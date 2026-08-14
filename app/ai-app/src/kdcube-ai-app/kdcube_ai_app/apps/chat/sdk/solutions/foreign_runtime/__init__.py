@@ -18,8 +18,13 @@ later phase.
 """
 
 from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.capabilities import (
+    disabled_category,
+    resolve_turn_disabled_mcp,
+    resolve_turn_disabled_namespaces,
     resolve_turn_disabled_tools,
+    resolve_turn_model_pick,
     resolve_turn_role_models,
+    resolve_turn_selection_disabled,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.dispatch import (
     AgentSpec,
@@ -35,10 +40,22 @@ from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.identity import (
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.mcp_bridge import (
     agent_grant_bearer_provider,
+    claude_code_tool_rules,
     connect_required_outcome,
+    connection_allowed_tools,
+    connection_server_id,
     current_turn_user_sub,
     load_mcp_server_instructions_safe,
+    claude_code_mcp_servers,
+    narrow_mcp_connections,
     resolve_turn_mcp,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.named_services import (
+    named_service_door_servers,
+    named_service_door_tools,
+    named_service_roster_lines,
+    named_service_rosters,
+    narrow_named_service_rosters,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.stream_contract import (
     content_text,
@@ -55,20 +72,35 @@ __all__ = [
     "AgentSpec",
     "TurnIdentity",
     "agent_grant_bearer_provider",
+    "claude_code_mcp_servers",
+    "claude_code_tool_rules",
     "connect_required_outcome",
+    "connection_allowed_tools",
+    "connection_server_id",
     "content_text",
     "conversation_is_new",
     "current_turn_user_sub",
+    "disabled_category",
     "emit_turn_timing",
     "finalize_conversation_title",
     "fold_turn_external_events",
     "load_mcp_server_instructions_safe",
+    "named_service_door_servers",
+    "named_service_door_tools",
+    "named_service_roster_lines",
+    "named_service_rosters",
+    "narrow_mcp_connections",
+    "narrow_named_service_rosters",
     "normalize_agent_id",
     "persist_turn_artifacts",
     "resolve_agent_spec",
+    "resolve_turn_disabled_mcp",
+    "resolve_turn_disabled_namespaces",
     "resolve_turn_disabled_tools",
     "resolve_turn_mcp",
+    "resolve_turn_model_pick",
     "resolve_turn_role_models",
+    "resolve_turn_selection_disabled",
     "tool_call_views",
     "turn_identity",
 ]

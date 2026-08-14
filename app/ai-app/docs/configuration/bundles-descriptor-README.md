@@ -4,9 +4,11 @@ title: "Bundles Descriptor"
 summary: "Bundle registry and non-secret bundle deployment configuration in bundles.yaml: default bundle, git or local bundle sources, module paths, and bundle-scoped config."
 tags: ["service", "configuration", "bundle", "bundle-registry", "deployment", "descriptor", "api-security"]
 keywords: ["bundle registry", "default bundle selection", "git bundle source", "local path bundle source", "bundle module mapping", "bundle configuration", "bundle inventory", "file-backed bundle authority", "bundle reload workflow", "deployment bundle catalog", "operation csrf override"]
-updated_at: 2026-08-01
+updated_at: 2026-08-14
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/descriptors-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/app-with-agents-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-agent-integration-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/assembly-descriptor-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/bundles-secrets-descriptor-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/service-runtime-configuration-mapping-README.md
@@ -386,6 +388,12 @@ controls which platform or bundle-provided surfaces this bundle consumes:
 model-callable tools, named-service event-source policies, pull/materialization
 policy, and UI resolvers.
 
+`surfaces.as_consumer.agents` is a map, and the key of each entry is that
+agent's id. A bundle may declare as many agents as the product needs; each one
+is configured on its own, and nothing is shared between them implicitly. The
+declaration is the deployment's visible statement of which agents exist, not
+something derived from bundle code.
+
 Example:
 
 ```yaml
@@ -469,8 +477,44 @@ bundles:
                     allowed: [object.resolve, object.action]
 ```
 
+What one agent entry may carry:
+
+| Key under `agents.<agent_id>` | Effect |
+|---|---|
+| `tools` | the connected tool sources this agent may call (`kind: python`, `mcp`, `named_service`) |
+| `skills` | the skill roots and consumer visibility rules for this agent |
+| `event_sources` | named-service event-source policies used by this agent |
+
+Per-agent runtime behavior that is not a tool — allowed models for the user's
+model pick, instruction profiles, subagent delegation, role models, cache
+policy — is declared in the react block for the same id, under
+`config.react.<agent_id>` (or `config.react.agents.<agent_id>`); a value
+declared under the literal key `default_agent`, or at the react root, serves
+every agent that declares none. The vocabulary is owned by
+[Bundle Agent Integration](../sdk/bundle/bundle-agent-integration-README.md).
+
+Everything declared for an agent is the inventory an administrator grants it.
+A signed-in user may narrow that inventory for their own turns; nothing outside
+it can ever be enabled.
+
 Rules:
 
+- `surfaces.as_consumer.agents` is a map keyed by agent id. A bundle may
+  declare any number of agents, and each one is configured separately.
+- `surfaces.as_consumer.default_agent` names the declared agent id that serves
+  a caller that names no agent.
+- The agent id is that agent's identity outside the descriptor. It is the
+  delegated-client identity the platform derives for the agent
+  (`kdcube-agent:<bundle_id>:<agent_id>`), so per-agent consent grants, the
+  per-turn bearer, and the entity a user sees and revokes in Connection Hub are
+  all keyed by it. Choose it deliberately and keep it stable: renaming an agent
+  orphans every grant users already gave it, and they must grant the new id
+  again. Identity model:
+  [Agents Acting On Behalf Of The User](../sdk/solutions/connections/agent-acting-for-user/agent-acting-for-user-README.md).
+- An agent id absent from this map falls back, in order, to the same id with
+  `.` and `-` replaced by `_`, then to the literal keys `default_agent`,
+  `main`, and `default`. Declare the id you mean rather than relying on the
+  fallback.
 - `surfaces.as_consumer.agents.<agent_id>.tools` is a list; each entry is one
   connected tool source for that agent.
 - This is the consumer-side surface: it says what that bundle/agent may call or

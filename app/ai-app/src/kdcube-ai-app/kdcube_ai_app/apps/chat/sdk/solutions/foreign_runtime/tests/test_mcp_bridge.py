@@ -231,3 +231,170 @@ def test_the_hub_link_is_the_platforms_and_absent_without_a_public_base(monkeypa
         "resource": "*/mcp/press*", "claims": ["press:read"],
     }]
     assert captured[0].chat_event_payload()["consent"]["url"] == ""
+
+
+# ── claude_code_mcp_servers (the Claude Code binding step) ───────────────────
+
+def test_neutral_map_binds_to_the_claude_code_workspace_shape() -> None:
+    """The seam stops at the neutral map; this is the per-runtime binding the
+    module header names. The SDK writes .mcp.json from the result, so an app
+    hands it to ClaudeCodeWorkspaceConfig and writes no file itself."""
+    bound = mcp_bridge.claude_code_mcp_servers({
+        "press": {
+            "url": "https://host/mcp/press",
+            "transport": "streamable_http",
+            "headers": {"Authorization": "Bearer turn-token"},
+        },
+        "sse_server": {"url": "https://host/sse", "transport": "sse"},
+        "bare": {"url": "https://host/plain"},
+    })
+    assert bound == {
+        "press": {
+            "type": "http",
+            "url": "https://host/mcp/press",
+            "headers": {"Authorization": "Bearer turn-token"},
+        },
+        "sse_server": {"type": "sse", "url": "https://host/sse"},
+        # No transport declared: the streamable-http default, and no headers key
+        # when the resolution bound no bearer.
+        "bare": {"type": "http", "url": "https://host/plain"},
+    }
+
+
+def test_half_formed_entries_are_dropped_not_written() -> None:
+    assert mcp_bridge.claude_code_mcp_servers({
+        "no_url": {"transport": "http"},
+        "": {"url": "https://host/mcp"},
+        "not_a_mapping": "nope",
+    }) == {}
+    assert mcp_bridge.claude_code_mcp_servers({}) == {}
+    assert mcp_bridge.claude_code_mcp_servers(None) == {}
+
+
+# ── narrow_mcp_connections (the pick, applied BEFORE any server contact) ─────
+
+_PRESS = {
+    "name": "press", "kind": "mcp", "server_id": "press", "alias": "press",
+    "url": "https://host/mcp/press", "delegated": True, "scopes": ["press:read"],
+    "allowed": ["search", "get_post", "commit_entry"],
+}
+_DOOR = {
+    "name": "named_services", "kind": "mcp", "server_id": "named_services",
+    "alias": "named_services", "url": "https://host/mcp/named_services",
+}
+_ROSTER = {
+    "name": "roster", "kind": "named_service", "alias": "named_services",
+    "namespaces": {"linkedin": {"allowed": ["object.search"]}},
+}
+
+
+def test_a_server_turned_off_whole_is_dropped_before_resolution() -> None:
+    dropped: list[str] = []
+    kept = mcp_bridge.narrow_mcp_connections(
+        [_PRESS, _DOOR], {"named_services": True}, dropped_sink=dropped
+    )
+    assert [c["server_id"] for c in kept] == ["press"]
+    assert dropped == ["named_services"]
+
+
+def test_a_partial_denial_keeps_the_connection() -> None:
+    """A tool-level opt-out narrows what the model may call; the server itself
+    still has to be reachable for the surviving tools."""
+    kept = mcp_bridge.narrow_mcp_connections([_PRESS], {"press": ["commit_entry"]})
+    assert [c["server_id"] for c in kept] == ["press"]
+
+
+def test_nothing_picked_keeps_the_whole_declared_inventory() -> None:
+    for disabled in ({}, None):
+        kept = mcp_bridge.narrow_mcp_connections([_PRESS, _DOOR], disabled)
+        assert [c["server_id"] for c in kept] == ["press", "named_services"]
+
+
+def test_non_mcp_entries_pass_through_untouched() -> None:
+    kept = mcp_bridge.narrow_mcp_connections([_PRESS, _ROSTER], {"press": True})
+    assert [c.get("kind") for c in kept] == ["named_service"]
+
+
+def test_a_dropped_server_is_never_resolved_and_mints_no_bearer(monkeypatch) -> None:
+    """The ordering contract end to end: narrow first, resolve second — the
+    resolver never sees a server the user turned off, so no grant token is read
+    for it and it can raise no consent card."""
+    seen: dict = {}
+
+    async def _stub_resolver(connections, *, user_sub=None, client_id="", bearer_provider=None, drop_sink=None, **kw):
+        seen["connections"] = [c.get("server_id") for c in connections]
+        return {}
+
+    monkeypatch.setattr(mcp_bridge, "resolve_mcp_server_map", _stub_resolver)
+    entrypoint = SimpleNamespace(comm=SimpleNamespace(user_id="operator-1"))
+    kept = mcp_bridge.narrow_mcp_connections([_PRESS, _DOOR], {"press": True})
+    asyncio.run(
+        mcp_bridge.resolve_turn_mcp(
+            entrypoint, kept, agent_id="press", application="press.linkedin@2026-08-13"
+        )
+    )
+    assert seen["connections"] == ["named_services"]
+
+
+# ── claude_code_tool_rules (the permission grammar, no wildcards) ────────────
+
+def test_an_untouched_server_is_allowed_whole() -> None:
+    allow, deny = mcp_bridge.claude_code_tool_rules(
+        [_PRESS], {}, server_ids=("press",), base_allowed=("Read", "Write")
+    )
+    assert allow == ("Read", "Write", "mcp__press")
+    assert deny == ()
+
+
+def test_a_partial_denial_names_the_survivors_from_the_declaration() -> None:
+    """The declaration enumerates the server's tools, so the survivors are known
+    from config alone — no live tools/list handshake."""
+    allow, deny = mcp_bridge.claude_code_tool_rules(
+        [_PRESS], {"press": ["commit_entry"]}, server_ids=("press",)
+    )
+    assert allow == ("mcp__press__search", "mcp__press__get_post")
+    assert deny == ("mcp__press__commit_entry",)
+
+
+def test_a_wildcard_server_falls_back_to_denying_the_removed_tools() -> None:
+    wildcard = {**_PRESS, "allowed": ["*"]}
+    allow, deny = mcp_bridge.claude_code_tool_rules(
+        [wildcard], {"press": ["commit_entry"]}, server_ids=("press",)
+    )
+    assert allow == ("mcp__press",)
+    assert deny == ("mcp__press__commit_entry",)
+
+
+def test_a_server_that_did_not_resolve_gets_no_rule() -> None:
+    allow, deny = mcp_bridge.claude_code_tool_rules(
+        [_PRESS, _DOOR], {}, server_ids=("press",)
+    )
+    assert allow == ("mcp__press",)
+    assert deny == ()
+
+
+def test_tool_overrides_carry_a_narrowing_computed_elsewhere() -> None:
+    allow, deny = mcp_bridge.claude_code_tool_rules(
+        [_DOOR], {},
+        server_ids=("named_services",),
+        tool_overrides={"named_services": ["named_services_list", "named_services_search"]},
+    )
+    assert allow == (
+        "mcp__named_services__named_services_list",
+        "mcp__named_services__named_services_search",
+    )
+    assert deny == ()
+
+
+def test_an_override_that_survives_nothing_denies_the_server_whole() -> None:
+    allow, deny = mcp_bridge.claude_code_tool_rules(
+        [_DOOR], {}, server_ids=("named_services",), tool_overrides={"named_services": []}
+    )
+    assert allow == ()
+    assert deny == ("mcp__named_services",)
+
+
+def test_connection_allowed_tools_reads_wildcards_as_unenumerable() -> None:
+    assert mcp_bridge.connection_allowed_tools(_PRESS) == ["search", "get_post", "commit_entry"]
+    assert mcp_bridge.connection_allowed_tools({"allowed": ["*"]}) == []
+    assert mcp_bridge.connection_allowed_tools({}) == []

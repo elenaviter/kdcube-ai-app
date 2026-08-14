@@ -3,9 +3,12 @@ id: repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-agent-integration-READM
 title: "Bundle Agent Integration"
 summary: "Canonical bundle guide for wiring React agents, bundle-local tools and skills, MCP connectors, bundle-served MCP endpoints, and Claude Code subagents with deployable auth and network requirements."
 tags: ["sdk", "bundle", "agents", "react", "claude-code", "tools", "skills", "mcp", "deployment"]
-keywords: ["bundle agent integration", "React tool config", "skill config", "event_source_reader", "bundle served MCP", "Claude Code MCP", "ClaudeCodeAgent", "mcp_base_url", "agent runtime context"]
-updated_at: 2026-07-30
+keywords: ["bundle agent integration", "React tool config", "skill config", "event_source_reader", "bundle served MCP", "Claude Code MCP", "ClaudeCodeAgent", "mcp_base_url", "agent runtime context", "agent id", "delegated client id", "per-agent consent", "per-user model pick"]
+updated_at: 2026-08-14
 see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/app-with-agents-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/configuration/bundles-descriptor-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/agent-acting-for-user/agent-acting-for-user-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-runtime-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-assemble-bundle-with-sdk-building-blocks-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-conversation-events-and-react-output-README.md
@@ -67,6 +70,71 @@ Important:
 - Claude Code does not inherit React tools or React skills automatically.
 - React does not read Claude `.mcp.json` or `CLAUDE.md`.
 - If both runtimes need the same capability, wire it explicitly for each one.
+
+### 1A. Wire Each Capability Per Runtime
+
+Read this table before wiring anything. Every row is two separate pieces of
+work when the product needs the capability in both runtimes.
+
+| Capability | React | Claude Code |
+| --- | --- | --- |
+| Python tools | `surfaces.as_consumer.agents.<agent>.tools` with `kind: python` | not available; expose the same capability through a bundle-served MCP endpoint |
+| MCP tools | `surfaces.as_consumer.agents.<agent>.tools` with `kind: mcp`, resolved against `surfaces.as_consumer.mcp.services` | `ClaudeCodeWorkspaceConfig.mcp_servers` plus `enabled_mcp_servers`; the SDK writes `.mcp.json` and `.claude/settings.local.json` into `workspace_path` |
+| named-service tools | `surfaces.as_consumer.agents.<agent>.tools` with `kind: named_service` | the named-services MCP surface, wired as an MCP server above |
+| built-in tool policy | React catalog is exactly the resolved inventory | `allowed_tools` / `denied_tools` (Claude built-ins such as `Bash`, `Read`, `WebFetch`) |
+| skills | `surfaces.as_consumer.agents.<agent>.skills` | `ClaudeCodeWorkspaceConfig.skill_ids`, materialized as native project Skills |
+| instructions | `additional_instructions` | `ClaudeCodeWorkspaceConfig.instructions_markdown`, written as `CLAUDE.md` |
+| model | role mapping resolved by the platform model router | `ClaudeCodeAgentConfig.model`, passed to the `claude` CLI |
+
+`config.surfaces.as_consumer.mcp.services` does not configure Claude Code, and
+a Claude workspace file never enters the React catalog. The two runtimes share
+the bundle, its props, and its secrets — nothing else.
+
+### 1B. The Agent Id Is An Identity, Not A Label
+
+The key under `surfaces.as_consumer.agents.<agent_id>` is the agent's id, and
+the platform derives the agent's delegated-client identity from it:
+
+```text
+surfaces.as_consumer.agents.<agent_id>      descriptor declaration
+        |
+        v
+delegated_client_id_for_agent(application, agent_id)
+"kdcube-agent:<bundle_id>:<agent_id>"       the client entity
+        |
+        v
+per-agent grant record (user, agent, resources)
+        |
+        v
+per-turn bearer for `delegated: true` MCP connections
+        |
+        v
+chat consent card with a one-click grant for THIS agent
+```
+
+Consequences a builder should plan for:
+
+- Consent is per agent. Granting one agent grants nothing to a sibling agent
+  of the same app, and the user revokes each agent separately in Connection
+  Hub.
+- The id is durable state. Renaming an agent produces a new client identity,
+  so every grant users already gave the old id stops applying.
+- The consent card the chat renders needs that identity in its payload. With
+  the agent client id present, the card reads "Grant access" and lands on the
+  Connection Hub pane for per-agent grants, prefilled with the pending agent,
+  resource, and claims. With it missing or malformed, the same denial degrades
+  into the generic connect-an-account card: "Open Connection Hub", landing on
+  the provider-connections view, where there is nothing for the user to
+  approve. A capability that is silently ungrantable looks to the user like a
+  broken tool.
+- An empty application or empty agent id collapses to one shared fallback
+  client identity, so distinct agents would share grants. Always resolve the
+  bundle id from the running spec and the agent id from runtime context.
+
+Identity model, grant record, and the demand chain are owned by
+[Agents Acting On Behalf Of The User](../solutions/connections/agent-acting-for-user/agent-acting-for-user-README.md).
+The declarative side is owned by
+[Bundles Descriptor](../../configuration/bundles-descriptor-README.md).
 
 ## 2. What A Bundle Can Provide To Agents
 
@@ -386,9 +454,54 @@ the override.
 
 ### Per-User Model Pick
 
-When the app declares `config.react.<agent>.supported_models`, a signed-in
-user's saved pick is applied per turn on top of this chain for role
-`solver.react.v2.decision.v2.strong` — owned by
+The pickable model list, the saved pick, and the wire operations that serve
+them are platform-owned and per agent. The list is what an administrator
+allows; the pick is the signed-in user's decision inside it, stored per (user,
+agent, conversation) and clamped to the allowed list on write. Declaring no
+list keeps the picker invisible.
+
+Where the app declares the list depends on the agent's capabilities provider:
+
+| Provider | Declaration | Pick applies to |
+| --- | --- | --- |
+| ReAct (default) | `config.react.<agent>.supported_models` | role `solver.react.v2.decision.v2.strong` for that user's turns |
+| `simple_model_pick` | `surfaces.as_consumer.agents.<agent>.capabilities.models` with `role`, `default`, `supported` | the declared role, for that user's turns |
+
+How the pick reaches the runtime differs by runtime, and this is the part an
+app has to get right:
+
+- **React.** Nothing to wire. The workflow applies the stored selection,
+  rebases the agent's role models from config, and overlays the validated pick
+  on the target role; the React runtime binds those role models into the
+  invocation context and the model router resolves them.
+- **Another hosted framework that calls through the model router.** Resolve
+  the pick as a role overlay with `resolve_turn_role_models(entrypoint, state,
+  agent_id)` from `sdk.solutions.foreign_runtime`, and bind the result with
+  `bind_current_bundle_call_context_patch({"role_models": ...})` around the
+  run. It returns `{}` when the user picked nothing, so the configured default
+  routes the turn.
+- **Claude Code.** The `claude` CLI takes a model *name*, not a router role, so
+  there is no role channel to rebase and the platform does not set the model
+  for the app. Resolve the pick with `resolve_turn_model_pick(entrypoint,
+  state, agent_id)` and pass the result into `ClaudeCodeAgentConfig(model=...)`.
+  It returns the bare `{"provider", "model"}` clamped to the agent's declared
+  list, and `None` when the user picked nothing or the stored pick is stale —
+  deliberately, so the app's own deployment default owns that case. The app
+  decides the fallback chain, typically user pick, then a bundle prop, then a
+  code default.
+
+```text
+Capabilities widget -> agent_selection_update -> selection store
+                                                     |
+              +--------------------------------------+-------------------+
+              |                                      |                   |
+              v                                      v                   v
+        React workflow                    resolve_turn_role_models   resolve_turn_model_pick
+        applies selection                 -> bundle_call_context     -> ClaudeCodeAgentConfig(model=...)
+        -> agent_role_models                 role_models overlay        (app supplies the fallback)
+```
+
+The React selection model, including capability narrowing, is owned by
 [How To Construct A ReAct Agent](../agents/react/how/how-to-construct-react-agent-README.md).
 
 ### React Agent Inputs
@@ -676,6 +789,44 @@ The bundle still owns policy:
 
 The SDK can write the standard workspace files from `ClaudeCodeWorkspaceConfig`,
 but it does not decide those values automatically.
+
+#### Delegated MCP Into A Claude Workspace
+
+When the Claude workspace should reach a KDCube `@mcp` surface as the
+signed-in user, the app does not hand-build `.mcp.json`. The per-turn server
+map is resolved for this user *as this agent*, then converted to the shape
+`ClaudeCodeWorkspaceConfig` takes:
+
+```python
+from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime import (
+    claude_code_mcp_servers,
+    resolve_turn_mcp,
+)
+
+drops: dict[str, str] = {}
+server_map = await resolve_turn_mcp(
+    self,
+    connections,                 # the agent's `kind: mcp` connections
+    agent_id=agent_id,
+    application=self.config.ai_bundle_spec.id,
+    drop_sink=drops,
+)
+
+workspace_config = ClaudeCodeWorkspaceConfig(
+    mcp_servers=claude_code_mcp_servers(server_map),
+    enabled_mcp_servers=tuple(claude_code_mcp_servers(server_map)),
+    allowed_tools=(...),
+)
+```
+
+`resolve_turn_mcp` keys the delegated bearer to
+`delegated_client_id_for_agent(application, agent_id)`, so the workspace runs
+under the same per-agent grant the chat consent card offers. A connection the
+user has not granted is **omitted** from the map before any server is
+contacted, and the reason lands in `drop_sink`; an omitted connection is a
+consent demand to raise, not a tool to retry. Pass the same agent id used
+everywhere else for this agent — see
+[1B. The Agent Id Is An Identity, Not A Label](#1b-the-agent-id-is-an-identity-not-a-label).
 
 Skill rule:
 

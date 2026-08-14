@@ -29,7 +29,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_mcp import (
     DROP_CONSENT_PENDING,
@@ -43,11 +43,21 @@ LOGGER = logging.getLogger("kdcube.foreign_runtime.mcp_bridge")
 __all__ = [
     "current_turn_user_sub",
     "agent_grant_bearer_provider",
+    "connection_server_id",
+    "connection_allowed_tools",
+    "narrow_mcp_connections",
     "resolve_turn_mcp",
+    "claude_code_mcp_servers",
+    "claude_code_tool_rules",
     "connect_required_outcome",
     "announce_connect_required",
     "load_mcp_server_instructions_safe",
 ]
+
+# ``resolve_turn_mcp`` yields the neutral map (``{server_id: {url, transport,
+# headers}}``); Claude Code's ``.mcp.json`` speaks ``{type, url, headers}``, and
+# names the transport ``type`` with its own vocabulary.
+_TRANSPORT_TO_MCP_JSON = {"streamable_http": "http", "http": "http", "sse": "sse"}
 
 
 def current_turn_user_sub(entrypoint: Any) -> str:
@@ -117,6 +127,69 @@ def agent_grant_bearer_provider(entrypoint: Any, agent_client_id: str):
     return _provider
 
 
+def connection_server_id(conn: Mapping[str, Any]) -> str:
+    """The SERVER ID a connection declares — the key the capabilities picker
+    denies by (its catalog rows carry ``server_id``), which is not always the
+    connection's model-facing ``alias``."""
+    return str(
+        (conn or {}).get("server_id") or (conn or {}).get("server") or (conn or {}).get("name") or ""
+    ).strip()
+
+
+def connection_allowed_tools(conn: Mapping[str, Any]) -> List[str]:
+    """The tool names a ``kind: mcp`` connection declares (``allowed``, or the
+    legacy ``tools``), or ``[]`` for a wildcard/undeclared connection.
+
+    A concrete list is the admin's enumeration of that server's surface: it gives
+    the picker per-tool rows with no handshake, and it lets a permission-grammar
+    runtime name the SURVIVORS of a user's partial denial without listing the
+    server live. ``["*"]`` reads as "whatever the server publishes" and yields
+    ``[]`` here — the caller then has no enumerable survivor set."""
+    raw = (conn or {}).get("allowed")
+    if raw is None:
+        raw = (conn or {}).get("tools")
+    if isinstance(raw, str):
+        raw = [raw]
+    names = [str(item).strip() for item in (raw or []) if str(item or "").strip()]
+    return [] if "*" in names else names
+
+
+def narrow_mcp_connections(
+    connections: List[Dict[str, Any]],
+    disabled_mcp: Optional[Mapping[str, Any]] = None,
+    *,
+    dropped_sink: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """The declared connection list minus the servers the user turned OFF whole.
+
+    ``disabled_mcp`` is the picker's ``disabled.mcp`` category
+    (``{server_id: true | [tool names]}``): a ``true`` drops the connection here,
+    a list is a PARTIAL denial and leaves the connection in place (its surviving
+    tools are named later, per runtime — ``claude_code_tool_rules``).
+
+    Call this BEFORE ``resolve_turn_mcp``. That ordering is the whole point: a
+    server the user turned off is never dialled, no grant token is ever read for
+    it, and it can never raise a consent card the user did not ask for. Entries of
+    other kinds pass through untouched (the resolver skips them anyway).
+
+    ``dropped_sink``: pass a list to learn WHICH server ids were removed."""
+    disabled = disabled_mcp or {}
+    kept: List[Dict[str, Any]] = []
+    for conn in connections or []:
+        if not isinstance(conn, Mapping):
+            continue
+        if str(conn.get("kind") or "").strip().lower() != "mcp":
+            kept.append(dict(conn))
+            continue
+        server_id = connection_server_id(conn)
+        if server_id and disabled.get(server_id) is True:
+            if dropped_sink is not None:
+                dropped_sink.append(server_id)
+            continue
+        kept.append(dict(conn))
+    return kept
+
+
 async def resolve_turn_mcp(
     entrypoint: Any,
     connections: List[Dict[str, Any]],
@@ -152,6 +225,130 @@ async def resolve_turn_mcp(
     )
 
 
+def claude_code_mcp_servers(
+    server_map: Mapping[str, Mapping[str, Any]]
+) -> Dict[str, Dict[str, Any]]:
+    """The Claude Code BINDING STEP: this module's neutral server map in the
+    shape ``ClaudeCodeWorkspaceConfig.mcp_servers`` takes.
+
+    The seam stops at the neutral map on purpose (see the module header); each
+    runtime binds it its own way. This is that step for Claude Code — the SDK
+    writes the resulting entries to ``.mcp.json`` itself, so an app hands the
+    result to ``ClaudeCodeWorkspaceConfig`` and writes no file. The per-turn
+    delegated bearer rides ``headers`` exactly as resolved; entries missing a
+    server id or a URL are dropped rather than written half-formed."""
+    out: Dict[str, Dict[str, Any]] = {}
+    for server_id, entry in dict(server_map or {}).items():
+        if not isinstance(entry, Mapping):
+            continue
+        url = str(entry.get("url") or "").strip()
+        if not str(server_id).strip() or not url:
+            continue
+        transport = str(entry.get("transport") or "streamable_http").strip().lower()
+        server: Dict[str, Any] = {
+            "type": _TRANSPORT_TO_MCP_JSON.get(transport, "http"),
+            "url": url,
+        }
+        headers = entry.get("headers")
+        if isinstance(headers, Mapping) and headers:
+            server["headers"] = {str(k): str(v) for k, v in headers.items()}
+        out[str(server_id)] = server
+    return out
+
+
+def claude_code_tool_rules(
+    connections: List[Dict[str, Any]],
+    disabled_mcp: Optional[Mapping[str, Any]] = None,
+    *,
+    server_ids: Sequence[str],
+    base_allowed: Sequence[str] = (),
+    tool_overrides: Optional[Mapping[str, Sequence[str]]] = None,
+) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
+    """The Claude Code permission rules for THIS turn's servers — ``(allow, deny)``
+    for ``ClaudeCodeWorkspaceConfig.allowed_tools`` / ``.denied_tools``.
+
+    Claude Code's grammar has exactly two MCP shapes and NO wildcard between them:
+    ``mcp__<server>`` covers everything that server publishes, ``mcp__<server>__<tool>``
+    covers one tool. So a PARTIAL denial has to be expressed one of two ways, and
+    which one is cheaper depends on what the admin declared:
+
+    * the connection enumerates its tools (``allowed: [...]``) — the survivors are
+      known from config alone, so they are named one by one and no server is
+      listed at runtime. This is the cheap path, and the reason a concrete
+      ``allowed`` list is the better declaration.
+    * the connection is a wildcard (``allowed: ["*"]`` or nothing) — the survivor
+      set is unknowable without a live ``tools/list`` handshake, so the whole
+      server stays allowed and the denied tools are named in the DENY list, which
+      wins over the allow rule.
+
+    Denied tools are named in the deny list in both cases: a rule the model cannot
+    talk its way around costs one line and removes the question.
+
+    ``server_ids`` are the servers that actually RESOLVED this turn (post-narrowing,
+    post-consent) — a declared server that dropped out gets no rule at all.
+    ``tool_overrides`` supplies a surviving tool list for a server whose narrowing
+    is computed elsewhere (the named-services door, where the user's pick lands on
+    namespaces rather than on the door's own tool names).
+
+    ``base_allowed`` (the runtime's own file/search tools) is carried through
+    unchanged, first."""
+    disabled = disabled_mcp or {}
+    overrides = {str(k): list(v or []) for k, v in dict(tool_overrides or {}).items()}
+    by_server: Dict[str, Mapping[str, Any]] = {}
+    for conn in connections or []:
+        if not isinstance(conn, Mapping):
+            continue
+        sid = connection_server_id(conn)
+        if sid and sid not in by_server:
+            by_server[sid] = conn
+
+    allow: List[str] = [str(item).strip() for item in base_allowed if str(item or "").strip()]
+    deny: List[str] = []
+    for raw_id in server_ids or ():
+        server_id = str(raw_id or "").strip()
+        if not server_id:
+            continue
+        entry = disabled.get(server_id)
+        denied_names = (
+            [str(item).strip() for item in entry if str(item or "").strip()]
+            if isinstance(entry, (list, tuple))
+            else []
+        )
+        if server_id in overrides:
+            declared = list(overrides[server_id])
+        else:
+            declared = connection_allowed_tools(by_server.get(server_id) or {})
+        if server_id in overrides and not declared:
+            # Everything this server offered was narrowed away, yet the server
+            # itself resolved (its other declarations may still matter). Deny it
+            # whole rather than leaving it silently reachable.
+            deny.append(f"mcp__{server_id}")
+            continue
+        if not denied_names and server_id not in overrides:
+            allow.append(f"mcp__{server_id}")
+            continue
+        if not declared:
+            # Wildcard surface: the survivors cannot be named without listing the
+            # server live, so allow the server and deny what the user removed.
+            allow.append(f"mcp__{server_id}")
+            deny.extend(f"mcp__{server_id}__{name}" for name in denied_names)
+            continue
+        survivors = [name for name in declared if name not in set(denied_names)]
+        allow.extend(f"mcp__{server_id}__{name}" for name in survivors)
+        deny.extend(
+            f"mcp__{server_id}__{name}" for name in declared if name in set(denied_names)
+        )
+
+    def _unique(values: List[str]) -> Tuple[str, ...]:
+        seen: Dict[str, None] = {}
+        for value in values:
+            if value and value not in seen:
+                seen[value] = None
+        return tuple(seen.keys())
+
+    return _unique(allow), _unique(deny)
+
+
 def connect_required_outcome(
     drop_sink: Optional[Mapping[str, str]],
     *,
@@ -182,12 +379,6 @@ def connect_required_outcome(
         "connections": pending,
         "connection_hub_url": connection_hub_url,
     }
-
-
-def _connection_server_id(conn: Mapping[str, Any]) -> str:
-    return str(
-        (conn or {}).get("server_id") or (conn or {}).get("server") or (conn or {}).get("name") or ""
-    ).strip()
 
 
 def _connection_claims(conn: Mapping[str, Any]) -> List[str]:
@@ -286,7 +477,7 @@ async def announce_connect_required(
         hub_bundle_id = ""
     announced: List[Dict[str, Any]] = []
     for conn in connections or []:
-        server_id = _connection_server_id(conn)
+        server_id = connection_server_id(conn)
         if server_id not in pending_ids:
             continue
         resource = connection_resource(conn)
