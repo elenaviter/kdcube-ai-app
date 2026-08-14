@@ -35,6 +35,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.claude_code.streaming import (
     extract_usage_from_claude_event,
     is_result_event,
     is_usage_bearing_message_event,
+    tool_progress_from_claude_event,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.claude_code.types import (
     CLAUDE_CODE_EXECUTIVE_JOURNAL_CODE_PREFIX,
@@ -633,6 +634,28 @@ class ClaudeCodeAgent:
                     )
                     await self._emit_activity_line(f"→ `{title}`")
 
+                # A tool that has not answered yet is the hardest failure to
+                # read from outside: the row sits at "running" and the reader
+                # cannot tell a slow call from a lost one. The CLI says so in
+                # its own heartbeat — carry it to the row AND to the log, so a
+                # stall is visible while it happens and greppable afterwards.
+                waiting = tool_progress_from_claude_event(parsed)
+                if waiting:
+                    step_key, title = tool_steps.get(
+                        str(waiting.get("tool_use_id") or ""), ("", "")
+                    ) or ("", "")
+                    elapsed = int(waiting.get("elapsed_seconds") or 0)
+                    self.logger.info(
+                        "[ClaudeCodeAgent] tool still running agent=%s tool=%s elapsed=%ss",
+                        self.config.agent_name, waiting.get("tool_name") or "?", elapsed,
+                    )
+                    if step_key:
+                        await self._emit_step(
+                            step=step_key, status="running", title=title,
+                            markdown=f"**{title}** — still running, {elapsed}s",
+                            data={"tool": waiting.get("tool_name") or "", "elapsed_seconds": elapsed},
+                        )
+
                 for done in extract_tool_results_from_claude_event(parsed):
                     step_key, title = tool_steps.pop(
                         str(done.get("tool_use_id") or ""), (f"tool.{tool_index}", "tool")
@@ -651,6 +674,14 @@ class ClaudeCodeAgent:
                     )
                     mark = "✗" if done.get("is_error") else "✓"
                     await self._emit_activity_line(f"{mark} `{title}` — {size}")
+                    if done.get("is_error"):
+                        # The agent narrates around a failed tool and the turn
+                        # still "succeeds", so this line is the only durable
+                        # trace that a capability was unavailable.
+                        self.logger.warning(
+                            "[ClaudeCodeAgent] tool ERROR agent=%s tool=%s detail=%s",
+                            self.config.agent_name, title, text_out[:400].replace("\n", " "),
+                        )
 
                 text = extract_text_from_claude_event(parsed)
                 _log_stdout_event(line, parsed=parsed if isinstance(parsed, Mapping) else None, text=text)

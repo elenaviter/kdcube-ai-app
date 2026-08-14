@@ -62,6 +62,14 @@ from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.stream_contract impor
     content_text,
     tool_call_views,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.workspace_tools import (
+    WORKSPACE_MCP_SERVER_ID,
+    WORKSPACE_PULL_TOOL,
+    pull_into_workspace,
+    pull_report_text,
+    workspace_mcp_server,
+    workspace_pull_dir,
+)
 from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.turn_record import (
     conversation_is_new,
     emit_turn_timing,
@@ -72,6 +80,8 @@ from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.turn_record import (
 __all__ = [
     "AgentSpec",
     "TurnIdentity",
+    "WORKSPACE_MCP_SERVER_ID",
+    "WORKSPACE_PULL_TOOL",
     "agent_grant_bearer_provider",
     "claude_code_mcp_servers",
     "claude_code_tool_rules",
@@ -95,6 +105,8 @@ __all__ = [
     "narrow_named_service_inventory",
     "normalize_agent_id",
     "persist_turn_artifacts",
+    "pull_into_workspace",
+    "pull_report_text",
     "resolve_agent_spec",
     "resolve_turn_disabled_mcp",
     "resolve_turn_disabled_namespaces",

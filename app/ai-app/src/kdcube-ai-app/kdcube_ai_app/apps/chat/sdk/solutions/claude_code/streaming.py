@@ -338,6 +338,32 @@ def extract_tool_results_from_claude_event(value: Any) -> list[dict[str, Any]]:
     return out
 
 
+def tool_progress_from_claude_event(value: Any) -> dict[str, Any] | None:
+    """``{"tool_use_id", "tool_name", "elapsed_seconds"}`` for a heartbeat the
+    CLI emits while a tool has not answered yet.
+
+    A call that never comes back looks exactly like a call that is merely slow,
+    from every vantage point except this event: the row stays at "running", the
+    server that served the request logged a clean 200, and the failure only
+    names itself minutes later as a lost response. Surfacing the heartbeat makes
+    the waiting itself visible while it happens."""
+    if not isinstance(value, dict) or str(value.get("type") or "") != "tool_progress":
+        return None
+    parent = str(value.get("parent_tool_use_id") or "").strip()
+    own = str(value.get("tool_use_id") or "").strip()
+    try:
+        elapsed = int(float(value.get("elapsed_time_seconds") or 0))
+    except Exception:
+        elapsed = 0
+    return {
+        # The heartbeat's own id is a synthetic `<tool_use_id>-heartbeat-N`; the
+        # call it belongs to is the parent.
+        "tool_use_id": parent or own,
+        "tool_name": str(value.get("tool_name") or ""),
+        "elapsed_seconds": elapsed,
+    }
+
+
 def _plain_text_of_blocks(value: Any) -> str:
     """The text of a tool result given as blocks rather than a string."""
     if isinstance(value, str):

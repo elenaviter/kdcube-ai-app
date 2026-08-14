@@ -989,6 +989,32 @@ def test_a_tool_result_is_shown_as_activity_with_its_size():
     assert err[0]["is_error"] is True and err[0]["text"] == "permission denied"
 
 
+def test_a_waiting_tool_is_visible_while_it_waits():
+    """LIVE: an MCP call whose response was lost in transit sat at `running` for
+    two minutes with nothing on screen and nothing in the log, and the user read
+    it as "no response". The CLI knew — it heartbeats the pending call — so the
+    heartbeat is what makes waiting legible, and it points at the PARENT call,
+    not at its own synthetic heartbeat id."""
+    from kdcube_ai_app.apps.chat.sdk.solutions.claude_code.streaming import (
+        tool_progress_from_claude_event,
+    )
+
+    waiting = tool_progress_from_claude_event({
+        "type": "tool_progress",
+        "tool_use_id": "toolu_ABC-heartbeat-2",
+        "parent_tool_use_id": "toolu_ABC",
+        "tool_name": "mcp__press__search",
+        "elapsed_time_seconds": 90,
+        "heartbeat": True,
+    })
+    assert waiting == {
+        "tool_use_id": "toolu_ABC",
+        "tool_name": "mcp__press__search",
+        "elapsed_seconds": 90,
+    }
+    assert tool_progress_from_claude_event({"type": "assistant"}) is None
+
+
 def test_an_activity_row_says_what_the_agent_did():
     """LIVE: the Steps list read `Bash(command=<252 chars>, descripti…` — an
     argument dump, truncated before the part that matters. A row should read
