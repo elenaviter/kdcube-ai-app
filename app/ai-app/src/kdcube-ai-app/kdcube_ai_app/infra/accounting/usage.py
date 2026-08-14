@@ -15,6 +15,8 @@ sonnet_46 = "claude-sonnet-4-6"
 sonnet_5 = "claude-sonnet-5"
 opus_46 = "claude-opus-4-6"
 opus_48 = "claude-opus-4-8"
+opus_5 = "claude-opus-5"
+fable_5 = "claude-fable-5"
 haiku_4 = "claude-haiku-4-5-20251001"
 gemini_25_pro = "gemini-2.5-pro"
 
@@ -54,6 +56,11 @@ DEFAULT_PRICE_TABLE = {
                 "cache_read_tokens_1M": 0.30,
             },
             {
+                # Standard list price. An introductory rate of 2.00/10.00 per 1M
+                # runs through 2026-08-31; the table carries no time-bounded price
+                # convention, so the standard rate is the baseline and the intro
+                # discount (if it is to be honoured) belongs in a descriptor
+                # `price_tables:` overlay for its window.
                 "model": sonnet_5,
                 "provider": "anthropic",
                 "aliases": [
@@ -125,6 +132,52 @@ DEFAULT_PRICE_TABLE = {
                 },
                 "cache_write_tokens_1M": 6.25,
                 "cache_read_tokens_1M": 0.50,
+            },
+            {
+                "model": opus_5,
+                "provider": "anthropic",
+                "aliases": [
+                    "opus-5",
+                    "claude-opus-5",
+                ],
+                "input_tokens_1M": 5.00,
+                "output_tokens_1M": 25.00,
+                "cache_pricing": {
+                    "5m": {
+                        "write_tokens_1M": 6.25,
+                        "read_tokens_1M": 0.50,
+                    },
+                    "1h": {
+                        "write_tokens_1M": 10.00,
+                        "read_tokens_1M": 0.50,
+                    },
+                },
+                "cache_write_tokens_1M": 6.25,
+                "cache_read_tokens_1M": 0.50,
+            },
+            {
+                "model": fable_5,
+                "provider": "anthropic",
+                "aliases": [
+                    "fable",
+                    "claude-fable",
+                    "fable-5",
+                    "claude-fable-5",
+                ],
+                "input_tokens_1M": 10.00,
+                "output_tokens_1M": 50.00,
+                "cache_pricing": {
+                    "5m": {
+                        "write_tokens_1M": 12.50,
+                        "read_tokens_1M": 1.00,
+                    },
+                    "1h": {
+                        "write_tokens_1M": 20.00,
+                        "read_tokens_1M": 1.00,
+                    },
+                },
+                "cache_write_tokens_1M": 12.50,
+                "cache_read_tokens_1M": 1.00,
             },
             {
                 "model": sonnet_45,
