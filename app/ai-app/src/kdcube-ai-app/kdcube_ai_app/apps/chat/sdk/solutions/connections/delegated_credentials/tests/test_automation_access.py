@@ -1636,3 +1636,40 @@ async def test_automation_access_update_empty_narrowing_clears_every_resource():
         named_service_operations={},
     )
     assert _namespaces() == []               # explicit {} -> cleared
+
+
+def test_a_catalog_tool_whose_claim_was_never_declared_is_reported():
+    """The defect that shipped: a resource entry naming claims the deployment
+    never declared under `capabilities`. Both halves live in the same config
+    block and both are this deployment's decision, but nothing compared them —
+    so the access card rendered, the grant failed, and the refusal talked about
+    the claim instead of the missing declaration."""
+    state = SimpleNamespace(
+        oauth_delegated_config={
+            "enabled": True,
+            "tenant": "demo-tenant",
+            "project": "demo-project",
+            "capabilities": [
+                {"grant": "records:read", "label": "Read records",
+                 "delegable_roles": ["kdcube:role:registered"]},
+            ],
+            "resources": [
+                {
+                    "resource": "https://example.test/mcp",
+                    "label": "Example MCP",
+                    "tools": {
+                        "records_export": {"label": "Export", "grants": ["records:read"]},
+                        "records_purge": {"label": "Purge", "grants": ["records:purge"]},
+                    },
+                },
+            ],
+        }
+    )
+    cfg = oauth_delegated_config(SimpleNamespace(state=state))
+    assert cfg.ungrantable_resource_tools() == (
+        ("https://example.test/mcp", "records_purge", "records:purge"),
+    )
+
+
+def test_a_coherent_catalog_reports_nothing():
+    assert _config().ungrantable_resource_tools() == ()

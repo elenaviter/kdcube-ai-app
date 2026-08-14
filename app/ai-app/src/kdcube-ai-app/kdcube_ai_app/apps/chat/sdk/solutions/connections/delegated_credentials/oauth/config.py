@@ -138,6 +138,28 @@ class OAuthDelegatedClientConfig:
     def capability_map(self) -> dict[str, OAuthDelegatedCapabilityConfig]:
         return {item.grant: item for item in self.capabilities}
 
+    def ungrantable_resource_tools(self) -> tuple[tuple[str, str, str], ...]:
+        """``(resource, tool, claim)`` for every catalog tool nobody can be
+        granted — its claim is not declared under ``capabilities``.
+
+        The catalog says WHICH endpoints may be asked for here and what each of
+        their tools costs in claims; ``capabilities`` says who may delegate a
+        claim at all. Both are this deployment's decision, written in the same
+        block, and an entry that names a claim the deployment never declared is
+        askable by nobody: the access card renders, the grant is refused, and
+        the refusal talks about the claim rather than the missing declaration.
+        Silent until now, so it was found by a person clicking Grant access.
+
+        Pure and cheap: it compares two lists this config already holds."""
+        declared = {item.grant for item in self.capabilities}
+        missing: list[tuple[str, str, str]] = []
+        for resource in self.resources:
+            for tool in resource.tools or ():
+                for claim in getattr(tool, "grants", ()) or ():
+                    if claim not in declared:
+                        missing.append((resource.resource, getattr(tool, "name", "") or "", claim))
+        return tuple(missing)
+
     def connected_account_requirements(self) -> dict[str, tuple[OAuthDelegatedAccountRequirement, ...]]:
         """Door claim -> the provider account(s) that back it. Used by the
         consent page to resolve door claims (mail:read) whose provider is not

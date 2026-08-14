@@ -429,7 +429,40 @@ class ConnectionHubAuthenticationSurface:
     def _bind_delegated_oauth_config(self, request: Request) -> Any:
         cfg = self._delegated_oauth_raw_config(request)
         request.state.oauth_delegated_config = cfg
-        return oauth_delegated_config(request)
+        resolved = oauth_delegated_config(request)
+        self._warn_ungrantable_catalog_once(resolved)
+        return resolved
+
+    def _warn_ungrantable_catalog_once(self, cfg: Any) -> None:
+        """Say once, at the top of the log, which catalog rows nobody can be
+        granted — a tool whose claim was never declared under `capabilities`.
+
+        Both halves are this deployment's decision and both live in the same
+        block, but nothing compared them, so the first sign was a user pressing
+        Grant access and reading a refusal about the claim. The warning names
+        the resource, the tool and the claim, so the fix is the next edit.
+        Never raises and never blocks a request: a deployment with an
+        incoherent row still serves everything else."""
+        try:
+            if cfg is None or not getattr(cfg, "enabled", False):
+                return
+            issues = cfg.ungrantable_resource_tools()
+            if not issues:
+                return
+            fingerprint = tuple(sorted(issues))
+            if fingerprint == getattr(self, "_ungrantable_catalog_warned", None):
+                return
+            self._ungrantable_catalog_warned = fingerprint
+            for resource, tool, claim in issues:
+                logger.warning(
+                    "[connection-hub] delegable catalog: tool %r of %s asks for %r, which "
+                    "no `capabilities` entry declares — nobody can be granted it. Declare "
+                    "the claim under connections.delegated_credentials.oauth.capabilities "
+                    "or drop the tool from the resource.",
+                    tool, resource, claim,
+                )
+        except Exception:
+            logger.debug("[connection-hub] catalog coherence check failed", exc_info=True)
 
     def _delegated_platform_resource_config(self, request: Request) -> Any:
         cfg = self._bind_delegated_oauth_config(request)

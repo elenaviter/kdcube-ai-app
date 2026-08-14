@@ -316,6 +316,38 @@ bundles:
               description: "Read the organization page's posts, comments, and reaction counts through a connected org-lane LinkedIn account."
               delegable_roles: ["kdcube:role:registered", "kdcube:role:paid", "kdcube:role:privileged", "kdcube:role:super-admin"]
               delegable_permissions: ["linkedin:org:read"]
+            - grant: press.linkedin:read
+              label: Read the press publications
+              description: Search and read entries in the press app's publication store, and refresh its local clone.
+              delegable_roles:
+              - kdcube:role:super-admin
+              - kdcube:role:admin
+              delegable_permissions:
+              - press.linkedin:read
+            - grant: press.linkedin:write
+              label: Edit the press publications
+              description: Change an entry's text, sketch or metadata, add files, and comment on entries.
+              delegable_roles:
+              - kdcube:role:super-admin
+              - kdcube:role:admin
+              delegable_permissions:
+              - press.linkedin:write
+            - grant: press.linkedin:delete
+              label: Delete from the press publications
+              description: Remove files and review comments from an entry.
+              delegable_roles:
+              - kdcube:role:super-admin
+              - kdcube:role:admin
+              delegable_permissions:
+              - press.linkedin:delete
+            - grant: press.linkedin:commit
+              label: Commit and push the press publications
+              description: Commit an entry's changes and push them to the store's repository.
+              delegable_roles:
+              - kdcube:role:super-admin
+              - kdcube:role:admin
+              delegable_permissions:
+              - press.linkedin:commit
             resources:
             - resource: '*'
               label: All platform and application APIs
