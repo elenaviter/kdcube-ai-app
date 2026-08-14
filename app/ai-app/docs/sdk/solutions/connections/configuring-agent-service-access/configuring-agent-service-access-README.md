@@ -101,6 +101,53 @@ consent renderer. Present with `mode: authority_provider` (or the equivalent
 provider. Both are valid; pick per deployment. This is a per-environment
 behavioral choice, not something to normalize across environments.
 
+### The delegable catalog — what may be asked for on this installation
+
+An app's own MCP surface is not askable until Connection Hub says it is. The
+catalog lives under `connections.delegated_credentials.oauth.resources` in the
+**Connection Hub app's** props, and it is a **declarative, deployment-level
+decision**, not something an app can do for itself:
+
+```yaml
+delegated_credentials:
+  oauth:
+    resources:
+      - resource: '*/api/integrations/bundles/*/*/press.linkedin@2026-08-13/mcp/press*'
+        label: Press LinkedIn publications
+        description: The publication store behind the press app.
+        tools:
+          search:       { label: Search publications,  grants: [press.linkedin:read] }
+          save_file:    { label: Edit an entry file,   grants: [press.linkedin:write] }
+          delete_file:  { label: Delete a file,        grants: [press.linkedin:delete] }
+          commit_entry: { label: Commit and push,      grants: [press.linkedin:commit] }
+```
+
+The rule, in one line:
+
+> **The catalog is a subset of what the deployment's apps expose.**
+
+Apps state what their surfaces *can* delegate — the claims on a `kind: mcp`
+connection. This catalog states how much of that may be **asked for here**, tool
+by tool, and it can only narrow: a claim no app serves cannot be granted by
+listing it, and an endpoint listed by nobody cannot be granted at all. A
+deployment may run a thousand services; until each is entered here, nobody can
+be asked to approve any of them.
+
+That is deliberate. Registering a surface automatically would mean installing an
+app silently widened what its users can be asked to approve — installing and
+allowing stay two decisions.
+
+**Claim vocabulary.** A claim names an app *and* a consequence:
+`press.linkedin:read`, `…:write`, `…:delete`, `…:commit`. The app segment keeps
+two publication apps distinguishable on the same card; the consequence is what
+the person approving is actually deciding. A claim that says `read` while its
+tools write is the one thing a consent card must never do.
+
+**When it is missing**, the hub answers `delegated_access_unknown_resources`
+(the endpoint was never made delegable here) or, if the endpoint is listed but
+the claim is not among its tools' grants, `delegated_access_grants_not_delegable`
+— both carrying a message naming this config block.
+
 ## Surface B — connect the agent to the service (the consuming agent)
 
 The agent that consumes the service declares a delegated connection in its
