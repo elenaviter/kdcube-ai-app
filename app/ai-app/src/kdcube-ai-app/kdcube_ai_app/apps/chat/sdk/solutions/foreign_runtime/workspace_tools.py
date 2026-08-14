@@ -42,7 +42,9 @@ __all__ = [
 ]
 
 #: The server id and tool name the runtime's permission rules name.
-WORKSPACE_MCP_SERVER_ID = "workspace"
+#: NOT "workspace": Claude Code reserves that name and refuses the server with
+#: `reserved_name`, which the lane sees only as tools that never arrive.
+WORKSPACE_MCP_SERVER_ID = "turn_workspace"
 WORKSPACE_PULL_TOOL = f"mcp__{WORKSPACE_MCP_SERVER_ID}__pull"
 
 #: Where pulled bytes land, relative to the agent's working directory. A single

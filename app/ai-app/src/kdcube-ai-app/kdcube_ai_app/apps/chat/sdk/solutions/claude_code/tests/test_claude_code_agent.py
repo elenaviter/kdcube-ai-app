@@ -1118,3 +1118,43 @@ def test_a_step_body_travels_as_markdown_not_inside_data():
     seen.clear()
     asyncio.run(agent._emit_step(step="tool.2", status="running", title="t", data={}))
     assert "markdown" not in seen[0]
+
+
+def test_the_workspace_is_trusted_so_its_permissions_are_read(tmp_path):
+    """LIVE: the CLI logged "Ignoring 8 permissions.allow entries … this
+    workspace has not been trusted" and ran with none of them — the per-turn
+    allow list, MCP servers included, silently discarded. Trust is an
+    interactive dialog nobody is there to click; the workspace is ours, so the
+    lane states the fact."""
+    import json as _json
+    from kdcube_ai_app.apps.chat.sdk.solutions.claude_code.workspace import (
+        ClaudeCodeWorkspaceConfig,
+        prepare_claude_code_workspace,
+    )
+
+    workspace = tmp_path / "turn"
+    workspace.mkdir()
+    prepare_claude_code_workspace(
+        workspace,
+        ClaudeCodeWorkspaceConfig(
+            mcp_servers={"turn_workspace": {"type": "stdio", "command": "python3"}},
+            allowed_tools=["Read", "mcp__turn_workspace"],
+        ),
+    )
+    config = _json.loads((workspace / ".claude" / ".claude.json").read_text(encoding="utf-8"))
+    entry = config["projects"][str(workspace.resolve())]
+    assert entry["hasTrustDialogAccepted"] is True
+
+    # an existing config is merged, never replaced
+    (workspace / ".claude" / ".claude.json").write_text(
+        _json.dumps({"projects": {"/other": {"hasTrustDialogAccepted": True}}, "keep": 1}),
+        encoding="utf-8",
+    )
+    prepare_claude_code_workspace(
+        workspace,
+        ClaudeCodeWorkspaceConfig(allowed_tools=["Read"]),
+    )
+    config = _json.loads((workspace / ".claude" / ".claude.json").read_text(encoding="utf-8"))
+    assert config["keep"] == 1
+    assert "/other" in config["projects"]
+    assert config["projects"][str(workspace.resolve())]["hasTrustDialogAccepted"] is True

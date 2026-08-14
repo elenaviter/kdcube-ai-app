@@ -30,6 +30,41 @@ def _deep_merge_dict(base: dict[str, Any], overlay: Mapping[str, Any]) -> dict[s
     return result
 
 
+def _trust_workspace(config_dir: Path, workspace: Path) -> str | None:
+    """Record this workspace as trusted in the CLI's own config.
+
+    Claude Code refuses to honor a project's `permissions.allow` until the
+    project has been trusted — interactively, through a dialog. A hosted lane
+    has nobody to click it, so the CLI logs "Ignoring N permissions.allow
+    entries … this workspace has not been trusted" and runs with none of them:
+    the allow list we compute per turn is silently discarded, MCP servers
+    included. The workspace IS ours — we created it, we wrote its config, and it
+    lives in bundle storage — so the trust is a statement of fact, not a
+    security decision handed to the agent."""
+    config_file = config_dir / ".claude.json"
+    payload: dict[str, Any] = {}
+    if config_file.exists():
+        try:
+            loaded = json.loads(config_file.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                payload = loaded
+        except Exception:
+            payload = {}
+    projects = payload.get("projects")
+    if not isinstance(projects, dict):
+        projects = {}
+    key = str(Path(workspace).resolve())
+    record = projects.get(key) if isinstance(projects.get(key), dict) else {}
+    if record.get("hasTrustDialogAccepted") is True:
+        return None
+    record["hasTrustDialogAccepted"] = True
+    projects[key] = record
+    payload["projects"] = projects
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return str(config_file)
+
+
 def _write_json(path: Path, payload: Mapping[str, Any], *, overwrite: bool) -> None:
     if path.exists() and not overwrite:
         return
@@ -213,9 +248,13 @@ def prepare_claude_code_workspace(
             permissions["deny"] = list(config.denied_tools)
         settings["permissions"] = permissions
     if settings:
-        path = workspace / ".claude" / "settings.local.json"
-        _write_json(path, settings, overwrite=config.overwrite)
-        written.append(str(path))
+        settings_path = workspace / ".claude" / "settings.local.json"
+        _write_json(settings_path, settings, overwrite=config.overwrite)
+        written.append(str(settings_path))
+    # …and make the CLI willing to read them.
+    trusted = _trust_workspace(workspace / ".claude", workspace)
+    if trusted:
+        written.append(trusted)
 
     if config.instructions_markdown is not None:
         path = workspace / "CLAUDE.md"
