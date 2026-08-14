@@ -100,6 +100,59 @@ def _server_id(conn: Mapping[str, Any]) -> str:
     return str(conn.get("server_id") or conn.get("server") or conn.get("name") or "").strip()
 
 
+def _runtime_local_base() -> str:
+    """This process's own address for the surfaces it serves.
+
+    A hosted agent runs INSIDE the runtime that serves the app's `@mcp` path,
+    so the shortest correct route to it is the loopback of that process — the
+    same base the email lane uses. Everywhere: on a laptop, in a container, and
+    on ECS, where the agent's subprocess and the surface it calls are the same
+    task."""
+    try:
+        from kdcube_ai_app.apps.chat.sdk.config import get_settings
+
+        port = int(getattr(get_settings(), "CHAT_PROCESSOR_PORT", None) or 8020)
+    except Exception:
+        port = 8020
+    return f"http://127.0.0.1:{port}"
+
+
+def self_hosted_url(conn: Mapping[str, Any], url: str) -> str:
+    """The address to DIAL for a surface this runtime serves itself.
+
+    A connection's declared `url` is the surface's public address — the one a
+    grant, a catalog resource pattern, and a person all recognise. When the
+    caller is the deployment that HOSTS it, that address sends the call out of
+    the machine and back in: through the public host, its TLS, its proxy, and
+    whatever tunnel or load balancer stands in between — every one of them a hop
+    that can mangle a response the app already produced correctly.
+
+    `self_hosted: true` on the connection says "this is mine": path and query
+    are kept exactly (they carry tenant, project, bundle, alias — and the grant
+    is checked against a host-wildcarded resource pattern, so authorization is
+    unchanged), and only the origin becomes local. `internal_base_url` overrides
+    the local base for a deployment whose agent host and serving process differ.
+    """
+    if not bool(conn.get("self_hosted")):
+        return url
+    raw = str(url or "").strip()
+    if not raw:
+        return url
+    base = str(conn.get("internal_base_url") or "").strip().rstrip("/") or _runtime_local_base()
+    try:
+        from urllib.parse import urlsplit, urlunsplit
+
+        parts = urlsplit(raw)
+        if not parts.scheme or not parts.netloc:
+            return url  # already relative/local — nothing to rewrite
+        base_parts = urlsplit(base)
+        if not base_parts.scheme or not base_parts.netloc:
+            return url
+        return urlunsplit((base_parts.scheme, base_parts.netloc, parts.path, parts.query, ""))
+    except Exception:
+        return url
+
+
 def _scopes(conn: Mapping[str, Any]) -> List[str]:
     raw = conn.get("scopes") or conn.get("grants") or []
     if isinstance(raw, str):
@@ -177,8 +230,14 @@ async def resolve_mcp_server_map(
         url = conn.get("url")
         if not server_id or not url:
             continue
+        dial_url = self_hosted_url(conn, str(url))
+        if dial_url != url:
+            logger.info(
+                "delegated_mcp: connection %s is served by this runtime — dialing %s "
+                "instead of the public address %s", server_id, dial_url, url,
+            )
         entry: Dict[str, Any] = {
-            "url": url,
+            "url": dial_url,
             "transport": conn.get("transport") or "streamable_http",
         }
         if conn.get("protocol_mode") is not None:

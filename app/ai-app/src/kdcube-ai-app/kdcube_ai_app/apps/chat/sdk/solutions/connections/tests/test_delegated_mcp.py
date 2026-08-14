@@ -236,3 +236,39 @@ def test_claim_requirements_from_connection():
     reqs2 = claim_requirements_from_connection(conn_slack)
     assert [r.claim for r in reqs2] == ["slack:read", "slack:write"]
     assert all(r.source == SOURCE_CONNECTED and r.provider_id == "slack" for r in reqs2)
+
+
+def test_a_surface_this_runtime_serves_is_dialed_locally():
+    """LIVE: the press agent's own `@mcp` surface was declared with the
+    deployment's PUBLIC address, so a call from inside the runtime went out
+    through the tunnel and back. Every byte was served correctly and the client
+    still lost the response — the hop broke the stream. `self_hosted: true`
+    keeps the declared address (grants and catalog patterns are written against
+    it) and dials the process that serves it."""
+    import asyncio
+
+    from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_mcp import (
+        resolve_mcp_server_map, self_hosted_url,
+    )
+
+    conn = {
+        "kind": "mcp", "server_id": "press", "self_hosted": True,
+        "url": "https://public.example/api/integrations/bundles/t/p/press@1-0/public/mcp/press",
+        "headers": {"Authorization": "Bearer static"},
+    }
+    servers = asyncio.run(resolve_mcp_server_map([conn]))
+    dialed = servers["press"]["url"]
+    assert dialed.startswith("http://127.0.0.1:")
+    # path/query survive untouched — they name tenant, project, bundle, alias
+    assert dialed.endswith("/api/integrations/bundles/t/p/press@1-0/public/mcp/press")
+
+    # An explicit internal base wins, for a deployment whose agent host and
+    # serving process are different containers.
+    assert self_hosted_url(
+        {**conn, "internal_base_url": "http://chat-processor.internal:8020/"},
+        conn["url"],
+    ) == "http://chat-processor.internal:8020/api/integrations/bundles/t/p/press@1-0/public/mcp/press"
+
+    # Without the flag, the declared address is what gets dialed.
+    plain = {k: v for k, v in conn.items() if k != "self_hosted"}
+    assert asyncio.run(resolve_mcp_server_map([plain]))["press"]["url"] == conn["url"]

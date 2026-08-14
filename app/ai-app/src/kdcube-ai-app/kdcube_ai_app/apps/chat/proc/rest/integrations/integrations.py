@@ -929,9 +929,21 @@ def _head_response_from(response: Response) -> Response:
 def _coerce_bundle_mcp_asgi_app(result: Any, *, transport: str):
     if transport == "streamable-http" and hasattr(result, "streamable_http_app"):
         app_factory = result.streamable_http_app
+        # ANSWER JSON, NOT AN EVENT STREAM. Streamable-HTTP lets a server reply
+        # to a plain request/response call either way, and the SDK's default is
+        # an `text/event-stream` body carrying exactly one message. That stream
+        # is what breaks in the field: a tunnel/CDN/HTTP2 edge in front of the
+        # deployment can deliver every byte and still close the stream badly
+        # (`PROTOCOL_ERROR`), and the MCP client then reports the response as
+        # LOST while the server's own log shows a happy 200. Nothing here needs
+        # server-initiated messages, so ask for the framing that has no stream
+        # to mishandle.
+        kwargs: Dict[str, Any] = {}
         if _callable_accepts_kwarg(app_factory, "stateless_http"):
-            return app_factory(stateless_http=True)
-        return app_factory()
+            kwargs["stateless_http"] = True
+        if _callable_accepts_kwarg(app_factory, "json_response"):
+            kwargs["json_response"] = True
+        return app_factory(**kwargs) if kwargs else app_factory()
     if callable(result):
         return result
     raise RuntimeError(
@@ -1088,11 +1100,78 @@ async def _dispatch_bundle_mcp_request(
     response_headers = _filtered_proxy_headers(response.headers)
     # Stateless bundle surfaces do not synthesize Mcp-Session-Id. Any header
     # emitted by an explicitly stateful ASGI app is preserved above.
+    content = response.content
+    collapsed = _collapse_single_message_event_stream(
+        content,
+        content_type=response.headers.get("content-type", ""),
+        accept=request.headers.get("accept", ""),
+    )
+    if collapsed is not None:
+        content = collapsed
+        response_headers = {
+            key: value
+            for key, value in response_headers.items()
+            if key.lower() != "content-type"
+        }
+        response_headers["content-type"] = "application/json"
+        logger.info(
+            "Bundle MCP response method=%s reframed=event-stream->json body_bytes=%s "
+            "(an event stream survives fewer hops than a JSON body)",
+            method or "<unknown>",
+            len(content),
+        )
     return Response(
-        content=response.content,
+        content=content,
         status_code=response.status_code,
         headers=response_headers,
     )
+
+
+def _collapse_single_message_event_stream(
+        body: bytes,
+        *,
+        content_type: str,
+        accept: str,
+) -> bytes | None:
+    """An SSE body carrying exactly ONE message, re-framed as plain JSON.
+
+    The dispatch above buffers the sub-app's whole response before answering,
+    so nothing is streaming by the time we get here — the event framing only
+    survives as a shape for every hop in front of us to get wrong. A body with
+    a single `data:` message loses nothing by becoming the JSON object it
+    already contains; a body with several (progress notifications, say) is
+    handed on untouched, because collapsing it WOULD drop messages.
+
+    Returns None when the body must be passed through as it stands."""
+    if "text/event-stream" not in str(content_type or "").lower():
+        return None
+    if "application/json" not in str(accept or "").lower():
+        return None  # the caller asked for the stream framing specifically
+    if not body or len(body) > 4_000_000:
+        return None
+    try:
+        text = body.decode("utf-8")
+    except Exception:
+        return None
+
+    payloads: list[Any] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith(":") or not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if not data:
+            continue
+        try:
+            payloads.append(json.loads(data))
+        except Exception:
+            return None  # not something we understand well enough to reframe
+    if len(payloads) != 1:
+        return None
+    try:
+        return json.dumps(payloads[0]).encode("utf-8")
+    except Exception:
+        return None
 
 
 @contextlib.asynccontextmanager
