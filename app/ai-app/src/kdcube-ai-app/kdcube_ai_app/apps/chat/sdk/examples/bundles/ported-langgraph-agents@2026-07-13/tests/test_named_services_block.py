@@ -1,6 +1,6 @@
 """What lg-react is told about the namespaces it consumes (platform/named_services.py).
 
-The declared `kind: named_service` roster is the ceiling, the conversation's
+The declared `kind: named_service` inventory is the ceiling, the conversation's
 capabilities pick subtracts from it, and what survives is stated to the agent in
 the SEAM's block — the same text every other wrapped runtime renders. Asserts:
 the block is the shared one (not a bundle wording), the pick reaches it, a
@@ -24,14 +24,14 @@ DOOR = {
     "name": "named_services", "kind": "mcp", "server_id": "named_services",
     "alias": "named_services", "url": "https://h/mcp/named_services", "delegated": True,
 }
-ROSTER = {
+INVENTORY = {
     "name": "named_services_roster", "kind": "named_service", "alias": "named_services",
     "namespaces": {
         "linkedin": {"allowed": ["provider.about", "object.search", "object.get", "object.action"]},
         "conv": {"allowed": ["provider.about", "object.search", "object.get"]},
     },
 }
-CONNECTIONS = [DOOR, ROSTER]
+CONNECTIONS = [DOOR, INVENTORY]
 PROPS = {"surfaces": {"as_consumer": {"agents": {AGENT_ID: {"tools": CONNECTIONS}}}}}
 DOOR_TOOL_NAMES = ("named_services_list", "named_services_search", "named_services_get")
 
@@ -64,7 +64,7 @@ def test_the_prompt_carries_the_SHARED_roster_block() -> None:
 
 
 def test_the_conversation_pick_reaches_the_prompt() -> None:
-    # REGRESSION: the roster used to be composed from the declared config alone,
+    # REGRESSION: the inventory used to be composed from the declared config alone,
     # so a namespace the user turned off was still announced to the model.
     block, namespaces = _build({"conv": True})
     assert namespaces == ["linkedin"]
@@ -94,8 +94,8 @@ def test_a_namespace_reached_without_an_operation_list_is_still_a_row() -> None:
     # resolver) — it exists for the agent, so it is a row; with no declared
     # operations it is named alone. A namespace the user turned off is neither.
     module = _module()
-    rows, _removed = module.named_service_roster_rows(
-        [ROSTER], {"linkedin": True}, connected=["conv", "linkedin", "task"]
+    rows, _removed = module.named_service_inventory_rows(
+        [INVENTORY], {"linkedin": True}, connected=["conv", "linkedin", "task"]
     )
     assert [row["namespace"] for row in rows] == ["conv", "task"]
     assert rows[0]["operations"] == ["provider.about", "object.search", "object.get"]
@@ -106,7 +106,7 @@ def test_a_namespace_reached_without_an_operation_list_is_still_a_row() -> None:
 #
 # The door publishes one tool per operation plus the generic `named_services_call`,
 # and every namespace rides the SAME tools (the namespace is an argument). So the
-# roster narrows the door's tools exactly where an operation survives NOWHERE, and
+# inventory narrows the door's tools exactly where an operation survives NOWHERE, and
 # the per-namespace half stays with the door's own gate — stated in the block's
 # words, asserted honestly below rather than claimed.
 
@@ -178,7 +178,7 @@ def test_every_namespace_off_leaves_no_door_tool_at_all() -> None:
     assert kept == []
 
 
-def test_no_declared_roster_narrows_nothing() -> None:
+def test_no_declared_inventory_narrows_nothing() -> None:
     # An app that declares only the door connection has stated no ceiling, so
     # there is nothing to narrow against and the tools pass through untouched.
     module = _module()

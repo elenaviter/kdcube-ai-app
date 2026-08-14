@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 #
-# ── named_services.py ── the declared namespace roster, narrowed per turn ──
+# ── named_services.py ── the declared namespace inventory, narrowed per turn ──
 #
 # An agent that reaches KDCube's named-service door declares TWO things in its
 # `surfaces.as_consumer.agents.<id>.tools` list:
@@ -27,8 +27,8 @@
 # This module is the read side for a WRAPPED runtime — a runtime that has no ReAct
 # tool config to narrow. It answers three questions with no I/O:
 #
-#   1. what did the admin declare?                 `named_service_rosters`
-#   2. what survives the user's pick this turn?    `narrow_named_service_rosters`
+#   1. what did the admin declare?                 `named_service_inventory`
+#   2. what survives the user's pick this turn?    `narrow_named_service_inventory`
 #   3. what does the surviving set mean for the door's own MCP tools and for the
 #      agent's own reading?                        `named_service_door_tools`,
 #                                                  `named_service_roster_block`
@@ -42,7 +42,7 @@
 # ARGUMENT. A tool-name permission grammar can therefore enforce the OPERATION
 # half of a pick exactly (a denied operation's tool is removed), but not the
 # NAMESPACE half: no tool name distinguishes `linkedin` from `conv`. So the
-# surviving roster is also stated to the agent in words, and per-namespace
+# surviving inventory is also stated to the agent in words, and per-namespace
 # enforcement stays with the door's own consumer gate, which knows the namespace
 # because it reads the call.
 
@@ -55,9 +55,9 @@ __all__ = [
     "DOOR_DISCOVERY_TOOLS",
     "DOOR_GENERIC_TOOL",
     "ROSTER_BLOCK_HEADING",
-    "named_service_rosters",
+    "named_service_inventory",
     "named_service_door_servers",
-    "narrow_named_service_rosters",
+    "narrow_named_service_inventory",
     "named_service_door_tools",
     "named_service_roster_lines",
     "named_service_roster_block",
@@ -80,7 +80,7 @@ NAMED_SERVICE_OPERATION_TO_DOOR_TOOL: Dict[str, str] = {
     "object.delete": "named_services_delete",
 }
 
-# Contract reading, always available while ANY namespace survives: the roster of
+# Contract reading, always available while ANY namespace survives: the list of
 # what this connection serves, and the schema browse the door's own operating
 # guide tells the model to read before calling anything.
 DOOR_DISCOVERY_TOOLS: Tuple[str, ...] = (
@@ -90,8 +90,9 @@ DOOR_DISCOVERY_TOOLS: Tuple[str, ...] = (
 )
 
 # The door's escape hatch: it takes the operation as an argument, so it reaches
-# operations the surviving roster excludes. It is offered only when the roster is
-# whole — a narrowed roster that left this in place would not be narrowed at all.
+# operations the surviving inventory excludes. It is offered only when the
+# inventory is whole — a narrowed inventory that left this in place would not be
+# narrowed at all.
 DOOR_GENERIC_TOOL = "named_services_call"
 
 
@@ -116,8 +117,8 @@ def _operations(namespace_cfg: Mapping[str, Any]) -> List[str]:
     return out
 
 
-def named_service_rosters(connections: Sequence[Mapping[str, Any]] | None) -> List[Dict[str, Any]]:
-    """The agent's declared namespace roster — one row per namespace.
+def named_service_inventory(connections: Sequence[Mapping[str, Any]] | None) -> List[Dict[str, Any]]:
+    """The agent's declared namespace inventory — one row per namespace.
 
     ``[{"alias", "namespace", "operations": [...]}]`` in declaration order, read
     from the ``kind: named_service`` entries of the agent's tool-connection list.
@@ -147,16 +148,16 @@ def named_service_rosters(connections: Sequence[Mapping[str, Any]] | None) -> Li
 
 def named_service_door_servers(
     connections: Sequence[Mapping[str, Any]] | None,
-    rosters: Sequence[Mapping[str, Any]] | None,
+    inventory: Sequence[Mapping[str, Any]] | None,
 ) -> Dict[str, str]:
-    """``{alias: server_id}`` for the door connections the roster rows ride.
+    """``{alias: server_id}`` for the door connections the inventory rows ride.
 
-    The tie between a roster entry and its transport is the ALIAS: a
+    The tie between an inventory entry and its transport is the ALIAS: a
     ``kind: named_service`` row and the ``kind: mcp`` door connection that serves
     it carry the same one. An alias with no matching door connection yields no
-    entry — the roster then teaches namespaces the agent has no way to reach, which
+    entry — the inventory then teaches namespaces the agent has no way to reach, which
     the caller can log."""
-    wanted = {_norm(row.get("alias")) for row in rosters or [] if _norm(row.get("alias"))}
+    wanted = {_norm(row.get("alias")) for row in inventory or [] if _norm(row.get("alias"))}
     out: Dict[str, str] = {}
     for conn in connections or []:
         if not isinstance(conn, Mapping):
@@ -172,8 +173,8 @@ def named_service_door_servers(
     return out
 
 
-def narrow_named_service_rosters(
-    rosters: Sequence[Mapping[str, Any]] | None,
+def narrow_named_service_inventory(
+    inventory: Sequence[Mapping[str, Any]] | None,
     disabled_namespaces: Optional[Mapping[str, Any]] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """``(surviving rows, what the user removed)`` for this turn.
@@ -190,7 +191,7 @@ def narrow_named_service_rosters(
     disabled = disabled_namespaces or {}
     kept: List[Dict[str, Any]] = []
     removed: Dict[str, Any] = {}
-    for row in rosters or []:
+    for row in inventory or []:
         ns = _norm(row.get("namespace")).lower()
         entry = disabled.get(ns)
         if entry is True:
@@ -217,11 +218,11 @@ def narrow_named_service_rosters(
 
 
 def named_service_door_tools(
-    rosters: Sequence[Mapping[str, Any]] | None,
+    inventory: Sequence[Mapping[str, Any]] | None,
     *,
     narrowed: bool = False,
 ) -> List[str]:
-    """The door MCP tools the surviving roster needs, sorted.
+    """The door MCP tools the surviving inventory needs, sorted.
 
     The union of the surviving operations' door tools, plus the discovery tools
     (contract reading is what the door's own guide asks the model to do first).
@@ -229,11 +230,11 @@ def named_service_door_tools(
     ``named_services_call``, which takes its operation as an argument and would
     walk straight around the narrowing.
 
-    An empty surviving roster yields ``[]``: no namespace, no door."""
-    if not rosters:
+    An empty surviving inventory yields ``[]``: no namespace, no door."""
+    if not inventory:
         return []
     tools = set(DOOR_DISCOVERY_TOOLS)
-    for row in rosters:
+    for row in inventory:
         for operation in row.get("operations") or []:
             tool = NAMED_SERVICE_OPERATION_TO_DOOR_TOOL.get(_norm(operation))
             if tool:
@@ -244,14 +245,14 @@ def named_service_door_tools(
 
 
 def named_service_roster_lines(
-    rosters: Sequence[Mapping[str, Any]] | None,
+    inventory: Sequence[Mapping[str, Any]] | None,
     *,
     intros: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> List[str]:
     """One entry per surviving namespace, in the ONE grammar both runtimes read.
 
     The namespace half of a pick cannot be enforced by tool name (the door takes
-    the namespace as an argument), so the surviving roster is also STATED: the
+    the namespace as an argument), so the surviving inventory is also STATED: the
     agent is told which namespaces it works with this turn and what it may do in
     each, in the operation vocabulary the door itself speaks.
 
@@ -268,7 +269,7 @@ def named_service_roster_lines(
     true); an ABSENT namespace is simply not a row."""
     blurbs = intros or {}
     lines: List[str] = []
-    for row in rosters or []:
+    for row in inventory or []:
         namespace = _norm(row.get("namespace"))
         if not namespace:
             continue
@@ -295,7 +296,7 @@ _ROSTER_BLOCK_LEAD = (
 
 
 def named_service_roster_block(
-    rosters: Sequence[Mapping[str, Any]] | None,
+    inventory: Sequence[Mapping[str, Any]] | None,
     *,
     intros: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> str:
@@ -308,9 +309,9 @@ def named_service_roster_block(
 
     It says only what IS available: a namespace the user turned off, or one the
     administrator never declared, is not a row and is never mentioned. An empty
-    surviving roster yields ``""`` — with nothing to name, nothing is said, and
+    surviving inventory yields ``""`` — with nothing to name, nothing is said, and
     nothing suggests a namespace exists."""
-    lines = named_service_roster_lines(rosters, intros=intros)
+    lines = named_service_roster_lines(inventory, intros=intros)
     if not lines:
         return ""
     return f"{ROSTER_BLOCK_HEADING}\n{_ROSTER_BLOCK_LEAD}\n\n" + "\n".join(lines)

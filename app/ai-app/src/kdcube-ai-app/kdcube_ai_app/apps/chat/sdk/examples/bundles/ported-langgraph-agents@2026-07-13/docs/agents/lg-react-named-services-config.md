@@ -35,8 +35,8 @@ Properties:
   the user capabilities picker (the deny-map keys on the connection alias).
 - **One entry per service.** The connection list grows with each service, and
   every service costs the user a separate consent.
-- **No namespace roster in the prompt** unless a `kind: named_service` entry
-  additionally declares the consumed namespaces (see the roster entry below —
+- **No namespace inventory in the prompt** unless a `kind: named_service` entry
+  additionally declares the consumed namespaces (see the inventory entry below —
   it composes with either shape).
 
 ## Shape B — whole surface
@@ -72,10 +72,10 @@ Properties:
 - **One picker toggle.** The whole named-services capability opts in/out as a
   unit; per-namespace narrowing moves into `scopes` (admin) rather than the
   picker (user).
-- **The prompt teaches the realms.** The roster entry binds NO tools in this
+- **The prompt teaches the realms.** The inventory entry binds NO tools in this
   bundle (`select_bound_tools` reads only `kind: python`; `mcp_connections`
   only `kind: mcp`) — it feeds the SDK instruction mechanism: the bridge
-  teaching block appears with the per-namespace roster and discovery intros,
+  teaching block appears with the per-namespace inventory and discovery intros,
   and declaring `conv` additionally summons the `[CONVERSATION RECOVERY]`
   block (see
   [lg-react-system-prompt.md](lg-react-system-prompt.md), blocks 6–7).
@@ -95,11 +95,11 @@ Properties:
 Three lists describe the same intent and must stay consistent:
 
 1. `scopes` on the MCP connection — what the guard enforces per call.
-2. `namespaces` on the roster entry — what the prompt tells the agent it has.
+2. `namespaces` on the inventory entry — what the prompt tells the agent it has.
 3. What the door actually serves — deployment fact; read it with
    `named_services_list` after connecting.
 
-A namespace in the roster the grant does not cover surfaces as a missing-grant
+A namespace in the inventory the grant does not cover surfaces as a missing-grant
 error with the Connection Hub link (the door's error contract explains it to
-the agent). A namespace granted but not in the roster still works through
+the agent). A namespace granted but not in the inventory still works through
 `named_services_list` discovery — the agent just is not pre-taught about it.

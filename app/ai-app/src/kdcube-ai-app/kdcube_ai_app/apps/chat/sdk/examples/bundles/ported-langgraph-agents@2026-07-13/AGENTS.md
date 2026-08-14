@@ -156,8 +156,8 @@ Config ([config/bundles.template.yaml](config/bundles.template.yaml)):
   [docs/agents/lg-react-system-prompt.md](docs/agents/lg-react-system-prompt.md).
 - `tools.mode` — lg-react's tools seam (plain | mcp | both).
 - Named services connect in two shapes — per-service scoped MCP connections, or
-  one whole-surface door connection + a `kind: named_service` roster entry that
-  feeds the prompt's namespace roster. Trade-offs and both YAML blocks:
+  one whole-surface door connection + a `kind: named_service` inventory entry that
+  feeds the prompt's namespace inventory. Trade-offs and both YAML blocks:
   [docs/agents/lg-react-named-services-config.md](docs/agents/lg-react-named-services-config.md).
 - `enabled.api.public.telegram_webhook.POST` + `integrations.telegram.default`.
 

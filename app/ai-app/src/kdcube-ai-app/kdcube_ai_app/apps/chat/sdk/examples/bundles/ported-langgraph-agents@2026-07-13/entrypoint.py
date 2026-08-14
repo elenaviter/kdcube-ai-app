@@ -291,7 +291,7 @@ async def _build_prebuilt_graph(
       * `mcp`            — MCP servers by SERVER ID (a server turned off is never
                            dialled) and individual tools under a surviving server;
       * `named_services` — the namespaces this agent consumes and the operations
-                           it may run in each (the roster the prompt states).
+                           it may run in each (the inventory the prompt states).
 
     Checkpointer reused across per-turn builds. `build_agent` remains
     solution-owned and injectable."""
@@ -374,11 +374,11 @@ async def _build_prebuilt_graph(
     )
     tools += mcp_tools
     # The named-service door publishes one tool per operation plus a generic
-    # `named_services_call`, and the declared roster is the administrator's
+    # `named_services_call`, and the declared inventory is the administrator's
     # ceiling of operations. What the conversation's pick removed is removed here
-    # too — otherwise the agent reads a narrowed roster while still holding the
+    # too — otherwise the agent reads a narrowed inventory while still holding the
     # tools it names. The namespace half stays with the door's own gate (one set
-    # of tools serves every namespace), which is why the roster is also stated in
+    # of tools serves every namespace), which is why the inventory is also stated in
     # words.
     tools = narrow_bound_door_tools(tools, connections, disabled_namespaces)
     # Consent is demand-driven per tool: a build cannot know which capabilities
@@ -391,7 +391,7 @@ async def _build_prebuilt_graph(
 
     # The named-services instruction block: the agent-neutral SDK teaching block
     # (HOW to work a namespace, named with the tools this turn actually bound)
-    # plus the foreign-runtime seam's namespace ROSTER — the one block every
+    # plus the foreign-runtime seam's namespace INVENTORY — the one block every
     # wrapped runtime renders, narrowed by this conversation's pick. Empty when
     # this agent has no namespaces this turn. Never raises (see the module).
     tool_names = {str(getattr(t, "name", "") or "") for t in tools}

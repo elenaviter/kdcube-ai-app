@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
-"""The declared namespace roster, narrowed per turn (foreign_runtime/named_services.py).
+"""The declared namespace inventory, narrowed per turn (foreign_runtime/named_services.py).
 
 Pure shaping, no I/O. What is proven: the admin's `kind: named_service`
-declaration becomes the roster a wrapped runtime reads, the user's
+declaration becomes the inventory a wrapped runtime reads, the user's
 `disabled.named_services` pick subtracts from it, and the surviving set turns
 into the door's own MCP tool list plus the words the agent is told — the two
 halves that exist because the door takes its namespace as an argument.
@@ -17,74 +17,74 @@ DOOR = {
     "name": "named_services", "kind": "mcp", "server_id": "kdcube_services",
     "alias": "named_services", "url": "https://host/mcp/named_services",
 }
-ROSTER = {
+INVENTORY = {
     "name": "named_services_roster", "kind": "named_service", "alias": "named_services",
     "namespaces": {
         "linkedin": {"allowed": ["provider.about", "object.search", "object.get", "object.action"]},
         "conv": {"allowed": ["provider.about", "object.search", "object.get"]},
     },
 }
-CONNECTIONS = [DOOR, ROSTER]
+CONNECTIONS = [DOOR, INVENTORY]
 
 
-def test_the_declaration_becomes_the_roster() -> None:
-    rosters = ns.named_service_rosters(CONNECTIONS)
-    assert [row["namespace"] for row in rosters] == ["linkedin", "conv"]
-    assert rosters[0]["alias"] == "named_services"
-    assert rosters[0]["operations"] == [
+def test_the_declaration_becomes_the_inventory() -> None:
+    inventory = ns.named_service_inventory(CONNECTIONS)
+    assert [row["namespace"] for row in inventory] == ["linkedin", "conv"]
+    assert inventory[0]["alias"] == "named_services"
+    assert inventory[0]["operations"] == [
         "provider.about", "object.search", "object.get", "object.action",
     ]
 
 
 def test_a_namespace_with_no_allowed_operations_is_not_a_capability() -> None:
-    rosters = ns.named_service_rosters(
+    inventory = ns.named_service_inventory(
         [{"kind": "named_service", "alias": "a", "namespaces": {"empty": {}, "ok": {"allowed": ["object.get"]}}}]
     )
-    assert [row["namespace"] for row in rosters] == ["ok"]
+    assert [row["namespace"] for row in inventory] == ["ok"]
 
 
-def test_a_roster_row_finds_its_door_by_alias() -> None:
-    rosters = ns.named_service_rosters(CONNECTIONS)
-    assert ns.named_service_door_servers(CONNECTIONS, rosters) == {
+def test_an_inventory_row_finds_its_door_by_alias() -> None:
+    inventory = ns.named_service_inventory(CONNECTIONS)
+    assert ns.named_service_door_servers(CONNECTIONS, inventory) == {
         "named_services": "kdcube_services"
     }
 
 
-def test_a_roster_with_no_door_yields_no_server() -> None:
-    rosters = ns.named_service_rosters([ROSTER])
-    assert ns.named_service_door_servers([ROSTER], rosters) == {}
+def test_an_inventory_with_no_door_yields_no_server() -> None:
+    inventory = ns.named_service_inventory([INVENTORY])
+    assert ns.named_service_door_servers([INVENTORY], inventory) == {}
 
 
 # ── the user's pick ─────────────────────────────────────────────────────────
 
-def test_nothing_picked_keeps_the_whole_declared_roster() -> None:
-    rosters = ns.named_service_rosters(CONNECTIONS)
+def test_nothing_picked_keeps_the_whole_declared_inventory() -> None:
+    inventory = ns.named_service_inventory(CONNECTIONS)
     for disabled in ({}, None):
-        kept, removed = ns.narrow_named_service_rosters(rosters, disabled)
+        kept, removed = ns.narrow_named_service_inventory(inventory, disabled)
         assert [row["namespace"] for row in kept] == ["linkedin", "conv"]
         assert removed == {}
 
 
-def test_a_namespace_turned_off_whole_leaves_the_roster() -> None:
-    rosters = ns.named_service_rosters(CONNECTIONS)
-    kept, removed = ns.narrow_named_service_rosters(rosters, {"conv": True})
+def test_a_namespace_turned_off_whole_leaves_the_inventory() -> None:
+    inventory = ns.named_service_inventory(CONNECTIONS)
+    kept, removed = ns.narrow_named_service_inventory(inventory, {"conv": True})
     assert [row["namespace"] for row in kept] == ["linkedin"]
     assert removed == {"conv": True}
 
 
 def test_denied_operations_narrow_a_namespace_that_stays_on() -> None:
-    rosters = ns.named_service_rosters(CONNECTIONS)
-    kept, removed = ns.narrow_named_service_rosters(
-        rosters, {"linkedin": ["object.action", "object.get"]}
+    inventory = ns.named_service_inventory(CONNECTIONS)
+    kept, removed = ns.narrow_named_service_inventory(
+        inventory, {"linkedin": ["object.action", "object.get"]}
     )
     assert kept[0]["operations"] == ["provider.about", "object.search"]
     assert removed["linkedin"] == ["object.action", "object.get"]
 
 
 def test_a_namespace_whose_operations_are_all_denied_disappears() -> None:
-    rosters = ns.named_service_rosters(CONNECTIONS)
-    kept, removed = ns.narrow_named_service_rosters(
-        rosters, {"conv": ["provider.about", "object.search", "object.get"]}
+    inventory = ns.named_service_inventory(CONNECTIONS)
+    kept, removed = ns.narrow_named_service_inventory(
+        inventory, {"conv": ["provider.about", "object.search", "object.get"]}
     )
     assert [row["namespace"] for row in kept] == ["linkedin"]
     assert removed["conv"] is True
@@ -94,9 +94,9 @@ def test_a_named_action_denial_keeps_the_operation_and_is_reported() -> None:
     """`object.action.<name>` narrows one action, not the operation — no tool
     name can express it, so the door's own gate enforces it and the lane can say
     so from the removed map."""
-    rosters = ns.named_service_rosters(CONNECTIONS)
-    kept, removed = ns.narrow_named_service_rosters(
-        rosters, {"linkedin": ["object.action.download"]}
+    inventory = ns.named_service_inventory(CONNECTIONS)
+    kept, removed = ns.narrow_named_service_inventory(
+        inventory, {"linkedin": ["object.action.download"]}
     )
     assert "object.action" in kept[0]["operations"]
     assert removed["linkedin"] == ["object.action.download"]
@@ -105,8 +105,8 @@ def test_a_named_action_denial_keeps_the_operation_and_is_reported() -> None:
 # ── what the surviving set means downstream ─────────────────────────────────
 
 def test_surviving_operations_pick_the_door_tools() -> None:
-    rosters = ns.named_service_rosters(CONNECTIONS)
-    tools = ns.named_service_door_tools(rosters)
+    inventory = ns.named_service_inventory(CONNECTIONS)
+    tools = ns.named_service_door_tools(inventory)
     assert "named_services_search" in tools
     assert "named_services_get" in tools
     assert "named_services_action" in tools
@@ -118,25 +118,25 @@ def test_surviving_operations_pick_the_door_tools() -> None:
         assert discovery in tools
 
 
-def test_a_narrowed_roster_withholds_the_generic_call_tool() -> None:
+def test_a_narrowed_inventory_withholds_the_generic_call_tool() -> None:
     """`named_services_call` takes its operation as an argument, so leaving it in
     would walk straight around the narrowing."""
-    rosters = ns.named_service_rosters(CONNECTIONS)
-    assert ns.DOOR_GENERIC_TOOL in ns.named_service_door_tools(rosters)
-    kept, removed = ns.narrow_named_service_rosters(rosters, {"conv": True})
+    inventory = ns.named_service_inventory(CONNECTIONS)
+    assert ns.DOOR_GENERIC_TOOL in ns.named_service_door_tools(inventory)
+    kept, removed = ns.narrow_named_service_inventory(inventory, {"conv": True})
     assert ns.DOOR_GENERIC_TOOL not in ns.named_service_door_tools(
         kept, narrowed=bool(removed)
     )
 
 
-def test_an_empty_surviving_roster_yields_no_door_tools() -> None:
+def test_an_empty_surviving_inventory_yields_no_door_tools() -> None:
     assert ns.named_service_door_tools([]) == []
     assert ns.named_service_door_tools(None) == []
 
 
-def test_the_surviving_roster_is_also_stated_in_words() -> None:
-    rosters = ns.named_service_rosters(CONNECTIONS)
-    kept, _removed = ns.narrow_named_service_rosters(rosters, {"conv": True})
+def test_the_surviving_inventory_is_also_stated_in_words() -> None:
+    inventory = ns.named_service_inventory(CONNECTIONS)
+    kept, _removed = ns.narrow_named_service_inventory(inventory, {"conv": True})
     lines = ns.named_service_roster_lines(kept)
     assert lines == [
         "- linkedin\n  operations: provider.about, object.search, object.get, object.action"
@@ -147,9 +147,9 @@ def test_the_surviving_roster_is_also_stated_in_words() -> None:
 def test_a_published_intro_is_a_detail_of_the_same_entry() -> None:
     """A deployment that publishes blurbs says more in the SAME grammar, so a
     runtime with intros and one without still render the same shape."""
-    rosters = ns.named_service_rosters([ROSTER])
+    inventory = ns.named_service_inventory([INVENTORY])
     lines = ns.named_service_roster_lines(
-        rosters, intros={"linkedin": {"intro": "the publications realm"}}
+        inventory, intros={"linkedin": {"intro": "the publications realm"}}
     )
     assert lines[0].startswith("- linkedin — the publications realm\n  operations: ")
     assert lines[1].startswith("- conv\n  operations: ")
@@ -166,9 +166,9 @@ def test_one_block_one_wording_for_every_runtime() -> None:
     Code instructions file carry the SAME text, so the agent reads the same
     words wherever it runs. Pinned verbatim — a wording change here is a change
     to every hosted runtime's standing instructions."""
-    rosters = ns.named_service_rosters(CONNECTIONS)
-    kept, _removed = ns.narrow_named_service_rosters(
-        rosters, {"linkedin": ["object.action"]}
+    inventory = ns.named_service_inventory(CONNECTIONS)
+    kept, _removed = ns.narrow_named_service_inventory(
+        inventory, {"linkedin": ["object.action"]}
     )
     assert ns.named_service_roster_block(kept) == (
         "## Service namespaces\n"
@@ -186,8 +186,8 @@ def test_one_block_one_wording_for_every_runtime() -> None:
 def test_the_block_says_only_what_is_available() -> None:
     """Positive framing is structural, not stylistic: what the user turned off
     has no row and no mention, so nothing suggests it ever existed."""
-    rosters = ns.named_service_rosters(CONNECTIONS)
-    kept, _removed = ns.narrow_named_service_rosters(rosters, {"conv": True})
+    inventory = ns.named_service_inventory(CONNECTIONS)
+    kept, _removed = ns.narrow_named_service_inventory(inventory, {"conv": True})
     block = ns.named_service_roster_block(kept)
     assert "conv" not in block
     assert "object.action" in block          # what survives IS named
@@ -198,8 +198,8 @@ def test_the_block_says_only_what_is_available() -> None:
 def test_no_namespaces_no_block() -> None:
     assert ns.named_service_roster_block([]) == ""
     assert ns.named_service_roster_block(None) == ""
-    rosters = ns.named_service_rosters(CONNECTIONS)
-    kept, _removed = ns.narrow_named_service_rosters(
-        rosters, {"linkedin": True, "conv": True}
+    inventory = ns.named_service_inventory(CONNECTIONS)
+    kept, _removed = ns.narrow_named_service_inventory(
+        inventory, {"linkedin": True, "conv": True}
     )
     assert ns.named_service_roster_block(kept) == ""

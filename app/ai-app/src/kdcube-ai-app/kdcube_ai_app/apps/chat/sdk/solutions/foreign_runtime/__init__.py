@@ -55,8 +55,8 @@ from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.named_services import
     named_service_door_tools,
     named_service_roster_block,
     named_service_roster_lines,
-    named_service_rosters,
-    narrow_named_service_rosters,
+    named_service_inventory,
+    narrow_named_service_inventory,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.stream_contract import (
     content_text,
@@ -90,9 +90,9 @@ __all__ = [
     "named_service_door_tools",
     "named_service_roster_block",
     "named_service_roster_lines",
-    "named_service_rosters",
+    "named_service_inventory",
     "narrow_mcp_connections",
-    "narrow_named_service_rosters",
+    "narrow_named_service_inventory",
     "normalize_agent_id",
     "persist_turn_artifacts",
     "resolve_agent_spec",

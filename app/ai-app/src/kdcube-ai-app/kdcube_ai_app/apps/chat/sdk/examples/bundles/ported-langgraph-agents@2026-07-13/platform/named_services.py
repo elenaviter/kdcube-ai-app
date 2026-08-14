@@ -16,7 +16,7 @@
 #      block is ONE text shared with every other wrapped runtime, so an agent
 #      hosted here and an agent hosted on a CLI runtime read the same words.
 #
-# The roster is narrowed the same way the tools are: the administrator's
+# The inventory is narrowed the same way the tools are: the administrator's
 # declaration is the ceiling and the chatting user's pick in the capabilities
 # widget subtracts from it (`disabled.named_services`). A namespace the user
 # turned off is not a row, and nothing anywhere says it once existed.
@@ -30,14 +30,14 @@ from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.named_services import
     named_service_door_servers,
     named_service_door_tools,
     named_service_roster_block,
-    named_service_rosters,
-    narrow_named_service_rosters,
+    named_service_inventory,
+    narrow_named_service_inventory,
 )
 
 LOGGER = logging.getLogger(__name__)
 
 __all__ = [
-    "named_service_roster_rows",
+    "named_service_inventory_rows",
     "narrow_bound_door_tools",
     "build_named_services_block",
 ]
@@ -47,24 +47,24 @@ def _norm(value: Any) -> str:
     return str(value or "").strip().lower().rstrip(":")
 
 
-def named_service_roster_rows(
+def named_service_inventory_rows(
     connections: Sequence[Mapping[str, Any]] | None,
     disabled_namespaces: Optional[Mapping[str, Any]] = None,
     *,
     connected: Sequence[str] | None = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """``(roster rows for this turn, what the user removed)``.
+    """``(inventory rows for this turn, what the user removed)``.
 
     The rows are the declared `kind: named_service` namespaces with their allowed
     operations, minus the user's pick. ``connected`` adds the namespaces this
     agent reaches by another declaration (an event source, a canvas resolver, the
     app's own namespace config) — they exist for the agent, so they are rows too;
-    with no operation list declared they carry none, and the roster says only
+    with no operation list declared they carry none, and the inventory says only
     their name.
 
     A namespace the user turned off whole is dropped from BOTH sources."""
-    rosters = named_service_rosters(connections)
-    kept, removed = narrow_named_service_rosters(rosters, disabled_namespaces)
+    inventory = named_service_inventory(connections)
+    kept, removed = narrow_named_service_inventory(inventory, disabled_namespaces)
     off = {
         _norm(ns) for ns, entry in (disabled_namespaces or {}).items() if entry is True
     } | {_norm(ns) for ns, entry in removed.items() if entry is True}
@@ -83,11 +83,11 @@ def narrow_bound_door_tools(
     connections: Sequence[Mapping[str, Any]] | None,
     disabled_namespaces: Optional[Mapping[str, Any]] = None,
 ) -> List[Any]:
-    """The bound tools with the door's operations narrowed to the surviving roster.
+    """The bound tools with the door's operations narrowed to the surviving inventory.
 
     The door publishes one tool per operation plus the generic
     ``named_services_call``, and every namespace rides the SAME tools — the
-    namespace is an argument. So this narrows what the roster no longer allows
+    namespace is an argument. So this narrows what the inventory no longer allows
     ANYWHERE: an operation still allowed in one surviving namespace keeps its
     tool, because that namespace needs it (the per-namespace half is the door's
     own gate to enforce; the roster block states it in words). The generic tool
@@ -95,16 +95,16 @@ def narrow_bound_door_tools(
     argument and would otherwise reach what was just removed.
 
     Tools from other servers are never touched, and with no `kind: named_service`
-    roster declared nothing is narrowed at all — an app that declares only the
+    inventory declared nothing is narrowed at all — an app that declares only the
     door connection has stated no ceiling to narrow against."""
     bound = list(tools or [])
-    rosters = named_service_rosters(connections)
-    if not bound or not rosters:
+    inventory = named_service_inventory(connections)
+    if not bound or not inventory:
         return bound
-    door_servers = {sid for sid in named_service_door_servers(connections, rosters).values() if sid}
+    door_servers = {sid for sid in named_service_door_servers(connections, inventory).values() if sid}
     if not door_servers:
         return bound
-    kept, removed = narrow_named_service_rosters(rosters, disabled_namespaces)
+    kept, removed = narrow_named_service_inventory(inventory, disabled_namespaces)
     allowed = set(named_service_door_tools(kept, narrowed=bool(removed)))
     out: List[Any] = []
     withheld: List[str] = []
@@ -162,21 +162,21 @@ async def build_named_services_block(
         connected = []
 
     try:
-        rows, removed = named_service_roster_rows(
+        rows, removed = named_service_inventory_rows(
             connections, disabled_namespaces, connected=connected
         )
     except Exception:
-        LOGGER.info("[ported-langgraph] namespace roster narrowing failed", exc_info=True)
+        LOGGER.info("[ported-langgraph] namespace inventory narrowing failed", exc_info=True)
         return "", []
     if not rows:
         return "", []
     namespaces = [str(row.get("namespace")) for row in rows]
     LOGGER.info(
-        "[ported-langgraph] namespaces agent=%s roster=%s picked_off=%s",
+        "[ported-langgraph] namespaces agent=%s inventory=%s picked_off=%s",
         agent_id, namespaces, dict(removed),
     )
 
-    # The published blurb per namespace — an optional detail of the roster's own
+    # The published blurb per namespace — an optional detail of the inventory's own
     # entry grammar, so a deployment that publishes intros says more in the same
     # shape and one that does not still renders the same block.
     intros: Mapping[str, Mapping[str, Any]] = {}

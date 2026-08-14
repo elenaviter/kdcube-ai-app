@@ -70,7 +70,7 @@ model call
 │      list-first when the door serves a        collection deltas,
 │      services_list tool                       host-then-cite, consent relay
 │      Named-service namespaces available to this agent:
-│      - `conv` — Conversation search realm …  roster: as_consumer-connected
+│      - `conv` — Conversation search realm …  inventory: as_consumer-connected
 │      - `mem` — Durable user memory …         namespaces + discovery intros
 │      Sandbox note: run_python has no network …   bundle-specific caveat
 │   6b. [SERVICE GUIDE — <server_id>]          each MCP server's own operating
@@ -134,7 +134,7 @@ Declared in the app descriptor (see `config/bundles.template.yaml`). A live
 change without restart goes through the platform property write; a descriptor
 edit lands on the next restart. Empty string = no block 8.
 
-The namespace roster in block 6 derives from the same descriptor: the agent's
+The namespace inventory in block 6 derives from the same descriptor: the agent's
 `as_consumer` named-service connections decide WHICH namespaces are listed
 (and whether block 7 joins), and discovery supplies each namespace's published
 `intro` line. Connecting the conversation realm (`conv`) to this agent is a
