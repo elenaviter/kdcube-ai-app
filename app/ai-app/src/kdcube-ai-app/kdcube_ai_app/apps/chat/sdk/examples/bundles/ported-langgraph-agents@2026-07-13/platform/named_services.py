@@ -27,6 +27,8 @@ import logging
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.named_services import (
+    named_service_door_servers,
+    named_service_door_tools,
     named_service_roster_block,
     named_service_rosters,
     narrow_named_service_rosters,
@@ -34,7 +36,11 @@ from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.named_services import
 
 LOGGER = logging.getLogger(__name__)
 
-__all__ = ["named_service_roster_rows", "build_named_services_block"]
+__all__ = [
+    "named_service_roster_rows",
+    "narrow_bound_door_tools",
+    "build_named_services_block",
+]
 
 
 def _norm(value: Any) -> str:
@@ -70,6 +76,52 @@ def named_service_roster_rows(
         kept.append({"alias": "", "namespace": ns, "operations": []})
         named.add(ns)
     return kept, removed
+
+
+def narrow_bound_door_tools(
+    tools: Sequence[Any] | None,
+    connections: Sequence[Mapping[str, Any]] | None,
+    disabled_namespaces: Optional[Mapping[str, Any]] = None,
+) -> List[Any]:
+    """The bound tools with the door's operations narrowed to the surviving roster.
+
+    The door publishes one tool per operation plus the generic
+    ``named_services_call``, and every namespace rides the SAME tools — the
+    namespace is an argument. So this narrows what the roster no longer allows
+    ANYWHERE: an operation still allowed in one surviving namespace keeps its
+    tool, because that namespace needs it (the per-namespace half is the door's
+    own gate to enforce; the roster block states it in words). The generic tool
+    goes as soon as the pick removed anything, since it takes its operation as an
+    argument and would otherwise reach what was just removed.
+
+    Tools from other servers are never touched, and with no `kind: named_service`
+    roster declared nothing is narrowed at all — an app that declares only the
+    door connection has stated no ceiling to narrow against."""
+    bound = list(tools or [])
+    rosters = named_service_rosters(connections)
+    if not bound or not rosters:
+        return bound
+    door_servers = {sid for sid in named_service_door_servers(connections, rosters).values() if sid}
+    if not door_servers:
+        return bound
+    kept, removed = narrow_named_service_rosters(rosters, disabled_namespaces)
+    allowed = set(named_service_door_tools(kept, narrowed=bool(removed)))
+    out: List[Any] = []
+    withheld: List[str] = []
+    for tool in bound:
+        metadata = getattr(tool, "metadata", None) or {}
+        server_id = _norm(metadata.get("mcp_server_id") if isinstance(metadata, Mapping) else "")
+        name = _norm(getattr(tool, "name", ""))
+        if server_id and server_id in door_servers and name not in allowed:
+            withheld.append(name)
+            continue
+        out.append(tool)
+    if withheld:
+        LOGGER.info(
+            "[ported-langgraph] door tools withheld by the pick: %s (surviving namespaces=%s)",
+            sorted(withheld), [row.get("namespace") for row in kept],
+        )
+    return out
 
 
 async def build_named_services_block(

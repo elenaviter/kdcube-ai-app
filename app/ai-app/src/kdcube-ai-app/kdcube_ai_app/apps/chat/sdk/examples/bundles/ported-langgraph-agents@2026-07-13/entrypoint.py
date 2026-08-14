@@ -120,7 +120,7 @@ from .platform.capabilities import (
     resolve_turn_role_models,
     resolve_turn_selection_disabled,
 )
-from .platform.named_services import build_named_services_block
+from .platform.named_services import build_named_services_block, narrow_bound_door_tools
 from .platform.code_exec import build_code_exec_context, code_exec_scope
 from .platform import telegram as telegram_ingress
 
@@ -373,6 +373,14 @@ async def _build_prebuilt_graph(
         instructions_sink=mcp_server_guides,
     )
     tools += mcp_tools
+    # The named-service door publishes one tool per operation plus a generic
+    # `named_services_call`, and the declared roster is the administrator's
+    # ceiling of operations. What the conversation's pick removed is removed here
+    # too — otherwise the agent reads a narrowed roster while still holding the
+    # tools it names. The namespace half stays with the door's own gate (one set
+    # of tools serves every namespace), which is why the roster is also stated in
+    # words.
+    tools = narrow_bound_door_tools(tools, connections, disabled_namespaces)
     # Consent is demand-driven per tool: a build cannot know which capabilities
     # THIS turn will use, so pending connections raise nothing here. Each binds
     # a consent-gated stub instead — when the model decides the user's request
