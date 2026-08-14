@@ -739,6 +739,13 @@ Example: the model calls `named_services.search_objects`,
 `named_services.host_file`, or `named_services.upsert_object`. Each step names
 where code executes, which surface executes it, and which part is customized.
 
+The tool catalog this flow starts from is already narrowed: the declared
+inventory minus the conversation's capability pick. A **hosted** runtime
+(LangGraph, Claude Code) reaches the same providers through the MCP door
+instead, where narrowing lands on the door's tools and on the roster block the
+agent reads — same declaration, different binding step, described in
+[Named Service Clients](clients-README.md#the-inventory-and-the-pick).
+
 ```text
 1. LLM generation
    executor: model stream governed by ReAct runtime

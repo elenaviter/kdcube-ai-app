@@ -133,6 +133,79 @@ model-callable named-service tools are visible to that agent. If a UI resolver
 surface is allowed to call `object.action`, the provider remains authoritative
 for the concrete action name it accepts or rejects.
 
+### The inventory and the pick
+
+That `kind: named_service` item is the agent's **service inventory**: the
+administrator's ceiling of namespaces and, per namespace, the operations this
+agent may run. It binds no tools of its own. It is also exactly what the
+capabilities picker renders as its Services group — one row per namespace,
+expandable to its operations — so the chatting user narrows their own
+conversation by unchecking rows. A pick can only subtract; nothing a user does
+adds a namespace or an operation the inventory does not carry.
+
+A **hosted runtime** (LangGraph, a Claude Code session — anything running to
+completion behind one turn) reaches the door over MCP, so it declares two items
+that travel together:
+
+```yaml
+tools:
+  - name: named_services            # the DOOR: transport + consent grant
+    kind: mcp
+    server_id: named_services
+    alias: named_services
+    url: ".../kdcube-services@1-0/public/mcp/named_services"
+    delegated: true
+    scopes: [named_services:use]
+
+  - name: named_services_inventory  # the CEILING: namespaces + operations
+    kind: named_service
+    alias: named_services           # the SAME alias ties it to the door above
+    namespaces:
+      task: { allowed: [provider.about, object.search, object.get] }
+```
+
+The alias is the tie. An inventory entry whose alias matches no `kind: mcp`
+connection names namespaces the agent has no way to reach.
+
+The user's pick comes back as three deny maps, and the keys matter:
+
+| key | keyed by | meaning |
+| --- | --- | --- |
+| `disabled.tools` | tool alias | plain tools switched off |
+| `disabled.mcp` | **`server_id`** — never the alias | `true` = the whole server, a list = individual tools |
+| `disabled.named_services` | namespace | `true` = the namespace, a list = operations or `object.action.<name>` |
+
+For hosted runtimes the platform applies all three (`foreign_runtime.mcp_bridge`
+and `foreign_runtime.named_services`). A denied MCP server is dropped **before
+the dial**: no grant token is read for it, so it cannot even raise a consent
+card the user already declined.
+
+### What the pick enforces, and what it only states
+
+The door publishes **generic** tools — `named_services_search`,
+`named_services_get`, … — and takes the namespace as an **argument**. That
+splits enforcement in two, and the split is worth knowing exactly:
+
+- **Enforced by tool name.** Surviving operations map to door tools, and only
+  those are granted. `named_services_call` — which takes its operation as an
+  argument, and would therefore reach operations the inventory excludes — is
+  withheld as soon as a pick removes anything. Every namespace denied means the
+  door server is denied whole.
+- **The union rule.** Door tools are granted as the union of surviving
+  operations **across all namespaces**, so an operation loses its tool only when
+  it is denied in *every* surviving namespace. Deny `object.get` in `a` while
+  `b` still allows it and `named_services_get` stays bound, because `b` needs
+  it.
+- **Stated, not enforced.** The namespace argument itself: no tool name
+  distinguishes `a` from `b`. The surviving inventory is therefore also written
+  for the agent in the **roster block** (`## Service namespaces`), rendered once
+  by the SDK and identical across every hosted runtime, and per-namespace
+  enforcement stays with the door's own consumer gate, which reads the call and
+  knows the namespace.
+
+Making a per-namespace operation denial enforceable is open work, tracked as
+[kdcube#233](https://github.com/kdcube/kdcube/issues/233).
+
 The configured namespace is the base namespace used for policy and endpoint
 resolution. A provider may advertise narrower scoped namespaces for specific
 operations, especially search. In that case, the client still authorizes the
@@ -564,7 +637,21 @@ object are different operations.
 
 ## Consent On The Named-Service Path
 
-Agent calls can cross two independent consent boundaries:
+Before any of this, the deployment must have made the endpoint askable at all.
+A surface that exists and is discoverable is **not** thereby grantable: the
+Connection Hub's delegable catalog
+(`connections.delegated_credentials.oauth.resources`, in the Connection Hub
+app's own props) is the subset of what this installation's apps expose that may
+be requested here, tool by tool — and each tool's claim must additionally be
+declared under `capabilities` with who may delegate it. Both halves are the
+deployment's decision. A missing endpoint answers
+`delegated_access_unknown_resources`; a claim outside the endpoint's tools
+answers `delegated_access_grants_not_delegable`; a claim no `capabilities` entry
+declares is reported by the hub at configuration time as grantable by nobody.
+The catalog and its claim vocabulary are documented once in
+[Configuring Agent Access To Services And Accounts](../solutions/connections/configuring-agent-service-access/configuring-agent-service-access-README.md).
+
+With that in place, agent calls can cross two independent consent boundaries:
 
 1. The hosted or external agent needs the user's per-agent grant for the
    named-service resource (`delegated_agent_grant`, managed under **Delegated

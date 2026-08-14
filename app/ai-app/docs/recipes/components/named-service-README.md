@@ -612,6 +612,63 @@ declares namespace tools and exact operation/action grants. A hosted agent and
 an external MCP client then see the same provider ontology through different
 client adapters.
 
+### Publishing is not permission — the deployment decides separately
+
+Discovery makes a provider **findable**. It does not make it **askable**. Until
+the Connection Hub app's own props list the endpoint, no user can be asked to
+approve access to it, and the grant fails with an error about claims rather
+than about the missing decision. A deployment may run a thousand services and
+none of them is grantable until it says so.
+
+That decision is declarative config in the **Connection Hub app**, and it has
+two halves that are easy to half-do:
+
+```yaml
+# connection-hub@1-0 → connections.delegated_credentials.oauth
+capabilities:                       # (a) who may delegate this claim at all
+  - grant: records:write
+    label: Edit records
+    delegable_roles: [kdcube:role:super-admin, kdcube:role:admin]
+    delegable_permissions: [records:write]
+
+resources:                          # (b) which endpoints may be asked for here
+  - resource: '*/api/integrations/bundles/*/*/records@1-0/mcp/records*'
+    label: Records service
+    tools:
+      records_search: { label: Search records, grants: [records:read] }
+      records_upsert: { label: Edit records,   grants: [records:write] }
+```
+
+Both are required. A resource entry whose tool names a claim no `capabilities`
+entry declares renders an access card that can never be approved; the hub logs
+that row at configuration time, naming resource, tool and claim.
+
+**The catalog is a subset of what apps expose.** Apps declare what their
+surfaces *can* delegate; this block decides how much of that may be asked for
+on this installation, and it can only narrow. Registration is deliberately not
+automatic: installing an app and letting it ask your users for access stay two
+decisions.
+
+**Name claims for the app and the consequence.** `records:read` is a poor claim
+on a deployment that may one day run two record services, and a claim that says
+`read` above tools that write is the one thing a consent card must never do.
+Prefer `<app>:<consequence>` — `press.linkedin:read`, `…:write`, `…:delete`,
+`…:commit` — so the person approving is deciding what will happen, not which
+endpoint is involved.
+
+Full walkthrough, including the consuming agent's side:
+[Configuring Agent Access To Services And Accounts](../../sdk/solutions/connections/configuring-agent-service-access/configuring-agent-service-access-README.md).
+
+### What the consumer's declaration is, once it is granted
+
+The `kind: named_service` item above is that agent's **service inventory** —
+the administrator's ceiling. The capabilities picker renders it, the chatting
+user narrows their own conversation, and the pick can only subtract. For a
+hosted runtime the surviving set is applied at tool binding and also stated to
+the agent in the shared roster block. What that enforces exactly (and the
+union rule that limits it) is in
+[Named Service Clients](../../sdk/namespace-services/clients-README.md#the-inventory-and-the-pick).
+
 ## 10. Add UI And Event Semantics When The Domain Needs Them
 
 Generic UI surfaces pass the full `object_ref` to the provider:

@@ -61,6 +61,13 @@ discovery = RedisNamedServiceDiscovery(redis, tenant=tenant, project=project)
 Discovery records what an app **currently publishes**. It does not decide which
 domain an app owns and it does not turn inherited code into a provider surface.
 
+It also does not make a surface **askable**. Being discoverable and being
+grantable are different decisions: no user can be asked to approve access to an
+endpoint until the deployment lists it in the Connection Hub's delegable
+catalog, which is a subset of what apps expose and is never populated
+automatically — see
+[Named Service Clients](clients-README.md#consent-on-the-named-service-path).
+
 ```text
 provider implementation
   describes one realm and its operations

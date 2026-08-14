@@ -1723,6 +1723,14 @@ Agent ids are not ReAct-specific. The same consumer-surface pattern can
 describe tool access for ReAct agents, Claude Code, Codex, MCP, widget, job,
 or other client runtimes once their adapters consume the provider contract.
 
+That declaration is the administrator's ceiling — the agent's **service
+inventory** — and the capabilities picker narrows it per conversation, for
+hosted runtimes as much as for ReAct. Publishing a provider does not make it
+askable either: the deployment lists endpoints in the Connection Hub's
+delegable catalog separately. Both belong to the consumer side and are
+documented there:
+[Named Service Clients](clients-README.md#the-inventory-and-the-pick).
+
 When a client must pin provider endpoints instead of using discovery, provider
 endpoint transport is explicit in the namespace config that the consumer
 surface passes to the named-service adapters. The list is plural because one
