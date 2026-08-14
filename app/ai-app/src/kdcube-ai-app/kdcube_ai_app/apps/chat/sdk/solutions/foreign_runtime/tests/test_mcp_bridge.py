@@ -136,3 +136,98 @@ def test_current_turn_user_sub_is_empty_when_nothing_is_bound() -> None:
 def test_current_turn_user_sub_falls_back_to_the_comm_user() -> None:
     ep = SimpleNamespace(comm=SimpleNamespace(user_id="comm-user"))
     assert mcp_bridge.current_turn_user_sub(ep) == "comm-user"
+
+
+# ── announce_connect_required (the house consent card) ───────────────────────
+
+_CONN = {
+    "name": "press",
+    "kind": "mcp",
+    "server_id": "press",
+    "url": "https://host/mcp/press",
+    "resource": "*/mcp/press*",
+    "delegated": True,
+    "scopes": ["press:read"],
+}
+
+
+def _announce_recorder(monkeypatch) -> list:
+    """Capture what the seam hands the SDK's consent announcer."""
+    captured: list = []
+
+    async def _announce(consent):
+        captured.append(consent)
+
+    monkeypatch.setattr(
+        "kdcube_ai_app.apps.chat.sdk.solutions.connections.mcp_consent.announce_agent_consent",
+        _announce,
+    )
+    return captured
+
+
+def test_consent_pending_drops_raise_one_demand_per_connection(monkeypatch) -> None:
+    captured = _announce_recorder(monkeypatch)
+
+    announced = asyncio.run(mcp_bridge.announce_connect_required(
+        SimpleNamespace(), [dict(_CONN)], {"press": DROP_CONSENT_PENDING},
+        agent_id="press", application="my-app@1-0", tenant="t1", project="p1",
+    ))
+
+    assert [item["server_id"] for item in announced] == ["press"]
+    assert len(captured) == 1
+    consent = captured[0]
+    # The demand is the SAME MCPConsentRequired a KDCube-MCP 403 produces, so
+    # the chat's one banner path serves both.
+    payload = consent.chat_event_payload()
+    assert payload["error"]["code"] == "needs_connected_account_consent"
+    block = payload["consent"]
+    assert block["agent_client_id"] == "kdcube-agent:my-app@1-0:press"
+    assert block["claims"] == ["press:read"]
+    assert block["resource"] == "*/mcp/press*"
+    assert block["grant"]["operation"] == "delegated_agent_grant_create"
+
+
+def test_operational_drops_raise_no_demand(monkeypatch) -> None:
+    captured = _announce_recorder(monkeypatch)
+
+    announced = asyncio.run(mcp_bridge.announce_connect_required(
+        SimpleNamespace(), [dict(_CONN)], {"press": DROP_PROVIDER_ERROR},
+        agent_id="press", application="my-app@1-0",
+    ))
+
+    assert announced == []
+    assert captured == []
+    assert asyncio.run(mcp_bridge.announce_connect_required(
+        SimpleNamespace(), [dict(_CONN)], {}, agent_id="press", application="my-app@1-0",
+    )) == []
+
+
+def test_the_hub_link_is_the_platforms_and_absent_without_a_public_base(monkeypatch) -> None:
+    """The seam never hand-writes a hub path: the link comes from the platform
+    builder over the deployment's public base URL, so with none bound the demand
+    simply carries no URL (the card still acts through its grant fields)."""
+    captured = _announce_recorder(monkeypatch)
+    calls: list = []
+
+    def _hub_url(*, tenant, project, client_id, resource, claims, **kw):
+        calls.append({"tenant": tenant, "project": project, "client_id": client_id,
+                      "resource": resource, "claims": list(claims)})
+        return ""
+
+    monkeypatch.setattr(
+        "kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials"
+        ".consent_denial.connection_hub_grant_url",
+        _hub_url,
+    )
+
+    asyncio.run(mcp_bridge.announce_connect_required(
+        SimpleNamespace(), [dict(_CONN)], {"press": DROP_CONSENT_PENDING},
+        agent_id="press", application="my-app@1-0", tenant="t1", project="p1",
+    ))
+
+    assert calls == [{
+        "tenant": "t1", "project": "p1",
+        "client_id": "kdcube-agent:my-app@1-0:press",
+        "resource": "*/mcp/press*", "claims": ["press:read"],
+    }]
+    assert captured[0].chat_event_payload()["consent"]["url"] == ""
