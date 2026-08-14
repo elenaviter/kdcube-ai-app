@@ -2839,17 +2839,30 @@ class BaseEntrypoint:
         # + file cards from these). All best-effort — never fail the turn on recovery.
         user_prompt_text = ""
         user_attachments: list = []
+        user_events: list = []
+        batch_id = ""
         assistant_files: list = []
         try:
             from kdcube_ai_app.apps.chat.sdk.protocol import (
                 external_events_text,
                 hosted_external_event_attachments,
             )
-            events = (state or {}).get("external_events") or []
+            events = [e for e in ((state or {}).get("external_events") or []) if isinstance(e, dict)]
             user_prompt_text = external_events_text(events) or ""
             user_attachments = list(hosted_external_event_attachments(events) or [])
+            # The CONTEXT OBJECTS the user sent with the message — a pinned post,
+            # a canvas object, anything a surface attached. They arrive as events
+            # and are recorded AS EVENTS, so the reloaded chip is the live thing
+            # again: it carries its own ref and opens through the same resolver.
+            # Recording a summary instead would reload as prose nobody can click.
+            user_events = list(events)
+            for event in events:
+                candidate = str(event.get("batch_id") or (event.get("payload") or {}).get("batch_id") or "").strip()
+                if candidate:
+                    batch_id = candidate
+                    break
         except Exception:
-            user_prompt_text, user_attachments = user_prompt_text, []
+            user_prompt_text, user_attachments, user_events = user_prompt_text, [], []
         # Assistant files: a bundle that hosts files (e.g. code exec) surfaces them on
         # `state["hosted_files"]` or `result["files"]` (compact rows: rn/hosted_uri/
         # logical_path/mime/filename).
@@ -2885,6 +2898,8 @@ class BaseEntrypoint:
                 conversation_title=conversation_title or None,
                 user_prompt_text=user_prompt_text,
                 user_attachments=user_attachments,
+                user_events=user_events,
+                batch_id=batch_id,
                 assistant_files=assistant_files,
             )
             try:

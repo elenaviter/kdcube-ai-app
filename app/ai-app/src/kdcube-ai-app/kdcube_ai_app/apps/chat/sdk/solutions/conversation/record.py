@@ -123,6 +123,50 @@ def _user_prompt_block(text: str, *, turn_id: str, ts: str) -> Optional[Dict[str
     }
 
 
+def _user_context_event_block(event: Any, *, turn_id: str, batch_id: str, ts: str) -> Optional[Dict[str, Any]]:
+    """One recorded EVENT block for a context object the user sent with the turn
+    — a pinned post, a canvas object, anything a surface put on the message.
+
+    Recorded VERBATIM under ``meta.event``, because the chip on reload is not a
+    picture of an event: `context_chip_from_event_block` rebuilds it from the
+    event's own `object_ref`, and clicking it resolves through the same resolver
+    the live chip used. A summary in text would reload as prose nobody can open.
+
+    The reader groups a batch by ``batch_id``, so the prompt block and these
+    blocks must carry the same one."""
+    if not isinstance(event, dict):
+        return None
+    event_type = str(event.get("type") or "").strip()
+    if not event_type.startswith("event."):
+        return None
+    if event_type.startswith("event.user.prompt") or event_type.startswith("event.user.followup") \
+            or event_type.startswith("event.user.steer"):
+        return None
+    payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    ref = str(
+        payload.get("object_ref") or payload.get("ref") or payload.get("hosted_uri")
+        or event.get("object_ref") or event.get("ref") or event.get("hosted_uri") or ""
+    ).strip()
+    return {
+        "type": event_type,
+        "author": "user",
+        "turn_id": turn_id,
+        "turn": turn_id,
+        "ts": str(event.get("ts") or ts),
+        "path": f"conv:ar:{turn_id}.user.context.{str(event.get('id') or len(event_type))}",
+        "text": "",
+        "meta": {
+            "event": dict(event),
+            "event_type": event_type,
+            "batch_id": batch_id,
+            "turn_id": turn_id,
+            "message_id": "m0",
+            **({"object_ref": ref} if ref else {}),
+            **({"event_source_id": str(event.get("event_source_id"))} if event.get("event_source_id") else {}),
+        },
+    }
+
+
 def _user_attachment_meta_block(att: Dict[str, Any], *, turn_id: str, ts: str) -> Optional[Dict[str, Any]]:
     """A ``user.attachment.meta`` block for one uploaded file — reloads as an
     ``artifact:user.attachment`` row and carries a pullable ``conv:fi:`` ref, mirroring
@@ -271,6 +315,8 @@ def build_minimal_turn_log_payload(
     conversation_title: Optional[str] = None,
     user_prompt_text: str = "",
     user_attachments: Optional[Sequence[Dict[str, Any]]] = None,
+    user_events: Optional[Sequence[Dict[str, Any]]] = None,
+    batch_id: str = "",
     assistant_files: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """The smallest valid turn-log payload. Records the assistant's final answer, and
@@ -289,8 +335,17 @@ def build_minimal_turn_log_payload(
     blocks: List[Dict[str, Any]] = []
     # 1) the user's message (reloads the chat:user bubble)
     user_block = _user_prompt_block(user_prompt_text, turn_id=turn_id, ts=now)
+    batch = str(batch_id or "").strip() or f"{turn_id}.batch"
     if user_block:
+        user_block["meta"]["batch_id"] = batch
         blocks.append(user_block)
+    # 1b) the context objects the user sent WITH the message (pins, canvas
+    # objects): recorded as their own events so the reloaded chip is live and
+    # resolves like the original.
+    for event in user_events or []:
+        ctx_block = _user_context_event_block(event, turn_id=turn_id, batch_id=batch, ts=now)
+        if ctx_block:
+            blocks.append(ctx_block)
     # 2) the user's uploaded attachments (reload + pullable conv:fi: refs)
     for att in user_attachments or []:
         att_block = _user_attachment_meta_block(att, turn_id=turn_id, ts=now)
@@ -562,6 +617,8 @@ async def record_minimal_turn_log_if_absent(
     conversation_title: Optional[str] = None,
     user_prompt_text: str = "",
     user_attachments: Optional[Sequence[Dict[str, Any]]] = None,
+    user_events: Optional[Sequence[Dict[str, Any]]] = None,
+    batch_id: str = "",
     assistant_files: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> bool:
     """Record the minimal turn log when none was written this turn.
@@ -593,6 +650,8 @@ async def record_minimal_turn_log_if_absent(
         conversation_title=conversation_title,
         user_prompt_text=user_prompt_text,
         user_attachments=user_attachments,
+        user_events=user_events,
+        batch_id=batch_id,
         assistant_files=assistant_files,
     )
     await save(

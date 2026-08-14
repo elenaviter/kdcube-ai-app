@@ -664,3 +664,82 @@ async def test_surface_turn_failure_skips_economics_limit():
     assert ep._comm.error_calls == []
     assert client.calls == []
     assert turn_error_was_surfaced() is False
+
+
+def test_a_pinned_object_reloads_as_a_live_chip():
+    """LIVE (press, Claude Code lane): a post pinned to the message showed as a
+    chip while the turn ran and was gone when the conversation was reopened —
+    the recorded turn kept the typed text and dropped the object.
+
+    A context object is an EVENT, not a file and not a sentence: recorded
+    verbatim, the reload reader rebuilds the chip from the event's own
+    `object_ref`, so clicking it resolves through the same resolver the live
+    chip used."""
+    from kdcube_ai_app.apps.chat.sdk.solutions.conversation.record import (
+        build_minimal_turn_log_payload,
+    )
+    from kdcube_ai_app.apps.chat.sdk.runtime.user_inputs import (
+        iter_turn_user_input_entries,
+    )
+
+    ref = "linkedin:kdcube:post:industry/2026.08.13-keep-agent-add-runtime"
+    event = {
+        "id": "e1",
+        "type": "event.user.context.object",
+        "batch_id": "b1",
+        "ts": "2026-08-14T16:38:00Z",
+        "payload": {"object_ref": ref, "label": "2026.08.13-keep-agent-add-runtime"},
+    }
+    payload = build_minimal_turn_log_payload(
+        final_answer="…",
+        turn_id="t1",
+        user_prompt_text="whats this ?",
+        user_events=[event],
+        batch_id="b1",
+    )
+    types = [b["type"] for b in payload["blocks"]]
+    assert "event.user.context.object" in types
+
+    entries = iter_turn_user_input_entries(payload["blocks"], turn_id="t1")
+    assert len(entries) == 1
+    contexts = entries[0].get("contexts") or []
+    assert [c.get("ref") for c in contexts] == [ref]
+    # the event survives verbatim, so anything the resolver needs is still there
+    recorded = [b for b in payload["blocks"] if b["type"] == "event.user.context.object"][0]
+    assert recorded["meta"]["event"] == event
+
+
+def test_the_prompt_and_its_objects_share_one_batch():
+    """The reader groups a user's message with its objects by batch id; without
+    the shared id the chip records but never attaches to the bubble."""
+    from kdcube_ai_app.apps.chat.sdk.solutions.conversation.record import (
+        build_minimal_turn_log_payload,
+    )
+
+    payload = build_minimal_turn_log_payload(
+        final_answer="…",
+        turn_id="t9",
+        user_prompt_text="look",
+        user_events=[{"id": "e", "type": "event.user.context.object",
+                      "payload": {"object_ref": "conv:ar:x"}}],
+        batch_id="",          # none supplied: one is derived, still shared
+    )
+    batches = {b["meta"].get("batch_id") for b in payload["blocks"] if b["type"].startswith(("user.prompt", "event."))}
+    assert len(batches) == 1 and next(iter(batches))
+
+
+def test_a_prompt_event_is_not_recorded_twice_as_a_chip():
+    """The prompt itself is already the bubble; it must not also render as an
+    object attached to itself."""
+    from kdcube_ai_app.apps.chat.sdk.solutions.conversation.record import (
+        build_minimal_turn_log_payload,
+    )
+
+    payload = build_minimal_turn_log_payload(
+        final_answer="…",
+        turn_id="t2",
+        user_prompt_text="hello",
+        user_events=[{"id": "p", "type": "event.user.prompt", "payload": {"text": "hello"}}],
+        batch_id="b",
+    )
+    assert [b["type"] for b in payload["blocks"]] == ["user.prompt", "assistant.completion"]
