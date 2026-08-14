@@ -24,7 +24,6 @@ import logging
 import re
 import sqlite3
 import time
-from collections import OrderedDict
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Literal, Sequence
@@ -54,7 +53,6 @@ class HybridIndex:
             # the cached vectors on first use. File/cross-process stores keep theirs.
             if getattr(config.vector_store, "volatile", True):
                 self._set_meta(conn, "built_version", -1)
-        self._qcache: "OrderedDict[str, List[float]]" = OrderedDict()
 
     # ---- connection ----
     @contextmanager
@@ -357,12 +355,24 @@ class HybridIndex:
         return True
 
     async def _embed_query(self, query: str) -> List[float] | None:
-        """Embed a query once; cache it (LRU) so repeats — pagination, debounced
-        typeahead, the same term across boards — don't re-pay the embedder."""
-        cache = self._qcache
-        if query in cache:
-            cache.move_to_end(query)
-            return cache[query]
+        """Embed a query, consulting the caller's SHARED cache when one was
+        configured (`IndexConfig.query_embedding_cache`).
+
+        Deliberately no process-local memoization: this runtime is distributed
+        and an index instance is rebuilt freely, so anything remembered inside
+        one process is a cache one worker out of N can use and none of them can
+        invalidate. The repeats worth catching — pagination, a later turn, a
+        second person asking the same thing — cross processes by definition, so
+        the cache has to as well. Fails soft: a cache that is down costs an
+        embed call, never the search."""
+        shared = self.cfg.query_embedding_cache
+        if shared is not None:
+            try:
+                vec = await shared.get(query)
+            except Exception:
+                vec = None
+            if vec:
+                return vec
         model_service = self.cfg.model_service
         embed_search_query = getattr(model_service, "embed_search_query", None)
         if callable(embed_search_query):
@@ -375,9 +385,11 @@ class HybridIndex:
                 vec = (await embed_texts([query]))[0]
             else:
                 vec = (await self.cfg.embed_fn([query]))[0]
-        cache[query] = vec
-        if len(cache) > max(1, self.cfg.query_cache_size):
-            cache.popitem(last=False)
+        if shared is not None:
+            try:
+                await shared.set(query, vec)
+            except Exception:
+                pass  # a cache that cannot write is not a failed search
         return vec
 
     async def _semantic(self, query, limit, filters) -> List[str]:

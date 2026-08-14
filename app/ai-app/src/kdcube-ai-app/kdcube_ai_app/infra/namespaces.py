@@ -83,6 +83,9 @@ class REDIS:
     class CACHE:
         FAVICON = "kdcube:cache:favicon"
         MCP = "kdcube:cache:mcp"
+        # Query→vector, shared across workers: a search embeds the query on
+        # every call, and the answer is a pure function of (query, model, dim).
+        QUERY_EMBEDDING = "kdcube:cache:query-embedding"
 
     class SYNCHRONIZATION:
         LOCK = "kdcube:lock"

@@ -77,7 +77,19 @@ class IndexConfig:
     # economics engine's `economic_preflight` (the feasibility-only check). This is
     # where the budget/quota enforcement plugs in.
     semantic_guard: Callable[[str], "bool | Awaitable[bool]"] | None = None
-    query_cache_size: int = 128                # LRU of query→vector (avoid re-embedding repeats)
+    # --- query→vector cache (opt-in, and SHARED by construction) ---
+    # A search embeds the query on every call, and that vector is a pure
+    # function of (query, model, dim). The repeats worth catching — pagination,
+    # a later turn, a second person asking the same thing — happen on other
+    # workers, so the cache lives in Redis, not in this object: a distributed
+    # runtime rebuilds index instances freely, and anything remembered inside
+    # one process is a cache one worker out of N can use and none can
+    # invalidate. Hand a `QueryEmbeddingCache`
+    # (infra.index.embedding_cache.create_query_embedding_cache) to switch it
+    # on; leave it None and every query is embedded. The caller decides,
+    # because the caller knows whether its queries repeat and under whose
+    # tenant/project the vectors belong.
+    query_embedding_cache: Any | None = None
 
     # --- lexical matching semantics ---
     # All-terms-first: a multi-word query first requires EVERY word (prefix)

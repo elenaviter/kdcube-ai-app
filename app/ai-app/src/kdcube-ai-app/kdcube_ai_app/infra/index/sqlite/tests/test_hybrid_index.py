@@ -92,7 +92,7 @@ async def _run_all() -> None:
 
 async def _run_guard() -> None:
     """Economical guard: short / disabled / budget-denied queries must not embed;
-    repeated queries hit the cache; guard-denied degrades to lexical."""
+    guard-denied degrades to lexical."""
     calls = {"n": 0}
 
     async def counting_embed(texts):
@@ -114,8 +114,12 @@ async def _run_guard() -> None:
         r = await idx.search("alpha", top_k=5)         # >= 3 → embeds once
         assert calls["n"] == base + 1 and r[0].id == "d1"
 
-        await idx.search("alpha", top_k=5)             # repeat → cache hit
-        assert calls["n"] == base + 1, "repeat query must hit cache"
+        # A repeat with NO shared cache configured embeds again — deliberately.
+        # There is no process-local memo: this runtime is distributed, so the
+        # only cache that means anything is the shared one (opt-in, see the
+        # query-embedding-cache tests below).
+        await idx.search("alpha", top_k=5)
+        assert calls["n"] == base + 2, "without a shared cache, a repeat re-embeds"
 
         idx.cfg.semantic_guard = lambda q: False       # budget says no (sync)
         before = calls["n"]
@@ -267,3 +271,198 @@ if __name__ == "__main__":
     asyncio.run(_run_all())
     asyncio.run(_run_guard())
     asyncio.run(_run_model_service_query_embed())
+
+
+# ── the shared query-embedding cache (opt-in) ──────────────────────────
+
+
+class _CountingEmbedder:
+    """fake_embed, but it says how many times it was asked."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def __call__(self, texts):
+        self.calls += 1
+        return await fake_embed(texts)
+
+
+class _FakeSharedCache:
+    """A QueryEmbeddingCache stand-in: the same two awaited methods, in memory,
+    so the test does not need Redis."""
+
+    def __init__(self, store: dict | None = None, *, broken: bool = False):
+        self.store = store if store is not None else {}
+        self.broken = broken
+        self.reads = 0
+        self.writes = 0
+
+    async def get(self, query):
+        self.reads += 1
+        if self.broken:
+            raise RuntimeError("redis is having a day")
+        return self.store.get(query)
+
+    async def set(self, query, vector):
+        self.writes += 1
+        if self.broken:
+            raise RuntimeError("redis is having a day")
+        self.store[query] = list(vector)
+        return True
+
+
+def _index_with_cache(tmp: Path, embed, cache, *, name="idx.sqlite") -> HybridIndex:
+    return HybridIndex(IndexConfig(
+        db_path=tmp / name,
+        embed_fn=embed,
+        dim=len(VOCAB),
+        vector_store=BruteForceVectorStore(),
+        overfetch=5,
+        query_embedding_cache=cache,
+    ))
+
+
+def test_a_second_process_reuses_the_shared_query_vector():
+    """The point of the shared tier: a NEW index instance (another worker, a
+    later turn) must not re-pay the embedder for a query somebody already
+    embedded. The in-process LRU cannot do this — it died with its process."""
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        shared = _FakeSharedCache()
+
+        first_embed = _CountingEmbedder()
+        idx = _index_with_cache(tmp, first_embed, shared)
+        asyncio.run(idx.upsert([
+            Document(id="1", text="alpha beta"),
+            Document(id="2", text="gamma delta"),
+        ]))
+        asyncio.run(idx.search("alpha", top_k=2))
+        upsert_and_query = first_embed.calls
+        assert shared.writes == 1, "the query vector should have been written once"
+
+        # A brand-new instance over the same data: the query is NOT re-embedded.
+        second_embed = _CountingEmbedder()
+        idx2 = _index_with_cache(tmp, second_embed, shared, name="idx.sqlite")
+        asyncio.run(idx2.search("alpha", top_k=2))
+        assert second_embed.calls == 0, "the shared cache should have answered"
+        assert upsert_and_query >= 1
+
+
+def test_every_repeat_goes_through_the_shared_cache():
+    """There is NO process-local memo by design: this runtime is distributed, so
+    a repeat asks the shared cache (which answers) rather than a dictionary only
+    this worker can see."""
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        shared = _FakeSharedCache()
+        embed = _CountingEmbedder()
+        idx = _index_with_cache(tmp, embed, shared)
+        asyncio.run(idx.upsert([Document(id="1", text="alpha beta")]))
+        asyncio.run(idx.search("alpha", top_k=1))
+        embeds_after_first = embed.calls
+        asyncio.run(idx.search("alpha", top_k=1))
+        assert shared.reads == 2, "the repeat must consult the shared cache"
+        assert embed.calls == embeds_after_first, "and must not re-embed"
+
+
+def test_a_broken_cache_costs_an_embed_call_not_the_search():
+    """Fail soft, both directions: a cache that raises on read and on write must
+    not surface as a failed search."""
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        embed = _CountingEmbedder()
+        idx = _index_with_cache(tmp, embed, _FakeSharedCache(broken=True))
+        asyncio.run(idx.upsert([Document(id="1", text="alpha beta")]))
+        hits = asyncio.run(idx.search("alpha", top_k=1))
+        assert [h.id for h in hits] == ["1"]
+
+
+def test_no_cache_configured_changes_nothing():
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        idx = _index(Path(td))
+        asyncio.run(idx.upsert([Document(id="1", text="alpha beta")]))
+        assert [h.id for h in asyncio.run(idx.search("alpha", top_k=1))] == ["1"]
+
+
+def test_the_key_carries_the_model_and_the_width():
+    """A vector from another model is not a cheaper answer, it is a wrong one —
+    so the key must separate them, and a stored vector of the wrong width is
+    refused rather than returned."""
+    from kdcube_ai_app.infra.index.embedding_cache import (
+        QueryEmbeddingCache, normalize_query, query_embedding_key,
+    )
+
+    assert normalize_query("  Keep   the Agent ") == "keep the agent"
+    small = query_embedding_key("keep the agent", model="m1", dim=6)
+    other_model = query_embedding_key("keep the agent", model="m2", dim=6)
+    other_dim = query_embedding_key("keep the agent", model="m1", dim=1536)
+    assert small != other_model and small != other_dim
+    # spacing/case do not make a new key
+    assert query_embedding_key("KEEP  the agent", model="m1", dim=6) == small
+
+    class _KV:
+        def __init__(self): self.data = {}
+        async def get(self, key): return self.data.get(key)
+        async def set(self, key, value, ttl_seconds=None): self.data[key] = value; return True
+
+    kv = _KV()
+    cache = QueryEmbeddingCache(kv, model="m1", dim=6)
+    assert asyncio.run(cache.set("alpha", [1.0] * 6)) is True
+    assert asyncio.run(cache.get("alpha")) == [1.0] * 6
+    # a vector of the wrong width never comes back
+    wrong = QueryEmbeddingCache(kv, model="m1", dim=1536)
+    assert asyncio.run(wrong.get("alpha")) is None
+    assert cache.stats()["hits"] == 1
+
+
+def test_vectors_are_stored_compactly_and_the_scope_is_bounded():
+    """Two properties a shared vector cache must have: it stores the vector in
+    a form that is not four times bigger than it needs to be, and it has a
+    CEILING — 1536 float32 values are ~8KB each, so an unbounded cache is a
+    memory leak that happens to answer questions. The bound is a Redis sorted
+    set of this scope's keys scored by last USE, so eviction takes the coldest,
+    not the oldest."""
+    import base64
+    from kdcube_ai_app.infra.index.embedding_cache import (
+        QueryEmbeddingCache, decode_vector, encode_vector,
+    )
+
+    vec = [0.0123456] * 8
+    packed = encode_vector(vec)
+    assert len(packed) < len(str(vec)), "the packed form must be smaller than the text form"
+    roundtrip = decode_vector(packed)
+    assert len(roundtrip) == 8
+    assert all(abs(a - b) < 1e-6 for a, b in zip(roundtrip, vec)), "float32 round-trip"
+    # a legacy JSON array still decodes (the cache predates the codec)
+    assert decode_vector([1.0, 2.0]) == [1.0, 2.0]
+    assert decode_vector("not base64 at all!!") is None
+
+    class _Redis:
+        def __init__(self): self.z = {}; self.deleted = []
+        async def zadd(self, key, mapping): self.z.setdefault(key, {}).update(mapping); return 1
+        async def expire(self, key, ttl): return True
+        async def zcard(self, key): return len(self.z.get(key, {}))
+        async def zrange(self, key, start, stop):
+            ordered = sorted(self.z.get(key, {}).items(), key=lambda kv: kv[1])
+            return [k for k, _ in ordered[start:stop + 1]]
+        async def delete(self, *keys): self.deleted.extend(keys); return len(keys)
+        async def zrem(self, key, *members):
+            for m in members: self.z.get(key, {}).pop(m, None)
+            return len(members)
+
+    class _KV:
+        def __init__(self, redis): self.redis = redis; self.data = {}
+        def _key(self, key): return f"ns:{key}"
+        async def get(self, key): return self.data.get(self._key(key))
+        async def set(self, key, value, ttl_seconds=None): self.data[self._key(key)] = value; return True
+
+    redis = _Redis()
+    cache = QueryEmbeddingCache(_KV(redis), model="m1", dim=8, max_entries=2)
+    for query in ("first", "second", "third"):
+        assert asyncio.run(cache.set(query, vec)) is True
+    assert redis.deleted, "the third write must have evicted the coldest entry"
+    assert cache.stats()["evictions"] == len(redis.deleted)
+    assert cache.stats()["max_entries"] == 2
+    # what survives still reads back
+    assert asyncio.run(cache.get("third")) is not None
