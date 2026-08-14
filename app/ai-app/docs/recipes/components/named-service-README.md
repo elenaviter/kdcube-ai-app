@@ -4,7 +4,7 @@ title: "Build A Complete Named Service"
 summary: "End-to-end recipe for publishing an app-owned domain as a discoverable, governed named service that external MCP clients, hosted agents, UI surfaces, and harness materializers can use progressively."
 status: active
 tags: ["recipes", "apps", "bundles", "named-services", "agents", "mcp", "react", "connections", "consent"]
-updated_at: 2026-08-03
+updated_at: 2026-08-14
 keywords:
   - named service provider
   - ontology-guided agent interface
@@ -176,6 +176,30 @@ class RecordsNamedServiceProvider(NamedServiceProvider):
 
 Use SDK absolute imports. Inside an app package, use package-relative imports
 for the app's own modules.
+
+### Join A Namespace Another App Already Serves
+
+A provider may publish a partial definition of an existing namespace instead
+of minting its own; the contribution model, routing, realm-card merge, and the
+contribute-vs-mint decision are owned by
+[Multi-Provider Namespaces](../../sdk/namespace-services/providers-README.md#multi-provider-namespaces).
+On the spec this means:
+
+- `namespace`: the existing name, exactly;
+- `provider_id`: this provider's own id, never the incumbent's;
+- `refs`: patterns partitioned by id shape — each pattern matches only this
+  provider's ids on every operation both providers declare;
+- `operations`: an explicit dict naming only what this provider serves; an
+  operation the incumbent owns stays undeclared;
+- this provider's own `object_kinds`, `search_scopes`, and presentation
+  metadata — the user's service card shows the merged union of every
+  provider's declarations.
+
+The platform does not detect overlap at publish time, so the joining bundle
+carries the disjointness test itself: for every operation both providers
+declare, assert that each provider's ref patterns match its own canonical refs
+and reject the other's. That test is the partition's regression guard; without
+it, an overlapping pattern surfaces only as misrouted calls.
 
 ## 4. Make Refs Round-Trip
 

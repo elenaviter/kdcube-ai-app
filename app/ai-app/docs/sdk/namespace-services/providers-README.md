@@ -4,7 +4,7 @@ title: "Namespace Services: Providers"
 summary: "Transport-neutral SDK concept for apps (bundles) and platform subsystems that publish namespace service provider surfaces: namespace ownership, object operations, resolvers, capabilities, relations, and integrations over API, MCP, Data Bus, or local adapters."
 status: current
 tags: ["sdk", "namespace-services", "named-service-provider", "services", "namespaces", "objects", "resolvers", "mcp", "api", "data-bus", "apps", "bundles"]
-updated_at: 2026-08-07
+updated_at: 2026-08-14
 keywords:
   [
     "named service provider",
@@ -21,6 +21,9 @@ keywords:
     "domain selector",
     "provider-bounded search",
     "provider translation",
+    "multi-provider namespace",
+    "shared namespace",
+    "ref-pattern disjointness",
   ]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/ecosystem-component/components-ecosystem-README.md
@@ -91,9 +94,95 @@ explicitly.
 The app's published registry is an authoritative snapshot for that app:
 providers omitted from a later snapshot are withdrawn. Multiple apps may still
 serve the same namespace when that partition is intentional and their
-operations, refs, or object kinds let discovery select correctly. Redis keys,
+operations, refs, or object kinds let discovery select correctly (see
+[Multi-Provider Namespaces](#multi-provider-namespaces)). Redis keys,
 empty-registry withdrawal, namespace-index reconciliation, and resolution are
 owned by [Discovery Registry](discovery-README.md); they are not repeated here.
+
+## Multi-Provider Namespaces
+
+A namespace names a domain, not one provider slot. Several providers — from
+several apps — may each publish a **partial definition** of the same base
+namespace; together they are that namespace's one realm. The registry layers
+are built for this: the in-process registry keys providers by `provider_id`
+and keeps a provider list per namespace, and each discovery record is keyed by
+publishing bundle plus provider (`{bundle_id}::{provider_id}`) with a
+provider-key set per namespace — so one app's authoritative republish
+upserts/withdraws only its own records and never evicts another app's
+provider. Request resolution filters candidates by namespace, declared
+operation, ref-pattern match, and object kind, then ranks by ref-match
+specificity: the provider whose declared ref pattern matches the requested
+`object_ref` most concretely wins the call. Keys, reconciliation, and the
+ranking tuple are owned by [Discovery Registry](discovery-README.md).
+
+The shipped example is the shared `linkedin` namespace:
+
+```text
+SDK publishing provider (integrations/linkedin/named_service.py)
+  refs:        linkedin:*
+  post ids:    URN-shaped — linkedin:<account>:post:urn:li:...   (no "/")
+  serves:      object.list (connected accounts), object.get,
+               object.action (publish/comment/... actions)
+
+an app's publications-store provider
+  refs:        linkedin:*:post:*/*
+  post ids:    store-shaped — linkedin:<account>:post:<fold>/<slug>[/<file>]
+  serves:      object.search, object.get, object.resolve,
+               object.action (open/download)
+  undeclared:  object.list — the SDK provider owns it
+```
+
+Every store pattern requires a slash inside the post id and URN ids never
+contain `/`, so on every operation both providers declare, ref routing sends
+store-shaped refs to the store and URN-shaped refs to the SDK provider —
+neither can take the other's calls.
+
+### The Disjointness Discipline
+
+The platform detects **no namespace conflicts at publish time**: two
+overlapping publications are both accepted, and the overlap surfaces only as
+routing behavior. A provider joining an existing namespace therefore carries
+the discipline itself:
+
+- **declare only the operations it serves.** An explicit `operations` dict is
+  the advertised surface; an operation the incumbent provider owns stays
+  undeclared on the joining spec.
+- **partition by id shape.** Every declared ref pattern must match only that
+  provider's ids on every operation both providers declare. The pattern is
+  also the tiebreaker: the longer concrete match wins every shared operation.
+- **pin the invariant with a test.** The joining bundle's suite asserts, for
+  every shared operation, that each provider's patterns match its own
+  canonical refs and reject the peer's. The platform will not police the
+  overlap.
+
+Callers can always bypass ranking: the request's `provider` field (exposed as
+the optional `provider` parameter on the generic MCP door's tools) names one
+provider explicitly when a namespace has more than one.
+
+### One Realm Card Over All Providers
+
+A shared namespace stays **one realm to the user**. The capability catalog
+folds every publishing provider's spec into a single realm view instead of
+first-provider-wins: advertised operations are unioned (the first spec
+declaring an operation keeps its operation spec), `actions` / `object_kinds` /
+`connected_accounts` / `presentation` metadata are merged, the first non-empty
+label wins, and distinct descriptions join into one paragraph — so a second
+provider's operations never vanish from the user-facing card. A
+single-provider namespace passes through unchanged. The fold is
+`_merge_realm_specs` in `kdcube_ai_app/apps/chat/sdk/runtime/agent_inventory.py`;
+card rendering stays with
+[Per-User Agent Capabilities](../solutions/user-settings/capabilities-README.md).
+
+### Contribute Or Mint
+
+Contribute to an existing namespace when the objects **are** that domain's
+objects — the user would name them with the same word, whichever app stores
+them — and the joining provider's operations and ref shapes can stay disjoint
+from every provider already there. Mint a new namespace when the objects are a
+different domain, or when disjointness would fail: two providers needing the
+same operation over ref shapes that cannot be told apart do not share a
+namespace. The spec fields a joining provider sets are in
+[the named-service recipe](../../recipes/components/named-service-README.md#join-a-namespace-another-app-already-serves).
 
 ## Mental Model
 
@@ -2007,6 +2096,10 @@ When introducing a named service provider:
 - contribute the provider explicitly from that owner app's
   `_named_service_providers()`; provider-capable inheritance is not
   publication;
+- when the provider joins a namespace another app already serves, declare only
+  the operations it serves, keep its ref patterns disjoint by id shape, and
+  carry the disjointness test
+  (see [Multi-Provider Namespaces](#multi-provider-namespaces));
 - define provider id, labels, and purpose;
 - define canonical ref grammar and object kinds when the provider owns refs;
 - define `provider.about` and `provider.capabilities`;
