@@ -331,6 +331,70 @@ bundles:
                   description: Read conversation transcripts for feedback triage.
                   grants:
                   - conversations:read
+            - resource: '*/api/integrations/bundles/*/*/press.linkedin@2026-08-13/mcp/press*'
+              label: Press LinkedIn publications
+              description: The publication store behind the press app — its records and drafts, and the moderation lane the review desk uses.
+              tools:
+                search:
+                  label: Search publications
+                  description: Find entries in the publication store.
+                  grants:
+                  - press.linkedin:read
+                get_post:
+                  label: Read one publication
+                  description: Read one entry — its text, metadata, receipts and comments.
+                  grants:
+                  - press.linkedin:read
+                related:
+                  label: Related publications
+                  description: Find entries related to one entry.
+                  grants:
+                  - press.linkedin:read
+                list_unpublished:
+                  label: List unpublished
+                  description: List entries that are ready or still drafts.
+                  grants:
+                  - press.linkedin:read
+                about:
+                  label: About the store
+                  description: Read the accounts, folds and index status of the store.
+                  grants:
+                  - press.linkedin:read
+                fetch_remote:
+                  label: Fetch from the repository
+                  description: Refresh the local clone from its remote. Changes no entry.
+                  grants:
+                  - press.linkedin:read
+                save_file:
+                  label: Edit an entry file
+                  description: Write the text, sketch or metadata of an entry in place.
+                  grants:
+                  - press.linkedin:write
+                upload_file:
+                  label: Add a file to an entry
+                  description: Add an image or attachment to an entry.
+                  grants:
+                  - press.linkedin:write
+                add_comment:
+                  label: Comment on an entry
+                  description: Append a review comment to an entry.
+                  grants:
+                  - press.linkedin:write
+                delete_file:
+                  label: Delete a file
+                  description: Remove a file from an entry.
+                  grants:
+                  - press.linkedin:delete
+                delete_comment:
+                  label: Delete a comment
+                  description: Remove one review comment from an entry.
+                  grants:
+                  - press.linkedin:delete
+                commit_entry:
+                  label: Commit and push
+                  description: Commit the changes of an entry and push them to the repository.
+                  grants:
+                  - press.linkedin:commit
             - resource: '*/api/integrations/bundles/*/*/kdcube-services@1-0/public/mcp/named_services*'
               label: KDCube named services MCP
               tools:
