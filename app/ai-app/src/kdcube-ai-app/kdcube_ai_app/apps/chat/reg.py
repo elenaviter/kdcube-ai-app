@@ -120,6 +120,7 @@ _SEEDED_FALSE = [
     (re.compile(r"^o4", re.I), {"temperature": False, "top_p": False, "tools": False, "reasoning": True}),  # o4-* reasoning models
     (re.compile(r"^gpt-5", re.I), {"temperature": False, "top_p": False, "tools": True, "reasoning": True}),  # gpt-5-* reasoning models
     (re.compile(r"^gpt-4o", re.I), {"temperature": True, "top_p": False, "tools": True}),
+    (re.compile(r"^(?:claude-)?(?:opus|sonnet|fable)-5(?:$|[-.])", re.I), {"temperature": False}),
 ]
 
 
@@ -141,6 +142,17 @@ def model_caps(model: str) -> dict:
         caps.update(learned)
 
     return caps
+
+
+def model_request_params(model: str, **parameters) -> dict:
+    """Return non-null request parameters supported by the selected model."""
+    caps = model_caps(model)
+    return {
+        name: value
+        for name, value in parameters.items()
+        if value is not None and caps.get(name, True)
+    }
+
 
 def learn_unsupported(model: str, param: str):
     _dynamic_caps.setdefault(model, {})[param] = False

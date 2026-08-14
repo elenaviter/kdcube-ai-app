@@ -453,6 +453,8 @@ Important behavior:
 
 Anthropic calls use the Anthropic SDK and support:
 
+- per-model request-parameter filtering, including omission of the deprecated
+  `temperature` parameter for Claude 5 models
 - streaming text
 - thinking deltas when configured/supported
 - native tool-call streaming

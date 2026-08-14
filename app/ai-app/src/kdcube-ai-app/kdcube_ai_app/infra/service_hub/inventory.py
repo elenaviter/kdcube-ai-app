@@ -21,7 +21,7 @@ from langchain_core.embeddings import Embeddings
 from langchain_core.messages import SystemMessage, HumanMessage, BaseMessage, AIMessage, AIMessageChunk, ToolMessage
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
-from kdcube_ai_app.apps.chat.reg import MODEL_CONFIGS, EMBEDDERS, model_caps
+from kdcube_ai_app.apps.chat.reg import MODEL_CONFIGS, EMBEDDERS, model_caps, model_request_params
 from kdcube_ai_app.infra.accounting import track_embedding, track_llm
 from kdcube_ai_app.infra.accounting.usage import (
     _structured_usage_extractor,
@@ -118,8 +118,6 @@ def make_chat_openai(*, model: str, api_key: str,
                      temperature: float | None = None,
                      stream_usage: bool = True,
                      **extra_kwargs) -> ChatOpenAI:
-    caps = model_caps(model)
-
     params = {
         "model": model,
         "api_key": api_key,
@@ -130,10 +128,10 @@ def make_chat_openai(*, model: str, api_key: str,
 
         **extra_kwargs,
     }
-
-    # Only include temperature if supported AND provided
-    if temperature is not None and caps.get("temperature", True):
-        params["temperature"] = float(temperature)
+    params.update(model_request_params(
+        model,
+        temperature=float(temperature) if temperature is not None else None,
+    ))
 
     return ChatOpenAI(**params)
 
@@ -1361,7 +1359,7 @@ class ModelServiceBase:
                     system=system_prompt,
                     messages=[{"role": "user", "content": user_message}],
                     max_tokens=max_tokens,
-                    temperature=temperature,
+                    **model_request_params(model_name, temperature=temperature),
                 )
                 response_content = "".join([p.text for p in getattr(resp, "content", []) if getattr(p, "type", "") == "text"])
                 u = getattr(resp, "usage", None)
@@ -1551,7 +1549,11 @@ class ModelServiceBase:
                         convo.append({"role": "user", "content": str(getattr(m, "content", ""))})
                 resp = client.messages.create(
                     model=model_name, system=sys_prompt, messages=convo,
-                    max_tokens=max_tokens or 1200, temperature=temperature if temperature is not None else 0.3,
+                    max_tokens=max_tokens or 1200,
+                    **model_request_params(
+                        model_name,
+                        temperature=temperature if temperature is not None else 0.3,
+                    ),
                 )
                 text = "".join([c.text for c in getattr(resp, "content", []) if getattr(c, "type", "") == "text"])
                 u = getattr(resp, "usage", None)
@@ -1653,13 +1655,15 @@ class ModelServiceBase:
             # If we have blocks, use them; otherwise None
             final_system = sys_blocks if sys_blocks else None
 
-            async with async_client.messages.stream(
-                    model=model_name,
-                    system=final_system,
-                    messages=convo,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-            ) as stream:
+            stream_kwargs = {
+                "model": model_name,
+                "system": final_system,
+                "messages": convo,
+                "max_tokens": max_tokens,
+            }
+            stream_kwargs.update(model_request_params(model_name, temperature=temperature))
+
+            async with async_client.messages.stream(**stream_kwargs) as stream:
                 index += 1
                 async for text in stream.text_stream:
                     if text:
@@ -2149,8 +2153,8 @@ class ModelServiceBase:
                 "system": final_system,
                 "messages": convo,
                 "max_tokens": max_tokens,
-                "temperature": temperature,
             }
+            stream_kwargs.update(model_request_params(model_name, temperature=temperature))
 
             # Add tools if provided
             if tools:

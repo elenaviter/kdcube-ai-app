@@ -12,6 +12,7 @@ import anthropic
 import openai
 from openai import AsyncOpenAI
 
+from kdcube_ai_app.apps.chat.reg import model_request_params
 from kdcube_ai_app.infra.accounting import track_llm, ServiceUsage, AccountingSystem, with_accounting
 from kdcube_ai_app.infra.llm.llm_data_model import (TokenUsage, StreamingResultWrapper,
                                                     ModelRecord, AIProvider, Message,
@@ -438,10 +439,10 @@ async def llm_streaming_with_progress(
             # Stream the response
             kwargs = {
                 "model": model.systemName,
-                "temperature": temperature,
                 "messages": formatted_messages,
                 "max_tokens": max_tokens
             }
+            kwargs.update(model_request_params(model.systemName, temperature=temperature))
 
             if model.provider.provider == AIProviderName.anthropic:
                 if system:
