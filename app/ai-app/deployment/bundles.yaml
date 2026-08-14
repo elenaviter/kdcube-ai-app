@@ -363,7 +363,7 @@ bundles:
                   description: Read conversation transcripts for feedback triage.
                   grants:
                   - conversations:read
-            - resource: '*/api/integrations/bundles/*/*/press.linkedin@2026-08-13/mcp/press*'
+            - resource: '*/api/integrations/bundles/*/*/press.linkedin@2026-08-13/public/mcp/press*'
               label: Press LinkedIn publications
               description: The publication store behind the press app — its records and drafts, and the moderation lane the review desk uses.
               tools:
