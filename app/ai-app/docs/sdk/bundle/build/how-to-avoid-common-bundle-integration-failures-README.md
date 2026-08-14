@@ -253,10 +253,102 @@ For inherited SDK widgets, the alias must match the inherited decorator alias.
 Config under `ui.widgets.memories` configures the existing `memories` widget; it
 does not create a new platform widget surface by itself.
 
+**Roles are matched ANY-OF, and an admin widget wants a user type.** Declaring
+two admin roles on a widget does not mean "either"; the app scene once filtered
+ALL-OF while the server filtered ANY-OF, and a widget declaring two roles
+vanished for a user holding one. For an admin-only surface prefer
+`user_types=("privileged",)` with no roles, and let the app's one visibility
+knob (`surfaces.as_provider.bundle.visibility.allowed_roles`) govern the rest.
+
+**`default_chat: true` already serves a chat widget.** It activates the
+inherited `chat` alias — the app's declared chat surface, served as an ordinary
+bundle widget. Declaring your own chat widget beside it mounts the same app
+twice; configure the inherited alias instead of adding a second one.
+
 Read:
 
 - [Bundle Subsystem Integration: visibility and enablement](../bundle-subsystem-integration-README.md#3-visibility-and-enablement)
 - [Bundle Widget Integration](../bundle-widget-integration-README.md)
+
+## Recipe: Lifecycle Hooks Call `super()`
+
+An app that overrides `pre_run_hook` / `post_run_hook` to do its own work must
+call the base first. The base `pre_run_hook` **starts the turn's event
+recording**, and that recording is what a reloaded turn is rebuilt from.
+
+```python
+# WRONG — the app's own work, and nothing else
+async def pre_run_hook(self, *, state):
+    await self._ensure_store(reason="pre_run_hook")
+
+# RIGHT — recording first, then the app's work
+async def pre_run_hook(self, *, state, econ_ctx: dict | None = None):
+    await super().pre_run_hook(state=state, econ_ctx=econ_ctx or {})
+    await self._ensure_store(reason="pre_run_hook")
+```
+
+The symptom is quiet and easy to misread: the turn streams its **cost badge and
+elapsed time live**, and a reloaded conversation shows neither. Nothing errors —
+the events were emitted to a listener and recorded nowhere, so the export that
+becomes the reload artifact is empty.
+
+Two details that bite in order:
+
+- **Order matters.** Start the recording *before* app work, so a slow refresh or
+  a failure in your own setup cannot swallow the beginning of the turn.
+- **`econ_ctx` is required by the economics base.** `BaseEntrypointWithEconomics`
+  declares `pre_run_hook(*, state, econ_ctx)` with no default. The platform is
+  tolerant — it inspects YOUR signature and passes `econ_ctx` only if you accept
+  it — but your `super()` call is not: omitting it raises
+  `missing 1 required keyword-only argument: 'econ_ctx'` before the agent runs.
+  Accept it with a default and forward it.
+
+A source-reading test that asserts the `super()` call exists does **not** prove
+it can execute; assert the forwarded arguments too.
+
+## Recipe: An MCP Surface A Delegated Agent Can Reach
+
+A `@mcp` surface an agent consumes — including this app's own agent — declares
+the public route and a managed auth block:
+
+```python
+@mcp(
+    alias="press",
+    route="public",                                   # not "operations"
+    transport="streamable-http",
+    auth_config="surfaces.as_provider.mcp.press.auth",
+)
+async def press_mcp(self, request, **kwargs):
+    self._require_admin(request)                      # the app's own gate, per dispatch
+    ...
+```
+
+```yaml
+surfaces:
+  as_provider:
+    mcp:
+      press:
+        auth:
+          mode: managed
+          authority_id: delegated_client
+          selected_tool_grants: true
+```
+
+**"Public" names the route, not the access.** The managed guard checks the
+caller's grant against the tool being called, and your handler still applies
+whatever gate the app owns.
+
+Declared on the operations route instead, the same surface fails twice and
+neither message points at the declaration:
+
+| What you see | Why |
+| --- | --- |
+| `401 Authentication required` on the configured URL | the operations route expects a platform session; a delegated bearer is not an identity there. |
+| `403 delegated platform resource has ambiguous operation catalog` | the bearer fell through to the REST path, whose guard resolves a resource to exactly ONE operation — a surface with several tools cannot satisfy it. |
+
+`selected_tool_grants: true` is what makes a multi-tool surface work at all: it
+routes through the managed MCP guard, which knows the tool name, instead of the
+single-operation REST path.
 
 ## Recipe: Live Events From Bundle Operations
 
@@ -533,3 +625,9 @@ Read:
 | A value or identity is present in proc but missing inside exec/subprocess/child runtime | it was stored in `os.environ` or a module global; dynamic state crosses fences only through portable context. |
 | A tool-calling agent loops on retries until a recursion-limit error | the answer model's output budget may be too small for a complete payload-bearing tool call; expose and raise the descriptor property. |
 | Authored event never appears in the timeline and the turn cannot complete | event published with a semantic transport kind instead of `external_event`. |
+| Cost badge and elapsed time show live and vanish on reload | a lifecycle hook overrode the base without calling `super()`; the turn recording never started. |
+| Every turn errors with `missing 1 required keyword-only argument: 'econ_ctx'` | a `super().pre_run_hook(...)` call that omits the argument the economics base requires. |
+| An agent reports no MCP tools although the server was injected with a fresh grant | the `@mcp` surface is on the operations route, or has no managed `auth_config`; probe it directly and read whether it answers 401 or 403. |
+| `403 ambiguous operation catalog` | a delegated resource with several tools reached the single-operation REST path — declare `selected_tool_grants: true`. |
+| A widget is invisible to a user who holds one of its declared roles | roles are ANY-OF; an admin surface should gate on `user_types`, not a role list. |
+| Two identical chat tiles in one scene | `default_chat: true` plus an app-declared chat widget — the inherited `chat` alias is already the app's chat surface. |

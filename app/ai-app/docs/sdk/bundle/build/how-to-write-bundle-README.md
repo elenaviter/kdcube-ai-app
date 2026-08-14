@@ -343,7 +343,14 @@ Practical hook rule:
 
 - `on_bundle_load(...)` = one-time per process per tenant/project setup
 - `on_props_changed(...)` = reconcile long-lived state after effective prop change
-- `pre_run_hook(...)` = request-time validation or lazy reconcile before execution
+- `pre_run_hook(...)` = request-time validation or lazy reconcile before
+  execution — **call `super()` FIRST**: the base hook starts the turn's event
+  recording, and that recording is what a reloaded conversation is rebuilt from.
+  An override that forgets it produces a turn whose cost and elapsed time show
+  live and are gone on reload, with nothing raised. Deriving from
+  `BaseEntrypointWithEconomics`? Its hook takes `econ_ctx` with no default, so
+  accept it (`econ_ctx: dict | None = None`) and forward `econ_ctx or {}`
+- `post_run_hook(...)` = same rule: `super()` first, then your own persistence
 - `on_turn_completed(...)` = fast per-turn cleanup after success, error, or
   cancellation; do not perform expensive reporting or user-facing delivery there
 

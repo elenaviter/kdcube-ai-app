@@ -302,10 +302,43 @@ record, and the demand chain:
 8. For a Claude Code agent, inspect the generated `.mcp.json` and
    `.claude/settings.local.json` in the workspace and confirm they list exactly
    the servers and tools intended for that run.
+9. Run a turn, then REOPEN the conversation: the cost badge, the elapsed time,
+   the conversation's name in the list, and any object the message carried must
+   all still be there. Live and reloaded are different code paths, and only the
+   second one proves the turn was recorded.
 
 For local source changes, remember that the runtime executes its staged copy of
 the platform and app. Refresh or reload the staged source before judging the
 result.
+
+## 7. Do Not Lose The Platform's Turn
+
+An app that hosts an agent almost always overrides a lifecycle hook — to bring a
+store current, to prepare a workspace. **Call the base first.** The base
+`pre_run_hook` starts the turn's event recording, and that recording is what a
+reloaded conversation is rebuilt from:
+
+```python
+async def pre_run_hook(self, *, state, econ_ctx: dict | None = None):
+    await super().pre_run_hook(state=state, econ_ctx=econ_ctx or {})   # recording
+    await self._ensure_store(reason="pre_run_hook")                    # then your work
+```
+
+The failure is silent: cost and elapsed time appear **live** and are gone when
+the conversation is reopened. Nothing raises, because the events were emitted to
+a listener and recorded nowhere. Same rule for `post_run_hook` — call
+`super()`, then persist your own artifacts.
+
+`econ_ctx` is required by `BaseEntrypointWithEconomics`; the platform passes it
+to a hook whose signature accepts it, but your `super()` call must supply it or
+every turn raises before the agent starts.
+
+If the agent consumes **this app's own** MCP surface, that surface must be
+declared so a delegated bearer can authenticate on it — `route: "public"` plus a
+managed `auth_config` with `selected_tool_grants: true`. On the operations route
+the agent's own endpoint answers 401, and a multi-tool surface reached by bearer
+answers `403 ambiguous operation catalog`. Both are in
+[Common Bundle Integration Failures](../../sdk/bundle/build/how-to-avoid-common-bundle-integration-failures-README.md#recipe-an-mcp-surface-a-delegated-agent-can-reach).
 
 ## Common Failures
 
@@ -317,6 +350,10 @@ result.
 | Claude Code cannot call a tool the React agent uses | the capability was wired for React only | wire it into the Claude workspace as MCP plus allowed tools |
 | the model picker is invisible | the agent declares no allowed model list | declare it on the agent's own block |
 | a stale model pick silently reverts | the pick fell outside the current allowed list and resolved to none | expected; the deployment default routes the turn |
+| cost and elapsed time show live, then vanish on reload | a lifecycle hook overrode the base without `super()`; the turn recording never started | call `super()` first, forwarding `econ_ctx` |
+| every turn raises `missing 1 required keyword-only argument: 'econ_ctx'` | a `super().pre_run_hook(...)` that omits it | accept `econ_ctx` with a default and forward it |
+| the agent reports no MCP tools although the server was injected with a fresh grant | the app's own `@mcp` surface is on the operations route, or carries no managed `auth_config` | declare `route: "public"` + `auth_config` with `selected_tool_grants: true` |
+| two identical chat tiles in one scene | `default_chat: true` already serves the inherited `chat` alias | configure that alias instead of declaring a second chat widget |
 
 ## Done Means
 
