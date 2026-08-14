@@ -112,7 +112,15 @@ from .platform.turn_workspace import (
     frame_turn_input,
     prepare_turn_workspace,
 )
-from .platform.capabilities import resolve_turn_role_models, resolve_turn_disabled_tools
+from .platform.capabilities import (
+    DISABLED_MCP,
+    DISABLED_NAMED_SERVICES,
+    DISABLED_TOOLS,
+    disabled_category,
+    resolve_turn_role_models,
+    resolve_turn_selection_disabled,
+)
+from .platform.named_services import build_named_services_block
 from .platform.code_exec import build_code_exec_context, code_exec_scope
 from .platform import telegram as telegram_ingress
 
@@ -213,9 +221,9 @@ def _solution_scope(ep: "LGPortedAgentsBundle", agent_id: str) -> StorageScope:
 
 
 async def _build_solution_graph(
-    ep: "LGPortedAgentsBundle", *, disabled_tools: Optional[Dict[str, Any]] = None
+    ep: "LGPortedAgentsBundle", *, disabled: Optional[Mapping[str, Any]] = None
 ) -> Any:
-    """Build lg-solution's research graph. (`disabled_tools` is accepted for a
+    """Build lg-solution's research graph. (`disabled` is accepted for a
     uniform build signature but ignored — the linear research graph has no pickable
     tool loop.) Route its pgvector memory + KB onto
     KDCube's SHARED asyncpg pool (in the ONE per-tenant/project schema, rows scoped
@@ -267,18 +275,29 @@ def _current_turn_user_sub(ep: "LGPortedAgentsBundle") -> str:
 
 
 async def _build_prebuilt_graph(
-    ep: "LGPortedAgentsBundle", *, disabled_tools: Optional[Dict[str, Any]] = None
+    ep: "LGPortedAgentsBundle", *, disabled: Optional[Mapping[str, Any]] = None
 ) -> Any:
     """Build lg-react's create_agent graph FOR THIS TURN (never cached).
 
     Tools are DECLARED as a connection list on the agent
     (`surfaces.as_consumer.agents.lg-react.tools`, the standard KDCube shape) — the
-    ADMIN CEILING. This binds EXACTLY the declared tools the user has NOT opted out
-    of this turn (`disabled_tools`, the saved capabilities-widget deny-map), so the
-    per-tool picker takes effect: a tool the admin does not declare is never bound;
-    a declared tool is on by default and the user may opt out per conversation. MCP
-    tools are declared as `kind: mcp` connections and loaded best-effort. Checkpointer
-    reused across per-turn builds. `build_agent` remains solution-owned and injectable."""
+    ADMIN CEILING. This binds EXACTLY the declared capabilities the user has NOT
+    opted out of this turn, so the picker takes effect: what the admin does not
+    declare is never bound; what is declared is on by default and the user may opt
+    out per conversation. `disabled` is the saved capabilities-widget deny map,
+    with one category per pickable kind, and lg-react narrows by all three:
+
+      * `tools`          — the plain + code-exec tool groups (by group alias);
+      * `mcp`            — MCP servers by SERVER ID (a server turned off is never
+                           dialled) and individual tools under a surviving server;
+      * `named_services` — the namespaces this agent consumes and the operations
+                           it may run in each (the roster the prompt states).
+
+    Checkpointer reused across per-turn builds. `build_agent` remains
+    solution-owned and injectable."""
+    disabled_tools = disabled_category(disabled, DISABLED_TOOLS)
+    disabled_mcp = disabled_category(disabled, DISABLED_MCP)
+    disabled_namespaces = disabled_category(disabled, DISABLED_NAMED_SERVICES)
     own = get_prebuilt_config()
     schema = schema_for_scope(
         str(getattr(ep.settings, "TENANT", "") or ""),
@@ -330,7 +349,7 @@ async def _build_prebuilt_graph(
     # Plain + code-exec tools narrowed to (admin-declared − user-disabled) this turn.
     tools = select_bound_tools(
         connections,
-        disabled_tools or {},
+        disabled_tools,
         plain_registry=plain_tool_registry(),
         run_python_factory=_run_python_factory,
         pull_files_factory=_pull_files_factory,
@@ -348,7 +367,7 @@ async def _build_prebuilt_graph(
     agent_client_id = delegated_client_id_for_agent(application, PREBUILT_AGENT_ID)
     mcp_server_guides: Dict[str, str] = {}
     mcp_tools, mcp_consents = await load_mcp_tools_for_connections(
-        connections, user_sub=_current_turn_user_sub(ep), disabled_map=disabled_tools or {},
+        connections, user_sub=_current_turn_user_sub(ep), disabled_map=disabled_mcp,
         application=application, agent_id=PREBUILT_AGENT_ID,
         bearer_provider=_agent_grant_bearer_provider(ep, agent_client_id),
         instructions_sink=mcp_server_guides,
@@ -362,44 +381,24 @@ async def _build_prebuilt_graph(
     # tools have) and returns the agent-explainable consent result.
     tools += consent_request_tools(mcp_consents, announce=_announce_mcp_consent)
 
-    # The named-services instruction block (teaching + connected-namespace roster
-    # with discovery intros) comes from the SAME agent-neutral SDK mechanism the
-    # ReAct harness uses — surface="bridge" teaches by operation name, so the
-    # exact MCP/LangChain tool naming does not matter, and names THIS bundle's
-    # file tools for materialization. Empty when the agent's `as_consumer`
-    # config declares no named-service namespaces.
-    ns_block = ""
-    connected_ns: List[str] = []
-    try:
-        from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers import (
-            connected_named_service_namespaces,
-            named_service_agent_instruction_block,
-        )
-        from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.instructions import (
-            NAMED_SERVICES_MCP_DOOR_TOOL_NAMES,
-        )
-        tool_names = {str(getattr(t, "name", "") or "") for t in tools}
-        connected_ns = connected_named_service_namespaces(
-            getattr(ep, "bundle_props", None) or {}, client_id=PREBUILT_AGENT_ID
-        )
-        # When the KDCube named-services door is bound, teach by its EXACT tool
-        # names — a model does not reliably map "read `object_schema`" onto a
-        # tool named `named_services_schema` on its own.
-        door_bound = any(n in tool_names for n in NAMED_SERVICES_MCP_DOOR_TOOL_NAMES.values())
-        ns_block = await named_service_agent_instruction_block(
-            bundle_props=getattr(ep, "bundle_props", None) or {},
-            client_id=PREBUILT_AGENT_ID,
-            surface="bridge",
-            namespaces=connected_ns,
-            redis=getattr(ep, "redis", None),
-            tenant=str(getattr(ep.settings, "TENANT", "") or ""),
-            project=str(getattr(ep.settings, "PROJECT", "") or ""),
-            pull_tool="pull_files" if "pull_files" in tool_names else "run_python",
-            read_tool="read_file" if "read_file" in tool_names else "",
-            operations=NAMED_SERVICES_MCP_DOOR_TOOL_NAMES if door_bound else None,
-        )
-    except Exception:
-        LOGGER.info("[ported-langgraph] named-services instruction block unavailable", exc_info=True)
+    # The named-services instruction block: the agent-neutral SDK teaching block
+    # (HOW to work a namespace, named with the tools this turn actually bound)
+    # plus the foreign-runtime seam's namespace ROSTER — the one block every
+    # wrapped runtime renders, narrowed by this conversation's pick. Empty when
+    # this agent has no namespaces this turn. Never raises (see the module).
+    tool_names = {str(getattr(t, "name", "") or "") for t in tools}
+    ns_block, connected_ns = await build_named_services_block(
+        bundle_props=getattr(ep, "bundle_props", None) or {},
+        agent_id=PREBUILT_AGENT_ID,
+        connections=connections,
+        disabled_namespaces=disabled_namespaces,
+        tool_names=tool_names,
+        redis=getattr(ep, "redis", None),
+        tenant=str(getattr(ep.settings, "TENANT", "") or ""),
+        project=str(getattr(ep.settings, "PROJECT", "") or ""),
+        pull_tool="pull_files" if "pull_files" in tool_names else "run_python",
+        read_tool="read_file" if "read_file" in tool_names else "",
+    )
 
     # Config-declared agent-admin customization — the SAME convention the ReAct
     # harness honors: the descriptor prop is the administrator's voice, appended
@@ -922,7 +921,7 @@ class LGPortedAgentsBundle(BaseEntrypointWithEconomics):
     # ── graph build (per turn) ────────────────────────────────────────────────
 
     async def _build_graph(
-        self, agent_id: str, *, disabled_tools: Optional[Dict[str, Any]] = None
+        self, agent_id: str, *, disabled: Optional[Mapping[str, Any]] = None
     ) -> Any:
         """Build the agent's graph FOR THIS TURN — never cached in-process.
 
@@ -932,10 +931,11 @@ class LGPortedAgentsBundle(BaseEntrypointWithEconomics):
         SHARED checkpointer connection (opened once per agent, reused — see
         `_open_checkpointer`), storing into the shared tenant/project schema scoped
         by its agent_id column. Rebuilding is cheap: the checkpointer is reused, and
-        the rest is pure in-memory graph compilation. `disabled_tools` is this turn's
-        current conversation's tool opt-outs — the per-turn build is exactly what lets them narrow
-        the bound tool set (lg-react); agents with no tool loop ignore it."""
-        return await AGENTS[agent_id].build_graph(self, disabled_tools=disabled_tools)
+        the rest is pure in-memory graph compilation. `disabled` is this conversation's
+        saved capability opt-outs (tools, MCP servers, namespaces) — the per-turn build
+        is exactly what lets them narrow what the agent gets (lg-react); an agent with
+        nothing pickable ignores it."""
+        return await AGENTS[agent_id].build_graph(self, disabled=disabled)
 
     # ── the turn (the dispatcher) ─────────────────────────────────────────────
 
@@ -951,13 +951,16 @@ class LGPortedAgentsBundle(BaseEntrypointWithEconomics):
         spec = resolve_agent_spec(AGENTS, state.get("agent_id"), DEFAULT_AGENT_ID)
         agent_id = spec.agent_id
 
-        # This (user, conversation)'s tool opt-outs from the capabilities widget —
-        # resolved BEFORE the build so they narrow the bound tool set (admin ceiling
-        # ∩ user-enabled). Fails open to {} (every admin-allowed tool stays bound).
-        disabled_tools = await resolve_turn_disabled_tools(self, state, agent_id)
+        # This (user, conversation)'s opt-outs from the capabilities widget —
+        # the WHOLE deny map in ONE store read (tools, MCP servers, namespaces),
+        # resolved BEFORE the build so it narrows what the agent gets (admin
+        # ceiling ∩ user-enabled). Fails open to {} (everything the admin allows
+        # stays in force).
+        disabled = await resolve_turn_selection_disabled(self, state, agent_id)
+        disabled_tools = disabled_category(disabled, DISABLED_TOOLS)
 
         # Built fresh every turn — no in-process graph cache (scaled serving).
-        graph = await self._build_graph(agent_id, disabled_tools=disabled_tools)
+        graph = await self._build_graph(agent_id, disabled=disabled)
 
         # (batch fold) the lane-wakeup dispatch hands a run-to-completion turn
         # only its single wakeup event (the prompt) — the attachment events

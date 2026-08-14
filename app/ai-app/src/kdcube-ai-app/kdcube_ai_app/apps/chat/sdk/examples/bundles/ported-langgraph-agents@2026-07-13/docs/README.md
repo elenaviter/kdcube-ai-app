@@ -50,7 +50,7 @@ this app does NOT own
 ```text
 1. resolve     entrypoint.py     agent_id = normalize(state.agent_id) or default;
                                  spec = AGENTS[agent_id]  (unknown -> default)
-2. graph       entrypoint.py     await _build_graph(agent_id, disabled_tools=...):
+2. graph       entrypoint.py     await _build_graph(agent_id, disabled=...):
                                  bound this turn; reuses the opened checkpointer
 3. inputs      spec.build_inputs the agent's own input shape + run_config(thread_id)
 4. stream      spec.stream       the agent's OWN adapter -> comm_ctx.step/delta/complete

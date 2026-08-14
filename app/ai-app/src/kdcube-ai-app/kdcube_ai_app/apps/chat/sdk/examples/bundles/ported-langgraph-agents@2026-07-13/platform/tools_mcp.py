@@ -17,6 +17,10 @@
 #   - `frameworks/langchain/mcp.load_mcp_tools_from_server_map` — bind that map as
 #     LangChain tools through KDCube's MCP SDK v2 adapter.
 #
+#   - `solutions/foreign_runtime/mcp_bridge.narrow_mcp_connections` — the per-turn
+#     narrowing every wrapped runtime shares: the capabilities picker's
+#     `disabled.mcp` deny map, keyed by SERVER ID, applied BEFORE resolution.
+#
 # This bundle file is the thin adapter: pass the agent's connection list + this
 # turn's user, get LangChain tools.
 #
@@ -41,7 +45,9 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.mcp_consent import (
     mcp_consent_from_denial,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.mcp_bridge import (
+    connection_server_id,
     load_mcp_server_instructions_safe,
+    narrow_mcp_connections,
 )
 from kdcube_ai_app.apps.chat.sdk.frameworks.langchain.mcp import (
     load_mcp_tools_from_server_map,
@@ -53,6 +59,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "mcp_connections",
+    "narrow_bound_mcp_tools",
     "load_mcp_tools_for_connections",
     "consent_request_tools",
     "mcp_adapters_available",
@@ -115,27 +122,62 @@ def consent_request_tools(
     return tools
 
 
-def _conn_alias(conn: Mapping[str, Any]) -> str:
-    return str(conn.get("alias") or conn.get("name") or "").strip()
-
-
 def mcp_connections(
     connections: List[Dict[str, Any]],
     disabled_map: Optional[Mapping[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """The `kind: mcp` entries of the agent's declared tool-connection list, minus
-    any the user opted OUT of this turn (whole-tool opt-out `{alias: true}` from the
-    capabilities picker deny-map) — the same admin-ceiling ∩ user-enabled narrowing
-    the plain/code-exec tools get, so MCP tools are governed too ("which agent")."""
+    the servers the user turned OFF whole this turn — the same admin-ceiling ∩
+    user-enabled narrowing the plain/code-exec tools get, so MCP servers are
+    governed too ("which agent").
+
+    ``disabled_map`` is the capabilities picker's ``disabled.mcp`` category:
+    ``{server_id: true | [tool names]}``. The KEY IS THE SERVER ID — the id the
+    picker's catalog rows carry, which a connection may declare separately from
+    its model-facing ``alias``. The narrowing itself is the shared seam's
+    (``narrow_mcp_connections``), so this app and every other wrapped runtime drop
+    a server on exactly the same rule, BEFORE resolution: a server turned off is
+    never dialled, no grant token is read for it, and it can raise no consent card.
+
+    A LIST value is a partial denial: the connection stays and its surviving tools
+    are named after the bind (``narrow_bound_mcp_tools``)."""
+    conns = [
+        c for c in connections or []
+        if isinstance(c, dict) and str(c.get("kind") or "").strip().lower() == "mcp"
+    ]
+    return narrow_mcp_connections(conns, disabled_map)
+
+
+def narrow_bound_mcp_tools(
+    tools: List[Any],
+    disabled_map: Optional[Mapping[str, Any]] = None,
+) -> List[Any]:
+    """The bound MCP tools minus the individual ones the user turned off.
+
+    The second half of the ``disabled.mcp`` deny map: a LIST value under a server
+    id names the tools opted out of a server that stays on. Whole-server denials
+    never reach here (the connection is dropped before resolution) — this covers
+    exactly the per-tool rows the picker offers under a server.
+
+    Each tool bound from a server map carries its origin in
+    ``metadata["mcp_server_id"]``, which is what makes the match server-scoped:
+    two servers publishing the same tool name are narrowed independently. A tool
+    with no such metadata is never dropped."""
     disabled = disabled_map or {}
-    out: List[Dict[str, Any]] = []
-    for c in connections or []:
-        if not (isinstance(c, dict) and str(c.get("kind") or "").strip().lower() == "mcp"):
+    denied = {
+        str(server_id): {str(name).strip() for name in entry if str(name or "").strip()}
+        for server_id, entry in disabled.items()
+        if isinstance(entry, (list, tuple))
+    }
+    if not denied:
+        return list(tools or [])
+    kept: List[Any] = []
+    for tool in tools or []:
+        server_id = str((getattr(tool, "metadata", None) or {}).get("mcp_server_id") or "")
+        if str(getattr(tool, "name", "") or "") in denied.get(server_id, ()):
             continue
-        if disabled.get(_conn_alias(c)) is True:
-            continue
-        out.append(c)
-    return out
+        kept.append(tool)
+    return kept
 
 
 async def load_mcp_tools_for_connections(
@@ -150,6 +192,10 @@ async def load_mcp_tools_for_connections(
 ) -> tuple[List[Any], List[MCPConsentRequired]]:
     """Bind the agent's declared, user-enabled `kind: mcp` connections as LangChain
     tools for THIS turn's user, AS this agent.
+
+    ``disabled_map`` is the picker's ``disabled.mcp`` category (keyed by SERVER
+    ID): a server turned off whole is dropped before resolution, and a server
+    kept with individual tools turned off binds only its survivors.
 
     The agent is a "Delegated By KDCube" entity keyed by `application` + `agent_id`,
     so consent is per-agent. When ``bearer_provider`` is supplied (the recommended
@@ -181,6 +227,10 @@ async def load_mcp_tools_for_connections(
     # bound tool (driven by the surface's self-describing result), so this thin
     # bundle adapter carries none of that logic.
     tools = await load_mcp_tools_from_server_map(server_map, error_sink=error_sink)
+    # The per-tool half of the same deny map (a server kept, some of its tools
+    # turned off) — applied on the bound tools, since only the bind knows which
+    # tools a server actually publishes.
+    tools = narrow_bound_mcp_tools(tools, disabled_map)
 
     # An MCP server may publish an operating guide during protocol negotiation —
     # what MCP-native clients (e.g. Claude connectors) show their model. Tool
@@ -200,7 +250,7 @@ async def load_mcp_tools_for_connections(
     for c in conns:
         if not is_delegated_connection(c):
             continue
-        server_id = str(c.get("server_id") or c.get("server") or c.get("name") or "").strip()
+        server_id = connection_server_id(c)
         dropped_pending = drop_sink.get(server_id) == DROP_CONSENT_PENDING
         server_error = server_errors.get(server_id)
         denied_at_load = load_error_looks_like_denial(server_error)

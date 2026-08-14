@@ -5,7 +5,10 @@ per-user MCP server map (minting a delegated bearer for delegated connections)
 and `frameworks/langchain/mcp` binds it as LangChain tools. This bundle module
 is the thin adapter (connection list + turn user -> LangChain tools). Asserts:
 only `kind: mcp` connections are considered, and clean degradation (no MCP
-connections / adapter absent -> [] , the agent still builds with plain tools).
+connections / adapter absent -> [] , the agent still builds with plain tools),
+and that the capabilities picker's MCP opt-outs actually govern — the deny map
+is keyed by SERVER ID, whole-server denials drop the connection before any
+server contact, per-tool denials narrow the bound set.
 Fully offline.
 """
 from __future__ import annotations
@@ -150,9 +153,69 @@ def test_no_user_drop_stays_silent() -> None:
 
 def test_user_opt_out_drops_the_mcp_connection() -> None:
     m = _mcp_module()
-    # The picker deny-map opts the whole MCP tool out this turn -> it is not bound
-    # (governance: admin-declared ∩ user-enabled, same as plain/code-exec tools).
-    # _MCP_CONN's name/alias is "memory".
+    # The picker deny-map opts the whole MCP server out this turn -> it is not
+    # bound (governance: admin-declared ∩ user-enabled, same as plain/code-exec
+    # tools). _MCP_CONN declares no server_id, so its name is the server id.
     assert m.mcp_connections([_MCP_CONN], None) == [_MCP_CONN]          # not opted out -> kept
     assert m.mcp_connections([_MCP_CONN], {"memory": True}) == []       # opted out -> dropped
     assert m.mcp_connections([_MCP_CONN], {"other": True}) == [_MCP_CONN]  # unrelated opt-out ignored
+
+
+# ── the deny map's KEY (regression) ─────────────────────────────────────────
+
+# A connection whose picker key (`server_id`) and model-facing `alias` differ —
+# the shape that made the bug invisible while both were the same string.
+_SPLIT_CONN = {
+    "name": "memories", "kind": "mcp", "server_id": "user_memories", "alias": "memory_tools",
+    "url": "https://h/api/mcp/mem", "delegated": True, "scopes": ["memories:read"],
+}
+
+
+def test_the_mcp_deny_map_is_keyed_by_server_id() -> None:
+    # REGRESSION (silent until now): this module filtered on the connection
+    # ALIAS against the `disabled.tools` category, while the capabilities picker
+    # writes `disabled.mcp` keyed on SERVER ID. Every MCP opt-out in this app was
+    # therefore inert unless alias and server id happened to be the same string.
+    m = _mcp_module()
+    # the picker's key removes the connection ...
+    assert m.mcp_connections([_SPLIT_CONN], {"user_memories": True}) == []
+    # ... and the alias — what an alias-keyed `disabled.tools` entry carries —
+    # governs MCP no longer.
+    assert m.mcp_connections([_SPLIT_CONN], {"memory_tools": True}) == [_SPLIT_CONN]
+    assert m.mcp_connections([_SPLIT_CONN], {"memories": True}) == [_SPLIT_CONN]
+
+
+def test_a_server_turned_off_is_never_dialled_and_raises_no_consent() -> None:
+    # The drop happens BEFORE resolution: no bearer is read for a server the user
+    # turned off, so it can raise no consent card the user did not ask for.
+    m = _mcp_module()
+
+    async def boom(conn, user_sub):
+        raise AssertionError("a server turned off must never mint a bearer")
+
+    tools, consents = asyncio.run(m.load_mcp_tools_for_connections(
+        [_SPLIT_CONN], user_sub="u1", application="app", agent_id="lg-react",
+        bearer_provider=boom, disabled_map={"user_memories": True},
+    ))
+    assert tools == [] and consents == []
+
+
+def test_a_partial_denial_keeps_the_server_and_drops_only_its_tools() -> None:
+    # The other half of the same deny map: a LIST under a server id names the
+    # individual tools the user turned off; the connection stays.
+    m = _mcp_module()
+    assert m.mcp_connections([_SPLIT_CONN], {"user_memories": ["search"]}) == [_SPLIT_CONN]
+
+    class _Tool:
+        def __init__(self, name, server_id):
+            self.name = name
+            self.metadata = {"mcp_server_id": server_id}
+
+    bound = [_Tool("search", "user_memories"), _Tool("get", "user_memories"), _Tool("search", "other")]
+    kept = m.narrow_bound_mcp_tools(bound, {"user_memories": ["search"]})
+    # the denied tool goes; the same tool name on ANOTHER server stays
+    assert [(t.name, t.metadata["mcp_server_id"]) for t in kept] == [
+        ("get", "user_memories"), ("search", "other"),
+    ]
+    assert m.narrow_bound_mcp_tools(bound, {"user_memories": True}) == bound
+    assert m.narrow_bound_mcp_tools(bound, None) == bound

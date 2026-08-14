@@ -78,7 +78,7 @@ Telegram webhook (public @api) ────────┤  (webhook -> DEFAULT 
        agent_id = normalize(state.agent_id) or DEFAULT_AGENT_ID   [entrypoint.py]
        spec = AGENTS[agent_id]                                    (else default)
        -> platform/identity.turn_identity(state, agent_id)  -> TurnIdentity
-       -> await _build_graph(agent_id, disabled_tools=...)   BOUND this turn
+       -> await _build_graph(agent_id, disabled=...)   BOUND this turn
        -> spec.build_inputs(question, ident) -> inputs, run_config(thread_id)
        -> spec.stream(graph, inputs, run_config)  -> the agent's OWN stream adapter
             -> comm_ctx.step/delta/complete
@@ -181,7 +181,10 @@ entrypoint.py (BUNDLE_ID, DEFAULT_AGENT_ID, the AGENTS registry, roles, schemas,
   == config/bundles.template.yaml (default_agent + agents.<agent> pickers/roles;
                                    tools.mode; telegram enable + integration)
   == platform/identity.py (turn_identity folds agent_id) + pg_target.py (agent_schema)
-  == platform/capabilities.py (resolve_turn_role_models(ep, state, agent_id))
+  == platform/capabilities.py (resolve_turn_role_models(ep, state, agent_id);
+                               the deny map read once, sliced per category)
+  == platform/named_services.py (the namespace block: SDK teaching + the seam's
+                                 shared roster block, narrowed by the pick)
   == platform/stream_solution.py + stream_prebuilt.py (the two adapters)
   == interface/README.md + interface/ported-langgraph-agents.openapi.yaml
   == README.md + docs/README.md + docs/arch/README.md + docs/storage/README.md
@@ -189,7 +192,8 @@ entrypoint.py (BUNDLE_ID, DEFAULT_AGENT_ID, the AGENTS registry, roles, schemas,
   == docs/agents/lg-react-named-services-config.md (the two named-services shapes)
   == docs/integrations/admin-integrational-homework.md
   == tests/ (dispatch, identity, storage, capabilities, both stream adapters,
-             tools_mcp, telegram, interface contract) + the dated journal entry
+             tools_mcp, named_services_block, telegram, interface contract)
+             + the dated journal entry
 ```
 
 Invariant: everything must agree that the id is

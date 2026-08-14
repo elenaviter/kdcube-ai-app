@@ -53,7 +53,7 @@ The **processor is only an orchestrator**. Everything app-specific happens from
                               build_inputs=_prebuilt_inputs),
    }
 
-   graph = await _build_graph(agent_id, disabled_tools=...)   BOUND this turn; reuses the checkpointer
+   graph = await _build_graph(agent_id, disabled=...)   BOUND this turn; reuses the checkpointer
    inputs, run_config = spec.build_inputs(question, turn_identity(state, agent_id))
    role_models = resolve_turn_role_models(self, state, agent_id)   (active agent's pick)
    answer = spec.stream(graph, inputs, run_config)   → comm_ctx.step/delta/complete
@@ -184,7 +184,7 @@ two agents' state from ever mixing — one shared schema, never one per agent.
    │  external_events_text(state) -> question
    │  turn_identity(state, agent_id) -> user_id (t:p:AGENT:user), thread_id
    ▼
- spec.stream( _build_graph(agent_id, disabled_tools).astream_events(inputs, {thread_id}, v2) )
+ spec.stream( _build_graph(agent_id, disabled).astream_events(inputs, {thread_id}, v2) )
    lg-solution: retrieve -> plan -> [delegate] -> answer   (dedicated answer node)
    lg-react: model <-> tools (loops); final model turn is the answer
    │  every event ▶ the agent's stream adapter ▶ comm_ctx.delta/step/complete ▶ chat UI

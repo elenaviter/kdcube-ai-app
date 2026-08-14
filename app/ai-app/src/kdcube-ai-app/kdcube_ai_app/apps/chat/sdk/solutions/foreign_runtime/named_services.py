@@ -31,7 +31,11 @@
 #   2. what survives the user's pick this turn?    `narrow_named_service_rosters`
 #   3. what does the surviving set mean for the door's own MCP tools and for the
 #      agent's own reading?                        `named_service_door_tools`,
-#                                                  `named_service_roster_lines`
+#                                                  `named_service_roster_block`
+#
+# The block in (3) is ONE text for every runtime: a LangGraph system prompt and
+# a Claude Code instructions file render the same heading, the same sentence, and
+# the same entries, so an agent reads the same words wherever it runs.
 #
 # HONEST LIMIT (why (3) has two halves): the door publishes GENERIC tools —
 # `named_services_search`, `named_services_get`, … — and takes the namespace as an
@@ -50,11 +54,13 @@ __all__ = [
     "NAMED_SERVICE_OPERATION_TO_DOOR_TOOL",
     "DOOR_DISCOVERY_TOOLS",
     "DOOR_GENERIC_TOOL",
+    "ROSTER_BLOCK_HEADING",
     "named_service_rosters",
     "named_service_door_servers",
     "narrow_named_service_rosters",
     "named_service_door_tools",
     "named_service_roster_lines",
+    "named_service_roster_block",
 ]
 
 # Declared operation → the door's MCP tool that performs it. The door's tool names
@@ -239,15 +245,72 @@ def named_service_door_tools(
 
 def named_service_roster_lines(
     rosters: Sequence[Mapping[str, Any]] | None,
+    *,
+    intros: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> List[str]:
-    """One line per surviving namespace, for the runtime's in-band instructions.
+    """One entry per surviving namespace, in the ONE grammar both runtimes read.
 
     The namespace half of a pick cannot be enforced by tool name (the door takes
     the namespace as an argument), so the surviving roster is also STATED: the
     agent is told which namespaces it works with this turn and what it may do in
-    each, in the operation vocabulary the door itself speaks."""
-    return [
-        f"- {row.get('namespace')}: " + ", ".join(row.get("operations") or [])
-        for row in rosters or []
-        if _norm(row.get("namespace"))
-    ]
+    each, in the operation vocabulary the door itself speaks.
+
+    The entry grammar (a namespace, then its operations indented under it)::
+
+        - linkedin — the publications realm
+          operations: provider.about, object.search
+
+    ``intros``: the discovery-published ``{namespace: {"intro"|"label": ...}}``
+    blurbs, when the caller has them — an optional DETAIL of the same entry, so
+    a lane that publishes intros and one that does not still render the same
+    shape. A row with no operations renders its name alone (a namespace reached
+    by another declaration than an operation list still exists, and saying so is
+    true); an ABSENT namespace is simply not a row."""
+    blurbs = intros or {}
+    lines: List[str] = []
+    for row in rosters or []:
+        namespace = _norm(row.get("namespace"))
+        if not namespace:
+            continue
+        info = blurbs.get(namespace) or {}
+        blurb = _norm(info.get("intro") or info.get("label")) if isinstance(info, Mapping) else ""
+        entry = f"- {namespace} — {blurb}" if blurb else f"- {namespace}"
+        operations = ", ".join(op for op in (row.get("operations") or []) if _norm(op))
+        if operations:
+            entry += f"\n  operations: {operations}"
+        lines.append(entry)
+    return lines
+
+
+#: The heading the roster block carries on EVERY runtime. Markdown reads the
+#: same in a system prompt and in a workspace instructions file, so the block is
+#: one text and only what surrounds it differs.
+ROSTER_BLOCK_HEADING = "## Service namespaces"
+
+_ROSTER_BLOCK_LEAD = (
+    "These namespaces are available to you this turn, each with the operations "
+    "you may run in it. Pass a namespace exactly as written, and read its schema "
+    "before you call it."
+)
+
+
+def named_service_roster_block(
+    rosters: Sequence[Mapping[str, Any]] | None,
+    *,
+    intros: Optional[Mapping[str, Mapping[str, Any]]] = None,
+) -> str:
+    """THE namespace roster block, for any runtime's standing instructions.
+
+    Heading, one sentence of framing, then one entry per surviving namespace.
+    Every runtime that consumes named services renders THIS text — a LangGraph
+    system prompt and a Claude Code instructions file carry the same block, so
+    the agent reads the same words wherever it runs.
+
+    It says only what IS available: a namespace the user turned off, or one the
+    administrator never declared, is not a row and is never mentioned. An empty
+    surviving roster yields ``""`` — with nothing to name, nothing is said, and
+    nothing suggests a namespace exists."""
+    lines = named_service_roster_lines(rosters, intros=intros)
+    if not lines:
+        return ""
+    return f"{ROSTER_BLOCK_HEADING}\n{_ROSTER_BLOCK_LEAD}\n\n" + "\n".join(lines)

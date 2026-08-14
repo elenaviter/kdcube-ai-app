@@ -139,6 +139,67 @@ def test_the_surviving_roster_is_also_stated_in_words() -> None:
     kept, _removed = ns.narrow_named_service_rosters(rosters, {"conv": True})
     lines = ns.named_service_roster_lines(kept)
     assert lines == [
-        "- linkedin: provider.about, object.search, object.get, object.action"
+        "- linkedin\n  operations: provider.about, object.search, object.get, object.action"
     ]
     assert ns.named_service_roster_lines([]) == []
+
+
+def test_a_published_intro_is_a_detail_of_the_same_entry() -> None:
+    """A deployment that publishes blurbs says more in the SAME grammar, so a
+    runtime with intros and one without still render the same shape."""
+    rosters = ns.named_service_rosters([ROSTER])
+    lines = ns.named_service_roster_lines(
+        rosters, intros={"linkedin": {"intro": "the publications realm"}}
+    )
+    assert lines[0].startswith("- linkedin — the publications realm\n  operations: ")
+    assert lines[1].startswith("- conv\n  operations: ")
+
+
+def test_a_row_with_no_declared_operations_still_names_its_namespace() -> None:
+    assert ns.named_service_roster_lines([{"namespace": "conv", "operations": []}]) == ["- conv"]
+
+
+# ── the block both runtimes render ──────────────────────────────────────────
+
+def test_one_block_one_wording_for_every_runtime() -> None:
+    """The whole point of this builder: a LangGraph system prompt and a Claude
+    Code instructions file carry the SAME text, so the agent reads the same
+    words wherever it runs. Pinned verbatim — a wording change here is a change
+    to every hosted runtime's standing instructions."""
+    rosters = ns.named_service_rosters(CONNECTIONS)
+    kept, _removed = ns.narrow_named_service_rosters(
+        rosters, {"linkedin": ["object.action"]}
+    )
+    assert ns.named_service_roster_block(kept) == (
+        "## Service namespaces\n"
+        "These namespaces are available to you this turn, each with the operations "
+        "you may run in it. Pass a namespace exactly as written, and read its schema "
+        "before you call it.\n"
+        "\n"
+        "- linkedin\n"
+        "  operations: provider.about, object.search, object.get\n"
+        "- conv\n"
+        "  operations: provider.about, object.search, object.get"
+    )
+
+
+def test_the_block_says_only_what_is_available() -> None:
+    """Positive framing is structural, not stylistic: what the user turned off
+    has no row and no mention, so nothing suggests it ever existed."""
+    rosters = ns.named_service_rosters(CONNECTIONS)
+    kept, _removed = ns.narrow_named_service_rosters(rosters, {"conv": True})
+    block = ns.named_service_roster_block(kept)
+    assert "conv" not in block
+    assert "object.action" in block          # what survives IS named
+    for absent in ("not ", "disabled", "denied", "unavailable", "no longer"):
+        assert absent not in block.lower()
+
+
+def test_no_namespaces_no_block() -> None:
+    assert ns.named_service_roster_block([]) == ""
+    assert ns.named_service_roster_block(None) == ""
+    rosters = ns.named_service_rosters(CONNECTIONS)
+    kept, _removed = ns.narrow_named_service_rosters(
+        rosters, {"linkedin": True, "conv": True}
+    )
+    assert ns.named_service_roster_block(kept) == ""

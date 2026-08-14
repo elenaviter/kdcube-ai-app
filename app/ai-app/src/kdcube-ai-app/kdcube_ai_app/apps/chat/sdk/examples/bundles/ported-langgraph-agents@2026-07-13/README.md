@@ -68,7 +68,7 @@ and prompt-composition changes are kept small, explicit, and documented.
 ```text
 agent_id (state) ─normalize→ AGENTS[agent_id]  (else the default, lg-solution)
   AgentSpec: build_graph · stream · build_inputs · role · schema
-    await _build_graph(agent_id, disabled_tools=...)  ← bound to this turn
+    await _build_graph(agent_id, disabled=...)  ← bound to this turn
     build_inputs(question, ident) → the agent's own input + run_config(thread_id)
     stream(graph, inputs, run_config) → the agent's OWN stream adapter → comm_ctx
   role_models = resolve_turn_role_models(self, state, agent_id)   (the active agent's pick)

@@ -53,6 +53,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.mcp_bridge import (
 from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.named_services import (
     named_service_door_servers,
     named_service_door_tools,
+    named_service_roster_block,
     named_service_roster_lines,
     named_service_rosters,
     narrow_named_service_rosters,
@@ -87,6 +88,7 @@ __all__ = [
     "load_mcp_server_instructions_safe",
     "named_service_door_servers",
     "named_service_door_tools",
+    "named_service_roster_block",
     "named_service_roster_lines",
     "named_service_rosters",
     "narrow_mcp_connections",
