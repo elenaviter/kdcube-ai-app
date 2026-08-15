@@ -1,40 +1,68 @@
 platform:
   repo: "kdcube-ai-app"
-  ref: "2026.08.03.1350"
+  ref: "2026.08.15.310"
   description: |
-    This release follows 2026.07.30.1642.
+    This release follows 2026.08.03.1350.
 
-    Google Docs workflows now cover native documents and imported sources from
-    discovery through delivery. Agents can copy or convert a source, select
-    tabs explicitly, inspect and act on comments, edit and format content, and
-    export portable files through the governed productivity and named-service
+    Application-hosted websites now have a prefix-safe platform contract from
+    the frontend artifact through the proxy and proc runtime. The control-plane
+    frontend can run under configured mount prefixes without leaking root
+    asset paths, and app site requests can be routed through generated proxy
+    rules with explicit fallback behavior. The release adds runtime and proxy
+    tests, reference website coverage, and architecture documentation for the
+    site serving model.
+
+    The foreign-runtime seam is now a first-class SDK layer for wrapped and
+    resident agents. Wrapped runtimes get shared identity, capability,
+    dispatch, stream, turn-record, workspace, MCP bridge, and named-service
+    helpers. The ported LangGraph runtime consumes that shared layer so hosted
+    agents can receive the same inventory, denial maps, pending-consent cards,
+    and workspace access as native agents.
+
+    Resident Claude Code style workflows are more observable and easier to
+    operate. The runtime now records one activity row per tool call, presents
+    waiting and failed tools explicitly, opens activity rows, points the CLI at
+    the turn MCP configuration, and exposes the turn workspace as a governed
+    tool. Conversation lists also name hosted-runtime chats correctly.
+
+    Delegated MCP and connected-account handling have been tightened across
+    browser, agent, and external-client flows. Bundle MCP routes can resolve
+    delegated-bearer identity, discovery and CIMD admit real external clients,
+    unconfigured endpoints and refused permissions return distinct answerable
+    errors, and per-account demands raise the correct consent cards. Manual
+    delegated cards can edit named-service operations in place, and the
+    documentation now explains delegated card lifecycle and cache behavior.
+
+    LinkedIn is available as a governed productivity integration. It includes
+    connected-account tools, REST APIs, gen-2 named-service projections,
+    organization posting lanes, connector-app selection, declarative grants,
+    and tests for tools, schemas, named-service behavior, and REST delivery.
+    Default descriptors include the LinkedIn provider, grants, namespace, and
+    tool configuration.
+
+    Named-service catalogs and inventories are clearer and more composable.
+    Multiple providers can contribute to one namespace realm card, providers
+    can expose declared service inventory and announced roster blocks, and the
+    runtime merges provider specs before presenting capabilities to agents.
+    Capability selection now reaches actual tool construction, not only the
+    prompt.
+
+    The platform adds Claude 5 model picker entries, omits temperature for
+    Claude 5 requests, and extends baseline accounting with Claude Opus 5 and
+    Fable 5 pricing. Hybrid index query embeddings are shared instead of kept
+    in process, reducing duplicate embedding work across searches.
+
+    Pin Board and canvas handling are more practical in live use. Text
+    selection no longer starts drags, Finder file clipboard intake works,
+    image drops into notes are supported, thumbnails are contained, markdown
+    rendering has chat-parity copyable code plates, and previews can render
+    image, HTML, and URL content.
+
+    Documentation was expanded for application-hosted websites, trusted
+    ingress, app surface interoperability, hosted coding agents, resident
+    agent failure classes, named-service binding, LinkedIn integrations,
+    delegated access, and the recipes needed to build and operate these
     surfaces.
 
-    Named-service providers can publish recursive capability catalogs organized
-    around domain use cases. Agents can browse a catalog by path, search it by
-    intent, and request the exact contract for one object kind or operation
-    instead of loading every provider API into the tool catalog. Docs, Sheets,
-    Mail, and Slack expose these provider-authored projections.
-
-    Capability lookup supports lexical, semantic, and hybrid search over the
-    provider's declarations without indexing user objects. Shared indexes use
-    immutable timestamp-and-hash generations derived from the catalog and
-    embedding profile. Concurrent loaders converge on one generation, rolling
-    deployments retain the current and previous generations, and stale loaders
-    cannot prune newer state.
-
-    Delegated operations now re-check current authority at execution time.
-    Manual automation access can be created and edited, and newly minted
-    credentials are returned reliably on creation. Protected bundle operations
-    also receive explicit CSRF validation and provider-surface policy checks.
-
-    Scene hosts can open authorized named-service documents through the
-    existing object-action route, preserving provider authorization without
-    exposing credentials or introducing an ungoverned download path.
-
-    Descriptor and reference documentation now identifies economics.yaml as
-    the sixth default descriptor and points maintenance journals at their
-    shared, versioned repository location.
-
 config:
-  version: "2026.08.03.1350"
+  version: "2026.08.15.310"
