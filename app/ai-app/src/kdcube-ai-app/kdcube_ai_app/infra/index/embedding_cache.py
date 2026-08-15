@@ -2,10 +2,9 @@
 # Copyright (c) 2026 Elena Viter
 """Query embeddings, cached where more than one process can find them.
 
-A hybrid search embeds the QUERY on every search call. The index already keeps
-an in-process LRU of query→vector, which covers a burst of identical searches
-inside one worker — and covers nothing else. In a distributed runtime that is
-most of the traffic:
+A hybrid search embeds the QUERY on every search call. Remembering the vector
+on the index object would cover a burst of identical searches inside one worker
+— and nothing else. In a distributed runtime that is most of the traffic:
 
   * pagination: "Load more" is the same query with a bigger window, and the
     next page may land on another worker;
@@ -14,9 +13,11 @@ most of the traffic:
   * a search-backed tool called once per turn across many turns.
 
 Each of those re-pays an embedder call for a vector that is a pure function of
-(query, model, dimension). This is the SHARED half of that cache: a KIND of the
-platform KV cache (the favicon cache's sibling), keyed by the query's digest so
-the key is bounded and readable, and holding a JSON vector under a TTL.
+(query, model, dimension). So the cache is shared and nothing else: a KIND of
+the platform KV cache (the favicon cache's sibling), keyed by the query's digest
+so the key is bounded and readable, holding a packed float32 vector under a TTL,
+and capped per scope by a recency index — because a vector is big enough that an
+unbounded cache is a leak that happens to answer questions.
 
 It is deliberately a wrapper around `KVCache`, not a new cache: the connection,
 the namespacing, the tenant/project prefixing, and the failure posture (a cache
