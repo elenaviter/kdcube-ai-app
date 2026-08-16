@@ -571,18 +571,6 @@ async def git_bundle_cache_status(
     return GitBundleCacheStatus(True, "current", paths, marker=marker)
 
 
-def _git_sparse_default() -> bool:
-    """The fallback for callers that have no descriptor to read.
-
-    A CALLER SHOULD PASS `sparse=` — it is a property of the source being
-    materialized, and a bundle reads it from its own descriptor like every
-    other knob. This exists for the loader paths that materialize a bundle
-    before any descriptor of it is available, and it stays off unless a
-    deployment says otherwise.
-    """
-    return os.environ.get("BUNDLE_GIT_SPARSE", "").strip().lower() in {"1", "true", "yes"}
-
-
 async def _clone_maybe_sparse(
     *,
     git_url: str,
@@ -591,9 +579,15 @@ async def _clone_maybe_sparse(
     depth: Optional[int],
     logger: Any,
     env: Optional[Dict[str, str]],
-    sparse: Optional[bool] = None,
+    sparse: bool = False,
 ) -> None:
-    """Clone, sparse when asked and applicable, PLAIN when that does not work.
+    """Clone, sparse when the CALLER asks and it applies, PLAIN when it does not.
+
+    `sparse` is a parameter and never an environment read. This process is
+    shared: an env var would set one value for every tenant and every bundle
+    materializing in it, so a choice belonging to one store would silently
+    become everyone's. A source's shape is a property of that source, passed by
+    whoever knows it.
 
     A partial clone needs the server to support `--filter`, and a sparse
     checkout needs a git new enough for `sparse-checkout`. Neither is worth a
@@ -604,8 +598,7 @@ async def _clone_maybe_sparse(
     base = ["git", "clone"]
     if depth:
         base += ["--depth", str(depth)]
-    want_sparse = _git_sparse_default() if sparse is None else bool(sparse)
-    if want_sparse and str(git_subdir or "").strip():
+    if bool(sparse) and str(git_subdir or "").strip():
         subdir = str(git_subdir).strip().strip("/")
         try:
             await _run_git_async(
@@ -819,7 +812,7 @@ async def ensure_git_bundle(
     bundles_root: Optional[pathlib.Path] = None,
     logger: Optional[AgentLogger] = None,
     atomic: bool = False,
-    sparse: Optional[bool] = None,
+    sparse: bool = False,
 ) -> GitBundlePaths:
     """
     Async git bundle materializer.

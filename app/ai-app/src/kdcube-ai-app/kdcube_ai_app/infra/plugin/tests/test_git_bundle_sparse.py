@@ -56,7 +56,7 @@ def source_repo(tmp_path: pathlib.Path) -> pathlib.Path:
 
 
 def _clone(source: pathlib.Path, dest: pathlib.Path, subdir: str | None,
-           sparse: bool | None = None) -> _Log:
+           sparse: bool = False) -> _Log:
     log = _Log()
     asyncio.run(git_bundle._clone_maybe_sparse(
         git_url=str(source), dest=dest, git_subdir=subdir,
@@ -65,19 +65,17 @@ def _clone(source: pathlib.Path, dest: pathlib.Path, subdir: str | None,
     return log
 
 
-def test_off_by_default_clones_everything(source_repo, tmp_path, monkeypatch):
-    """Nothing changes for a deployment that has not asked for this."""
-    monkeypatch.delenv("BUNDLE_GIT_SPARSE", raising=False)
+def test_off_by_default_clones_everything(source_repo, tmp_path):
+    """Nothing changes for a caller that has not asked for this."""
     dest = tmp_path / "clone"
     _clone(source_repo, dest, "publications/wanted")
     assert (dest / "publications" / "wanted" / "entry.md").is_file()
     assert (dest / "publications" / "unwanted" / "big.md").is_file()
 
 
-def test_sparse_fetches_only_the_subdir(source_repo, tmp_path, monkeypatch):
-    monkeypatch.setenv("BUNDLE_GIT_SPARSE", "1")
+def test_sparse_fetches_only_the_subdir(source_repo, tmp_path):
     dest = tmp_path / "clone"
-    log = _clone(source_repo, dest, "publications/wanted")
+    log = _clone(source_repo, dest, "publications/wanted", sparse=True)
     # The store is there in full…
     assert (dest / "publications" / "wanted" / "entry.md").read_text() == "the store\n"
     # …and the rest of the repository is not checked out at all.
@@ -85,7 +83,7 @@ def test_sparse_fetches_only_the_subdir(source_repo, tmp_path, monkeypatch):
     assert any("sparse clone" in line for line in log.lines), log.lines
 
 
-def test_a_repo_that_refuses_filtering_still_clones(tmp_path, monkeypatch):
+def test_a_repo_that_refuses_filtering_still_clones(tmp_path):
     """The fallback is the point: a bundle that starts beats one that does not."""
     repo = tmp_path / "plain-source"
     (repo / "publications" / "wanted").mkdir(parents=True)
@@ -99,9 +97,8 @@ def test_a_repo_that_refuses_filtering_still_clones(tmp_path, monkeypatch):
     _git("add", "-A", cwd=repo)
     _git("commit", "-qm", "first", cwd=repo)
 
-    monkeypatch.setenv("BUNDLE_GIT_SPARSE", "1")
     dest = tmp_path / "clone"
-    log = _clone(repo, dest, "publications/wanted")
+    log = _clone(repo, dest, "publications/wanted", sparse=True)
     # Whatever git said about filtering, the bundle has its store.
     assert (dest / "publications" / "wanted" / "entry.md").is_file()
     if any("unavailable" in line for line in log.lines):
@@ -109,24 +106,22 @@ def test_a_repo_that_refuses_filtering_still_clones(tmp_path, monkeypatch):
         assert (dest / "elsewhere" / "other.md").is_file()
 
 
-def test_no_subdir_is_never_sparse(source_repo, tmp_path, monkeypatch):
+def test_no_subdir_is_never_sparse(source_repo, tmp_path):
     """A bundle whose store IS the repository has nothing to narrow to."""
-    monkeypatch.setenv("BUNDLE_GIT_SPARSE", "1")
     dest = tmp_path / "clone"
-    log = _clone(source_repo, dest, None)
+    log = _clone(source_repo, dest, None, sparse=True)
     assert (dest / "publications" / "unwanted" / "big.md").is_file()
     assert not any("sparse clone" in line for line in log.lines), log.lines
 
 
-def test_a_sparse_clone_still_fetches_and_resets(source_repo, tmp_path, monkeypatch):
+def test_a_sparse_clone_still_fetches_and_resets(source_repo, tmp_path):
     """The refresh lane runs on it unchanged — that is what makes this safe.
 
     A sparse checkout that could not be updated would trade disk for a store
     frozen at its first commit, which is not a trade worth making.
     """
-    monkeypatch.setenv("BUNDLE_GIT_SPARSE", "1")
     dest = tmp_path / "clone"
-    _clone(source_repo, dest, "publications/wanted")
+    _clone(source_repo, dest, "publications/wanted", sparse=True)
 
     (source_repo / "publications" / "wanted" / "entry.md").write_text("moved on\n")
     _git("add", "-A", cwd=source_repo)
@@ -138,26 +133,20 @@ def test_a_sparse_clone_still_fetches_and_resets(source_repo, tmp_path, monkeypa
     assert not (dest / "publications" / "unwanted").exists()
 
 
-def test_the_caller_decides_not_the_environment(source_repo, tmp_path, monkeypatch):
-    """`sparse=` is the contract; the env is only a fallback for the loader.
+def test_nothing_here_reads_the_environment(source_repo, tmp_path, monkeypatch):
+    """The choice travels as an argument, never as process state.
 
-    Every knob in this system is a descriptor property read by the thing it
-    configures. A caller that passes the parameter must win over whatever the
-    environment happens to say, in both directions.
+    This process is shared by many tenants and many bundles. An environment
+    read would make one store's shape everyone's, decided by whoever set it
+    last — so setting anything must change nothing, and only the caller decides.
     """
+    for value in ("1", "true", "0", ""):
+        monkeypatch.setenv("BUNDLE_GIT_SPARSE", value)
+        dest = tmp_path / f"env-{value or 'empty'}"
+        _clone(source_repo, dest, "publications/wanted")
+        assert (dest / "publications" / "unwanted" / "big.md").is_file(), value
+
     monkeypatch.setenv("BUNDLE_GIT_SPARSE", "0")
-    on = tmp_path / "caller-says-yes"
-    _clone(source_repo, on, "publications/wanted", sparse=True)
-    assert not (on / "publications" / "unwanted").exists()
-
-    monkeypatch.setenv("BUNDLE_GIT_SPARSE", "1")
-    off = tmp_path / "caller-says-no"
-    _clone(source_repo, off, "publications/wanted", sparse=False)
-    assert (off / "publications" / "unwanted" / "big.md").is_file()
-
-
-def test_no_caller_and_no_env_is_a_full_clone(source_repo, tmp_path, monkeypatch):
-    monkeypatch.delenv("BUNDLE_GIT_SPARSE", raising=False)
-    dest = tmp_path / "clone"
-    _clone(source_repo, dest, "publications/wanted", sparse=None)
-    assert (dest / "publications" / "unwanted" / "big.md").is_file()
+    asked = tmp_path / "asked"
+    _clone(source_repo, asked, "publications/wanted", sparse=True)
+    assert not (asked / "publications" / "unwanted").exists()
