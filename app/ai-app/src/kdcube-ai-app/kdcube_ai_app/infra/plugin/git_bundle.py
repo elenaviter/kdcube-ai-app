@@ -571,16 +571,14 @@ async def git_bundle_cache_status(
     return GitBundleCacheStatus(True, "current", paths, marker=marker)
 
 
-def _git_sparse() -> bool:
-    """Whether a clone with a subdir should fetch only that subdir.
+def _git_sparse_default() -> bool:
+    """The fallback for callers that have no descriptor to read.
 
-    Off by default, so nothing about an existing deployment changes until it
-    asks. Turned on, a store that lives in one folder of a large repository
-    stops costing the whole repository — three channels sharing a repo were
-    three full copies of it, on EFS, of which each needed one directory.
-
-    Only ever applies to a clone; an existing full checkout is left alone
-    rather than re-fetched to save space it has already spent.
+    A CALLER SHOULD PASS `sparse=` — it is a property of the source being
+    materialized, and a bundle reads it from its own descriptor like every
+    other knob. This exists for the loader paths that materialize a bundle
+    before any descriptor of it is available, and it stays off unless a
+    deployment says otherwise.
     """
     return os.environ.get("BUNDLE_GIT_SPARSE", "").strip().lower() in {"1", "true", "yes"}
 
@@ -593,6 +591,7 @@ async def _clone_maybe_sparse(
     depth: Optional[int],
     logger: Any,
     env: Optional[Dict[str, str]],
+    sparse: Optional[bool] = None,
 ) -> None:
     """Clone, sparse when asked and applicable, PLAIN when that does not work.
 
@@ -605,7 +604,8 @@ async def _clone_maybe_sparse(
     base = ["git", "clone"]
     if depth:
         base += ["--depth", str(depth)]
-    if _git_sparse() and str(git_subdir or "").strip():
+    want_sparse = _git_sparse_default() if sparse is None else bool(sparse)
+    if want_sparse and str(git_subdir or "").strip():
         subdir = str(git_subdir).strip().strip("/")
         try:
             await _run_git_async(
@@ -819,6 +819,7 @@ async def ensure_git_bundle(
     bundles_root: Optional[pathlib.Path] = None,
     logger: Optional[AgentLogger] = None,
     atomic: bool = False,
+    sparse: Optional[bool] = None,
 ) -> GitBundlePaths:
     """
     Async git bundle materializer.
@@ -875,7 +876,7 @@ async def ensure_git_bundle(
                         log.log(f"[git.bundle] cloning {git_url} -> {tmp_root}", level="INFO")
                         await _clone_maybe_sparse(
                             git_url=git_url, dest=tmp_root, git_subdir=git_subdir,
-                            depth=depth, logger=log, env=env,
+                            depth=depth, logger=log, env=env, sparse=sparse,
                         )
                         try:
                             tmp_root.rename(repo_root)
@@ -892,7 +893,7 @@ async def ensure_git_bundle(
                         log.log(f"[git.bundle] cloning {git_url} -> {repo_root}", level="INFO")
                         await _clone_maybe_sparse(
                             git_url=git_url, dest=repo_root, git_subdir=git_subdir,
-                            depth=depth, logger=log, env=env,
+                            depth=depth, logger=log, env=env, sparse=sparse,
                         )
                 else:
                     try:

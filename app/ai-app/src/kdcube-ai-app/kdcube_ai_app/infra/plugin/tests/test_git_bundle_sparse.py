@@ -55,11 +55,12 @@ def source_repo(tmp_path: pathlib.Path) -> pathlib.Path:
     return repo
 
 
-def _clone(source: pathlib.Path, dest: pathlib.Path, subdir: str | None) -> _Log:
+def _clone(source: pathlib.Path, dest: pathlib.Path, subdir: str | None,
+           sparse: bool | None = None) -> _Log:
     log = _Log()
     asyncio.run(git_bundle._clone_maybe_sparse(
         git_url=str(source), dest=dest, git_subdir=subdir,
-        depth=None, logger=log, env=None,
+        depth=None, logger=log, env=None, sparse=sparse,
     ))
     return log
 
@@ -135,3 +136,28 @@ def test_a_sparse_clone_still_fetches_and_resets(source_repo, tmp_path, monkeypa
     _git("reset", "--hard", "origin/main", cwd=dest)
     assert (dest / "publications" / "wanted" / "entry.md").read_text() == "moved on\n"
     assert not (dest / "publications" / "unwanted").exists()
+
+
+def test_the_caller_decides_not_the_environment(source_repo, tmp_path, monkeypatch):
+    """`sparse=` is the contract; the env is only a fallback for the loader.
+
+    Every knob in this system is a descriptor property read by the thing it
+    configures. A caller that passes the parameter must win over whatever the
+    environment happens to say, in both directions.
+    """
+    monkeypatch.setenv("BUNDLE_GIT_SPARSE", "0")
+    on = tmp_path / "caller-says-yes"
+    _clone(source_repo, on, "publications/wanted", sparse=True)
+    assert not (on / "publications" / "unwanted").exists()
+
+    monkeypatch.setenv("BUNDLE_GIT_SPARSE", "1")
+    off = tmp_path / "caller-says-no"
+    _clone(source_repo, off, "publications/wanted", sparse=False)
+    assert (off / "publications" / "unwanted" / "big.md").is_file()
+
+
+def test_no_caller_and_no_env_is_a_full_clone(source_repo, tmp_path, monkeypatch):
+    monkeypatch.delenv("BUNDLE_GIT_SPARSE", raising=False)
+    dest = tmp_path / "clone"
+    _clone(source_repo, dest, "publications/wanted", sparse=None)
+    assert (dest / "publications" / "unwanted" / "big.md").is_file()
