@@ -571,6 +571,65 @@ async def git_bundle_cache_status(
     return GitBundleCacheStatus(True, "current", paths, marker=marker)
 
 
+def _git_sparse() -> bool:
+    """Whether a clone with a subdir should fetch only that subdir.
+
+    Off by default, so nothing about an existing deployment changes until it
+    asks. Turned on, a store that lives in one folder of a large repository
+    stops costing the whole repository — three channels sharing a repo were
+    three full copies of it, on EFS, of which each needed one directory.
+
+    Only ever applies to a clone; an existing full checkout is left alone
+    rather than re-fetched to save space it has already spent.
+    """
+    return os.environ.get("BUNDLE_GIT_SPARSE", "").strip().lower() in {"1", "true", "yes"}
+
+
+async def _clone_maybe_sparse(
+    *,
+    git_url: str,
+    dest: pathlib.Path,
+    git_subdir: Optional[str],
+    depth: Optional[int],
+    logger: Any,
+    env: Optional[Dict[str, str]],
+) -> None:
+    """Clone, sparse when asked and applicable, PLAIN when that does not work.
+
+    A partial clone needs the server to support `--filter`, and a sparse
+    checkout needs a git new enough for `sparse-checkout`. Neither is worth a
+    failed bundle load: if either step fails the directory is removed and the
+    ordinary clone runs, because a bundle that starts and uses more disk beats
+    a bundle that does not start.
+    """
+    base = ["git", "clone"]
+    if depth:
+        base += ["--depth", str(depth)]
+    if _git_sparse() and str(git_subdir or "").strip():
+        subdir = str(git_subdir).strip().strip("/")
+        try:
+            await _run_git_async(
+                base + ["--filter=blob:none", "--sparse", git_url, str(dest)],
+                logger=logger, env=env,
+            )
+            await _run_git_async(
+                ["git", "-C", str(dest), "sparse-checkout", "set", subdir],
+                logger=logger, env=env,
+            )
+            logger.log(
+                f"[git.bundle] sparse clone: {git_url} -> {dest} (subdir={subdir})",
+                level="INFO",
+            )
+            return
+        except Exception as exc:
+            logger.log(
+                f"[git.bundle] sparse clone unavailable ({exc}); cloning in full",
+                level="WARNING",
+            )
+            shutil.rmtree(dest, ignore_errors=True)
+    await _run_git_async(base + [git_url, str(dest)], logger=logger, env=env)
+
+
 def _git_depth() -> Optional[int]:
     raw = os.environ.get("BUNDLE_GIT_CLONE_DEPTH") or ""
     if not raw:
@@ -814,11 +873,10 @@ async def ensure_git_bundle(
                     if atomic:
                         tmp_root = repo_root.parent / _atomic_dir_name(repo_root.name)
                         log.log(f"[git.bundle] cloning {git_url} -> {tmp_root}", level="INFO")
-                        clone_args = ["git", "clone"]
-                        if depth:
-                            clone_args += ["--depth", str(depth)]
-                        clone_args += [git_url, str(tmp_root)]
-                        await _run_git_async(clone_args, logger=log, env=env)
+                        await _clone_maybe_sparse(
+                            git_url=git_url, dest=tmp_root, git_subdir=git_subdir,
+                            depth=depth, logger=log, env=env,
+                        )
                         try:
                             tmp_root.rename(repo_root)
                         except Exception:
@@ -832,11 +890,10 @@ async def ensure_git_bundle(
                             )
                     else:
                         log.log(f"[git.bundle] cloning {git_url} -> {repo_root}", level="INFO")
-                        clone_args = ["git", "clone"]
-                        if depth:
-                            clone_args += ["--depth", str(depth)]
-                        clone_args += [git_url, str(repo_root)]
-                        await _run_git_async(clone_args, logger=log, env=env)
+                        await _clone_maybe_sparse(
+                            git_url=git_url, dest=repo_root, git_subdir=git_subdir,
+                            depth=depth, logger=log, env=env,
+                        )
                 else:
                     try:
                         proc = await _run_git_capture_async(
