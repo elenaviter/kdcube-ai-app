@@ -623,7 +623,14 @@ async def _clone_maybe_sparse(
     await _run_git_async(base + [git_url, str(dest)], logger=logger, env=env)
 
 
-def _git_depth() -> Optional[int]:
+def default_clone_depth() -> Optional[int]:
+    """A platform-level default a CALLER may choose to pass as `depth`.
+
+    Exported and never called from inside the clone: a module that reads
+    process state decides for every tenant sharing that process, which is not
+    its decision to make. A caller that wants this reads it once, at the edge,
+    and passes the answer in.
+    """
     raw = os.environ.get("BUNDLE_GIT_CLONE_DEPTH") or ""
     if not raw:
         shallow = os.environ.get("BUNDLE_GIT_SHALLOW", "").lower() in {"1", "true", "yes"}
@@ -813,6 +820,7 @@ async def ensure_git_bundle(
     logger: Optional[AgentLogger] = None,
     atomic: bool = False,
     sparse: bool = False,
+    depth: Optional[int] = None,
 ) -> GitBundlePaths:
     """
     Async git bundle materializer.
@@ -844,7 +852,6 @@ async def ensure_git_bundle(
                 repo_root = paths.repo_root
                 repo_root.parent.mkdir(parents=True, exist_ok=True)
                 env = await _build_git_env()
-                depth = _git_depth()
 
                 git_dir = repo_root / ".git"
                 if git_dir.exists() and not force_pull:

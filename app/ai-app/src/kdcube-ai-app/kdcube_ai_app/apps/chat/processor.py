@@ -44,6 +44,7 @@ from kdcube_ai_app.infra.aws.task_protection import build_task_scale_in_protecti
 from kdcube_ai_app.infra.metrics.rolling_stats import record_metric
 from kdcube_ai_app.infra.namespaces import REDIS
 from kdcube_ai_app.infra.plugin.git_bundle import (
+    default_clone_depth,
     ensure_git_bundle,
     GitBundleCooldown,
     compute_git_bundle_paths,
@@ -348,6 +349,7 @@ async def prefetch_git_bundles(registry: Optional[Any] = None) -> dict[str, str]
                 bool(force_pull),
             )
             await ensure_git_bundle(
+                depth=default_clone_depth(),
                 bundle_id=bid,
                 git_url=repo,
                 git_ref=entry.get("ref"),

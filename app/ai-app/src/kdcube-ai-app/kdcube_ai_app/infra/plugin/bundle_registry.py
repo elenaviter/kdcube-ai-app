@@ -173,6 +173,7 @@ async def _apply_git_resolution(reg: Dict[str, Dict[str, Any]], source: str = "u
         logger.info("Resolving git bundles (source=%s, bundles=%s)", source, repo_count)
     try:
         from kdcube_ai_app.infra.plugin.git_bundle import (
+            default_clone_depth,
             ensure_git_bundle,
             resolve_managed_bundles_root,
             cleanup_old_git_bundles_async,
@@ -254,6 +255,10 @@ async def _apply_git_resolution(reg: Dict[str, Dict[str, Any]], source: str = "u
                 )
         try:
             paths = await ensure_git_bundle(
+                # Platform default, read HERE rather than inside the clone: a
+                # module that reads process state decides for every tenant
+                # sharing the process.
+                depth=default_clone_depth(),
                 bundle_id=bid,
                 git_url=repo,
                 git_ref=entry.get("ref"),
