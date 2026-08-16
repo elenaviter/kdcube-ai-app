@@ -112,14 +112,14 @@ decision**, not something an app can do for itself:
 delegated_credentials:
   oauth:
     resources:
-      - resource: '*/api/integrations/bundles/*/*/press.linkedin@2026-08-13/mcp/press*'
+      - resource: '*/api/integrations/bundles/*/*/press@2026-08-16/mcp/press*'
         label: Press LinkedIn publications
         description: The publication store behind the press app.
         tools:
-          search:       { label: Search publications,  grants: [press.linkedin:read] }
-          save_file:    { label: Edit an entry file,   grants: [press.linkedin:write] }
-          delete_file:  { label: Delete a file,        grants: [press.linkedin:delete] }
-          commit_entry: { label: Commit and push,      grants: [press.linkedin:commit] }
+          search:       { label: Search publications,  grants: [press:read] }
+          save_file:    { label: Edit an entry file,   grants: [press:write] }
+          delete_file:  { label: Delete a file,        grants: [press:delete] }
+          commit_entry: { label: Commit and push,      grants: [press:commit] }
 ```
 
 The rule, in one line:
@@ -138,7 +138,7 @@ app silently widened what its users can be asked to approve — installing and
 allowing stay two decisions.
 
 **Claim vocabulary.** A claim names an app *and* a consequence:
-`press.linkedin:read`, `…:write`, `…:delete`, `…:commit`. The app segment keeps
+`press:read`, `…:write`, `…:delete`, `…:commit`. The app segment keeps
 two publication apps distinguishable on the same card; the consequence is what
 the person approving is actually deciding. A claim that says `read` while its
 tools write is the one thing a consent card must never do.

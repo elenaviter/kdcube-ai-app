@@ -1064,7 +1064,7 @@ def test_a_long_subject_keeps_the_part_that_identifies_it():
     # A path keeps its TAIL — the mount point identifies nothing.
     title = claude_tool_activity_title(
         "Read", {"file_path": "/bundles/kdcube/applications/kdcube-docs/procedures/"
-                              "synthesis/press.linkedin@2026-08-13/publications/README.md"}
+                              "synthesis/press@2026-08-16/publications/README.md"}
     )
     assert title.endswith("publications/README.md")
     assert len(title) <= len("Read · ") + TOOL_TITLE_SUBJECT_CHARS

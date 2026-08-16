@@ -652,7 +652,7 @@ decisions.
 **Name claims for the app and the consequence.** `records:read` is a poor claim
 on a deployment that may one day run two record services, and a claim that says
 `read` above tools that write is the one thing a consent card must never do.
-Prefer `<app>:<consequence>` — `press.linkedin:read`, `…:write`, `…:delete`,
+Prefer `<app>:<consequence>` — `press:read`, `…:write`, `…:delete`,
 `…:commit` — so the person approving is deciding what will happen, not which
 endpoint is involved.
 

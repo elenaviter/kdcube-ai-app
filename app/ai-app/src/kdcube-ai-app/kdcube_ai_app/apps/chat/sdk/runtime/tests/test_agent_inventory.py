@@ -789,7 +789,7 @@ async def test_realm_enrichment_folds_every_provider_of_a_shared_namespace():
         },
     )
     store_spec = NamedServiceProviderSpec(
-        provider_id="press.linkedin.store",
+        provider_id="press.store",
         namespace="linkedin",
         refs=("linkedin:*:post:*/*",),
         operations={

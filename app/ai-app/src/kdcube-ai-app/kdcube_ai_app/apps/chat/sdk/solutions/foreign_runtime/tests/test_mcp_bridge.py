@@ -330,7 +330,7 @@ def test_a_dropped_server_is_never_resolved_and_mints_no_bearer(monkeypatch) -> 
     kept = mcp_bridge.narrow_mcp_connections([_PRESS, _DOOR], {"press": True})
     asyncio.run(
         mcp_bridge.resolve_turn_mcp(
-            entrypoint, kept, agent_id="press", application="press.linkedin@2026-08-13"
+            entrypoint, kept, agent_id="press", application="press@2026-08-16"
         )
     )
     assert seen["connections"] == ["named_services"]

@@ -194,7 +194,7 @@ def test_mcp_projection_lands_on_request_state(monkeypatch):
         request=request,
         session=session,
         comm_context=comm_context,
-        bundle_id="press.linkedin@2026-08-13",
+        bundle_id="press@2026-08-16",
         endpoint_alias="press",
     )
     attached = getattr(request.state, STATE_SESSION)
@@ -343,6 +343,6 @@ def test_specific_row_beats_wildcard():
 def test_wildcard_serves_only_the_unmatched():
     cfg = _catalog()
     row = OAuthDelegatedClientConfig.resource_config(
-        cfg, "https://host/api/integrations/bundles/t/p/press.linkedin@2026-08-13/mcp/press"
+        cfg, "https://host/api/integrations/bundles/t/p/press@2026-08-16/mcp/press"
     )
     assert row is not None and row.resource == "*" and row.admin_only is True

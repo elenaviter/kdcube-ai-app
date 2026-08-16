@@ -65,7 +65,7 @@ def _entrypoint(selection: Dict[str, Any] | None, props: Dict[str, Any] | None =
             "tenant": "t1",
             "project": "p1",
             "user_id": "operator-1",
-            "bundle_id": "press.linkedin@2026-08-13",
+            "bundle_id": "press@2026-08-16",
         },
         _agent_selection_store=lambda identity: store,
     )
@@ -89,7 +89,7 @@ def test_a_stored_pick_resolves_to_the_supported_row() -> None:
     assert _resolve(entrypoint) == {"provider": "anthropic", "model": "claude-sonnet-5"}
     # The LOAD key is the wire op's key: user + app + agent + conversation.
     assert store.calls[-1]["user_id"] == "operator-1"
-    assert store.calls[-1]["bundle_id"] == "press.linkedin@2026-08-13"
+    assert store.calls[-1]["bundle_id"] == "press@2026-08-16"
     assert store.calls[-1]["agent_id"] == "press"
     assert store.calls[-1]["conversation_id"] == "conv-1"
 
