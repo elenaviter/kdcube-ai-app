@@ -542,22 +542,32 @@ processor resolves the wake back to the lane before invoking the app.
 
 For native ReAct, the live `ContextBrowser` opens the handler and drains the lane
 itself. For a run-to-completion hosted runtime, the rehydrated
-`state["external_events"]` may contain only the wake occurrence. The hosted
-runtime therefore folds the wake occurrence's same-`batch_id` lane siblings at
-turn start so prompt text, attachments, and context objects are one visible user
-input. That fold is read-only: it does not mark lane records consumed and does
-not touch the consumer reservation.
+`state["external_events"]` may contain only the wake occurrence, so the runtime
+folds at turn start — and it folds **everything still pending on the lane**, in
+`sequence` order: the wake occurrence, its `batch_id` siblings (attachments,
+context objects) and any message that queued behind them. That fold is
+read-only: it marks nothing consumed and does not touch the reservation.
+
+Each folded event carries its origin `batch_id`, lane sequence and arrival time,
+so a turn frame can render several messages in the order they were sent with the
+files and refs that came with each, and a turn log can record one user block per
+message with its own timestamp.
 
 The shared door finalizer performs the accounting after `execute_core` returns.
-If the fold saw same-batch siblings, it records their exact lane event ids on turn
-state. Finalization consumes the wake occurrence through the normal lane cursor
-and terminalizes folded siblings by exact event id before releasing the consumer
-reservation. This prevents a same-ingress attachment from remaining pending and
-being re-woken as a second run for the same visible send, without consuming an
-accepted occurrence from a different `batch_id` whose sequence may interleave
-with the batch siblings. Work that arrives later, with a different accepted
-occurrence outside the folded batch, is still pending work and can schedule the
-next serialized turn after release.
+The fold records the exact lane event ids it delivered; finalization consumes the
+wake occurrence through the normal lane cursor and terminalizes those ids before
+releasing the reservation. It then publishes **one** wake — not one per pending
+event — and only when reactive events arrived after the last steer.
+
+Two rules follow, and both exist because of what happened without them:
+
+- **Folding one batch and promoting the rest one turn each** made the agent
+  answer the first queued message without knowing the second existed, so a
+  correction was read only after the work it corrected had been paid for.
+- **A steer bounds the handoff.** Events at or before it stay pending — kept for
+  the next fold, not a reason to run — and a bare steer is terminalized, because
+  the turn it asked to stop is over and waking for it handed the agent an empty
+  message.
 
 ## Built-In User Events
 

@@ -2593,6 +2593,13 @@ bundles:
                   supported:
                     - {model: claude-sonnet-4-5-20250929, provider: anthropic, label: Sonnet 4.5}
                     - {model: claude-haiku-4-5-20251001, provider: anthropic, label: Haiku 4.5}
+                # Stoppable mid-run (the steer cancels the graph stream; the checkpointer
+                # holds the last completed node). A mid-run message is NOT folded into the
+                # running graph - it folds into the next turn, leaving the graph's own
+                # iteration management intact.
+                conversation:
+                  accepts_steer: true
+                  accepts_followup: false
             lg-react:
               # HIGHER budget: this agent passes whole payloads as tool arguments
               # (run_python carries the full program text) — the budget must fit
@@ -2612,6 +2619,13 @@ bundles:
                   supported:
                     - {model: claude-haiku-4-5-20251001, provider: anthropic, label: Haiku 4.5}
                     - {model: claude-sonnet-4-5-20250929, provider: anthropic, label: Sonnet 4.5}
+                # Stoppable mid-run (the steer cancels the graph stream; the checkpointer
+                # holds the last completed node). A mid-run message is NOT folded into the
+                # running graph - it folds into the next turn, leaving the graph's own
+                # iteration management intact.
+                conversation:
+                  accepts_steer: true
+                  accepts_followup: false
               tools:
                 - {name: calc, kind: python, alias: calc, allowed: [calc]}
                 - {name: unit_convert, kind: python, alias: unit_convert, allowed: [unit_convert]}

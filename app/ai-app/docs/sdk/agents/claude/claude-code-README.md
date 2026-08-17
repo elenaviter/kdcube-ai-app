@@ -305,6 +305,56 @@ Important current flags:
 - `--resume <stable-uuid>` for continued turns
 
 The CLI command is configurable through `ClaudeCodeAgentConfig.command`, but defaults to `claude`.
+Anything else a lane needs on the command line rides `ClaudeCodeAgentConfig.extra_args`
+— that is how live control passes `--settings` (below).
+
+### Reaching a run that is already going (live control)
+
+A hosted lane can hand a message to a run in flight, and can stop one, without
+killing the process. Both go through a `PreToolUse` hook, seeded by
+`solutions/claude_code/live_control.py` into the workspace's `.claude/`:
+
+- `allow` + a reason — the model reads what the person said and keeps working
+- `deny` + a reason — the tool call does not happen, so the model answers with
+  what it has
+
+Two measurements decided this shape, against CLI 2.1.232:
+
+- **streaming stdin does not deliver into a live turn.** With
+  `--input-format stream-json --replay-user-messages`, a message written between
+  two tool calls was replayed back on stdout in ~20 ms — ingested immediately —
+  and the running turn never acted on it. The run finished normally and no
+  further turn started.
+- **the hook does.** With `allow` + `additionalContext`, the model's next line
+  after a tool call reported the out-of-band message and it carried on; with
+  `deny`, it stopped calling tools and answered (`turns=2` where the task needed
+  eight).
+
+The seeded files are `kdcube-live-events.json` (the buffer), `kdcube-live-hook.py`
+and `kdcube-live-settings.json`, and the hook is registered for **every** tool
+(`matcher: "*"`, MCP tools included) — a matcher naming a few leaves the run
+reachable through the ones it forgot.
+
+**The buffer is stamped with its turn, and the hook is invoked with that turn id
+on its command line.** The workspace is per CONVERSATION, so the buffer outlives
+the turn that wrote it: without the stamp, a stop written in one turn denied
+every tool call of every later turn, and the agent — seeing its commands refused
+repeatedly — reasonably concluded that a permission policy was blocking the
+path. A stop belongs to one run.
+
+Two limits, both real:
+
+- a run inside one long tool call reaches no hook until that call returns, and a
+  run that has stopped calling tools reaches none at all
+- what no hook delivered is not claimed as delivered
+  (`delivered_message_ids`), so the caller can leave it for the next turn
+
+### Resume after a kill
+
+Measured, because the timeout path already kills mid-run: a run **SIGKILLed** two
+tool calls into a loop resumed on the same `--session-id` with exit 0 and its
+memory from before the kill intact — transcript readable, unfinished assistant
+turn harmless, work not redone. `--fork-session` is available but not needed.
 
 ### When `--agent` is passed
 

@@ -124,6 +124,25 @@ A bundle can surface Claude Code spend per turn by reading:
 
 and storing those values in conversation message metadata or bundle-specific turn payloads.
 
+### A stopped run still bills what it spent
+
+A turn a person stops mid-flight is not a free turn. The stop is a refused tool
+call, not a killed process (see the live-control section of the runner page), so
+the run reaches its own end and reports the usage it accumulated up to that
+point — the model answers with what it has, and that answer costs what it cost.
+
+Two consequences worth stating rather than discovering:
+
+- **the stopped turn's usage is real usage** and belongs in the same per-turn
+  spend chip as any other turn
+- **stopping does not refund the work already done**, which is the honest thing
+  to show a person deciding whether to stop: it bounds further spend, it does
+  not undo the spend so far
+
+A run that is instead terminated (the timeout path) reports whatever the CLI
+emitted before the kill; if no result event arrived, there is no usage to
+attribute and the turn is accounted as a failure, per the section above.
+
 This is the recommended path for UI chips such as:
 
 - selected/resolved model

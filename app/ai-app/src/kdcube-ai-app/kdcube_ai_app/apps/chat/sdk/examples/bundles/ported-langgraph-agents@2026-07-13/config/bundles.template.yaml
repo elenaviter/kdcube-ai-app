@@ -103,6 +103,15 @@ bundles:
                     supported:
                       - { model: claude-sonnet-4-5-20250929, provider: anthropic, label: "Sonnet 4.5" }
                       - { model: claude-haiku-4-5-20251001, provider: anthropic, label: "Haiku 4.5" }
+                  # What the composer may offer mid-turn. Declared, not
+                  # assumed: this lane can be STOPPED while it runs (the steer
+                  # cancels the graph stream; the checkpointer holds the last
+                  # completed node), but a mid-run message is NOT folded into
+                  # the running graph — it folds into the next turn, which is
+                  # the graph's own iteration management left intact.
+                  conversation:
+                    accepts_steer: true
+                    accepts_followup: false
               # Agent 2 — the prebuilt create_react agent (looping agent node).
               lg-react:
                 # Output budget for the answer model (see lg-solution's note: the
@@ -129,6 +138,12 @@ bundles:
                     supported:
                       - { model: claude-haiku-4-5-20251001, provider: anthropic, label: "Haiku 4.5" }
                       - { model: claude-sonnet-4-5-20250929, provider: anthropic, label: "Sonnet 4.5" }
+                  # Same lane, same answer: stoppable mid-run, and a mid-run
+                  # message waits for the next turn rather than being folded
+                  # into a loop this app does not own.
+                  conversation:
+                    accepts_steer: true
+                    accepts_followup: false
                 # ── lg-react TOOLS (per-agent inventory + user pick) ───────
                 # Tools are declared PER AGENT as a CONNECTION LIST — the standard
                 # KDCube shape the capabilities catalog reads (same as the workspace

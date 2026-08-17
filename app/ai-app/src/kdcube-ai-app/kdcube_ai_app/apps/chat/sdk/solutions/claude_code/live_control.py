@@ -71,6 +71,7 @@ def read_buffer(workspace: Path) -> Dict[str, Any]:
         return {"stop": False, "messages": []}
     if not isinstance(parsed, dict):
         return {"stop": False, "messages": []}
+    parsed.setdefault("turn_id", "")
     parsed.setdefault("stop", False)
     parsed.setdefault("messages", [])
     return parsed
@@ -88,27 +89,61 @@ def _write_buffer(workspace: Path, payload: Mapping[str, Any]) -> None:
 
 def publish_arrivals(
     workspace: Path,
-    messages: Sequence[str],
+    messages: Sequence[Any],
     *,
     stop: bool = False,
 ) -> None:
     """Put what arrived where the next tool call will read it.
 
-    ``messages`` are the person's own words, in order. ``stop`` marks the run as
-    stopped, which the hook turns into a refusal rather than a note.
+    ``messages`` are the person's own words, in order — either plain strings or
+    ``{"text", "message_id"}`` mappings. The lane message id is what makes the
+    buffer answerable afterwards: it says WHICH lane event the model actually
+    saw, so a delivered one can be closed as answered by this turn while an
+    undelivered one stays pending for the next.
+
+    ``stop`` marks the run as stopped, which the hook turns into a refusal
+    rather than a note.
     """
     buffer = read_buffer(workspace)
     pending: List[Dict[str, Any]] = list(buffer.get("messages") or [])
-    for text in messages:
-        body = str(text or "").strip()
+    for message in messages:
+        if isinstance(message, Mapping):
+            body = str(message.get("text") or "").strip()
+            message_id = str(message.get("message_id") or "")
+        else:
+            body, message_id = str(message or "").strip(), ""
         if body:
-            pending.append({"text": body, "delivered": False})
-    payload = {"stop": bool(buffer.get("stop")) or bool(stop), "messages": pending}
+            pending.append({"text": body, "message_id": message_id, "delivered": False})
+    payload = {
+        "turn_id": str(buffer.get("turn_id") or ""),
+        "stop": bool(buffer.get("stop")) or bool(stop),
+        "messages": pending,
+    }
     _write_buffer(workspace, payload)
     LOGGER.info(
         "[claude-code] live control: %d message(s) pending, stop=%s",
         sum(1 for item in pending if not item.get("delivered")), payload["stop"],
     )
+
+
+def delivered_message_ids(workspace: Path) -> List[str]:
+    """The lane events the model actually READ during the run.
+
+    A hook fired means the model saw those words inside this turn and answered
+    with them in view, so the turn owns them. What no hook ever reached — a run
+    that sat in one long tool call, or one that had stopped calling tools — is
+    still pending, and the handoff treats it exactly like a message that
+    arrived after the turn ended. That is the difference between "delivered"
+    and "arrived", and only the buffer knows it.
+    """
+    buffer = read_buffer(workspace)
+    return [
+        str(item.get("message_id") or "")
+        for item in (buffer.get("messages") or [])
+        if isinstance(item, Mapping)
+        and item.get("delivered")
+        and str(item.get("message_id") or "").strip()
+    ]
 
 
 def undelivered(buffer: Mapping[str, Any]) -> List[str]:
@@ -182,6 +217,13 @@ def main() -> int:
         return 0
     if not isinstance(buffer, dict):
         return 0
+    # WHOSE TURN THIS IS. The workspace is per conversation, so the buffer
+    # outlives the turn that wrote it. A stop belongs to ONE run; honouring a
+    # stale one denies every tool call of every later turn, which is what
+    # happened before this check existed.
+    mine = sys.argv[1] if len(sys.argv) > 1 else "-"
+    if str(buffer.get("turn_id") or "") != (mine if mine != "-" else ""):
+        return 0
     messages = [m for m in (buffer.get("messages") or []) if isinstance(m, dict)]
     fresh = [str(m.get("text") or "") for m in messages
              if not m.get("delivered") and str(m.get("text") or "").strip()]
@@ -210,7 +252,9 @@ def main() -> int:
     try:
         tmp = BUFFER + ".writing"
         with open(tmp, "w", encoding="utf-8") as handle:
-            json.dump({{"stop": stop, "messages": messages}}, handle, ensure_ascii=False)
+            json.dump({{"turn_id": buffer.get("turn_id") or "",
+                        "stop": stop, "messages": messages}},
+                      handle, ensure_ascii=False)
         os.replace(tmp, BUFFER)
     except Exception:
         pass
@@ -224,7 +268,7 @@ if __name__ == "__main__":
 '''
 
 
-def seed_live_control(workspace: Path, *, matcher: str = "*") -> List[str]:
+def seed_live_control(workspace: Path, *, turn_id: str = "", matcher: str = "*") -> List[str]:
     """Seed the hook, its settings and an empty buffer into the workspace.
 
     Returns the CLI args that turn it on; pass them as the agent's
@@ -243,7 +287,7 @@ def seed_live_control(workspace: Path, *, matcher: str = "*") -> List[str]:
             encoding="utf-8",
         )
         hook.chmod(0o755)
-        _write_buffer(workspace, {"stop": False, "messages": []})
+        _write_buffer(workspace, {"turn_id": str(turn_id or ""), "stop": False, "messages": []})
         settings = directory / SETTINGS_FILENAME
         settings.write_text(
             json.dumps({
@@ -255,7 +299,12 @@ def seed_live_control(workspace: Path, *, matcher: str = "*") -> List[str]:
                         "matcher": matcher,
                         "hooks": [{
                             "type": "command",
-                            "command": f"{_python_for_hook()} {hook}",
+                            # The turn the hook belongs to, on its command
+                            # line. The workspace is per CONVERSATION, so a
+                            # buffer outlives the turn that wrote it; without
+                            # this a stop leaks into every later turn and
+                            # denies every tool call forever.
+                            "command": f"{_python_for_hook()} {hook} {turn_id or '-'}",
                         }],
                     }],
                 }

@@ -20,6 +20,14 @@ picker by declaring::
                   - { model: claude-sonnet-4-6, provider: anthropic, label: Sonnet 4.6 }
                   - { model: claude-haiku-4-5,  provider: anthropic, label: Haiku 4.5 }
                   - { model: qwen3:8b, provider: custom, label: Qwen3 8B, num_ctx: 40960 }
+              conversation:
+                accepts_steer: true        # this lane can be stopped mid-run
+                accepts_followup: false    # a mid-run message folds into the next turn
+
+``capabilities.conversation`` is what the composer reads to offer or hide the
+two mid-turn controls. Declare only what the lane actually honours: a stop
+button on a lane that cannot stop is a control that lies, and the default
+(both false) is the safe one.
 
 The per-user (per-conversation) pick is applied to
 ``runtime_ctx.agent_role_models[<role>]``; the model router overlays that onto
@@ -80,25 +88,41 @@ class SimpleModelPickProvider:
         default: Optional[str] = None,
         bundle_props: Any = None,
         agent_id: str = "",
+        accepts_followup: bool = False,
+        accepts_steer: bool = False,
     ):
         self.role = role
         self.supported = list(supported or [])
         self.default = default
         self._bundle_props = bundle_props
         self._agent_id = agent_id
+        self._accepts_followup = bool(accepts_followup)
+        self._accepts_steer = bool(accepts_steer)
 
     # -- inventory -----------------------------------------------------------
 
     def capability_blocks(
         self, *, bundle_props: Any = None, bundle_root: Any = None, agent_id: str = ""
     ) -> CapabilityBlocks:
-        # A minimal agent: only a model list; no skills, no subagents. A generic
-        # run-to-completion agent consumes NEITHER mid-turn affordance, so it
-        # declares both false — the composer then presents a mid-turn message as
-        # queued-for-next-turn and hides the steer control.
+        # A minimal agent: only a model list; no skills, no subagents.
+        #
+        # The two mid-turn affordances are DECLARED, not assumed. They used to be
+        # hardcoded false here, on the reasoning that a run-to-completion agent
+        # consumes neither — which stopped being true when the foreign-runtime
+        # lanes learned to be reached and stopped while they run (LangGraph
+        # cancels its stream; the Claude Code lane answers a tool-call hook). An
+        # agent that CAN be stopped and whose composer hides the control is a
+        # capability nobody can use, so each app says what its lane does.
+        #
+        # The default stays false/false: an app that declares nothing behaves
+        # exactly as it did, and a control is never offered where nothing would
+        # answer it.
         return CapabilityBlocks(
             models=ModelPick(supported=self.supported, default=self.default),
-            conversation=ConversationCaps(accepts_followup=False, accepts_steer=False),
+            conversation=ConversationCaps(
+                accepts_followup=self._accepts_followup,
+                accepts_steer=self._accepts_steer,
+            ),
         )
 
     # -- runtime application -------------------------------------------------
@@ -193,17 +217,23 @@ class SimpleModelPickProvider:
 
 
 def make_simple_model_pick_provider(*, bundle_props: Any, agent_id: str) -> SimpleModelPickProvider:
-    """Factory: read ``capabilities.models`` from the agent's consumer block."""
+    """Factory: read ``capabilities.models`` and ``capabilities.conversation``
+    from the agent's consumer block."""
     block = agent_config_block(bundle_props, agent_id)
-    models_cfg = block.get("capabilities") or {}
-    models_cfg = models_cfg.get("models") if isinstance(models_cfg, Mapping) else {}
+    caps_cfg = block.get("capabilities") or {}
+    caps_cfg = caps_cfg if isinstance(caps_cfg, Mapping) else {}
+    models_cfg = caps_cfg.get("models") if isinstance(caps_cfg, Mapping) else {}
     models_cfg = models_cfg if isinstance(models_cfg, Mapping) else {}
+    conversation_cfg = caps_cfg.get("conversation")
+    conversation_cfg = conversation_cfg if isinstance(conversation_cfg, Mapping) else {}
     return SimpleModelPickProvider(
         role=str(models_cfg.get("role") or "").strip(),
         supported=_normalize_supported(models_cfg.get("supported")),
         default=(str(models_cfg.get("default")).strip() or None) if models_cfg.get("default") else None,
         bundle_props=bundle_props,
         agent_id=agent_id,
+        accepts_followup=bool(conversation_cfg.get("accepts_followup")),
+        accepts_steer=bool(conversation_cfg.get("accepts_steer")),
     )
 
 

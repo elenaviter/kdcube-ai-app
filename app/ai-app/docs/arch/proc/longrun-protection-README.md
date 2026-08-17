@@ -511,6 +511,24 @@ It does promise:
 - drain in-flight work cleanly when shutdown begins
 - prefer explicit interruption over unsafe replay after start
 
+### 11.1 A long turn also has to hold its lane
+
+Host protection is not the only thing a long turn needs. The conversation event
+lane hands a turn a consumer reservation, and that reservation is kept by
+ACKNOWLEDGEMENT, not by the task still being alive: `scheduled` counts as fresh
+only within `scheduled_ttl_ms` (30 000 ms).
+
+Native ReAct re-marks it while it works. Run-to-completion hosted turns did not,
+and they can run for minutes — the press lane's are bounded at 900 seconds — so
+for most of a long turn the lane believed nobody was consuming it and a message
+typed by the person was admitted as a new turn instead of queueing behind the
+running one. Nothing failed loudly; it looked like a turn that simply started.
+
+The foreign-runtime lane watcher heartbeats the consumer while the turn runs. A
+lane that stops being marked still goes stale on purpose — that is the recovery
+path for a worker that died, and it is the same reason this page prefers
+explicit interruption over replay.
+
 ---
 
 ## 12. Summary

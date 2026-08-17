@@ -722,6 +722,21 @@ The target behavior should be:
 - never auto-replay an already-started turn just because a worker died
 
 The last point remains non-negotiable.
+
+**Where the non-reactive half stands (2026-08-18).** "Leave those messages
+queued" is now specific rather than approximate:
+
+- the queued messages are folded into ONE next turn, in lane order, not one turn
+  each
+- the lane consumer is heartbeated for the turn's whole life, so they really do
+  wait — a hosted turn used to lose its reservation after 30 seconds and a later
+  message was admitted as its own turn
+- a steer bounds the handoff: only what arrived after the last one wakes a turn
+- a hosted lane can still be reached and stopped while it runs, by what its own
+  runtime supports (a cancelled stream, a tool-call hook decision), without
+  folding into a loop it does not own
+
+See `sdk/events/reactive-turn-delivery-README.md` for the per-lane table.
 Steer/followup does not change the non-idempotent nature of an already-started turn.
 
 ---

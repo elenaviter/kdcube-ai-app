@@ -325,3 +325,99 @@ def test_the_stopped_events_are_left_pending_for_the_next_turn(monkeypatch):
     assert outcome.stopped is True
     assert stop_event.consumed_at is None            # untouched on the lane
     assert getattr(stop_event, "promoted_at", None) is None
+
+
+# ── the reservation has to last as long as the turn ──────────────────────────
+
+
+class _FakeOrchestrator:
+    marks: list = []
+
+    def __init__(self, source):
+        self._source = source
+
+    @staticmethod
+    def for_source(source):
+        return _FakeOrchestrator(source)
+
+    async def mark_consumer_active(self, *, turn_id=""):
+        _FakeOrchestrator.marks.append(turn_id)
+        return None
+
+
+def _install_orchestrator(monkeypatch):
+    import kdcube_ai_app.apps.chat.sdk.events.event_bus.orchestrator as orch
+
+    _FakeOrchestrator.marks = []
+    monkeypatch.setattr(
+        orch.ConversationEventBusOrchestrator, "for_source",
+        staticmethod(_FakeOrchestrator.for_source),
+    )
+
+
+def test_the_watch_keeps_the_lane_reservation_alive(monkeypatch):
+    """The reason this matters, in one sentence: a run-to-completion turn never
+    touched the lane, so its consumer stayed `scheduled` — fresh for 30 seconds
+    — while the turn itself can run for fifteen minutes. Past that half-minute a
+    message typed by the person was ADMITTED as a new turn instead of waiting
+    for the handoff, which is what "one turn for the pending lane" and the stop
+    boundary both assume.
+    """
+    own = _lane_event(message_id="m-own", sequence=1, accepted=_accepted("do X", event_id="e0"))
+    monkeypatch.setattr(mod, "_lane_source", lambda redis, wakeup: _FakeSource([own]))
+    _install_orchestrator(monkeypatch)
+
+    async def scenario():
+        async with mod.LiveLaneWatch(
+            _entrypoint(), {"turn_id": "turn-7"}, poll_seconds=0.05,
+        ):
+            await asyncio.sleep(0.3)
+
+    _run(scenario())
+
+    assert len(_FakeOrchestrator.marks) >= 3      # heartbeat, repeatedly
+    assert set(_FakeOrchestrator.marks) == {"turn-7"}
+
+
+def test_the_heartbeat_can_be_turned_off(monkeypatch):
+    """A caller that owns the lane state itself (ReAct does) must not have a
+    second writer marking it."""
+    own = _lane_event(message_id="m-own", sequence=1, accepted=_accepted("do X", event_id="e0"))
+    monkeypatch.setattr(mod, "_lane_source", lambda redis, wakeup: _FakeSource([own]))
+    _install_orchestrator(monkeypatch)
+
+    async def scenario():
+        async with mod.LiveLaneWatch(
+            _entrypoint(), {"turn_id": "turn-7"}, poll_seconds=0.05, heartbeat=False,
+        ):
+            await asyncio.sleep(0.2)
+
+    _run(scenario())
+
+    assert _FakeOrchestrator.marks == []
+
+
+def test_a_failing_heartbeat_does_not_break_the_watch(monkeypatch):
+    """A lane that cannot be marked goes stale, which is the self-healing
+    behaviour that existed before this — not a reason to stop watching."""
+    own = _lane_event(message_id="m-own", sequence=1, accepted=_accepted("do X", event_id="e0"))
+    source = _FakeSource([own])
+    monkeypatch.setattr(mod, "_lane_source", lambda redis, wakeup: source)
+
+    import kdcube_ai_app.apps.chat.sdk.events.event_bus.orchestrator as orch
+
+    def _boom(_source):
+        raise RuntimeError("lane state unavailable")
+
+    monkeypatch.setattr(orch.ConversationEventBusOrchestrator, "for_source", staticmethod(_boom))
+
+    async def scenario():
+        async with mod.LiveLaneWatch(_entrypoint(), {"turn_id": "t"}, poll_seconds=0.05) as watch:
+            source.append(_lane_event(
+                message_id="m-f1", sequence=2, batch_id="b2",
+                accepted=_accepted("still seen", event_id="e1"),
+            ))
+            await asyncio.sleep(0.2)
+            return watch.arrived()
+
+    assert [item["event_id"] for item in _run(scenario())] == ["e1"]

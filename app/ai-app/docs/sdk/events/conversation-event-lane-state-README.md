@@ -218,6 +218,15 @@ scheduled_is_fresh =
 heartbeat can help diagnose long-running work, but it does not replace this
 lane-local acknowledgement.
 
+**A long turn must keep writing it.** Native ReAct does, through
+`mark_consumer_active`. A run-to-completion hosted turn did not, so its
+`scheduled` reservation went stale after 30 seconds while the turn itself ran
+for minutes — and a message typed after that was admitted as a new turn instead
+of waiting for the handoff, which reads as a turn that simply started. The
+foreign-runtime lane watcher now heartbeats the consumer on its poll, so the
+reservation lasts as long as the turn. A lane that stops being marked still goes
+stale, which is the self-healing path for a worker that died.
+
 A fresh `active` acknowledgement suppresses a wake only while
 `T.handler.status == open`. `handler=closed, consumer=active` is a recoverable
 finalization residue: no reader can consume through a closed gate, so proc may

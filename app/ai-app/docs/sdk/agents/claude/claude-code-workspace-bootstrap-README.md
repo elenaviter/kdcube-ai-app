@@ -181,6 +181,29 @@ refs/heads/kdcube/claude/<tenant>/<project>/<user_id>/<conversation_id>/<agent_n
 
 This matches the same continuity boundary used for `claude_session_id`.
 
+## Live control files in the workspace
+
+Beside the agent definition and `.mcp.json`, a lane that wants to reach its run
+mid-flight seeds three files into `.claude/` (see
+`solutions/claude_code/live_control.py`):
+
+| File | What it is |
+| --- | --- |
+| `kdcube-live-events.json` | the buffer: this turn's id, a stop flag, and what the person said |
+| `kdcube-live-hook.py` | the `PreToolUse` hook, self-contained (the CLI runs it as a bare subprocess with no path back to the SDK) |
+| `kdcube-live-settings.json` | registers the hook for every tool; passed as `--settings` through `extra_args` |
+
+**These are per TURN inside a per CONVERSATION directory**, which is the trap:
+the buffer outlives the turn that wrote it. Each turn reseeds it, and the seed
+stamps the turn id — which the settings also put on the hook's command line, so
+a buffer another turn wrote is ignored even before the reseed. A turn that
+returns early (a refusal, a connect-required answer) never reaches the seed, so
+the stamp is what makes the leftover harmless rather than the reset.
+
+The buffer does not accumulate: it holds one turn's messages and is overwritten
+whole. It is a few dozen bytes, and workspace cleanup takes it with everything
+else.
+
 ## Turn lifecycle
 
 The high-level runtime entry is:

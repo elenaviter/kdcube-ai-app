@@ -245,23 +245,39 @@ For that path:
 
 ```text
 proc schedules wake -> T.consumer = scheduled
-hosted runtime folds wake event's same-batch siblings into one start input
-execute_core runs once
+hosted runtime folds EVERY pending lane event into one start input (lane order)
+execute_core runs, and a lane watcher heartbeats T.consumer while it does
 shared door finalizer:
   consumes the wake occurrence through the lane cursor
-  terminalizes folded same-batch siblings by exact event id
+  terminalizes the folded events by exact event id
   sets T.consumer = none
-  publishes wake for remaining reactive lane work, if any
+  publishes ONE wake, and only for reactive events after the last steer
 ```
 
-This is not a replacement for ReAct's live folding. Native ReAct can still accept
-later batches into the current turn while the handler is open. Hosted
-run-to-completion runtimes fold only the start batch; different-`batch_id` events
-remain pending and can schedule the next serialized turn after release.
+This is not a replacement for ReAct's live folding into a running timeline.
+Native ReAct accepts later batches into the current turn while the handler is
+open; a hosted runtime folds at turn start and, while it runs, is reached (or
+stopped) by whatever its own runtime supports — a cancelled stream, a tool-call
+hook decision — never by folding into a loop it does not own.
+
+Three properties of that path are load-bearing:
+
+- **The fold is the pending lane, not one batch.** Two messages typed during a
+  turn are answered together by the next turn, in order. They used to promote
+  one turn each, so the agent answered the first without knowing the second
+  existed.
+- **The consumer is heartbeated for the turn's whole life.** Nothing marked it
+  before, so `scheduled` went stale after `scheduled_ttl_ms` (30 000 ms) while a
+  hosted turn can run for minutes — past that, a message was admitted as its own
+  turn rather than waiting for the handoff.
+- **A steer bounds the handoff.** Only events after the last steer wake a turn;
+  earlier ones stay pending for the next fold, and a bare steer is terminalized
+  because the turn it asked to stop is already over.
 
 Lane `sequence` remains the ordering field. `batch_id` groups one accepted
-ingress batch. Exact event ids are used only to terminalize the folded sibling
-records that the hosted runtime actually used.
+ingress batch, and travels on each folded event so a turn frame can say which
+files and refs arrived with which message. Exact event ids terminalize the
+folded records the hosted runtime actually used.
 
 ## Freshness
 

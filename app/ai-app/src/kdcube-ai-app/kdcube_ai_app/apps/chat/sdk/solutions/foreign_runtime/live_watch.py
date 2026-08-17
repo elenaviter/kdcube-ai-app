@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from kdcube_ai_app.apps.chat.sdk.protocol import external_event_text
 from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.external_events import (
@@ -45,6 +45,9 @@ from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.external_events impor
 )
 
 LOGGER = logging.getLogger("kdcube.foreign_runtime.live_watch")
+
+#: The lane occurrence an arrival came from, carried on the arrival itself.
+LANE_MESSAGE_ID_KEY = "_kdcube_lane_message_id"
 
 #: How often the lane is re-read while a turn runs. A turn lives for minutes and
 #: a person waiting on a stop notices a second; polling is chosen over a
@@ -87,9 +90,12 @@ class LiveLaneWatch:
         *,
         on_arrival: Optional[Callable[[List[Dict[str, Any]]], Any]] = None,
         poll_seconds: float = POLL_SECONDS,
+        heartbeat: bool = True,
     ) -> None:
         self._entrypoint = entrypoint
         self._state = state if isinstance(state, dict) else {}
+        self._heartbeat_enabled = bool(heartbeat)
+        self._turn_id = str((state or {}).get("turn_id") or "") if isinstance(state, dict) else ""
         self._on_arrival = on_arrival
         self._poll_seconds = max(0.1, float(poll_seconds or POLL_SECONDS))
         self._task: Optional[asyncio.Task] = None
@@ -97,6 +103,7 @@ class LiveLaneWatch:
         self._arrived: List[Dict[str, Any]] = []
         self._steer_seen = False
         self._live = False
+        self._source: Any = None
 
     # -- what the caller reads ------------------------------------------------
 
@@ -116,6 +123,35 @@ class LiveLaneWatch:
         """Everything seen so far, in lane order. Stamped exactly like the
         start-of-turn fold, so a caller handles one shape."""
         return list(self._arrived)
+    async def consume_delivered(self, message_ids: Sequence[str]) -> int:
+        """Close the lane events a runtime actually delivered to its model.
+
+        The watcher reads and does not write — except here, and only for what a
+        lane REPORTS as delivered. An event the model read mid-run was answered
+        by this turn, so leaving it pending would wake another turn for a
+        message that has already been dealt with. Everything the lane cannot
+        vouch for stays pending, which is the safe direction: at worst it is
+        folded into the next turn and read twice by a person, rather than
+        silently dropped.
+        """
+        ids = [str(item or "").strip() for item in (message_ids or []) if str(item or "").strip()]
+        if not ids or self._source is None:
+            return 0
+        closed = 0
+        for message_id in ids:
+            try:
+                event = await self._source.mark_consumed_event(
+                    message_id=message_id, turn_id=self._turn_id,
+                )
+                if event is not None:
+                    closed += 1
+            except Exception:
+                LOGGER.debug("[live-watch] could not close %s", message_id, exc_info=True)
+        LOGGER.info(
+            "[live-watch] closed %d/%d delivered event(s) as answered by this turn",
+            closed, len(ids),
+        )
+        return closed
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -128,6 +164,7 @@ class LiveLaneWatch:
         if source is None or own is None:
             return self
         self._live = True
+        self._source = source
         self._task = asyncio.create_task(self._poll(source, own))
         return self
 
@@ -170,9 +207,38 @@ class LiveLaneWatch:
         self._seen.add(str(getattr(own, "message_id", "") or ""))
         return source, own
 
+    async def _heartbeat(self, source: Any) -> None:
+        """Tell the lane this turn is still consuming it.
+
+        A run-to-completion turn never touched the lane, so its consumer stayed
+        `scheduled` — and `schedule_consumer_from_wake` treats `scheduled` as
+        fresh only within 30 seconds. For a turn bounded at fifteen minutes that
+        means the reservation is stale for most of its life, and a message typed
+        after the first half-minute is ADMITTED as a new turn instead of waiting
+        for the handoff. Everything downstream — one turn for the pending lane,
+        the stop as a boundary — assumes the events wait, so the wait has to be
+        real.
+
+        ReAct keeps this alive from `browser.py`; a foreign lane had no
+        equivalent until this poll, which is already ticking once a second.
+        Best-effort: a lane that cannot be marked is left to go stale, which is
+        the self-healing behaviour that existed before.
+        """
+        try:
+            from kdcube_ai_app.apps.chat.sdk.events.event_bus.orchestrator import (
+                ConversationEventBusOrchestrator,
+            )
+
+            orchestrator = ConversationEventBusOrchestrator.for_source(source)
+            await orchestrator.mark_consumer_active(turn_id=self._turn_id)
+        except Exception:
+            LOGGER.debug("[live-watch] consumer heartbeat failed", exc_info=True)
+
     async def _poll(self, source: Any, own: Any) -> None:
         own_sequence = int(getattr(own, "sequence", 0) or 0)
         while True:
+            if self._heartbeat_enabled:
+                await self._heartbeat(source)
             try:
                 await self._read_once(source, own_sequence)
             except asyncio.CancelledError:
@@ -203,6 +269,10 @@ class LiveLaneWatch:
                 continue
             body[LANE_BATCH_ID_KEY] = str(getattr(item, "batch_id", "") or "")
             body[LANE_SEQUENCE_KEY] = int(getattr(item, "sequence", 0) or 0)
+            # WHICH lane event this is. A lane that delivers an arrival to its
+            # runtime has to be able to say afterwards which ones actually
+            # landed, and only the message id survives that round trip.
+            body[LANE_MESSAGE_ID_KEY] = message_id
             from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.external_events import (
                 _lane_timestamp,
             )

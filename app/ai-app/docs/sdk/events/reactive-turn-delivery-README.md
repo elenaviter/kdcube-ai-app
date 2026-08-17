@@ -202,17 +202,44 @@ change what the composer *offers*, not what is delivered:
 
 - **ReAct (accepts both):** a mid-turn followup is folded into the running turn; a
   steer cancels and finalizes it.
-- **Run-to-completion (declares both false):** a mid-turn message is queued for
-  the next turn — it is not folded into the running turn. The finalizer releases
-  the consumer before any optional liveness wake. This is the "Queue for next
-  turn" composer state; agent code does not manage the lane.
+- **Run-to-completion:** a mid-turn message is not folded into the running turn's
+  own loop — that loop belongs to the graph or the CLI, and folding into it would
+  contradict the iteration management the agent's own design owns. What the turn
+  does instead is WATCH (`foreign_runtime/live_watch.py`), and each lane decides
+  what watching buys it:
 
-`event.user.steer` is never included in that next-turn handoff. It controls only the
-turn that was active when ingress accepted it; if that turn does not consume
-the control before closing, the control expires.
+  | Lane | A follow-up mid-run | A steer mid-run |
+  | --- | --- | --- |
+  | LangGraph (ported agents) | not delivered; folds into the next turn | cancels the streaming task; the checkpointer holds the last completed node |
+  | Claude Code (hosted) | delivered before the next tool call, via a `PreToolUse` hook — the model reads it and keeps working | the same hook DENIES the next tool call, so the model answers with what it has |
 
-An agent that *can* consume mid-turn integrates the ReAct-style handler
-(open/close, `mark_consumed_up_to`) inside its own `execute_core`; see the recipe.
+  Neither can reach a run that is inside a long tool call, and neither kills a
+  process to stop it.
+
+**What arrives while a turn runs now waits for the handoff, for the whole turn.**
+That used to hold for thirty seconds: a run-to-completion turn never marked the
+lane consumer, so `scheduled` went stale (`scheduled_ttl_ms`, 30 000 ms) and a
+later message was admitted as its own turn. The watcher heartbeats the consumer
+on its poll, so the reservation lasts as long as the turn does.
+
+**The handoff wakes ONE turn**, not one per pending event, and the fold takes the
+whole pending lane rather than the wakeup's own batch. Two messages typed during
+a turn are answered together, in order, by one turn — before, each promoted
+alone and the agent answered the first without knowing the second existed.
+
+**A steer is a boundary at the handoff.** Re-wake only when reactive events
+arrived AFTER the last steer:
+
+- before it — said while the stopped run was going; superseded as a REASON to
+  run, kept pending, folded into whatever turn a person starts next
+- the steer itself — a bare one is terminalized (spent: the turn it asked to
+  stop is over, and waking for it handed the agent an empty message). One with
+  text does not wake either, and its text stays pending for the next fold
+- after it — new intent, and it wakes one turn
+
+An agent that *can* consume mid-turn into its own loop integrates the ReAct-style
+handler (open/close, `mark_consumed_up_to`) inside its own `execute_core`; see
+the recipe.
 
 ## The failure mode this prevents
 

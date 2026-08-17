@@ -238,6 +238,13 @@ UI can reconcile.
 handlers for the same partition at the same time. It is not a substitute for
 storage-level checks.
 
+For conversation lanes, serialization is enforced by the consumer reservation,
+which is held by acknowledgement rather than by liveness: a turn that stops
+marking the lane loses it after the TTL. A long-running turn therefore has to
+heartbeat its consumer, or a message arriving mid-turn is admitted as a second
+turn on the same conversation. See
+[`../../sdk/events/conversation-event-lane-state-README.md`](../../sdk/events/conversation-event-lane-state-README.md).
+
 Bundle storage remains the authority:
 
 - require `idempotency_key` for mutations;

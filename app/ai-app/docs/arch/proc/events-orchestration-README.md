@@ -161,17 +161,38 @@ by that live handler, folded into the current timeline, and rendered by the same
 turn. If it is not accepted before close, post-save handoff wakes a later turn.
 
 Run-to-completion hosted runtimes, including foreign-runtime adapters such as
-LG-ReAct, do not keep a live lane reader open. They receive one processor wake,
-fold only the wakeup occurrence's same-`batch_id` start batch into
-`state["external_events"]`, execute once, and return. The shared door finalizer
-then consumes the wake occurrence and terminalizes the exact folded same-batch
+LG-ReAct and the hosted Claude Code lane, do not keep a live lane reader open.
+They receive one processor wake, fold, execute once, and return. The shared door
+finalizer then consumes the wake occurrence and terminalizes the exact folded
 event ids before releasing `T.consumer`.
 
-For that hosted-runtime path, a different-`batch_id` event is not part of the
-start batch, even if it arrives close in time or its lane sequence is adjacent.
-It remains pending and can schedule the next serialized turn after release. Lane
-`sequence` is still the ordering field; `batch_id` groups one visible ingress
-batch; event ids identify the exact folded records the hosted turn actually used.
+**The fold takes the whole PENDING lane, not the wakeup's batch.** Every event
+still unconsumed at turn start — the wakeup occurrence, its `batch_id` siblings
+(attachments, context refs) and anything that queued behind them — is delivered
+in lane `sequence` order, each stamped with its origin batch, sequence and
+arrival time. Consumed, promoted and failed occurrences stay out. Until
+2026-08-17 the fold took the wakeup's batch alone and the rest promoted one turn
+each: the agent answered the first without knowing the second existed, so a
+message correcting the first was read only after the work it corrected had been
+paid for.
+
+**The handoff wakes one turn, and a steer bounds it.** `_rewake_pending_reactive_events`
+publishes a single wakeup — the widened fold absorbs the rest — and only when
+reactive events arrived AFTER the last steer. Events at or before a steer stay
+pending (superseded as a reason to run, still folded into whatever turn a person
+starts next); a bare steer is terminalized, since the turn it asked to stop has
+ended and waking for it handed the agent an empty message.
+
+**The reservation lasts as long as the turn.** A run-to-completion turn never
+marked the lane consumer, so `scheduled` went stale after `scheduled_ttl_ms`
+(30 000 ms) while turns can run for minutes — past that, a message was admitted
+as its own turn instead of waiting for the handoff. The foreign-runtime watcher
+heartbeats the consumer on its poll.
+
+Lane `sequence` is still the ordering field; `batch_id` groups one visible
+ingress batch — and now also tells a turn frame which files and refs arrived
+with which message; event ids identify the exact folded records the hosted turn
+actually used.
 
 ## Lane State, Live Reader, And Handoff
 
@@ -204,8 +225,14 @@ fresh consumer. It queues an `ExternalEventLaneWakeup`, not a request copy. The 
 processor task therefore goes through the same resolution path as an initial
 lane-backed reactive start. Proc does not scan the lane after task completion.
 
-`steer` is a live control event. Stale steer events do not start a later turn
-after the target turn has expired.
+`steer` is a live control event. It never starts a later turn: a bare steer is
+terminalized at the handoff, and one carrying text stays pending for the next
+fold to read rather than waking a turn of its own.
+
+Hosted run-to-completion lanes can now be reached and stopped while they run,
+each by the mechanism its runtime supports — a cancelled stream for LangGraph,
+a `PreToolUse` hook decision for Claude Code. See the reactive-turn-delivery
+page for the per-lane table.
 
 ## Non-Reactive Idle Events
 
