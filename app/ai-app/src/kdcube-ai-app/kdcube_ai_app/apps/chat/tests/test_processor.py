@@ -1387,6 +1387,7 @@ async def test_process_task_schedules_fresh_external_event_lane_wakeup_before_ha
         state = await ConversationEventBusOrchestrator.for_source(source).state()
         captured["task_id"] = payload.meta.task_id
         captured["event_id"] = payload.event.event_id
+        captured["consumer_turn_id"] = state.consumer_turn_id
         captured["consumer_status"] = state.consumer_status
         captured["consumer_status_at"] = state.consumer_status_at
         await source.mark_consumed_up_to(max_sequence=int(payload.event.sequence or 0), turn_id=payload.routing.turn_id)
@@ -1444,6 +1445,7 @@ async def test_process_task_schedules_fresh_external_event_lane_wakeup_before_ha
 
     assert captured["task_id"] == "task-event"
     assert captured["event_id"] == "evt-fresh"
+    assert captured["consumer_turn_id"] == "turn-event"
     assert captured["consumer_status"] == "scheduled"
     assert captured["consumer_status_at"]
     assert redis.lists[inflight_key] == []

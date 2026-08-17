@@ -203,6 +203,7 @@ class EventLaneState:
     last_processed_reactive_event_timestamp: str = ""
     last_processed_event_timestamp: str = ""
     last_processed_event_id: str = ""
+    consumer_turn_id: str = ""
     consumer_status: str = ""
     consumer_status_at: str = ""
 

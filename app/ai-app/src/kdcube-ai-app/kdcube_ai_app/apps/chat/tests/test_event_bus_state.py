@@ -535,12 +535,50 @@ async def test_wake_schedules_consumer_when_no_fresh_consumer_exists():
 
     decision = await orchestrator.schedule_consumer_from_wake(
         wake_event_timestamp="2026-06-10T10:00:00Z",
+        turn_id="turn-1",
     )
 
     assert decision.scheduled
     assert decision.reason == "scheduled"
+    assert decision.state.consumer_turn_id == "turn-1"
     assert decision.state.consumer_status == "scheduled"
     assert decision.state.consumer_status_at
+
+
+@pytest.mark.asyncio
+async def test_owned_scheduled_consumer_heartbeat_refreshes_without_becoming_active():
+    orchestrator = _orchestrator()
+    await orchestrator.table.put(
+        EventLaneState(
+            consumer_turn_id="turn-1",
+            consumer_status="scheduled",
+            consumer_status_at="2026-06-10T09:00:00Z",
+        )
+    )
+
+    state = await orchestrator.heartbeat_scheduled_consumer(turn_id="turn-1")
+
+    assert state.consumer_turn_id == "turn-1"
+    assert state.consumer_status == "scheduled"
+    assert state.consumer_status_at != "2026-06-10T09:00:00Z"
+
+
+@pytest.mark.asyncio
+async def test_scheduled_consumer_heartbeat_cannot_refresh_another_turns_reservation():
+    orchestrator = _orchestrator()
+    await orchestrator.table.put(
+        EventLaneState(
+            consumer_turn_id="turn-new",
+            consumer_status="scheduled",
+            consumer_status_at="2026-06-10T09:00:00Z",
+        )
+    )
+
+    state = await orchestrator.heartbeat_scheduled_consumer(turn_id="turn-old")
+
+    assert state.consumer_turn_id == "turn-new"
+    assert state.consumer_status == "scheduled"
+    assert state.consumer_status_at == "2026-06-10T09:00:00Z"
 
 
 @pytest.mark.asyncio

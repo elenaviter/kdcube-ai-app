@@ -340,7 +340,7 @@ class _FakeOrchestrator:
     def for_source(source):
         return _FakeOrchestrator(source)
 
-    async def mark_consumer_active(self, *, turn_id=""):
+    async def heartbeat_scheduled_consumer(self, *, turn_id=""):
         _FakeOrchestrator.marks.append(turn_id)
         return None
 

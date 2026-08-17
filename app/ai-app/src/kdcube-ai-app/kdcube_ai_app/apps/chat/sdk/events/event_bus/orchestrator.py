@@ -191,10 +191,12 @@ class ConversationEventBusOrchestrator:
         self,
         *,
         wake_event_timestamp: str,
+        turn_id: str = "",
         active_ttl_ms: int = 30_000,
         scheduled_ttl_ms: int = 30_000,
     ) -> EventBusScheduleDecision:
         wake_ts = str(wake_event_timestamp or "").strip()
+        turn_id = str(turn_id or "").strip()
         now = utc_timestamp()
 
         async with self.table.lock(operation="schedule_consumer_from_wake"):
@@ -237,6 +239,7 @@ class ConversationEventBusOrchestrator:
                 )
             state.consumer_status = "scheduled"
             state.consumer_status_at = now
+            state.consumer_turn_id = turn_id
             await self.table.put(state)
             return EventBusScheduleDecision(
                 scheduled=True,
@@ -255,19 +258,54 @@ class ConversationEventBusOrchestrator:
                 return state
             state.consumer_status = "active"
             state.consumer_status_at = now
+            state.consumer_turn_id = turn_id or state.handler_turn_id
             return state
 
         return await self.table.update(_mutate, operation="mark_consumer_active")
+
+    async def heartbeat_scheduled_consumer(self, *, turn_id: str) -> EventLaneState:
+        """Refresh one run-to-completion turn's scheduled reservation.
+
+        Foreign runtimes do not open the ReAct handler, so their reservation
+        must remain ``scheduled`` while they run. Ownership is explicit: a
+        watcher may refresh only the reservation created for its own turn.
+        """
+        turn_id = str(turn_id or "").strip()
+        if not turn_id:
+            return await self.table.get()
+        now = utc_timestamp()
+
+        def _mutate(state: EventLaneState) -> EventLaneState:
+            if state.consumer_status != "scheduled":
+                return state
+            if state.consumer_turn_id != turn_id:
+                return state
+            state.consumer_status_at = now
+            return state
+
+        return await self.table.update(
+            _mutate,
+            operation="heartbeat_scheduled_consumer",
+        )
 
     async def mark_consumer_none(self, *, turn_id: str = "") -> EventLaneState:
         turn_id = str(turn_id or "").strip()
         now = utc_timestamp()
 
         def _mutate(state: EventLaneState) -> EventLaneState:
-            if turn_id and state.handler_turn_id and state.handler_turn_id != turn_id:
-                return state
+            if turn_id:
+                if state.consumer_turn_id and state.consumer_turn_id != turn_id:
+                    return state
+                if (
+                    not state.consumer_turn_id
+                    and state.handler_status == "open"
+                    and state.handler_turn_id
+                    and state.handler_turn_id != turn_id
+                ):
+                    return state
             state.consumer_status = "none"
             state.consumer_status_at = now
+            state.consumer_turn_id = ""
             return state
 
         return await self.table.update(_mutate, operation="mark_consumer_none")
@@ -302,6 +340,7 @@ class ConversationEventBusOrchestrator:
             )
             state.consumer_status = "active"
             state.consumer_status_at = utc_timestamp()
+            state.consumer_turn_id = str(turn_id or state.handler_turn_id or "")
             return state
 
         return await self.table.update(_mutate, operation="record_processed_events")
@@ -355,6 +394,7 @@ class ConversationEventBusOrchestrator:
             )
             state.consumer_status = "active"
             state.consumer_status_at = now
+            state.consumer_turn_id = turn_id or state.handler_turn_id
             await self.table.put(state)
             return EventBusAcceptDecision(
                 accepted=True,

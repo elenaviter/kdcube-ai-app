@@ -268,7 +268,7 @@ class LiveLaneWatch:
             )
 
             orchestrator = ConversationEventBusOrchestrator.for_source(source)
-            await orchestrator.mark_consumer_active(turn_id=self._turn_id)
+            await orchestrator.heartbeat_scheduled_consumer(turn_id=self._turn_id)
         except Exception:
             LOGGER.debug("[live-watch] consumer heartbeat failed", exc_info=True)
 

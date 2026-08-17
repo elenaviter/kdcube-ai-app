@@ -1283,7 +1283,10 @@ class EnhancedChatRequestProcessor:
         if ignore_reason:
             raise ExternalEventLaneWakeIgnored(ignore_reason)
         payload = event.task_payload_model()
-        decision = await orchestrator.schedule_consumer_from_wake(wake_event_timestamp=wake_ts)
+        decision = await orchestrator.schedule_consumer_from_wake(
+            wake_event_timestamp=wake_ts,
+            turn_id=str(payload.routing.turn_id or ""),
+        )
         if not decision.scheduled:
             raise ExternalEventLaneWakeIgnored(decision.reason)
         return self._payload_for_lane_wakeup(payload, wakeup=wakeup, event=event)
