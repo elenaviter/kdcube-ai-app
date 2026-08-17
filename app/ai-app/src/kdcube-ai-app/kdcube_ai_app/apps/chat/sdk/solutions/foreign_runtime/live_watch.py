@@ -177,6 +177,12 @@ class LiveLaneWatch:
             await task
         except (asyncio.CancelledError, Exception):  # noqa: BLE001 - best effort
             pass
+        # A watch that never stops keeps writing into a workspace the NEXT turn
+        # is using, so the end of watching is worth a line of its own.
+        LOGGER.info(
+            "[live-watch] turn=%s stopped watching after %d arrival(s) (steer=%s)",
+            self._turn_id or "-", len(self._arrived), self._steer_seen,
+        )
 
     # -- internals ------------------------------------------------------------
 
@@ -216,11 +222,27 @@ class LiveLaneWatch:
         #
         # Anchoring on identity instead of on ordering cannot drift: an arrival
         # is an event that was not on the lane when this turn started.
+        baseline: List[str] = []
         try:
             for item in await source.read_since(0, limit=100) or []:
-                self._seen.add(str(getattr(item, "message_id", "") or ""))
+                message_id = str(getattr(item, "message_id", "") or "")
+                self._seen.add(message_id)
+                baseline.append(f"{message_id}:{int(getattr(item, 'sequence', 0) or 0)}")
         except Exception:
-            LOGGER.debug("[live-watch] could not seed the lane baseline", exc_info=True)
+            LOGGER.warning(
+                "[live-watch] could not seed the lane baseline; everything already "
+                "on the lane will look like an arrival", exc_info=True,
+            )
+        # WHAT THIS WATCH CONSIDERS HISTORY, said out loud. An arrival that was
+        # on the lane before the turn started is the failure this anchor exists
+        # to prevent, and it is only diagnosable next to the baseline.
+        LOGGER.info(
+            "[live-watch] anchored turn=%s own=%s own_seq=%s baseline=%d %s",
+            self._turn_id or "-",
+            str(getattr(own, "message_id", "") or "-"),
+            int(getattr(own, "sequence", 0) or 0),
+            len(baseline), baseline,
+        )
         return source, own
 
     async def _heartbeat(self, source: Any) -> None:
@@ -303,9 +325,22 @@ class LiveLaneWatch:
         self._arrived.extend(fresh)
         if any(event_is_steer(body) for body in fresh):
             self._steer_seen = True
+        # WHICH events, and on whose behalf. "Something arrived" was never
+        # enough to tell a real mid-turn steer from an old one re-announced,
+        # and three fixes were shipped without it.
         LOGGER.info(
-            "[live-watch] %d event(s) arrived mid-turn (steer=%s)",
-            len(fresh), self._steer_seen,
+            "[live-watch] turn=%s announced %d arrival(s) (steer=%s) own_seq=%d: %s",
+            self._turn_id or "-", len(fresh), self._steer_seen, own_sequence,
+            [
+                {
+                    "id": body.get(LANE_MESSAGE_ID_KEY),
+                    "seq": body.get(LANE_SEQUENCE_KEY),
+                    "type": body.get("type"),
+                    "batch": body.get(LANE_BATCH_ID_KEY),
+                    "ts": body.get(LANE_TS_KEY),
+                }
+                for body in fresh
+            ],
         )
         if self._on_arrival is None:
             return

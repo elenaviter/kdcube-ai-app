@@ -38,9 +38,21 @@ from typing import Any, Dict, List, Mapping, Sequence
 
 LOGGER = logging.getLogger("kdcube.claude_code.live_control")
 
-#: Everything lives under the workspace's own `.claude/`, the same place the
-#: agent definition and the MCP config are seeded.
-CONTROL_DIRNAME = ".claude"
+#: A directory of our own, beside the workspace's `.claude/` and deliberately
+#: NOT inside it.
+#:
+#: `.claude/` is the session store's checkout. At the start of every turn the
+#: store deletes everything in it except `.git` and does `reset --hard` to the
+#: previous turn's snapshot, so anything seeded there before the run is wiped
+#: and REPLACED by last turn's copy. That is not a hypothetical: a stop written
+#: in one turn came back — buffer and hook settings together, a matching pair —
+#: at the start of every later turn, and the hook denied their tool calls
+#: because the stale buffer and the stale turn id on the hook's command line
+#: agreed with each other. The first turn of a conversation worked, because
+#: there was no snapshot to restore yet; every turn after it was refused.
+#:
+#: Per-turn ephemera do not belong in a directory another subsystem versions.
+CONTROL_DIRNAME = ".kdcube-live"
 BUFFER_FILENAME = "kdcube-live-events.json"
 HOOK_FILENAME = "kdcube-live-hook.py"
 SETTINGS_FILENAME = "kdcube-live-settings.json"
@@ -92,6 +104,7 @@ def publish_arrivals(
     messages: Sequence[Any],
     *,
     stop: bool = False,
+    turn_id: str = "",
 ) -> None:
     """Put what arrived where the next tool call will read it.
 
@@ -103,8 +116,39 @@ def publish_arrivals(
 
     ``stop`` marks the run as stopped, which the hook turns into a refusal
     rather than a note.
+
+    ``turn_id`` is WHOSE ARRIVAL THIS IS — the turn the caller is watching for.
+    The buffer's own turn id comes from the file, so a write inherits the stamp
+    of whatever turn seeded it: a writer left over from an earlier turn would
+    stamp a stop with the CURRENT turn's id and be indistinguishable from that
+    turn's own watcher. Saying who is writing makes the two tellable apart in
+    the log, and a write from a turn that is over is refused rather than
+    silently applied to somebody else's run.
     """
     buffer = read_buffer(workspace)
+    buffer_turn = str(buffer.get("turn_id") or "")
+    writer_turn = str(turn_id or "")
+    message_ids = [
+        str(item.get("message_id") or "") if isinstance(item, Mapping) else ""
+        for item in (messages or [])
+    ]
+    LOGGER.info(
+        "[claude-code] live control write: writer_turn=%s buffer_turn=%s stop=%s "
+        "arrivals=%d ids=%s workspace=%s",
+        writer_turn or "-", buffer_turn or "-", bool(stop),
+        len(message_ids), message_ids, workspace,
+    )
+    if writer_turn and buffer_turn and writer_turn != buffer_turn:
+        # NOT THIS TURN'S BUFFER. The workspace is per conversation, so the
+        # buffer a live turn reads is the same file an earlier turn's watcher
+        # still holds a path to. Writing here would hand this run a stop nobody
+        # pressed on it.
+        LOGGER.warning(
+            "[claude-code] live control write REFUSED: it belongs to turn %s but "
+            "the workspace is running turn %s (stop=%s, %d arrival(s))",
+            writer_turn, buffer_turn, bool(stop), len(message_ids),
+        )
+        return
     pending: List[Dict[str, Any]] = list(buffer.get("messages") or [])
     for message in messages:
         if isinstance(message, Mapping):

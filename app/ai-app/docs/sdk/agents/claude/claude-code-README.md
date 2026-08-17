@@ -312,7 +312,7 @@ Anything else a lane needs on the command line rides `ClaudeCodeAgentConfig.extr
 
 A hosted lane can hand a message to a run in flight, and can stop one, without
 killing the process. Both go through a `PreToolUse` hook, seeded by
-`solutions/claude_code/live_control.py` into the workspace's `.claude/`:
+`solutions/claude_code/live_control.py` into the workspace's `.kdcube-live/`:
 
 - `allow` + a reason — the model reads what the person said and keeps working
 - `deny` + a reason — the tool call does not happen, so the model answers with
@@ -341,6 +341,11 @@ the turn that wrote it: without the stamp, a stop written in one turn denied
 every tool call of every later turn, and the agent — seeing its commands refused
 repeatedly — reasonably concluded that a permission policy was blocking the
 path. A stop belongs to one run.
+
+The stamp only holds because these files sit outside the session store's
+checkout; seeded inside it they were restored in matching stale pairs, which the
+stamp cannot detect (workspace bootstrap doc, "Live control files in the
+workspace").
 
 Two limits, both real:
 

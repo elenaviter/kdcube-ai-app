@@ -183,8 +183,8 @@ This matches the same continuity boundary used for `claude_session_id`.
 
 ## Live control files in the workspace
 
-Beside the agent definition and `.mcp.json`, a lane that wants to reach its run
-mid-flight seeds three files into `.claude/` (see
+A lane that wants to reach its run mid-flight seeds three files into
+`.kdcube-live/` — a directory of its own beside `.claude/`, never inside it (see
 `solutions/claude_code/live_control.py`):
 
 | File | What it is |
@@ -199,6 +199,18 @@ stamps the turn id — which the settings also put on the hook's command line, s
 a buffer another turn wrote is ignored even before the reseed. A turn that
 returns early (a refusal, a connect-required answer) never reaches the seed, so
 the stamp is what makes the leftover harmless rather than the reset.
+
+**Why they are not in `.claude/`.** That directory is the session store's
+checkout (above): every turn it is emptied except for `.git` and reset to the
+previous turn's snapshot. Files seeded there before the run are deleted a moment
+later and REPLACED by the previous turn's copies — buffer and settings together,
+so the stale stop arrives with the stale turn id that matches it and the stamp
+above cannot tell. The symptom was total: after one stop, every later turn had
+every tool call refused, while the first turn of a conversation always worked
+because there was nothing to restore yet.
+
+A store lineage that already carries these files sheds them at the next
+bootstrap, so a conversation from before this heals on its next turn.
 
 The buffer does not accumulate: it holds one turn's messages and is overwritten
 whole. It is a few dozen bytes, and workspace cleanup takes it with everything

@@ -495,6 +495,48 @@ async def test_publish_respects_seeded_gitignore(tmp_path: Path):
     assert all(not name.startswith("backups/") for name in listing)
 
 
+@pytest.mark.asyncio
+async def test_bootstrap_sheds_live_control_files_an_older_lineage_carries(tmp_path: Path):
+    """The seam that made a stop outlive its turn, seen from the store's side.
+
+    Live control used to seed its buffer, hook and settings into this checkout.
+    The store committed them and restored them at the start of every later turn,
+    which handed that turn the PREVIOUS turn's stop — with the previous turn's
+    id on the hook command line, so the two agreed and the hook denied every
+    tool call. Live control keeps its own directory now; a lineage that already
+    carries these files has to shed them, or it replays that stop forever.
+    """
+    remote_repo = _init_bare_repo(tmp_path / "remote.git")
+    seed_repo = _init_git_repo(
+        tmp_path / "seed",
+        files={
+            "projects/-fixture/history.json": "{\"turns\": 1}\n",
+            "kdcube-live-events.json": "{\"turn_id\": \"turn-1\", \"stop\": true, \"messages\": []}",
+            "kdcube-live-hook.py": "# stale hook\n",
+            "kdcube-live-settings.json": "{\"hooks\": {}}",
+        },
+    )
+    config = _config(tmp_path, git_repo=remote_repo)
+    _push_branch(seed_repo, remote_repo, claude_code_session_branch_ref(config))
+
+    await bootstrap_claude_code_session_store(config=config)
+
+    for name in ("kdcube-live-events.json", "kdcube-live-hook.py", "kdcube-live-settings.json"):
+        assert not (config.local_root / name).exists(), name
+    # The session's own content is untouched.
+    assert (config.local_root / "projects" / "-fixture" / "history.json").is_file()
+
+    # And the lineage stops carrying them after this turn's snapshot.
+    publish = await publish_claude_code_session_store(config=config)
+    assert publish["published"] is True
+    listing = subprocess.run(
+        ["git", "--git-dir", str(remote_repo), "ls-tree", "-r", "--name-only",
+         claude_code_session_branch_ref(config)],
+        check=True, capture_output=True, text=True,
+    ).stdout.splitlines()
+    assert not [name for name in listing if name.startswith("kdcube-live-")]
+
+
 def test_sanitize_cwd_matches_observed_claude_cli_scheme():
     sanitized = runtime_module._sanitize_cwd_for_claude_projects(
         Path("/private/tmp/claude-probe2/has.dot and_space")

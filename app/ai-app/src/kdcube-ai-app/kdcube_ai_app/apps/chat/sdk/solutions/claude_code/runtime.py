@@ -274,7 +274,22 @@ statsig/
 shell-snapshots/
 ide/
 sessions/
+kdcube-live-events.json
+kdcube-live-hook.py
+kdcube-live-settings.json
 """
+
+#: Live control used to seed itself into this checkout, so the store committed
+#: its files and restored them at the start of every later turn — handing that
+#: turn the PREVIOUS turn's stop, with the previous turn's id on the hook
+#: command line to match. Live control now keeps its own directory beside this
+#: one; these names are shed so a lineage that already carries them stops
+#: replaying a stop nobody pressed.
+_LIVE_CONTROL_LEFTOVERS = (
+    "kdcube-live-events.json",
+    "kdcube-live-hook.py",
+    "kdcube-live-settings.json",
+)
 
 
 def _ensure_session_gitignore(*, local_root: pathlib.Path) -> bool:
@@ -283,6 +298,25 @@ def _ensure_session_gitignore(*, local_root: pathlib.Path) -> bool:
         return False
     gitignore_path.write_text(CLAUDE_CODE_SESSION_GITIGNORE, encoding="utf-8")
     return True
+
+
+def _drop_live_control_leftovers(*, local_root: pathlib.Path) -> list[str]:
+    """Remove files an earlier live control left in this checkout.
+
+    Deleting them on disk is enough to retire them: the end-of-turn snapshot
+    stages everything (``git add -A``), so the deletion is committed and the
+    lineage stops carrying them after one turn.
+    """
+    dropped: list[str] = []
+    for name in _LIVE_CONTROL_LEFTOVERS:
+        path = local_root / name
+        try:
+            if path.is_file():
+                path.unlink()
+                dropped.append(name)
+        except OSError:
+            continue
+    return dropped
 
 
 def _sanitize_cwd_for_claude_projects(cwd: pathlib.Path) -> str:
@@ -411,6 +445,7 @@ def _bootstrap_claude_code_session_store_sync(
         else:
             action = "reused_local_workspace"
     gitignore_seeded = _ensure_session_gitignore(local_root=local_root)
+    dropped = _drop_live_control_leftovers(local_root=local_root)
     log.info(
         "[ClaudeCodeRuntime] bootstrapped session store agent=%s conversation=%s local_root=%s action=%s branch=%s gitignore_seeded=%s",
         config.agent_name,
@@ -420,6 +455,12 @@ def _bootstrap_claude_code_session_store_sync(
         claude_code_session_branch_ref(config),
         gitignore_seeded,
     )
+    if dropped:
+        log.info(
+            "[ClaudeCodeRuntime] dropped live-control leftovers from the session "
+            "checkout agent=%s conversation=%s files=%s",
+            config.agent_name, config.conversation_id, dropped,
+        )
     return {
         "implementation": config.implementation,
         "local_root": str(local_root),

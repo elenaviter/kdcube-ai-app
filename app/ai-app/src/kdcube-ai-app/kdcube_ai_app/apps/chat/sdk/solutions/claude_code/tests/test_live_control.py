@@ -208,6 +208,72 @@ def test_reseeding_clears_the_previous_turns_stop(tmp_path):
     assert mod.read_buffer(tmp_path)["stop"] is False
 
 
+def test_nothing_is_seeded_into_the_session_stores_checkout(tmp_path):
+    """WHY THIS LIVES SOMEWHERE ELSE, and the bug that taught it.
+
+    `.claude/` is the session store's checkout: at the start of every turn it
+    deletes everything there except `.git` and resets to the previous turn's
+    snapshot. Seeding into it meant the fresh buffer and settings were wiped a
+    second after they were written and REPLACED by last turn's pair — a stop
+    with the matching turn id on the hook's command line — so every turn after
+    a stop had its tool calls refused, while the first turn of a conversation
+    worked because there was no snapshot to restore yet.
+    """
+    mod.seed_live_control(tmp_path, turn_id="turn-1")
+
+    session_store_root = tmp_path / ".claude"
+    seeded = list(session_store_root.rglob("kdcube-live-*")) if session_store_root.exists() else []
+    assert seeded == []
+    assert not str(mod.control_dir(tmp_path)).startswith(str(session_store_root) + "/")
+
+
+def test_the_seed_survives_the_store_restoring_its_checkout(tmp_path):
+    """The same thing, played out: the store wipes and restores `.claude`
+    between the seed and the first tool call, and live control is unaffected."""
+    args = mod.seed_live_control(tmp_path, turn_id="turn-2")
+
+    store_root = tmp_path / ".claude"
+    store_root.mkdir(parents=True, exist_ok=True)
+    (store_root / "kdcube-live-events.json").write_text(
+        json.dumps({"turn_id": "turn-1", "stop": True, "messages": []}), encoding="utf-8",
+    )
+
+    assert _fire_hook(tmp_path, "turn-2") == {}
+    assert Path(args[1]).is_file()
+
+
+def test_a_writer_from_a_finished_turn_cannot_stop_the_running_one(tmp_path):
+    """The other half of the same bug, on the WRITE side.
+
+    The reseed above resets the buffer, but nothing stopped a writer belonging
+    to an earlier turn from putting a stop back into it a moment later: the
+    buffer takes its turn id from the file, so such a write is stamped with the
+    RUNNING turn's id and the hook honours it. That is a stop nobody pressed on
+    this run, and it is indistinguishable after the fact from a real one.
+    """
+    mod.seed_live_control(tmp_path, turn_id="turn-1")
+    mod.seed_live_control(tmp_path, turn_id="turn-2")
+
+    mod.publish_arrivals(tmp_path, [], stop=True, turn_id="turn-1")
+
+    assert mod.read_buffer(tmp_path)["stop"] is False
+    assert _fire_hook(tmp_path, "turn-2") == {}
+
+    # The running turn's own watcher still reaches it.
+    mod.publish_arrivals(tmp_path, [], stop=True, turn_id="turn-2")
+    assert _fire_hook(tmp_path, "turn-2")["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_an_unnamed_writer_is_still_honoured(tmp_path):
+    """Saying which turn you are is optional: a caller that does not (tests,
+    and any lane that has no turn id to give) behaves exactly as before."""
+    mod.seed_live_control(tmp_path, turn_id="turn-1")
+    mod.publish_arrivals(tmp_path, ["look at this"])
+    assert "look at this" in _fire_hook(tmp_path, "turn-1")["hookSpecificOutput"][
+        "permissionDecisionReason"
+    ]
+
+
 def test_the_settings_name_the_turn_on_the_hook_command(tmp_path):
     args = mod.seed_live_control(tmp_path, turn_id="turn-9")
     settings = json.loads(Path(args[1]).read_text(encoding="utf-8"))
