@@ -11,6 +11,7 @@ its event shape; the title/is-new probes' fail-open skips.
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.turn_record import (
@@ -18,6 +19,12 @@ from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.turn_record import (
     emit_turn_timing,
     finalize_conversation_title,
     persist_turn_artifacts,
+    record_foreign_runtime_turn_log,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.conversation.record import (
+    mark_turn_log_recorded,
+    reset_turn_log_recorded,
+    turn_log_was_recorded,
 )
 
 
@@ -34,6 +41,32 @@ class _RecordingEntrypoint:
 
     async def _persist_stream_artifacts_fallback(self, *, state: dict) -> None:
         self.stream_states.append(state)
+
+
+class _TurnLogClient:
+    def __init__(self) -> None:
+        self.recent_calls: list[dict] = []
+        self.turn_logs: list[dict] = []
+        self.timeline_artifacts: list[dict] = []
+
+    async def recent(self, **kwargs):
+        self.recent_calls.append(kwargs)
+        return {"items": []}
+
+    async def save_turn_log_as_artifact(self, **kwargs) -> None:
+        self.turn_logs.append(kwargs)
+
+    async def save_artifact(self, **kwargs) -> None:
+        self.timeline_artifacts.append(kwargs)
+
+
+class _TurnLogEntrypoint:
+    def __init__(self, client: _TurnLogClient | None = None) -> None:
+        self.client = client
+        self.config = SimpleNamespace(ai_bundle_spec=SimpleNamespace(id="bundle@1"))
+
+    async def get_ctx_client(self):
+        return self.client
 
 
 # ── persist_turn_artifacts ───────────────────────────────────────────────────
@@ -89,6 +122,105 @@ def test_persist_is_tolerant_of_an_empty_state() -> None:
     # base methods (fail-open themselves) still both run.
     assert ep.events_states == [state]
     assert ep.stream_states == [state]
+
+
+# ── record_foreign_runtime_turn_log ──────────────────────────────────────────
+
+def test_record_foreign_runtime_turn_log_records_ordered_user_and_assistant_blocks() -> None:
+    reset_turn_log_recorded()
+    client = _TurnLogClient()
+    ep = _TurnLogEntrypoint(client)
+    state = {
+        "tenant": "demo-tenant",
+        "project": "demo-project",
+        "economics_user": "u1",
+        "user_type": "registered",
+        "conversation_id": "c1",
+        "turn_id": "t1",
+        "agent_id": "lg-react",
+        "external_events": [
+            {
+                "type": "event.user.prompt",
+                "batch_id": "batch-1",
+                "payload": {"event": {"text": "send this image"}},
+            },
+            {
+                "type": "event.user.attachment.created",
+                "batch_id": "batch-1",
+                "payload": {
+                    "event": {
+                        "filename": "image.png",
+                        "mime": "image/png",
+                        "hosted_uri": "file:///kdcube-storage/image.png",
+                        "key": "attachments/image.png",
+                    }
+                },
+            },
+        ],
+        "hosted_files": [
+            {
+                "logical_path": "conv:fi:t1.assistant/test.png",
+                "hosted_uri": "file:///kdcube-storage/out.png",
+                "filename": "test.png",
+                "mime": "image/png",
+            }
+        ],
+    }
+
+    wrote = asyncio.run(record_foreign_runtime_turn_log(
+        ep,
+        state,
+        {"final_answer": "uploaded", "conversation_title": "Send Image"},
+    ))
+
+    assert wrote is True
+    assert turn_log_was_recorded() is True
+    assert len(client.turn_logs) == 1
+    saved = client.turn_logs[0]
+    assert saved["tenant"] == "demo-tenant"
+    assert saved["project"] == "demo-project"
+    assert saved["user"] == "u1"
+    assert saved["conversation_id"] == "c1"
+    assert saved["turn_id"] == "t1"
+    assert saved["bundle_id"] == "bundle@1"
+    assert saved["agent_id"] == "lg-react"
+
+    blocks = saved["payload"]["blocks"]
+    assert [b["type"] for b in blocks] == [
+        "user.prompt",
+        "user.attachment.meta",
+        "react.tool.result",
+        "assistant.completion",
+    ]
+    assert blocks[0]["text"] == "send this image"
+    assert blocks[0]["meta"]["batch_id"] == "batch-1"
+    assert blocks[1]["meta"]["filename"] == "image.png"
+    assert json.loads(blocks[2]["text"])["filename"] == "test.png"
+    assert blocks[3]["text"] == "uploaded"
+    assert client.timeline_artifacts
+
+
+def test_record_foreign_runtime_turn_log_is_inert_after_a_rich_log_was_recorded() -> None:
+    reset_turn_log_recorded()
+    mark_turn_log_recorded()
+    client = _TurnLogClient()
+    ep = _TurnLogEntrypoint(client)
+
+    wrote = asyncio.run(record_foreign_runtime_turn_log(
+        ep,
+        {
+            "tenant": "demo-tenant",
+            "project": "demo-project",
+            "economics_user": "u1",
+            "conversation_id": "c1",
+            "turn_id": "t1",
+        },
+        {"final_answer": "already handled"},
+    ))
+
+    assert wrote is False
+    assert client.turn_logs == []
+    assert client.timeline_artifacts == []
 
 
 # ── emit_turn_timing ─────────────────────────────────────────────────────────

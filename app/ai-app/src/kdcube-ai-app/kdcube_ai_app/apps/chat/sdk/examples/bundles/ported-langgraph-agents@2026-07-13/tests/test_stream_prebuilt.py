@@ -111,6 +111,73 @@ class _OfflineFinalGraph:
         }
 
 
+class _StreamingOrderGraph:
+    """A final model turn that streams content before its chain-end event.
+
+    The adapter must pass those chunks through immediately. Delaying all answer
+    deltas until node end makes the UI receive the answer as one completed block
+    instead of a live stream.
+    """
+
+    def __init__(self) -> None:
+        self.deltas_before_end = 0
+
+    async def astream_events(self, inputs, config, *, version=None):
+        yield {"event": "on_chain_start", "name": "model", "metadata": {"langgraph_node": "model"}}
+        yield {
+            "event": "on_chat_model_stream",
+            "name": "model",
+            "metadata": {"langgraph_node": "model"},
+            "data": {"chunk": _chunk(content="live ")},
+        }
+        comm = comm_ctx.get_comm()
+        self.deltas_before_end = len(getattr(comm, "deltas", []) or [])
+        yield {
+            "event": "on_chain_end",
+            "name": "model",
+            "metadata": {"langgraph_node": "model"},
+            "data": {"output": {"messages": [_ai("live ")]}},
+        }
+
+
+class _MetadataOnlyAgentNodeGraph:
+    """Some LangGraph event versions put the semantic node in metadata while the
+    event name is a runnable wrapper. The adapter must still reset tool turns and
+    flush the final answer as chat.delta."""
+
+    async def astream_events(self, inputs, config, *, version=None):
+        yield {"event": "on_chain_start", "name": "RunnableSequence", "metadata": {"langgraph_node": "model"}}
+        yield {
+            "event": "on_chat_model_stream",
+            "name": "ChatModel",
+            "metadata": {"langgraph_node": "model"},
+            "data": {"chunk": _chunk(content="", tool_call_chunks=[{"name": "lookup", "id": "1"}])},
+        }
+        yield {
+            "event": "on_chain_end",
+            "name": "RunnableSequence",
+            "metadata": {"langgraph_node": "model"},
+            "data": {"output": {"messages": [_ai("", tool_calls=[{"name": "lookup", "id": "1"}])]}},
+        }
+        yield {"event": "on_tool_start", "name": "lookup", "run_id": "r1", "metadata": {"langgraph_node": "tools"}}
+        yield {"event": "on_tool_end", "name": "lookup", "run_id": "r1",
+               "metadata": {"langgraph_node": "tools"}, "data": {"output": _ai("ok")}}
+        yield {"event": "on_chain_start", "name": "RunnableSequence", "metadata": {"langgraph_node": "model"}}
+        for tok in ("final ", "answer"):
+            yield {
+                "event": "on_chat_model_stream",
+                "name": "ChatModel",
+                "metadata": {"langgraph_node": "model"},
+                "data": {"chunk": _chunk(content=tok)},
+            }
+        yield {
+            "event": "on_chain_end",
+            "name": "RunnableSequence",
+            "metadata": {"langgraph_node": "model"},
+            "data": {"output": {"messages": [_ai("final answer")]}},
+        }
+
+
 def _run(graph):
     async def _go():
         comm = _FakeComm()
@@ -148,6 +215,24 @@ def test_offline_final_turn_streams_content_as_single_delta() -> None:
     assert comm.deltas == ["canned offline answer"]
     assert comm.completed is True
     assert comm.complete_data == {"final_answer": "canned offline answer"}
+
+
+def test_streamed_answer_chunk_is_emitted_before_chain_end() -> None:
+    graph = _StreamingOrderGraph()
+    comm, answer = _run(graph)
+
+    assert graph.deltas_before_end == 1
+    assert answer == "live "
+    assert comm.deltas == ["live "]
+    assert comm.completed is True
+
+
+def test_metadata_langgraph_node_drives_answer_delta_when_event_name_is_wrapper() -> None:
+    comm, answer = _run(_MetadataOnlyAgentNodeGraph())
+
+    assert answer == "final answer"
+    assert comm.deltas == ["final ", "answer"]
+    assert comm.completed is True
 
 
 # ── tool-call visibility in the Steps view ───────────────────────────────────

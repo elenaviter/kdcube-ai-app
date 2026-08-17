@@ -104,6 +104,168 @@ async def persist_turn_artifacts(
     await entrypoint._persist_stream_artifacts_fallback(state=save_state)
 
 
+def _record_user_from_state(state: Dict[str, Any]) -> str:
+    return str(
+        state.get("economics_user")
+        or state.get("authority_user")
+        or state.get("actor_user")
+        or state.get("user")
+        or state.get("fingerprint")
+        or ""
+    ).strip()
+
+
+async def record_foreign_runtime_turn_log(
+    entrypoint: Any,
+    state: Dict[str, Any],
+    result: Optional[Dict[str, Any]] = None,
+    *,
+    econ_ctx: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Persist the canonical minimal turn log for a run-to-completion foreign
+    runtime.
+
+    React owns a rich ordered turn log. Foreign runtimes such as ported
+    LangGraph do not, so they must explicitly record the framework-neutral
+    blocks the conversation reader understands: user input events, user
+    attachment refs, assistant-hosted file refs, steps, and one assistant
+    completion for this completed run. This is not a UI recovery path and it
+    does not read legacy ``chat.complete`` payloads; it records from the turn
+    state the bundle just ran with.
+    """
+    result = result or {}
+    state = state or {}
+    econ_ctx = econ_ctx or {}
+    try:
+        from kdcube_ai_app.apps.chat.sdk.protocol import (
+            external_events_text,
+            hosted_external_event_attachments,
+        )
+        from kdcube_ai_app.apps.chat.sdk.solutions.conversation.record import (
+            record_minimal_turn_log_if_absent,
+            turn_log_was_recorded,
+        )
+    except Exception:
+        LOGGER.warning("[foreign-runtime] turn-log record imports failed", exc_info=True)
+        return False
+
+    if turn_log_was_recorded():
+        LOGGER.info("[foreign-runtime] turn-log record skip already_recorded=True")
+        return False
+
+    final_answer = str(
+        result.get("final_answer")
+        or result.get("answer")
+        or state.get("final_answer")
+        or ""
+    ).strip()
+    if not final_answer:
+        LOGGER.info("[foreign-runtime] turn-log record skip final_answer_len=0")
+        return False
+
+    tenant = str(state.get("tenant") or econ_ctx.get("tenant") or "").strip()
+    project = str(state.get("project") or econ_ctx.get("project") or "").strip()
+    user_id = _record_user_from_state(state)
+    user_type = str(
+        state.get("user_type")
+        or econ_ctx.get("user_type")
+        or ("registered" if user_id else "anonymous")
+    ).strip() or "registered"
+    conversation_id = str(
+        state.get("conversation_id")
+        or state.get("session_id")
+        or result.get("conversation_id")
+        or ""
+    ).strip()
+    turn_id = str(state.get("turn_id") or result.get("turn_id") or "").strip()
+    bundle_id = str(
+        getattr(getattr(getattr(entrypoint, "config", None), "ai_bundle_spec", None), "id", "")
+        or ""
+    ).strip()
+    agent_id_raw = str(state.get("agent_id") or result.get("agent_id") or "").strip()
+    agent_id = agent_id_raw or None
+
+    missing = [
+        name for name, value in (
+            ("tenant", tenant),
+            ("project", project),
+            ("user", user_id),
+            ("conversation_id", conversation_id),
+            ("turn_id", turn_id),
+            ("bundle_id", bundle_id),
+        )
+        if not value
+    ]
+    if missing:
+        LOGGER.warning(
+            "[foreign-runtime] turn-log record skip missing=%s conversation=%s turn=%s",
+            ",".join(missing), conversation_id or "-", turn_id or "-",
+        )
+        return False
+
+    client = await entrypoint.get_ctx_client()
+    if client is None:
+        LOGGER.warning(
+            "[foreign-runtime] turn-log record skip no ctx client conversation=%s turn=%s",
+            conversation_id, turn_id,
+        )
+        return False
+
+    events = [e for e in (state.get("external_events") or []) if isinstance(e, dict)]
+    user_prompt_text = external_events_text(events) or ""
+    user_event_type = "event.user.prompt"
+    for event in events:
+        event_type = str(event.get("type") or "").strip()
+        if event_type in {"event.user.prompt", "event.user.followup", "event.user.steer"}:
+            user_event_type = event_type
+            break
+    user_attachments = list(hosted_external_event_attachments(events) or [])
+    batch_id = ""
+    for event in events:
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        candidate = str(event.get("batch_id") or payload.get("batch_id") or "").strip()
+        if candidate:
+            batch_id = candidate
+            break
+    raw_files = state.get("hosted_files") or result.get("files") or []
+    assistant_files = [row for row in raw_files if isinstance(row, dict)]
+    conversation_title = str(
+        result.get("conversation_title")
+        or state.get("conversation_title")
+        or ""
+    ).strip()
+
+    wrote_turn_log = await record_minimal_turn_log_if_absent(
+        conversation_client=client,
+        tenant=tenant,
+        project=project,
+        user=user_id,
+        user_type=user_type,
+        conversation_id=conversation_id,
+        turn_id=turn_id,
+        bundle_id=bundle_id,
+        agent_id=agent_id,
+        final_answer=final_answer,
+        steps=result.get("step_logs") or None,
+        conversation_title=conversation_title or None,
+        user_prompt_text=user_prompt_text,
+        user_event_type=user_event_type,
+        user_attachments=user_attachments,
+        user_events=events,
+        batch_id=batch_id,
+        assistant_files=assistant_files,
+    )
+    LOGGER.info(
+        "[foreign-runtime] turn-log record conversation=%s turn=%s wrote=%s "
+        "events=%d user_event_type=%s prompt_len=%d attachments=%d "
+        "assistant_files=%d final_answer_len=%d title=%r",
+        conversation_id, turn_id, wrote_turn_log, len(events), user_event_type,
+        len(user_prompt_text), len(user_attachments), len(assistant_files),
+        len(final_answer), conversation_title,
+    )
+    return bool(wrote_turn_log)
+
+
 async def finalize_conversation_title(
     entrypoint: Any,
     state: Dict[str, Any],

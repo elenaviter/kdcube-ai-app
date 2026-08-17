@@ -104,6 +104,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.turn_record import (
     emit_turn_timing,
     finalize_conversation_title,
     persist_turn_artifacts,
+    record_foreign_runtime_turn_log,
 )
 from .platform.tool_pick import agent_tool_connections, run_python_bound, select_bound_tools
 from .platform.turn_workspace import (
@@ -1136,6 +1137,7 @@ class LGPortedAgentsBundle(BaseEntrypointWithEconomics):
         the artifact is scoped to the same (user, conversation) the reload reads.
         The persistence orchestration is the shared foreign-runtime seam's."""
         await super().post_run_hook(state=state, result=result, econ_ctx=econ_ctx or {})
+        await record_foreign_runtime_turn_log(self, state, result, econ_ctx=econ_ctx or {})
         await persist_turn_artifacts(self, state, result)
 
     # ── first-turn conversation title ─────────────────────────────────────────
