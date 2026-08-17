@@ -396,6 +396,14 @@ async def run_until_stopped(
     cancelled at an await point — LangGraph, whose checkpointer holds the last
     completed node, so a cancelled stream loses nothing that was finished.
 
+    Finished is the operative word: a cancellation can land INSIDE one exchange,
+    with the model's tool call checkpointed and its result never written. The
+    runtime is untroubled by that and the provider is not — it refuses the whole
+    history on the next request — so a lane that cancels a run owes its state a
+    repair afterwards. Only the lane knows the shape of its own messages, so
+    this function cannot do it for them; see the ported-langgraph bundle's
+    `stop_repair`.
+
     The FOLD half needs no work here and that is the point: the watcher is
     read-only, so every event it saw — the follow-ups and the steer itself — is
     still pending on the lane when the run is cancelled. The handoff then folds

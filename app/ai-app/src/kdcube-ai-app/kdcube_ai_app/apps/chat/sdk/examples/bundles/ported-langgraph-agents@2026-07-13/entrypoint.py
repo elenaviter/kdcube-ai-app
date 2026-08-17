@@ -91,6 +91,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.live_watch import (
     run_until_stopped,
 )
 from .platform.identity import turn_identity
+from .platform.stop_repair import repair_unanswered_tool_calls
 from .platform.stream_solution import stream_graph_turn
 from .platform.stream_prebuilt import stream_react_turn
 from .platform.tools_mcp import load_mcp_tools_for_connections, consent_request_tools
@@ -1067,6 +1068,14 @@ class LGPortedAgentsBundle(BaseEntrypointWithEconomics):
         # adapter, redirected at the chat component via comm_ctx. Returns the
         # answer in the shape the Telegram renderer reads. The graph runs INSIDE the
         # code-exec scope so `run_python`'s `host_files` resolves during the run.
+        # (repair) Whatever interrupted the LAST run of this thread — a stop, a
+        # timeout kill, a worker that died — may have left a tool call the model
+        # made and no result for it, which the provider refuses to accept on the
+        # NEXT request (`tool_use` without `tool_result`). Left alone it wedges
+        # the whole conversation, not one turn, so every turn heals the thread it
+        # is about to send before it sends it.
+        await repair_unanswered_tool_calls(graph, run_config)
+
         async def _run_turn() -> Dict[str, Any]:
             async with code_exec_scope(code_exec_ctx):
                 answer = await spec.stream(graph, inputs, run_config)
@@ -1103,6 +1112,12 @@ class LGPortedAgentsBundle(BaseEntrypointWithEconomics):
                 "pending_events=%d",
                 agent_id, thread_id, len(outcome.arrived),
             )
+            # A cancellation can land between the model asking for a tool and
+            # the result arriving, and the checkpoint keeps the half it has.
+            # Answered here so the thread is sendable at rest, truthfully: the
+            # next turn reads that the tool did not run rather than inventing
+            # what it would have returned.
+            await repair_unanswered_tool_calls(graph, run_config)
             # Said in band, in plain language: the person sees why the stream
             # ended, and the next turn reads the same sentence in its history
             # instead of inferring that the agent fell silent.
