@@ -431,3 +431,124 @@ async def test_base_run_finalizes_lane_on_success_and_error_but_not_cancel(monke
     with pytest.raises(asyncio.CancelledError):
         await _build(_cancel).run()
     assert calls == []
+
+
+# ── one turn for the whole pending lane (2026-08-17) ─────────────────────────
+
+def _typed(*, ts, message_id, sequence, text="and this?", etype="event.user.followup"):
+    """A pending event carrying what a person typed."""
+    event = _event(ts=ts, message_id=message_id, sequence=sequence)
+    event.payload = {
+        "event": {
+            "timestamp": ts,
+            "reactive": True,
+            "type": etype,
+            "payload": {"event": {"text": text}},
+        }
+    }
+    return event
+
+
+@pytest.mark.asyncio
+async def test_three_queued_followups_wake_ONE_turn(monkeypatch):
+    """The behaviour this change exists for.
+
+    Waking one turn per pending event answered each message in isolation: the
+    agent replied to the first without knowing the second existed, so a message
+    that CORRECTED the first was read only after the correction was moot. The
+    handoff now wakes once and the foreign-runtime fold takes the rest.
+    """
+    own = _event(ts=_OWN_TS, message_id="evt-own", sequence=1)
+    f1 = _typed(ts=_FOLLOWUP_TS, message_id="evt-f1", sequence=2, text="do X")
+    f2 = _typed(ts="2026-07-13T11:00:06Z", message_id="evt-f2", sequence=3, text="actually Y")
+    f3 = _typed(ts="2026-07-13T11:00:07Z", message_id="evt-f3", sequence=4, text="and Z")
+    source = _FakeSource([own, f1, f2, f3])
+    published: list = []
+    _install(
+        monkeypatch,
+        state=EventLaneState(consumer_status="scheduled", consumer_status_at="2026-07-13T11:00:00Z"),
+        source=source,
+        published=published,
+    )
+
+    await rl.finalize_reactive_event_lane(redis=object(), comm_context=_comm_context())
+
+    # ONE wake, for the EARLIEST pending event — the fold reads the lane from
+    # there and delivers all three to that turn.
+    assert published == ["evt-f1"]
+    # And the later two are left pending rather than consumed here: the turn
+    # that folds them is what terminalizes them.
+    assert f2.consumed_at is None and f3.consumed_at is None
+
+
+@pytest.mark.asyncio
+async def test_a_bare_stop_does_not_buy_a_turn(monkeypatch):
+    """A steer with no text asks a RUNNING turn to wrap up.
+
+    By the time the handoff sees it, that turn has ended — so there is nothing
+    left to ask. It used to wake a turn anyway, and since the batch carried no
+    user-visible text the agent was handed an empty message: pressing stop cost
+    a turn instead of saving one.
+    """
+    own = _event(ts=_OWN_TS, message_id="evt-own", sequence=1)
+    stop = _typed(ts=_FOLLOWUP_TS, message_id="evt-stop", sequence=2,
+                  text="", etype="event.user.steer")
+    source = _FakeSource([own, stop])
+    published: list = []
+    _install(
+        monkeypatch,
+        state=EventLaneState(consumer_status="scheduled", consumer_status_at="2026-07-13T11:00:00Z"),
+        source=source,
+        published=published,
+    )
+
+    await rl.finalize_reactive_event_lane(redis=object(), comm_context=_comm_context())
+
+    assert published == []                                   # no turn woken
+    assert ("evt-stop", "turn-1") in source.consumed_event_calls  # and it is spent
+    assert stop.consumed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_a_steer_that_says_something_still_wakes(monkeypatch):
+    """Only the BARE stop is spent. A steer carrying text is an instruction —
+    "stop and do this instead" — and the instruction survives the turn it could
+    not reach."""
+    own = _event(ts=_OWN_TS, message_id="evt-own", sequence=1)
+    steer = _typed(ts=_FOLLOWUP_TS, message_id="evt-steer", sequence=2,
+                   text="stop, use the other channel", etype="event.user.steer")
+    source = _FakeSource([own, steer])
+    published: list = []
+    _install(
+        monkeypatch,
+        state=EventLaneState(consumer_status="scheduled", consumer_status_at="2026-07-13T11:00:00Z"),
+        source=source,
+        published=published,
+    )
+
+    await rl.finalize_reactive_event_lane(redis=object(), comm_context=_comm_context())
+
+    assert published == ["evt-steer"]
+
+
+@pytest.mark.asyncio
+async def test_a_bare_stop_beside_a_followup_leaves_the_followup(monkeypatch):
+    """The mixed case: the person typed a message, then pressed stop. The
+    message still deserves a turn; the stop does not add one."""
+    own = _event(ts=_OWN_TS, message_id="evt-own", sequence=1)
+    follow = _typed(ts=_FOLLOWUP_TS, message_id="evt-f1", sequence=2, text="do X")
+    stop = _typed(ts="2026-07-13T11:00:06Z", message_id="evt-stop", sequence=3,
+                  text="", etype="event.user.steer")
+    source = _FakeSource([own, follow, stop])
+    published: list = []
+    _install(
+        monkeypatch,
+        state=EventLaneState(consumer_status="scheduled", consumer_status_at="2026-07-13T11:00:00Z"),
+        source=source,
+        published=published,
+    )
+
+    await rl.finalize_reactive_event_lane(redis=object(), comm_context=_comm_context())
+
+    assert published == ["evt-f1"]
+    assert stop.consumed_at is not None

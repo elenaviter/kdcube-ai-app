@@ -897,3 +897,97 @@ def test_a_prompt_event_is_not_recorded_twice_as_a_chip():
         batch_id="b",
     )
     assert [b["type"] for b in payload["blocks"]] == ["user.prompt", "assistant.completion"]
+
+
+# ── several messages in one turn (2026-08-18) ────────────────────────────────
+
+
+def test_every_folded_message_reloads_as_its_own_bubble():
+    """A turn folds the messages that queued while the previous one was
+    running. Each was its own bubble when it was sent, so each has to be its
+    own bubble on reload — recording only the first would make them vanish
+    after having been read live.
+    """
+    from kdcube_ai_app.apps.chat.sdk.solutions.conversation.record import (
+        user_messages_from_folded_events,
+    )
+
+    events = [
+        {"type": "event.user.prompt", "payload": {"event": {"text": "do X"}},
+         "_kdcube_lane_batch_id": "b1"},
+        {"type": "event.user.followup", "payload": {"event": {"text": "actually Y"}},
+         "_kdcube_lane_batch_id": "b2"},
+        {"type": "event.user.followup", "payload": {"event": {"text": "and Z"}},
+         "_kdcube_lane_batch_id": "b3"},
+    ]
+    messages = user_messages_from_folded_events(events)
+    payload = build_minimal_turn_log_payload(
+        final_answer="Answer", turn_id="turn-9", user_messages=messages,
+    )
+    prompts = [b for b in payload["blocks"] if b.get("type") == "user.prompt"]
+
+    assert [b["text"] for b in prompts] == ["do X", "actually Y", "and Z"]
+    # Distinct identities, or the reader collapses them into one entry.
+    assert [b["meta"]["message_id"] for b in prompts] == ["m0", "m1", "m2"]
+    assert len({b["path"] for b in prompts}) == 3
+    # A follow-up reloads AS a follow-up, per message and not per turn.
+    assert [b["meta"]["event_type"] for b in prompts] == [
+        "event.user.prompt", "event.user.followup", "event.user.followup",
+    ]
+    # And each keeps the send it belonged to, so its chips land on it.
+    assert [b["meta"]["batch_id"] for b in prompts] == ["b1", "b2", "b3"]
+
+
+def test_one_message_records_exactly_as_before():
+    """The single-message turn — every turn until now — is untouched: one
+    block, `m0`, the unsuffixed artifact path."""
+    payload = build_minimal_turn_log_payload(
+        final_answer="Answer", turn_id="turn-9",
+        user_prompt_text="just the one", batch_id="b1",
+    )
+    prompts = [b for b in payload["blocks"] if b.get("type") == "user.prompt"]
+
+    assert len(prompts) == 1
+    assert prompts[0]["meta"]["message_id"] == "m0"
+    assert prompts[0]["path"] == "conv:ar:turn-9.user.prompt"
+    assert prompts[0]["meta"]["batch_id"] == "b1"
+
+
+def test_each_message_keeps_the_time_it_was_sent():
+    """A folded turn records several messages in one write. Stamping them all
+    with the record moment puts them in the timeline where the ANSWER is,
+    rather than where they were typed — so each block carries the arrival time
+    the lane recorded, and only falls back to the write moment when the lane
+    did not know one.
+    """
+    from kdcube_ai_app.apps.chat.sdk.solutions.conversation.record import (
+        user_messages_from_folded_events,
+    )
+
+    events = [
+        {"type": "event.user.prompt", "payload": {"event": {"text": "do X"}},
+         "_kdcube_lane_batch_id": "b1", "_kdcube_lane_ts": "2026-08-18T00:00:01Z"},
+        {"type": "event.user.followup", "payload": {"event": {"text": "actually Y"}},
+         "_kdcube_lane_batch_id": "b2", "_kdcube_lane_ts": "2026-08-18T00:00:09Z"},
+    ]
+    payload = build_minimal_turn_log_payload(
+        final_answer="Answer", turn_id="turn-9",
+        user_messages=user_messages_from_folded_events(events),
+        ts="2026-08-18T00:05:00Z",   # the write moment: much later
+    )
+    prompts = [b for b in payload["blocks"] if b.get("type") == "user.prompt"]
+
+    assert [b["ts"] for b in prompts] == [
+        "2026-08-18T00:00:01Z", "2026-08-18T00:00:09Z",
+    ]
+
+
+def test_a_message_the_lane_never_timed_keeps_the_write_moment():
+    """The fallback: an unstamped event records exactly as it always did."""
+    payload = build_minimal_turn_log_payload(
+        final_answer="Answer", turn_id="turn-9",
+        user_prompt_text="just the one", ts="2026-08-18T00:05:00Z",
+    )
+    prompts = [b for b in payload["blocks"] if b.get("type") == "user.prompt"]
+
+    assert prompts[0]["ts"] == "2026-08-18T00:05:00Z"

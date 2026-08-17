@@ -146,6 +146,26 @@ def external_event_text(event: Any) -> str:
     return str(text or "").strip()
 
 
+def external_events_texts(events: Any) -> List[str]:
+    """Every user-visible text in an external-event batch, in arrival order.
+
+    A turn can now fold SEVERAL user messages — the ones that queued while the
+    previous turn was running — and each of them is something a person typed
+    and expects an answer to. `external_events_text` answers "what is this turn
+    about" with the first one; this answers "what did they say", which is what
+    a turn frame has to render. Rendering only the first silently drops the
+    rest, and a dropped message is worse than the extra turn folding replaced.
+    """
+    if not isinstance(events, list):
+        return []
+    out: List[str] = []
+    for event in events:
+        text = external_event_text(event)
+        if text:
+            out.append(text)
+    return out
+
+
 def external_events_text(events: Any) -> str:
     """Return the first user-visible text from an external event list."""
     if not isinstance(events, list):

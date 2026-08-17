@@ -49,7 +49,11 @@ import time
 from dataclasses import replace
 from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
-from kdcube_ai_app.apps.chat.sdk.protocol import ExternalEventPayload, external_events_text
+from kdcube_ai_app.apps.chat.sdk.protocol import (
+    ExternalEventPayload,
+    external_events_text,
+    external_events_texts,
+)
 from kdcube_ai_app.apps.chat.sdk.util import _now_ms
 from kdcube_ai_app.apps.chat.sdk.runtime.comm_ctx import bind_current_bundle_call_context_patch
 from kdcube_ai_app.apps.chat.sdk.tools.backends.summary.conversation_title import (
@@ -82,6 +86,10 @@ from .solution.lg_prebuilt.llm import StubChatModel
 # The platform seams.
 from .platform.pg_target import resolve_solution_pg, resolve_solution_memory, schema_for_scope
 from .platform.turn_batch import fold_turn_external_events
+from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.live_watch import (
+    STOPPED_ANSWER,
+    run_until_stopped,
+)
 from .platform.identity import turn_identity
 from .platform.stream_solution import stream_graph_turn
 from .platform.stream_prebuilt import stream_react_turn
@@ -984,6 +992,19 @@ class LGPortedAgentsBundle(BaseEntrypointWithEconomics):
         # METADATA + LINKS in the turn frame below, and the model chooses the
         # door — read_file to view, pull_files + run_python to process.
         question = external_events_text(state.get("external_events") or [])
+        # A turn folds every message that queued while the previous one ran, so
+        # there can be SEVERAL — and a later one often revises an earlier one.
+        # `question` stays the first (it names the conversation); what the model
+        # reads is all of them, in the order they were sent.
+        user_texts = external_events_texts(state.get("external_events") or [])
+        if len(user_texts) > 1:
+            question_for_model = (
+                "\n".join(f"{n}. {text}" for n, text in enumerate(user_texts, start=1))
+                + "\n\nThey were all sent before you started, and a later one may "
+                "revise an earlier one. Read them together and answer once."
+            )
+        else:
+            question_for_model = question
         attachments: list = []
 
         # (code execution) build the per-turn code-exec scope for the ACTIVE agent —
@@ -1015,7 +1036,7 @@ class LGPortedAgentsBundle(BaseEntrypointWithEconomics):
             LOGGER.warning("[ported-langgraph] turn workspace preparation failed", exc_info=True)
             from .platform.turn_workspace import TurnWorkspace
             workspace = TurnWorkspace(live=False)
-        framed_question = frame_turn_input(question, workspace)
+        framed_question = frame_turn_input(question_for_model, workspace)
 
         # Whole-turn summary at the boundary: one line tells the story of what this
         # turn was asked to do (cheap, non-fatal).
@@ -1066,8 +1087,31 @@ class LGPortedAgentsBundle(BaseEntrypointWithEconomics):
 
         # Wrap the run so a Telegram-originated turn is delivered from the processor
         # side; a browser turn passes through unchanged.
+        # (stop) The lane is watched while the graph streams, and a steer cancels
+        # the run. This agent does not consume live events into its own loop —
+        # that loop is LangGraph's and folding into it mid-run would contradict
+        # the graph's own iteration — so the watcher is read-only and everything
+        # it saw, the steer included, is still PENDING when the run is cancelled.
+        # The handoff folds it into the next turn, and the checkpointer holds the
+        # last completed node, so a stop loses nothing that finished.
+        async def _run_turn_stoppable() -> Dict[str, Any]:
+            outcome = await run_until_stopped(self, state, _run_turn)
+            if not outcome.stopped:
+                return outcome.result
+            LOGGER.info(
+                "[ported-langgraph] TURN stopped by the user agent=%s conversation=%s "
+                "pending_events=%d",
+                agent_id, thread_id, len(outcome.arrived),
+            )
+            # Said in band, in plain language: the person sees why the stream
+            # ended, and the next turn reads the same sentence in its history
+            # instead of inferring that the agent fell silent.
+            return {"answer": STOPPED_ANSWER, "final_answer": STOPPED_ANSWER}
+
         with bind_current_bundle_call_context_patch({"role_models": role_models}):
-            result = await telegram_ingress.run_turn_with_delivery(self, runner=_run_turn)
+            result = await telegram_ingress.run_turn_with_delivery(
+                self, runner=_run_turn_stoppable,
+            )
 
         # The platform's canonical final answer (what the framework-neutral turn
         # recorder persists for reload). The conversation title was already emitted

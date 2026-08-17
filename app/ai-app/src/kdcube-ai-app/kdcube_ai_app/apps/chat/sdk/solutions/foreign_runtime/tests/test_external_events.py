@@ -117,9 +117,9 @@ def test_fold_delivers_the_hosted_attachment_beside_the_prompt(monkeypatch):
     assert hosted[0]["mime"] == "image/png"
 
 
-def test_fold_skips_batch_siblings_a_previous_turn_consumed(monkeypatch):
-    """A re-woken queued event promotes ALONE: consumed siblings stay out and
-    the dispatched events stand untouched."""
+def test_fold_skips_what_a_previous_turn_consumed(monkeypatch):
+    """A consumed event is a previous turn's history: it stays out, and with
+    nothing else pending the dispatched events stand untouched."""
     consumed_prompt = _lane_event(
         message_id="m-prompt", sequence=2, accepted=_prompt_accepted(), consumed_at=1234.5,
     )
@@ -178,3 +178,70 @@ def test_folded_batch_carries_the_attachment_body(monkeypatch):
     assert len(hosted) == 1
     assert hosted[0]["base64"] == accepted["payload"]["event"]["base64"]
     assert hosted[0]["mime"] == "image/png"
+
+
+# ── the whole pending lane, not just this batch (2026-08-17) ─────────────────
+
+
+def test_fold_takes_the_followups_that_queued_during_the_previous_turn(monkeypatch):
+    """The behaviour this widening exists for.
+
+    Two messages typed while a turn was running used to promote one turn each:
+    the agent answered the first without knowing the second existed, so a
+    correction was read only after the work it corrected had been paid for.
+    They belong to ONE turn, in the order they were said.
+    """
+    own = _lane_event(message_id="m-prompt", sequence=2, batch_id="batch-1",
+                      accepted=_prompt_accepted("do X"))
+    f1 = _lane_event(message_id="m-f1", sequence=5, batch_id="batch-2",
+                     accepted={**_prompt_accepted("actually Y"), "event_id": "evt-f1",
+                               "type": "event.user.followup"})
+    f2 = _lane_event(message_id="m-f2", sequence=6, batch_id="batch-3",
+                     accepted={**_prompt_accepted("and Z"), "event_id": "evt-f2",
+                               "type": "event.user.followup"})
+    monkeypatch.setattr(mod, "_lane_source", lambda redis, wakeup: _FakeSource([f2, own, f1]))
+
+    state = {"external_events": [_prompt_accepted("do X")]}
+    folded = asyncio.run(mod.fold_turn_external_events(_entrypoint(), state))
+
+    assert [item["event_id"] for item in folded] == ["evt-prompt", "evt-f1", "evt-f2"]
+    # Lane order, not arrival-at-the-fake order — the person's sequence is the
+    # only thing that makes a correction readable as a correction.
+    assert mod.folded_external_events_message_ids(state) == ["m-prompt", "m-f1", "m-f2"]
+
+
+def test_fold_takes_attachments_and_queued_messages_together(monkeypatch):
+    """The two folds are one fold: this turn's own batch siblings AND whatever
+    queued behind them."""
+    own = _lane_event(message_id="m-prompt", sequence=2, accepted=_prompt_accepted())
+    att = _lane_event(message_id="m-att", sequence=3, accepted=_attachment_accepted())
+    queued = _lane_event(message_id="m-f1", sequence=9, batch_id="batch-2",
+                         accepted={**_prompt_accepted("one more thing"), "event_id": "evt-f1"})
+    monkeypatch.setattr(mod, "_lane_source", lambda redis, wakeup: _FakeSource([own, att, queued]))
+
+    state = {"external_events": [_prompt_accepted()]}
+    folded = asyncio.run(mod.fold_turn_external_events(_entrypoint(), state))
+
+    assert [item["event_id"] for item in folded] == ["evt-prompt", "evt-att", "evt-f1"]
+    assert len(hosted_external_event_attachments(folded)) == 1
+
+
+def test_fold_still_leaves_out_what_another_turn_already_answered(monkeypatch):
+    """Widening to the pending lane must not widen to the WHOLE lane: an event
+    a previous turn consumed is that turn's history, and folding it again would
+    replay a message the person already got an answer to."""
+    answered = _lane_event(message_id="m-old", sequence=1, batch_id="batch-0",
+                           accepted={**_prompt_accepted("asked and answered"),
+                                     "event_id": "evt-old"},
+                           consumed_at=999.0)
+    own = _lane_event(message_id="m-prompt", sequence=2, accepted=_prompt_accepted())
+    queued = _lane_event(message_id="m-f1", sequence=3, batch_id="batch-2",
+                         accepted={**_prompt_accepted("next"), "event_id": "evt-f1"})
+    monkeypatch.setattr(
+        mod, "_lane_source", lambda redis, wakeup: _FakeSource([answered, own, queued])
+    )
+
+    state = {"external_events": [_prompt_accepted()]}
+    folded = asyncio.run(mod.fold_turn_external_events(_entrypoint(), state))
+
+    assert [item["event_id"] for item in folded] == ["evt-prompt", "evt-f1"]

@@ -88,6 +88,25 @@ def _source_for_wakeup(redis: Any, wakeup: Any):
     )
 
 
+def _is_bare_steer(event: Any) -> bool:
+    """A steer carrying no text — the "stop" control with nothing else said.
+
+    It asks a RUNNING turn to wrap up. Reaching this function means the turn
+    already ended, so there is nothing left to ask, and waking a turn for it
+    means the model is handed an empty message: pressing stop bought a turn
+    instead of saving one. A steer WITH text is an instruction and still wakes.
+    """
+    from kdcube_ai_app.apps.chat.sdk.protocol import external_event_text
+
+    payload = getattr(event, "payload", None)
+    body = payload.get("event") if isinstance(payload, dict) else None
+    if not isinstance(body, dict):
+        return False
+    if str(body.get("type") or "").strip() != "event.user.steer":
+        return False
+    return not external_event_text(body)
+
+
 async def _rewake_pending_reactive_events(
     *,
     source: Any,
@@ -96,10 +115,19 @@ async def _rewake_pending_reactive_events(
     own_ts: str,
     turn_id: str,
 ) -> None:
-    """Re-publish a lane wakeup for every unconsumed reactive event that landed
-    AFTER the turn's own event (a followup queued mid-turn). Exactly-once holds:
-    consumed/promoted/failed events, the turn's own event, and anything at/earlier
-    than it are skipped, and a duplicate wake is dropped by the lane guards.
+    """Hand the lane's pending work to ONE next turn.
+
+    Every unconsumed reactive event that landed after the turn's own event (the
+    follow-ups queued mid-turn) belongs to the next turn — and to the SAME next
+    turn, because the foreign-runtime fold now takes the whole pending lane.
+    Waking one per event, which is what this did until 2026-08-17, produced a
+    turn per message: the agent answered the first without knowing the second
+    existed, and a correction was read only after the work it corrected had
+    been paid for. One wake, and the fold absorbs the rest.
+
+    Exactly-once holds as before: consumed/promoted/failed events, the turn's
+    own event, and anything at or earlier than it are skipped, and a duplicate
+    wake is dropped by the lane guards.
 
     A followup a ReAct turn FOLDED into itself is left alone: ReAct does not set
     ``consumed_at`` on a folded event (it tracks folding by advancing the lane's
@@ -115,6 +143,7 @@ async def _rewake_pending_reactive_events(
     except Exception:
         logger.debug("reactive lane finalize: read_since failed", exc_info=True)
         return
+    candidates = []
     for event in pending or []:
         if getattr(event, "consumed_at", None) is not None:
             continue
@@ -130,38 +159,70 @@ async def _rewake_pending_reactive_events(
         # turn already handled this event, so re-waking it would double-run it.
         if state is not None and state.event_was_processed(event):
             continue
-        try:
-            payload = event.task_payload_model()
-        except Exception:
+        candidates.append(event)
+
+    # A bare stop is spent the moment the turn it aimed at is over. Terminalize
+    # it here rather than leaving it to wake an empty-message turn.
+    live: list = []
+    for event in candidates:
+        if not _is_bare_steer(event):
+            live.append(event)
             continue
-        result = await wake_publisher.publish_for_event(
-            payload=payload,
-            event=event,
-            tenant=getattr(source, "tenant", None),
-            project=getattr(source, "project", None),
-            user_id=getattr(source, "user_id", None),
-            conversation_id=getattr(source, "conversation_id", None),
-            agent_id=getattr(source, "agent_id", None),
-            reason="run_to_completion_handoff",
-        )
-        if getattr(result, "success", False):
+        try:
+            await source.mark_consumed_event(
+                message_id=str(getattr(event, "message_id", "") or ""),
+                turn_id=turn_id,
+            )
             logger.info(
-                "[reactive-lane] run-to-completion handoff re-woke reactive event "
-                "conversation=%s turn_id=%s event_id=%s event_ts=%s",
+                "[reactive-lane] bare steer terminalized at handoff (the turn it "
+                "asked to stop had already ended) conversation=%s turn_id=%s event_id=%s",
                 getattr(source, "conversation_id", None),
                 turn_id,
                 getattr(event, "message_id", ""),
-                event_timestamp(event),
             )
-        else:
-            logger.warning(
-                "[reactive-lane] run-to-completion handoff re-wake not queued "
-                "conversation=%s turn_id=%s event_id=%s reason=%s",
-                getattr(source, "conversation_id", None),
-                turn_id,
-                getattr(event, "message_id", ""),
-                getattr(result, "reason", ""),
+        except Exception:
+            logger.debug(
+                "reactive lane finalize: bare-steer terminalize failed", exc_info=True
             )
+    if not live:
+        return
+
+    live.sort(key=lambda item: int(getattr(item, "sequence", 0) or 0))
+    event = live[0]
+    try:
+        payload = event.task_payload_model()
+    except Exception:
+        return
+    result = await wake_publisher.publish_for_event(
+        payload=payload,
+        event=event,
+        tenant=getattr(source, "tenant", None),
+        project=getattr(source, "project", None),
+        user_id=getattr(source, "user_id", None),
+        conversation_id=getattr(source, "conversation_id", None),
+        agent_id=getattr(source, "agent_id", None),
+        reason="run_to_completion_handoff",
+    )
+    if getattr(result, "success", False):
+        logger.info(
+            "[reactive-lane] run-to-completion handoff woke ONE turn for %d pending "
+            "event(s) conversation=%s turn_id=%s event_id=%s event_ts=%s",
+            len(live),
+            getattr(source, "conversation_id", None),
+            turn_id,
+            getattr(event, "message_id", ""),
+            event_timestamp(event),
+        )
+    else:
+        logger.warning(
+            "[reactive-lane] run-to-completion handoff re-wake not queued "
+            "conversation=%s turn_id=%s event_id=%s pending=%d reason=%s",
+            getattr(source, "conversation_id", None),
+            turn_id,
+            getattr(event, "message_id", ""),
+            len(live),
+            getattr(result, "reason", ""),
+        )
 
 
 async def finalize_reactive_event_lane(

@@ -2855,6 +2855,7 @@ class BaseEntrypoint:
         user_event_type = "event.user.prompt"
         user_attachments: list = []
         user_events: list = []
+        user_messages: list = []
         batch_id = ""
         assistant_files: list = []
         try:
@@ -2864,6 +2865,16 @@ class BaseEntrypoint:
             )
             events = [e for e in ((state or {}).get("external_events") or []) if isinstance(e, dict)]
             user_prompt_text = external_events_text(events) or ""
+            # EVERY message this turn folded, not just the first. A turn now
+            # carries the messages that queued while the previous one ran, and
+            # each was its own bubble when it was sent — recording one would
+            # make the rest disappear on reload after having been read live.
+            from kdcube_ai_app.apps.chat.sdk.solutions.conversation.record import (
+                user_messages_from_folded_events,
+            )
+            user_messages = user_messages_from_folded_events(
+                events, fallback_text=user_prompt_text,
+            )
             for event in events:
                 event_type = str(event.get("type") or "").strip()
                 if event_type in {"event.user.prompt", "event.user.followup", "event.user.steer"}:
@@ -2887,6 +2898,7 @@ class BaseEntrypoint:
                     f"[turn-log-fallback] recovered user input conversation={thread_id} turn={turn_id} "
                     f"events={len(events)} event_types={json.dumps(event_types[:12], ensure_ascii=False)} "
                     f"user_event_type={user_event_type} prompt_len={len(user_prompt_text)} "
+                    f"messages={len(user_messages)} "
                     f"attachments={len(user_attachments)} batch_id={batch_id or '-'}",
                     "INFO",
                 )
@@ -2931,6 +2943,7 @@ class BaseEntrypoint:
                 user_event_type=user_event_type,
                 user_attachments=user_attachments,
                 user_events=user_events,
+                user_messages=user_messages,
                 batch_id=batch_id,
                 assistant_files=assistant_files,
             )
@@ -3056,6 +3069,7 @@ class BaseEntrypoint:
         user_event_type = "event.user.prompt"
         user_attachments: list = []
         user_events: list = []
+        user_messages: list = []
         batch_id = ""
         try:
             from kdcube_ai_app.apps.chat.sdk.protocol import (
@@ -3064,6 +3078,16 @@ class BaseEntrypoint:
             )
             events = [e for e in ((state or {}).get("external_events") or []) if isinstance(e, dict)]
             user_prompt_text = external_events_text(events) or ""
+            # EVERY message this turn folded, not just the first. A turn now
+            # carries the messages that queued while the previous one ran, and
+            # each was its own bubble when it was sent — recording one would
+            # make the rest disappear on reload after having been read live.
+            from kdcube_ai_app.apps.chat.sdk.solutions.conversation.record import (
+                user_messages_from_folded_events,
+            )
+            user_messages = user_messages_from_folded_events(
+                events, fallback_text=user_prompt_text,
+            )
             for event in events:
                 event_type = str(event.get("type") or "").strip()
                 if event_type in {"event.user.prompt", "event.user.followup", "event.user.steer"}:
@@ -3114,6 +3138,7 @@ class BaseEntrypoint:
                 user_event_type=user_event_type,
                 user_attachments=user_attachments,
                 user_events=user_events,
+                user_messages=user_messages,
                 batch_id=batch_id,
             )
         except Exception:

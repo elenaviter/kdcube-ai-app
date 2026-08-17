@@ -110,12 +110,21 @@ def _user_prompt_block(
     turn_id: str,
     ts: str,
     user_event_type: str = "event.user.prompt",
+    message_index: int = 0,
 ) -> Optional[Dict[str, Any]]:
     """A ``user.prompt`` block — the reload reader (``iter_turn_user_input_entries``)
-    rebuilds the ``chat:user`` bubble from the common turn-log contract."""
+    rebuilds the ``chat:user`` bubble from the common turn-log contract.
+
+    ``message_index`` distinguishes SEVERAL messages in one turn. A turn folds
+    every message that queued while the previous one was running, and each was
+    shown as its own bubble when it was sent — so the reload has to show the
+    same ones. The reader already collects user blocks as a list; what it could
+    not survive is two blocks sharing `m0` and one artifact path.
+    """
     body = str(text or "").strip()
     if not body:
         return None
+    suffix = "" if message_index <= 0 else f".{message_index}"
     return {
         "type": "user.prompt",
         "author": "user",
@@ -123,14 +132,138 @@ def _user_prompt_block(
         "turn": turn_id,
         "ts": ts,
         "mime": "text/markdown",
-        "path": f"conv:ar:{turn_id}.user.prompt",
+        "path": f"conv:ar:{turn_id}.user.prompt{suffix}",
         "text": body,
         "meta": {
-            "message_id": "m0",
+            "message_id": f"m{max(0, int(message_index))}",
             "event_type": str(user_event_type or "event.user.prompt").strip() or "event.user.prompt",
             "turn_id": turn_id,
         },
     }
+
+
+def user_messages_from_folded_events(
+    events: Any,
+    *,
+    fallback_text: str = "",
+    fallback_event_type: str = "event.user.prompt",
+) -> List[Dict[str, Any]]:
+    """The folded batch as the SUBMISSIONS a person actually sent.
+
+    Each is ``{text, event_type, batch_id}`` — one send, in lane order, keyed
+    by the lane batch stamp the foreign-runtime fold puts on every folded event.
+    A turn used to carry exactly one, so recording `external_events_text` (the
+    FIRST text) lost nothing; once a turn folds the messages that queued during
+    the previous one, that same call silently drops every message after the
+    first, and they disappear on reload having been visible while live.
+
+    Falls back to a single submission from ``fallback_text`` when the events
+    carry no text at all — a directly dispatched turn, or a test.
+    """
+    from kdcube_ai_app.apps.chat.sdk.protocol import external_event_text
+    from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.external_events import (
+        LANE_BATCH_ID_KEY,
+        LANE_TS_KEY,
+    )
+
+    out: List[Dict[str, Any]] = []
+    for event in events or []:
+        if not isinstance(event, dict):
+            continue
+        text = external_event_text(event)
+        if not text:
+            continue
+        out.append({
+            "text": text,
+            "event_type": str(event.get("type") or "event.user.prompt"),
+            "batch_id": str(event.get(LANE_BATCH_ID_KEY) or ""),
+            # WHEN it was sent, not when the turn ended. A timeline sorted by
+            # time puts a message where it was typed only if the record says
+            # so, and a turn that folds several records them all at once.
+            "ts": str(event.get(LANE_TS_KEY) or ""),
+        })
+    if out:
+        return out
+    body = str(fallback_text or "").strip()
+    return [{"text": body, "event_type": fallback_event_type, "batch_id": ""}] if body else []
+
+
+def _user_input_blocks(
+    *,
+    turn_id: str,
+    ts: str,
+    default_batch_id: str,
+    user_prompt_text: str = "",
+    user_event_type: str = "event.user.prompt",
+    user_messages: Optional[Sequence[Dict[str, Any]]] = None,
+    user_events: Optional[Sequence[Dict[str, Any]]] = None,
+    user_attachments: Optional[Sequence[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """The user side of a turn log: one prompt block per message the person
+    sent, plus the context refs and attachments that rode with each.
+
+    ``user_messages`` is the folded batch as submissions (see
+    :func:`user_messages_from_folded_events`); when it is absent this falls
+    back to the single ``user_prompt_text``, which is exactly what every caller
+    passed before a turn could fold more than one message.
+
+    Cargo keeps the batch it declares and otherwise lands on the turn's default
+    batch — unchanged from the single-message behaviour.
+    """
+    from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.external_events import (
+        LANE_BATCH_ID_KEY,
+        LANE_TS_KEY,
+    )
+
+    messages = list(user_messages or [])
+    if not messages:
+        body = str(user_prompt_text or "").strip()
+        if body:
+            messages = [{"text": body, "event_type": user_event_type, "batch_id": ""}]
+
+    blocks: List[Dict[str, Any]] = []
+    for index, message in enumerate(messages):
+        if not isinstance(message, dict):
+            continue
+        block = _user_prompt_block(
+            str(message.get("text") or ""),
+            turn_id=turn_id,
+            # Its own arrival time when the lane knew it; the record moment
+            # otherwise, which is what every block carried before a turn could
+            # fold more than one message.
+            ts=str(message.get("ts") or "") or ts,
+            user_event_type=str(message.get("event_type") or user_event_type),
+            message_index=index,
+        )
+        if block:
+            block["meta"]["batch_id"] = str(message.get("batch_id") or "") or default_batch_id
+            blocks.append(block)
+
+    # The context objects the user sent WITH a message (pins, canvas objects):
+    # recorded as their own events so the reloaded chip is live and resolves
+    # like the original.
+    for event in user_events or []:
+        batch = default_batch_id
+        if isinstance(event, dict) and str(event.get(LANE_BATCH_ID_KEY) or ""):
+            batch = str(event[LANE_BATCH_ID_KEY])
+        event_ts = str(event.get(LANE_TS_KEY) or "") if isinstance(event, dict) else ""
+        ctx_block = _user_context_event_block(
+            event, turn_id=turn_id, batch_id=batch, ts=event_ts or ts,
+        )
+        if ctx_block:
+            blocks.append(ctx_block)
+    # The user's uploaded attachments (reload + pullable conv:fi: refs).
+    for att in user_attachments or []:
+        batch = default_batch_id
+        if isinstance(att, dict) and str(att.get(LANE_BATCH_ID_KEY) or ""):
+            batch = str(att[LANE_BATCH_ID_KEY])
+        att_ts = str(att.get(LANE_TS_KEY) or "") if isinstance(att, dict) else ""
+        att_block = _user_attachment_meta_block(
+            att, turn_id=turn_id, batch_id=batch, ts=att_ts or ts,
+        )
+        if att_block:
+            blocks.append(att_block)
+    return blocks
 
 
 def _user_context_event_block(event: Any, *, turn_id: str, batch_id: str, ts: str) -> Optional[Dict[str, Any]]:
@@ -341,6 +474,7 @@ def build_minimal_turn_log_payload(
     user_event_type: str = "event.user.prompt",
     user_attachments: Optional[Sequence[Dict[str, Any]]] = None,
     user_events: Optional[Sequence[Dict[str, Any]]] = None,
+    user_messages: Optional[Sequence[Dict[str, Any]]] = None,
     batch_id: str = "",
     assistant_files: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
@@ -358,29 +492,17 @@ def build_minimal_turn_log_payload(
     """
     now = ts or _utc_iso()
     blocks: List[Dict[str, Any]] = []
-    # 1) the user's message (reloads the chat:user bubble)
-    user_block = _user_prompt_block(
-        user_prompt_text,
+    batch = str(batch_id or "").strip() or f"{turn_id}.batch"
+    blocks.extend(_user_input_blocks(
         turn_id=turn_id,
         ts=now,
+        default_batch_id=batch,
+        user_prompt_text=user_prompt_text,
         user_event_type=user_event_type,
-    )
-    batch = str(batch_id or "").strip() or f"{turn_id}.batch"
-    if user_block:
-        user_block["meta"]["batch_id"] = batch
-        blocks.append(user_block)
-    # 1b) the context objects the user sent WITH the message (pins, canvas
-    # objects): recorded as their own events so the reloaded chip is live and
-    # resolves like the original.
-    for event in user_events or []:
-        ctx_block = _user_context_event_block(event, turn_id=turn_id, batch_id=batch, ts=now)
-        if ctx_block:
-            blocks.append(ctx_block)
-    # 2) the user's uploaded attachments (reload + pullable conv:fi: refs)
-    for att in user_attachments or []:
-        att_block = _user_attachment_meta_block(att, turn_id=turn_id, batch_id=batch, ts=now)
-        if att_block:
-            blocks.append(att_block)
+        user_messages=user_messages,
+        user_events=user_events,
+        user_attachments=user_attachments,
+    ))
     # 3) the agent's progress steps
     for step in steps or []:
         if not isinstance(step, dict):
@@ -592,6 +714,7 @@ def build_error_turn_log_payload(
     user_event_type: str = "event.user.prompt",
     user_attachments: Optional[Sequence[Dict[str, Any]]] = None,
     user_events: Optional[Sequence[Dict[str, Any]]] = None,
+    user_messages: Optional[Sequence[Dict[str, Any]]] = None,
     batch_id: str = "",
 ) -> Dict[str, Any]:
     """A minimal turn-log payload for a **failed** turn: an ``assistant.completion``
@@ -603,23 +726,16 @@ def build_error_turn_log_payload(
     text = str(error_message or "").strip() or "An error occurred."
     blocks: List[Dict[str, Any]] = []
     batch = str(batch_id or "").strip() or f"{turn_id}.batch"
-    user_block = _user_prompt_block(
-        user_prompt_text,
+    blocks.extend(_user_input_blocks(
         turn_id=turn_id,
         ts=now,
+        default_batch_id=batch,
+        user_prompt_text=user_prompt_text,
         user_event_type=user_event_type,
-    )
-    if user_block:
-        user_block["meta"]["batch_id"] = batch
-        blocks.append(user_block)
-    for event in user_events or []:
-        ctx_block = _user_context_event_block(event, turn_id=turn_id, batch_id=batch, ts=now)
-        if ctx_block:
-            blocks.append(ctx_block)
-    for att in user_attachments or []:
-        att_block = _user_attachment_meta_block(att, turn_id=turn_id, batch_id=batch, ts=now)
-        if att_block:
-            blocks.append(att_block)
+        user_messages=user_messages,
+        user_events=user_events,
+        user_attachments=user_attachments,
+    ))
     for step in steps or []:
         if not isinstance(step, dict):
             continue
@@ -661,6 +777,7 @@ async def record_error_turn_log_if_absent(
     user_event_type: str = "event.user.prompt",
     user_attachments: Optional[Sequence[Dict[str, Any]]] = None,
     user_events: Optional[Sequence[Dict[str, Any]]] = None,
+    user_messages: Optional[Sequence[Dict[str, Any]]] = None,
     batch_id: str = "",
 ) -> bool:
     """Record a minimal **failed** turn log when none was written this turn.
@@ -684,6 +801,7 @@ async def record_error_turn_log_if_absent(
         user_event_type=user_event_type,
         user_attachments=user_attachments,
         user_events=user_events,
+        user_messages=user_messages,
         batch_id=batch_id,
     )
     prior_payload = await _latest_turn_log_payload(
@@ -860,6 +978,7 @@ async def record_minimal_turn_log_if_absent(
     user_event_type: str = "event.user.prompt",
     user_attachments: Optional[Sequence[Dict[str, Any]]] = None,
     user_events: Optional[Sequence[Dict[str, Any]]] = None,
+    user_messages: Optional[Sequence[Dict[str, Any]]] = None,
     batch_id: str = "",
     assistant_files: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> bool:
@@ -894,6 +1013,7 @@ async def record_minimal_turn_log_if_absent(
         user_event_type=user_event_type,
         user_attachments=user_attachments,
         user_events=user_events,
+        user_messages=user_messages,
         batch_id=batch_id,
         assistant_files=assistant_files,
     )
