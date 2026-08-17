@@ -88,6 +88,15 @@ def _source_for_wakeup(redis: Any, wakeup: Any):
     )
 
 
+def _is_steer(event: Any) -> bool:
+    """A steer, with or without text — the stop control either way."""
+    payload = getattr(event, "payload", None)
+    body = payload.get("event") if isinstance(payload, dict) else None
+    if not isinstance(body, dict):
+        return False
+    return str(body.get("type") or "").strip() == "event.user.steer"
+
+
 def _is_bare_steer(event: Any) -> bool:
     """A steer carrying no text — the "stop" control with nothing else said.
 
@@ -161,30 +170,56 @@ async def _rewake_pending_reactive_events(
             continue
         candidates.append(event)
 
-    # A bare stop is spent the moment the turn it aimed at is over. Terminalize
-    # it here rather than leaving it to wake an empty-message turn.
+    # THE STEER IS A BOUNDARY. Everything at or before it was said while the run
+    # it stopped was going, and the stop supersedes it: those events are not
+    # thrown away — they stay pending and fold into whatever turn comes next —
+    # but they do not START one. Only what arrives AFTER the stop is new intent,
+    # and only new intent is worth spending a turn on. Without this, pressing
+    # stop still bought a turn: the follow-ups typed just before it woke one
+    # immediately, which is the spending the button exists to prevent.
+    steer_sequences = [
+        int(getattr(event, "sequence", 0) or 0)
+        for event in candidates
+        if _is_steer(event)
+    ]
+    boundary = max(steer_sequences) if steer_sequences else None
+
     live: list = []
     for event in candidates:
-        if not _is_bare_steer(event):
-            live.append(event)
+        if _is_bare_steer(event):
+            # A bare stop is spent the moment the turn it aimed at is over:
+            # nothing is left to ask, and waking for it hands the agent an empty
+            # message. Terminalized rather than left to linger.
+            try:
+                await source.mark_consumed_event(
+                    message_id=str(getattr(event, "message_id", "") or ""),
+                    turn_id=turn_id,
+                )
+                logger.info(
+                    "[reactive-lane] bare steer terminalized at handoff (the turn it "
+                    "asked to stop had already ended) conversation=%s turn_id=%s event_id=%s",
+                    getattr(source, "conversation_id", None),
+                    turn_id,
+                    getattr(event, "message_id", ""),
+                )
+            except Exception:
+                logger.debug(
+                    "reactive lane finalize: bare-steer terminalize failed", exc_info=True
+                )
             continue
-        try:
-            await source.mark_consumed_event(
-                message_id=str(getattr(event, "message_id", "") or ""),
-                turn_id=turn_id,
-            )
-            logger.info(
-                "[reactive-lane] bare steer terminalized at handoff (the turn it "
-                "asked to stop had already ended) conversation=%s turn_id=%s event_id=%s",
-                getattr(source, "conversation_id", None),
-                turn_id,
-                getattr(event, "message_id", ""),
-            )
-        except Exception:
-            logger.debug(
-                "reactive lane finalize: bare-steer terminalize failed", exc_info=True
-            )
+        if boundary is not None and int(getattr(event, "sequence", 0) or 0) <= boundary:
+            # Said before the stop, so the stop supersedes it as a REASON to
+            # run. Left pending on purpose: the next turn folds it in, in order,
+            # whenever a person starts one.
+            continue
+        live.append(event)
     if not live:
+        if boundary is not None:
+            logger.info(
+                "[reactive-lane] stop was the last word on the lane; %d earlier "
+                "event(s) stay pending for the next turn conversation=%s turn_id=%s",
+                len(candidates), getattr(source, "conversation_id", None), turn_id,
+            )
         return
 
     live.sort(key=lambda item: int(getattr(item, "sequence", 0) or 0))

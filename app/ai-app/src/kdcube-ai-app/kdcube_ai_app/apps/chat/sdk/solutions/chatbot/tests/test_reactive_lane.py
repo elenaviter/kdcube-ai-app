@@ -510,10 +510,14 @@ async def test_a_bare_stop_does_not_buy_a_turn(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_steer_that_says_something_still_wakes(monkeypatch):
-    """Only the BARE stop is spent. A steer carrying text is an instruction —
-    "stop and do this instead" — and the instruction survives the turn it could
-    not reach."""
+async def test_a_steer_that_says_something_does_not_wake_either(monkeypatch):
+    """A steer is a boundary whatever it says.
+
+    "stop, use the other channel" is still a stop: the person asked for the
+    spending to end, and starting a turn on the strength of the stop itself is
+    the spending the button exists to prevent. The text is not lost — the event
+    stays pending and folds into whatever turn the person starts next.
+    """
     own = _event(ts=_OWN_TS, message_id="evt-own", sequence=1)
     steer = _typed(ts=_FOLLOWUP_TS, message_id="evt-steer", sequence=2,
                    text="stop, use the other channel", etype="event.user.steer")
@@ -528,13 +532,19 @@ async def test_a_steer_that_says_something_still_wakes(monkeypatch):
 
     await rl.finalize_reactive_event_lane(redis=object(), comm_context=_comm_context())
 
-    assert published == ["evt-steer"]
+    assert published == []
+    assert steer.consumed_at is None      # kept for the next turn to fold
 
 
 @pytest.mark.asyncio
-async def test_a_bare_stop_beside_a_followup_leaves_the_followup(monkeypatch):
-    """The mixed case: the person typed a message, then pressed stop. The
-    message still deserves a turn; the stop does not add one."""
+async def test_a_message_typed_before_the_stop_does_not_start_a_turn(monkeypatch):
+    """The person typed something, then pressed stop.
+
+    Everything said BEFORE the stop was said while the run it stopped was
+    going, so the stop supersedes it as a reason to run. Not discarded — it
+    stays pending and folds into the next turn a person starts — but it does
+    not buy one on its own, which is exactly what stop is for.
+    """
     own = _event(ts=_OWN_TS, message_id="evt-own", sequence=1)
     follow = _typed(ts=_FOLLOWUP_TS, message_id="evt-f1", sequence=2, text="do X")
     stop = _typed(ts="2026-07-13T11:00:06Z", message_id="evt-stop", sequence=3,
@@ -550,5 +560,64 @@ async def test_a_bare_stop_beside_a_followup_leaves_the_followup(monkeypatch):
 
     await rl.finalize_reactive_event_lane(redis=object(), comm_context=_comm_context())
 
-    assert published == ["evt-f1"]
+    assert published == []
+    assert stop.consumed_at is not None      # the bare stop is spent
+    assert follow.consumed_at is None        # the message waits, unanswered
+
+
+@pytest.mark.asyncio
+async def test_a_message_typed_AFTER_the_stop_starts_a_turn(monkeypatch):
+    """The other side of the boundary, and the operator's rule in one line:
+    re-wake when there are reactive events after the last steer.
+
+    What comes after a stop is new intent — the person has seen the run end and
+    said something anyway — and new intent is worth a turn. The turn folds the
+    whole pending lane, so the message said before the stop is read too, in
+    order, as context for the one said after it.
+    """
+    own = _event(ts=_OWN_TS, message_id="evt-own", sequence=1)
+    before = _typed(ts=_FOLLOWUP_TS, message_id="evt-before", sequence=2, text="do X")
+    stop = _typed(ts="2026-07-13T11:00:06Z", message_id="evt-stop", sequence=3,
+                  text="", etype="event.user.steer")
+    after = _typed(ts="2026-07-13T11:00:20Z", message_id="evt-after", sequence=4,
+                   text="ok, now do Y instead")
+    source = _FakeSource([own, before, stop, after])
+    published: list = []
+    _install(
+        monkeypatch,
+        state=EventLaneState(consumer_status="scheduled", consumer_status_at="2026-07-13T11:00:00Z"),
+        source=source,
+        published=published,
+    )
+
+    await rl.finalize_reactive_event_lane(redis=object(), comm_context=_comm_context())
+
+    assert published == ["evt-after"]
+    assert before.consumed_at is None     # folded by that turn, not consumed here
     assert stop.consumed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_two_stops_use_the_LAST_one_as_the_boundary(monkeypatch):
+    """A person who stops twice means the second one. Only what follows the
+    last stop is new intent."""
+    own = _event(ts=_OWN_TS, message_id="evt-own", sequence=1)
+    between = _typed(ts=_FOLLOWUP_TS, message_id="evt-between", sequence=2, text="wait")
+    stop1 = _typed(ts="2026-07-13T11:00:06Z", message_id="evt-stop1", sequence=3,
+                   text="", etype="event.user.steer")
+    after1 = _typed(ts="2026-07-13T11:00:07Z", message_id="evt-a1", sequence=4, text="hmm")
+    stop2 = _typed(ts="2026-07-13T11:00:08Z", message_id="evt-stop2", sequence=5,
+                   text="", etype="event.user.steer")
+    source = _FakeSource([own, between, stop1, after1, stop2])
+    published: list = []
+    _install(
+        monkeypatch,
+        state=EventLaneState(consumer_status="scheduled", consumer_status_at="2026-07-13T11:00:00Z"),
+        source=source,
+        published=published,
+    )
+
+    await rl.finalize_reactive_event_lane(redis=object(), comm_context=_comm_context())
+
+    assert published == []                 # nothing follows the LAST stop
+    assert stop1.consumed_at is not None and stop2.consumed_at is not None
