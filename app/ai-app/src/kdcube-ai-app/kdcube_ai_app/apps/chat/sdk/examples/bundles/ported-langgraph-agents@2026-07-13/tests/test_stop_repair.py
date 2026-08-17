@@ -53,14 +53,18 @@ class _Snapshot:
 class _Graph:
     """A graph whose state can be read and appended to, like a checkpointed one."""
 
+    nodes = {"model": object(), "tools": object()}
+
     def __init__(self, messages):
         self.messages = list(messages)
         self.updates = []
+        self.as_nodes = []
 
     async def aget_state(self, _config):
         return _Snapshot(self.messages)
 
-    async def aupdate_state(self, _config, values):
+    async def aupdate_state(self, _config, values, as_node=None):
+        self.as_nodes.append(as_node)
         self.updates.append(values)
         self.messages.extend(values["messages"])
 
@@ -120,10 +124,48 @@ def test_a_state_that_cannot_be_read_does_not_fail_the_turn():
 
 def test_a_repair_that_cannot_be_written_is_reported_not_swallowed(caplog):
     class _ReadOnly(_Graph):
-        async def aupdate_state(self, _config, values):
+        async def aupdate_state(self, _config, values, as_node=None):
             raise RuntimeError("read-only checkpoint")
 
     graph = _ReadOnly([_AI([{"id": "toolu_a", "name": "web_search", "args": {}}])])
     with caplog.at_level("WARNING"):
         assert asyncio.run(stop_repair.repair_unanswered_tool_calls(graph, {})) == 0
     assert any("dangling tool call" in record.getMessage() for record in caplog.records)
+
+
+def test_the_repair_is_written_as_the_tools_node(monkeypatch):
+    """LIVE, and the reason the first repair did not land: an unattributed
+    update makes LangGraph resume from the interrupted node and re-evaluate its
+    conditional edge, which on the prebuilt agent with middleware raises
+
+        KeyError: 'SummarizationMiddleware.before_model'
+
+    A tool result is the tools node's output; saying so follows that node's
+    ordinary edge instead of replaying a branch from a run that never finished.
+    """
+    graph = _Graph([_AI([{"id": "toolu_a", "name": "web_search", "args": {}}])])
+
+    assert asyncio.run(stop_repair.repair_unanswered_tool_calls(graph, {})) == 1
+    assert graph.as_nodes == ["tools"]
+
+
+def test_a_graph_without_a_tools_node_still_writes():
+    class _NoTools(_Graph):
+        nodes = {"model": object()}
+
+    graph = _NoTools([_AI([{"id": "toolu_a", "name": "web_search", "args": {}}])])
+    assert asyncio.run(stop_repair.repair_unanswered_tool_calls(graph, {})) == 1
+    assert graph.as_nodes == [None]
+
+
+def test_a_rejected_attribution_falls_back_rather_than_giving_up():
+    """The node names are a guess about somebody else's graph; a wrong guess
+    must cost an attempt, not the repair."""
+    class _RejectsNode(_Graph):
+        async def aupdate_state(self, _config, values, as_node=None):
+            if as_node:
+                raise ValueError(f"unknown node {as_node}")
+            return await _Graph.aupdate_state(self, _config, values)
+
+    graph = _RejectsNode([_AI([{"id": "toolu_a", "name": "web_search", "args": {}}])])
+    assert asyncio.run(stop_repair.repair_unanswered_tool_calls(graph, {})) == 1

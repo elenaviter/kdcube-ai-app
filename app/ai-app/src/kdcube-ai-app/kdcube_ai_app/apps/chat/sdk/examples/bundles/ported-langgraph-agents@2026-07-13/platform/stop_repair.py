@@ -70,6 +70,34 @@ def unanswered_tool_calls(messages: Any) -> List[Tuple[str, str]]:
     return [(call_id, name) for call_id, name in requested if call_id not in answered]
 
 
+def tool_node_name(graph: Any) -> str:
+    """The node that PRODUCES tool results in this graph, if it has one.
+
+    A state update has to be attributed to a node. Attributed to none, LangGraph
+    resumes from wherever the interrupted run stopped and re-evaluates that
+    node's conditional edge — which, on the prebuilt agent with middleware,
+    routes to `SummarizationMiddleware.before_model`, a target that branch's own
+    `ends` map does not contain:
+
+        KeyError: 'SummarizationMiddleware.before_model'
+
+    Writing AS the tools node says what is true — this message is a tool result
+    — and follows that node's ordinary edge instead of replaying a branch from a
+    run that never finished.
+    """
+    nodes = getattr(graph, "nodes", None) or {}
+    try:
+        names = [str(name) for name in nodes.keys()]
+    except Exception:
+        return ""
+    if "tools" in names:
+        return "tools"
+    for name in names:
+        if "tool" in name.lower():
+            return name
+    return ""
+
+
 async def repair_unanswered_tool_calls(graph: Any, run_config: Dict[str, Any]) -> int:
     """Answer every dangling tool call in this thread's checkpoint.
 
@@ -101,17 +129,39 @@ async def repair_unanswered_tool_calls(graph: Any, run_config: Dict[str, Any]) -
             )
             for call_id, name in pending
         ]
-        await graph.aupdate_state(run_config, {"messages": repairs})
     except Exception:
-        LOGGER.warning(
-            "[stop-repair] could not answer %d dangling tool call(s); the next "
-            "turn will be refused by the provider until this thread is repaired",
-            len(pending), exc_info=True,
-        )
+        LOGGER.warning("[stop-repair] could not build the tool results", exc_info=True)
         return 0
-    LOGGER.info(
-        "[stop-repair] answered %d tool call(s) left unanswered by an "
-        "interrupted run: %s",
-        len(pending), [call_id for call_id, _ in pending],
+
+    as_node = tool_node_name(graph)
+    attempts = [as_node] if as_node else []
+    # Unattributed LAST, not first: it is the one that replays the interrupted
+    # node's branch, and on this graph that raises. Kept as a fallback for a
+    # graph with no tools node, where there is nothing better to try.
+    attempts.append("")
+    last_error: Exception | None = None
+    for attempt in attempts:
+        try:
+            if attempt:
+                await graph.aupdate_state(run_config, {"messages": repairs}, as_node=attempt)
+            else:
+                await graph.aupdate_state(run_config, {"messages": repairs})
+        except Exception as exc:  # noqa: BLE001 - each attempt is best effort
+            last_error = exc
+            LOGGER.debug(
+                "[stop-repair] writing as_node=%r failed", attempt or None, exc_info=True,
+            )
+            continue
+        LOGGER.info(
+            "[stop-repair] answered %d tool call(s) left unanswered by an "
+            "interrupted run (as_node=%r): %s",
+            len(repairs), attempt or None, [call_id for call_id, _ in pending],
+        )
+        return len(repairs)
+
+    LOGGER.warning(
+        "[stop-repair] could not answer %d dangling tool call(s); the next "
+        "turn will be refused by the provider until this thread is repaired",
+        len(pending), exc_info=last_error,
     )
-    return len(repairs)
+    return 0
