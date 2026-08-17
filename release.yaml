@@ -1,68 +1,51 @@
 platform:
   repo: "kdcube-ai-app"
-  ref: "2026.08.15.310"
+  ref: "2026.08.18.242"
   description: |
-    This release follows 2026.08.03.1350.
+    This release follows 2026.08.15.310.
 
-    Application-hosted websites now have a prefix-safe platform contract from
-    the frontend artifact through the proxy and proc runtime. The control-plane
-    frontend can run under configured mount prefixes without leaking root
-    asset paths, and app site requests can be routed through generated proxy
-    rules with explicit fallback behavior. The release adds runtime and proxy
-    tests, reference website coverage, and architecture documentation for the
-    site serving model.
+    Hosted agent runtimes now have a complete live-control path without giving
+    the platform ownership of their execution loops. A lane-neutral watcher
+    delivers steer and stop signals to the active runtime; the ported
+    LangGraph adapter cancels the active stream while preserving its
+    checkpoint, and the Claude Code adapter receives the same controls through
+    its runtime hook. Live-control state is stored outside restored Claude Code
+    session checkouts so stale stop state cannot return with a recovered
+    workspace.
 
-    The foreign-runtime seam is now a first-class SDK layer for wrapped and
-    resident agents. Wrapped runtimes get shared identity, capability,
-    dispatch, stream, turn-record, workspace, MCP bridge, and named-service
-    helpers. The ported LangGraph runtime consumes that shared layer so hosted
-    agents can receive the same inventory, denial maps, pending-consent cards,
-    and workspace access as native agents.
+    Interrupted LangGraph tool calls are repaired as truthful tool results
+    attributed to the tools node. This closes dangling tool-call protocol
+    edges, lets an already stopped thread resume, and keeps interruption facts
+    in the persisted framework state rather than silently rebuilding or
+    rerunning the turn.
 
-    Resident Claude Code style workflows are more observable and easier to
-    operate. The runtime now records one activity row per tool call, presents
-    waiting and failed tools explicitly, opens activity rows, points the CLI at
-    the turn MCP configuration, and exposes the turn workspace as a governed
-    tool. Conversation lists also name hosted-runtime chats correctly.
+    Conversation event-lane ownership is stricter. New arrivals are measured
+    against the events present when the turn started, and a watcher heartbeat
+    may refresh only a reservation already owned by that watcher. A heartbeat
+    can no longer claim a reservation or promote a consumer to active. Hosted
+    runtime event folding, reload, stream recording, answer recording, and
+    recovery now follow the same shared conversation contracts.
 
-    Delegated MCP and connected-account handling have been tightened across
-    browser, agent, and external-client flows. Bundle MCP routes can resolve
-    delegated-bearer identity, discovery and CIMD admit real external clients,
-    unconfigured endpoints and refused permissions return distinct answerable
-    errors, and per-account demands raise the correct consent cards. Manual
-    delegated cards can edit named-service operations in place, and the
-    documentation now explains delegated card lifecycle and cache behavior.
+    Delegated MCP feedback and named-service file delivery have been corrected
+    across hosted runtimes. Governed tool outcomes remain visible to the agent,
+    and file uploads are represented through the conversation delivery path
+    rather than being lost at a framework boundary.
 
-    LinkedIn is available as a governed productivity integration. It includes
-    connected-account tools, REST APIs, gen-2 named-service projections,
-    organization posting lanes, connector-app selection, declarative grants,
-    and tests for tools, schemas, named-service behavior, and REST delivery.
-    Default descriptors include the LinkedIn provider, grants, namespace, and
-    tool configuration.
+    Git-backed app materialization now treats sparse checkout as a caller-owned
+    decision. The bundle store reads descriptor arguments instead of process
+    environment, fetches only the configured package folder when sparse mode is
+    requested, and retains a full-clone fallback for repositories that cannot
+    satisfy the optimized path.
 
-    Named-service catalogs and inventories are clearer and more composable.
-    Multiple providers can contribute to one namespace realm card, providers
-    can expose declared service inventory and announced roster blocks, and the
-    runtime merges provider specs before presenting capabilities to agents.
-    Capability selection now reaches actual tool construction, not only the
-    prompt.
+    Conversation-title generation has a larger bounded output budget and now
+    reports when that ceiling truncates a title. Default descriptors no longer
+    include private press configuration, and the press app descriptor and docs
+    use the current package identity.
 
-    The platform adds Claude 5 model picker entries, omits temperature for
-    Claude 5 requests, and extends baseline accounting with Claude Opus 5 and
-    Fable 5 pricing. Hybrid index query embeddings are shared instead of kept
-    in process, reducing duplicate embedding work across searches.
-
-    Pin Board and canvas handling are more practical in live use. Text
-    selection no longer starts drags, Finder file clipboard intake works,
-    image drops into notes are supported, thumbnails are contained, markdown
-    rendering has chat-parity copyable code plates, and previews can render
-    image, HTML, and URL content.
-
-    Documentation was expanded for application-hosted websites, trusted
-    ingress, app surface interoperability, hosted coding agents, resident
-    agent failure classes, named-service binding, LinkedIn integrations,
-    delegated access, and the recipes needed to build and operate these
-    surfaces.
+    Repository hygiene removes accidentally tracked conversation-debug dumps,
+    runtime identity-store copies, and generated dashboard siblings. Canonical
+    TypeScript frontend sources remain in place, and narrow ignore rules keep
+    these local or generated artifacts out of future releases.
 
 config:
-  version: "2026.08.15.310"
+  version: "2026.08.18.242"
