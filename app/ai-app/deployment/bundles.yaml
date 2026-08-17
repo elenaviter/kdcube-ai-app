@@ -316,38 +316,6 @@ bundles:
               description: "Read the organization page's posts, comments, and reaction counts through a connected org-lane LinkedIn account."
               delegable_roles: ["kdcube:role:registered", "kdcube:role:paid", "kdcube:role:privileged", "kdcube:role:super-admin"]
               delegable_permissions: ["linkedin:org:read"]
-            - grant: press:read
-              label: Read the press publications
-              description: Search and read entries in the press app's publication store, and refresh its local clone.
-              delegable_roles:
-              - kdcube:role:super-admin
-              - kdcube:role:admin
-              delegable_permissions:
-              - press:read
-            - grant: press:write
-              label: Edit the press publications
-              description: Change an entry's text, sketch or metadata, add files, and comment on entries.
-              delegable_roles:
-              - kdcube:role:super-admin
-              - kdcube:role:admin
-              delegable_permissions:
-              - press:write
-            - grant: press:delete
-              label: Delete from the press publications
-              description: Remove files and review comments from an entry.
-              delegable_roles:
-              - kdcube:role:super-admin
-              - kdcube:role:admin
-              delegable_permissions:
-              - press:delete
-            - grant: press:commit
-              label: Commit and push the press publications
-              description: Commit an entry's changes and push them to the store's repository.
-              delegable_roles:
-              - kdcube:role:super-admin
-              - kdcube:role:admin
-              delegable_permissions:
-              - press:commit
             resources:
             - resource: '*'
               label: All platform and application APIs
@@ -363,70 +331,6 @@ bundles:
                   description: Read conversation transcripts for feedback triage.
                   grants:
                   - conversations:read
-            - resource: '*/api/integrations/bundles/*/*/press@2026-08-16/public/mcp/press*'
-              label: Press LinkedIn publications
-              description: The publication store behind the press app — its records and drafts, and the moderation lane the review desk uses.
-              tools:
-                search:
-                  label: Search publications
-                  description: Find entries in the publication store.
-                  grants:
-                  - press:read
-                get_post:
-                  label: Read one publication
-                  description: Read one entry — its text, metadata, receipts and comments.
-                  grants:
-                  - press:read
-                related:
-                  label: Related publications
-                  description: Find entries related to one entry.
-                  grants:
-                  - press:read
-                list_unpublished:
-                  label: List unpublished
-                  description: List entries that are ready or still drafts.
-                  grants:
-                  - press:read
-                about:
-                  label: About the store
-                  description: Read the accounts, folds and index status of the store.
-                  grants:
-                  - press:read
-                fetch_remote:
-                  label: Fetch from the repository
-                  description: Refresh the local clone from its remote. Changes no entry.
-                  grants:
-                  - press:read
-                save_file:
-                  label: Edit an entry file
-                  description: Write the text, sketch or metadata of an entry in place.
-                  grants:
-                  - press:write
-                upload_file:
-                  label: Add a file to an entry
-                  description: Add an image or attachment to an entry.
-                  grants:
-                  - press:write
-                add_comment:
-                  label: Comment on an entry
-                  description: Append a review comment to an entry.
-                  grants:
-                  - press:write
-                delete_file:
-                  label: Delete a file
-                  description: Remove a file from an entry.
-                  grants:
-                  - press:delete
-                delete_comment:
-                  label: Delete a comment
-                  description: Remove one review comment from an entry.
-                  grants:
-                  - press:delete
-                commit_entry:
-                  label: Commit and push
-                  description: Commit the changes of an entry and push them to the repository.
-                  grants:
-                  - press:commit
             - resource: '*/api/integrations/bundles/*/*/kdcube-services@1-0/public/mcp/named_services*'
               label: KDCube named services MCP
               tools:
