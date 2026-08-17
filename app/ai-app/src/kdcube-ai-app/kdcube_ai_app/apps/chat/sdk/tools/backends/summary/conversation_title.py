@@ -56,6 +56,15 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 
 LOGGER = logging.getLogger("kdcube.conversation_title")
 
+#: Room for BOTH channels. The title is six words, but it is emitted AFTER the
+#: thinking channel this prompt asks for, so the budget has to cover the
+#: thinking too — at 128 it did not, and the ceiling cut the answer off before
+#: the title. That failed silently and intermittently: a terse model fit inside
+#: 128 and named the conversation, a chattier one on the same question spent the
+#: whole budget thinking and the conversation stayed "Untitled". Measured on the
+#: calls that failed: exactly 128 output tokens, the cap itself.
+TITLE_MAX_TOKENS = 512
+
 
 def _meta_model(meta: Any) -> str:
     """Best-effort model id/name from stream_with_channels meta, for logging.
@@ -73,6 +82,24 @@ def _meta_model(meta: Any) -> str:
         if isinstance(val, str) and val.strip():
             return val.strip()
     return ""
+
+
+def _stopped_on_length(meta: Any) -> bool:
+    """Whether the model was CUT OFF by the token ceiling rather than finishing.
+
+    The title arrives on the second channel, after the thinking channel the
+    prompt asks for — so a budget that thinking overruns costs the title itself,
+    and the symptom is an empty title with no error anywhere. Naming it is the
+    difference between "the model produced nothing" and "we did not let it
+    finish".
+    """
+    if not isinstance(meta, dict):
+        return False
+    for key in ("stop_reason", "finish_reason"):
+        value = str(meta.get(key) or "").strip().lower()
+        if value in {"max_tokens", "length", "max_output_tokens"}:
+            return True
+    return False
 
 
 def _meta_brief(meta: Any) -> Dict[str, Any]:
@@ -117,7 +144,8 @@ def build_title_system_prompt(max_words: int = 6) -> str:
     return (
         "You propose a short conversation title.\n\n"
         "IMPORTANT: The THINKING channel is shown to the user.\n"
-        "Keep it very short (1-2 sentences, no lists).\n\n"
+        "Keep it to ONE short sentence, no lists. The title comes after it, so\n"
+        "a long thinking channel is what keeps the title from being written.\n\n"
         "Output protocol (strict):\n"
         "<channel:thinking> ... </channel:thinking>\n"
         "<channel:output> {\"conversation_title\": \"...\"} </channel:output>\n\n"
@@ -181,7 +209,7 @@ async def run_conversation_title(
     role: str = "gate.simple",
     agent: Optional[str] = None,
     max_words: int = 6,
-    max_tokens: int = 128,
+    max_tokens: int = TITLE_MAX_TOKENS,
     temperature: float = 0.2,
     on_thinking_delta: Optional[Callable[..., Any]] = None,
     ctx_browser: Any = None,
@@ -272,6 +300,19 @@ async def run_conversation_title(
             )
             if salvaged:
                 payload[title_field] = salvaged
+            elif _stopped_on_length(meta):
+                # NOT the model's failure — ours. It was still writing when the
+                # ceiling stopped it, and the title comes last, so the cap took
+                # exactly the part we wanted. Said plainly, with the number, so
+                # nobody re-derives this from an empty title again.
+                LOGGER.warning(
+                    "[conversation-title] role=%s model=%s was CUT OFF at "
+                    "max_tokens=%d before it reached the title (thinking used "
+                    "%d chars). The conversation stays untitled because the "
+                    "budget ran out, not because the model had nothing. meta=%r",
+                    role, _meta_model(meta), max_tokens,
+                    len(channel_dump["thinking"] or ""), _meta_brief(meta),
+                )
             else:
                 # Still empty after structured parse + salvage: log the raw model
                 # output so the exact shape (which extraction to add) is visible.
@@ -321,7 +362,7 @@ async def generate_conversation_title(
     answer: Optional[str] = None,
     role: str = "gate.simple",
     max_words: int = 6,
-    max_tokens: int = 128,
+    max_tokens: int = TITLE_MAX_TOKENS,
     temperature: float = 0.2,
     on_thinking_delta: Optional[Callable[..., Any]] = None,
     ctx_browser: Any = None,

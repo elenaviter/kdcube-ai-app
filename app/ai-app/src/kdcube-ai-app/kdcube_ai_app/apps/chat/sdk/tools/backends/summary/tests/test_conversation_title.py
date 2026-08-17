@@ -25,7 +25,8 @@ def _channel_result(raw: str, obj=None) -> ChannelResult:
     )
 
 
-def _make_streamer(*, output_raw="", output_obj=None, thinking="", service_error=None, capture=None):
+def _make_streamer(*, output_raw="", output_obj=None, thinking="", service_error=None,
+                   capture=None, stop_reason=None):
     """Build a fake stream_with_channels that also fires the thinking emit."""
     async def _fake(svc, *, messages, role, channels, emit, agent, max_tokens, temperature, return_full_raw, **kw):
         if capture is not None:
@@ -41,6 +42,8 @@ def _make_streamer(*, output_raw="", output_obj=None, thinking="", service_error
             "output": _channel_result(output_raw, output_obj),
         }
         meta = {"service_error": service_error} if service_error else {}
+        if stop_reason:
+            meta["stop_reason"] = stop_reason
         return results, meta
     return _fake
 
@@ -126,3 +129,47 @@ def test_defaults_role_and_temperature(monkeypatch):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+def test_the_budget_covers_the_thinking_channel_too(monkeypatch):
+    """LIVE: press conversations kept listing as "Untitled conversation".
+
+    The title is emitted AFTER the thinking channel the prompt asks for, and the
+    two shared a 128-token ceiling — so a chatty model spent the budget thinking
+    and the response was cut off before the title. It failed intermittently, on
+    the same question, which is what made it read as something that worked and
+    then stopped working: the calls that failed spent exactly 128 output tokens.
+    """
+    capture: dict = {}
+    obj = ct.TitleOut(conversation_title="A Title")
+    monkeypatch.setattr(ct, "stream_with_channels",
+                        _make_streamer(output_raw='{"conversation_title": "A Title"}',
+                                       output_obj=obj, capture=capture))
+    asyncio.run(ct.generate_conversation_title(object(), user_message="Anything"))
+    assert capture["max_tokens"] >= 400
+
+
+def test_a_title_cut_off_by_the_ceiling_says_so(monkeypatch):
+    """An empty title is the same silence whether the model had nothing to say
+    or we stopped it mid-sentence. Only one of those is ours to fix, so the log
+    has to tell them apart."""
+    monkeypatch.setattr(ct, "stream_with_channels",
+                        _make_streamer(output_raw="", thinking="Considering names for this",
+                                       stop_reason="max_tokens"))
+    import logging
+    records = []
+
+    class _Catch(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler = _Catch()
+    ct.LOGGER.addHandler(handler)
+    try:
+        title = asyncio.run(ct.generate_conversation_title(object(), user_message="Anything"))
+    finally:
+        ct.LOGGER.removeHandler(handler)
+
+    assert title == ""
+    cut_off = [r for r in records if "CUT OFF" in r.getMessage()]
+    assert cut_off and cut_off[0].levelno == logging.WARNING
