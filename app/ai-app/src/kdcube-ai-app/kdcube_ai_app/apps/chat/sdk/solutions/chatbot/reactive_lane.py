@@ -169,6 +169,7 @@ async def finalize_reactive_event_lane(
     redis: Any,
     comm_context: Any,
     turn_id: str = "",
+    consumed_event_ids: Optional[list[str]] = None,
 ) -> bool:
     """Release the reactive-event lane for a completed run-to-completion turn.
 
@@ -211,13 +212,51 @@ async def finalize_reactive_event_lane(
 
         # Run-to-completion left the lane reserved. Mark the own event consumed
         # (exactly-once: a re-delivered wakeup for it is dropped as
-        # event_already_consumed) using the same primitive BaseWorkflow uses.
+        # event_already_consumed) using the same cursor primitive BaseWorkflow
+        # uses for the wakeup occurrence itself.
         own_seq = int(getattr(event, "sequence", 0) or 0)
         if own_seq > 0:
             try:
                 await source.mark_consumed_up_to(max_sequence=own_seq, turn_id=turn_id)
             except Exception:
                 log.debug("reactive lane finalize: mark_consumed_up_to failed", exc_info=True)
+
+        # A single visible UI send arrives as an ingress batch: prompt plus
+        # sibling attachments/context events. The foreign-runtime batch fold reads
+        # those siblings into this turn, so the finalizer must terminalize those
+        # exact lane occurrences before liveness re-wake scans the lane. This is
+        # deliberately exact-id based, not a sequence-range consume: an
+        # accepted occurrence from a different batch can interleave between
+        # same-batch siblings and must remain pending for the next turn.
+        folded_ids = []
+        seen_folded_ids = set()
+        for item in consumed_event_ids or []:
+            event_key = str(item or "").strip()
+            if not event_key or event_key == event_id or event_key in seen_folded_ids:
+                continue
+            seen_folded_ids.add(event_key)
+            folded_ids.append(event_key)
+        exact_consumed = 0
+        for folded_event_id in folded_ids:
+            try:
+                consumed_event = await source.mark_consumed_event(
+                    message_id=folded_event_id,
+                    turn_id=turn_id,
+                )
+                if consumed_event is not None:
+                    exact_consumed += 1
+            except Exception:
+                log.debug("reactive lane finalize: mark_consumed_event failed", exc_info=True)
+        if folded_ids:
+            log.info(
+                "[reactive-lane] run-to-completion consumed folded event batch "
+                "conversation=%s turn_id=%s own_sequence=%s folded_events=%s exact_consumed=%s",
+                getattr(source, "conversation_id", None),
+                turn_id,
+                own_seq,
+                folded_ids,
+                exact_consumed,
+            )
 
         # Release the consumer reservation so the next turn's wakeup is not dropped
         # as scheduled_consumer_fresh. Every event already has its atomic ingress

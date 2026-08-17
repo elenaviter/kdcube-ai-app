@@ -62,6 +62,18 @@ class _FakeConversationClient:
             if f"artifact:{a.get('kind')}" in wanted
             and (conv is None or a.get("conversation_id") == conv)
         ]
+        if "artifact:turn.log" in wanted:
+            items.extend(
+                {
+                    "turn_id": c.get("turn_id"),
+                    "text": json.dumps(c.get("payload") or {}, ensure_ascii=False),
+                    "payload": c.get("payload") or {},
+                    "bundle_id": c.get("bundle_id"),
+                    "tags": ["artifact:turn.log", f"turn:{c.get('turn_id')}"],
+                }
+                for c in reversed(self.calls)
+                if conv is None or c.get("conversation_id") == conv
+            )
         if isinstance(limit, int):
             items = items[:limit]
         return {"items": items}
@@ -227,6 +239,49 @@ def test_minimal_turn_log_records_user_prompt_attachments_and_files():
 
     # The final answer is still last.
     assert payload["blocks"][-1]["type"] == ASSISTANT_COMPLETION_BLOCK_TYPE
+
+
+def test_minimal_turn_log_preserves_followup_text_attachments_and_events():
+    """A non-ReAct follow-up can carry typed text, files, and context objects in
+    one accepted event batch. Reload must keep that whole batch together and must
+    not turn the follow-up into a fresh prompt."""
+    from kdcube_ai_app.apps.chat.sdk.runtime.user_inputs import iter_turn_user_input_entries
+
+    ctx_event = {
+        "id": "ctx1",
+        "type": "event.user.context.object",
+        "batch_id": "batch-followup",
+        "payload": {
+            "object_ref": "conv:ar:turn-1.artifact",
+            "label": "runtime note",
+        },
+    }
+    payload = build_minimal_turn_log_payload(
+        final_answer="Done.",
+        turn_id="turn-9",
+        user_prompt_text="  please send this too  ",
+        user_event_type="event.user.followup",
+        user_attachments=[{
+            "filename": "keep-the-agent-add-the-runtime.png",
+            "mime": "image/png",
+            "hosted_uri": "s3://bucket/user/conv/turn/file.png",
+            "rn": "rn:file",
+        }],
+        user_events=[ctx_event],
+        batch_id="batch-followup",
+    )
+
+    prompt = [b for b in payload["blocks"] if b["type"] == "user.prompt"][0]
+    assert prompt["text"] == "please send this too"
+    assert prompt["meta"]["event_type"] == "event.user.followup"
+    assert prompt["meta"]["batch_id"] == "batch-followup"
+
+    entries = iter_turn_user_input_entries(payload["blocks"], turn_id="turn-9")
+    assert len(entries) == 1
+    assert entries[0]["plain_text"] == "please send this too"
+    assert entries[0]["user_event_type"] == "event.user.followup"
+    assert entries[0]["attachments"][0]["label"] == "keep-the-agent-add-the-runtime.png"
+    assert entries[0]["contexts"][0]["ref"] == "conv:ar:turn-1.artifact"
 
 
 def test_minimal_turn_log_skips_empty_prompt_and_bad_refs():
@@ -416,6 +471,53 @@ async def test_minimal_log_without_title_registers_conversation():
     assert client.artifact_calls[-1]["turn_id"] == "turn-2"
 
 
+@pytest.mark.asyncio
+async def test_minimal_log_merges_same_turn_sibling_without_losing_user_text():
+    reset_turn_log_recorded()
+    client = _FakeConversationClient()
+    attachment = {
+        "filename": "keep-the-agent-add-the-runtime.png",
+        "mime": "image/png",
+        "hosted_uri": "s3://bucket/user/conv/turn/file.png",
+        "rn": "rn:file",
+    }
+    wrote = await record_minimal_turn_log_if_absent(
+        conversation_client=client,
+        tenant="t", project="p", user="u", user_type="registered",
+        conversation_id="conv-1", turn_id="turn-1", bundle_id="bundle.demo",
+        agent_id="raw",
+        final_answer="First answer.",
+        user_prompt_text="please send this image to Slack",
+        user_attachments=[attachment],
+        batch_id="batch-1",
+    )
+    assert wrote is True
+
+    # Defensive regression guard: if a same-turn sibling event ever reaches the
+    # fallback again, the newer minimal payload must not replace the earlier one
+    # that carried the user's text.
+    reset_turn_log_recorded()
+    wrote2 = await record_minimal_turn_log_if_absent(
+        conversation_client=client,
+        tenant="t", project="p", user="u", user_type="registered",
+        conversation_id="conv-1", turn_id="turn-1", bundle_id="bundle.demo",
+        agent_id="raw",
+        final_answer="Second answer.",
+        user_prompt_text="",
+        user_attachments=[attachment],
+        batch_id="batch-1",
+    )
+    assert wrote2 is True
+
+    blocks = client.calls[-1]["payload"]["blocks"]
+    prompts = [b for b in blocks if b["type"] == "user.prompt"]
+    attachments = [b for b in blocks if b["type"] == "user.attachment.meta"]
+    completions = [b for b in blocks if b["type"] == ASSISTANT_COMPLETION_BLOCK_TYPE]
+    assert [b["text"] for b in prompts] == ["please send this image to Slack"]
+    assert len(attachments) == 1
+    assert [b["text"] for b in completions] == ["First answer.", "Second answer."]
+
+
 # ------------------------------------------------- entrypoint (BaseEntrypoint)
 #
 # The fallback lives on the app layer, not the orchestrator: BaseEntrypoint.run()
@@ -465,6 +567,58 @@ async def test_entrypoint_records_for_non_react_turn():
     assert len(client.calls) == 1
     assert client.calls[0]["payload"]["blocks"][-1]["text"] == "Framework-neutral answer."
     assert client.calls[0]["agent_id"] == "raw"
+
+
+@pytest.mark.asyncio
+async def test_entrypoint_fallback_records_followup_text_attachments_and_context_events():
+    reset_turn_log_recorded()
+    client = _FakeConversationClient()
+    ep = _FakeEntrypoint(client)
+    state = {
+        "external_events": [
+            {
+                "id": "fu1",
+                "type": "event.user.followup",
+                "batch_id": "batch-followup",
+                "payload": {"event": {"text": "please send this too"}},
+            },
+            {
+                "id": "file1",
+                "type": "event.user.attachment.file",
+                "batch_id": "batch-followup",
+                "payload": {
+                    "event": {
+                        "filename": "keep-the-agent-add-the-runtime.png",
+                        "mime": "image/png",
+                        "hosted_uri": "s3://bucket/user/conv/turn/file.png",
+                        "rn": "rn:file",
+                    }
+                },
+            },
+            {
+                "id": "ctx1",
+                "type": "event.user.context.object",
+                "batch_id": "batch-followup",
+                "payload": {"object_ref": "conv:ar:turn-1.artifact", "label": "runtime note"},
+            },
+        ]
+    }
+    kwargs = _fallback_kwargs(final_answer="Framework-neutral answer.")
+    kwargs["state"] = state
+
+    await ep._record_turn_log_fallback(**kwargs)
+
+    blocks = client.calls[0]["payload"]["blocks"]
+    prompt = [b for b in blocks if b["type"] == "user.prompt"][0]
+    assert prompt["text"] == "please send this too"
+    assert prompt["meta"]["event_type"] == "event.user.followup"
+    assert prompt["meta"]["batch_id"] == "batch-followup"
+    assert [b["type"] for b in blocks] == [
+        "user.prompt",
+        "event.user.context.object",
+        "user.attachment.meta",
+        ASSISTANT_COMPLETION_BLOCK_TYPE,
+    ]
 
 
 @pytest.mark.asyncio

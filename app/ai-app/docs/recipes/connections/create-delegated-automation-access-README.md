@@ -4,7 +4,7 @@ title: "Create Delegated Automation Access"
 summary: "Configure and use Connection Hub delegated access tokens for scripts, agents, and DevOps automation that represent a KDCube platform user."
 status: active
 tags: ["connection-hub", "delegated-credentials", "automation", "resources", "roles", "mcp", "named-services", "least-privilege"]
-updated_at: 2026-08-10
+updated_at: 2026-08-17
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/agent-acting-for-user/agent-acting-for-user-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/protect-bundle-rest-with-managed-credentials-README.md
@@ -266,6 +266,12 @@ named-service bridge
 provider adapter
   grantor's connected-account claim, when the provider requires one
 ```
+
+For hosted agents that consume this named-services MCP bridge, the connection
+declaration should ask only for the door grant, usually `named_services:use`.
+Conversation operation grants such as `conversations:read` and provider claims
+such as `slack:post` are selected or demanded from the Connection Hub catalog at
+operation time; they are not static MCP connection scopes.
 
 Grant checks are resource-scoped. A token with:
 

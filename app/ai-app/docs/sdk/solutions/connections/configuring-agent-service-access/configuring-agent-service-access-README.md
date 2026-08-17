@@ -5,7 +5,7 @@ summary: "End-to-end configuration for letting an agent act on the user's behalf
 status: active
 tags: ["sdk", "connections", "configuration", "delegated-credentials", "named-services", "connected-accounts", "account-scope", "consent", "connection-hub", "agents", "mcp"]
 updated_at: 2026-07-19
-keywords: ["account_scope", "delegated: true", "named_services", "named_services_roster", "scopes", "conv:read", "delegated_to_kdcube", "connector_apps", "allowed_claims", "consent_ui", "authority_provider", "resource_grants", "kdcube-agent", "per-account scoping", "bundles.yaml", "bundles.template.yaml"]
+keywords: ["account_scope", "delegated: true", "named_services", "named_services_roster", "scopes", "conversations:read", "delegated_to_kdcube", "connector_apps", "allowed_claims", "consent_ui", "authority_provider", "resource_grants", "kdcube-agent", "per-account scoping", "bundles.yaml", "bundles.template.yaml"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/quickstart/explore-how-agents-connect-to-kdcube-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/mcp/platform-mcp-over-connection-hub-README.md
@@ -153,7 +153,9 @@ the claim is not among its tools' grants, `delegated_access_grants_not_delegable
 The agent that consumes the service declares a delegated connection in its
 `tools` list. For KDCube named services this is one connection to the
 `kdcube-services@1-0` named-services MCP door, `delegated: true`, with `scopes`
-as the fine-grained ceiling:
+as the door admission grant. Namespace-operation grants are owned by the
+Connection Hub resource catalog and raised by the named-services bridge when an
+operation actually needs them:
 
 ```yaml
 - name: named_services
@@ -164,7 +166,7 @@ as the fine-grained ceiling:
   resource: "*/api/integrations/bundles/*/*/kdcube-services@1-0/public/mcp/named_services*"
   transport: streamable_http
   delegated: true
-  scopes: [named_services:use, conv:read]   # conv is built-in (no account); mail/slack read/write is per-account
+  scopes: [named_services:use]   # door grant only; conv uses conversations:read per operation; mail/slack is per-account
 - name: named_services_roster       # binds no tools; teaches the prompt the realms
   kind: named_service
   alias: named_services
@@ -180,9 +182,10 @@ Key fields:
 - `resource` — the grant key. It must byte-match the deployment's configured
   delegated-resource id (commonly the wildcard pattern above) so grant creation,
   validation, and per-turn lookup all agree.
-- `scopes` — the per-call ceiling the door's `@mcp` guard enforces; adding
-  `conv:read` admits the conversation namespace and summons the prompt's
-  conversation-recovery block.
+- `scopes` — the entry grant for the delegated MCP door. Do not put provider
+  claims or named-service namespace grants here; the resource catalog declares
+  `conv` operation grants such as `conversations:read`, and provider-backed
+  namespaces resolve account claims through `account_scope`.
 
 This door has **two valid connection shapes** (whole-surface vs per-service) that
 differ in governance granularity, consent UX, and what the prompt teaches. That

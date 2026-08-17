@@ -79,6 +79,7 @@ class _FakeSource:
         self.conversation_id = "conv-1"
         self.agent_id = "agent-x"
         self.consumed_calls = []
+        self.consumed_event_calls = []
 
     async def get_event(self, message_id):
         return self._by_id.get(message_id)
@@ -95,6 +96,15 @@ class _FakeSource:
                 event.consumed_at = 1.0
                 updated += 1
         return updated
+
+    async def mark_consumed_event(self, *, message_id, turn_id):
+        self.consumed_event_calls.append((message_id, turn_id))
+        event = self._by_id.get(message_id)
+        if event is None:
+            return None
+        if event.consumed_at is None:
+            event.consumed_at = 1.0
+        return event
 
 
 def _install(
@@ -178,6 +188,60 @@ async def test_release_rewakes_mid_turn_followup_not_own_event(monkeypatch):
 
     # The mid-turn followup is re-woken (promoted to the next turn); the turn's
     # own event is never re-woken (no double run).
+    assert published == ["evt-followup"]
+
+
+@pytest.mark.asyncio
+async def test_release_consumes_folded_ingress_batch_without_rewake(monkeypatch):
+    own = _event(ts=_OWN_TS, message_id="evt-own", sequence=1)
+    attachment = _event(ts=_FOLLOWUP_TS, message_id="evt-attachment", sequence=2)
+    source = _FakeSource([own, attachment])
+    published: list = []
+    _install(
+        monkeypatch,
+        state=EventLaneState(consumer_status="scheduled", consumer_status_at="2026-07-13T11:00:00Z"),
+        source=source,
+        published=published,
+    )
+
+    await rl.finalize_reactive_event_lane(
+        redis=object(),
+        comm_context=_comm_context(),
+        consumed_event_ids=["evt-own", "evt-attachment"],
+    )
+
+    assert source.consumed_calls == [(1, "turn-1")]
+    assert source.consumed_event_calls == [("evt-attachment", "turn-1")]
+    assert own.consumed_at is not None
+    assert attachment.consumed_at is not None
+    assert published == []
+
+
+@pytest.mark.asyncio
+async def test_release_consumes_folded_ids_without_swallowing_interleaved_followup(monkeypatch):
+    own = _event(ts=_OWN_TS, message_id="evt-own", sequence=1)
+    followup = _event(ts=_FOLLOWUP_TS, message_id="evt-followup", sequence=2)
+    attachment = _event(ts=_FOLLOWUP_TS, message_id="evt-attachment", sequence=3)
+    source = _FakeSource([own, followup, attachment])
+    published: list = []
+    _install(
+        monkeypatch,
+        state=EventLaneState(consumer_status="scheduled", consumer_status_at="2026-07-13T11:00:00Z"),
+        source=source,
+        published=published,
+    )
+
+    await rl.finalize_reactive_event_lane(
+        redis=object(),
+        comm_context=_comm_context(),
+        consumed_event_ids=["evt-own", "evt-attachment"],
+    )
+
+    assert source.consumed_calls == [(1, "turn-1")]
+    assert source.consumed_event_calls == [("evt-attachment", "turn-1")]
+    assert own.consumed_at is not None
+    assert attachment.consumed_at is not None
+    assert followup.consumed_at is None
     assert published == ["evt-followup"]
 
 

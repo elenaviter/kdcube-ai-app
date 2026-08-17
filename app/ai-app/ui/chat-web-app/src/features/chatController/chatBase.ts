@@ -300,6 +300,35 @@ export interface ExternalEvent {
     [key: string]: unknown;
 }
 
+const USER_AUTHORED_EVENT_TYPES = new Set([
+    "event.user.prompt",
+    "event.user.followup",
+    "event.user.steer",
+]);
+
+const externalEventText = (event: ExternalEvent): string => {
+    const payloadEvent = event.payload?.event;
+    if (payloadEvent && typeof payloadEvent === "object") {
+        const body = payloadEvent as { text?: unknown; message?: unknown; request?: unknown };
+        const text = body.text ?? body.message ?? body.request ?? "";
+        return typeof text === "string" ? text.trim() : "";
+    }
+    if (typeof payloadEvent === "string") {
+        return payloadEvent.trim();
+    }
+    const legacyText = (event as { text?: unknown }).text;
+    return typeof legacyText === "string" ? legacyText.trim() : "";
+};
+
+const hasAuthoredUserEvent = (event: ExternalEvent, reactiveEventType: string): boolean => {
+    const type = String(event.type || "");
+    if (!USER_AUTHORED_EVENT_TYPES.has(type) || type !== reactiveEventType) return false;
+    if (reactiveEventType === "event.user.steer") {
+        return true;
+    }
+    return externalEventText(event).length > 0;
+};
+
 export interface ChatRequest {
     message: string;
     chat_history?: ChatMessage[] | null;
@@ -512,8 +541,9 @@ export abstract class ChatBase {
         const reactiveEventType = req.reactiveEventType || "event.user.prompt";
         const events: ExternalEvent[] = [];
         const text = String(req.message || "").trim();
-        const hasAuthoredEvents = Boolean(req.external_events?.length);
-        if ((text || reactiveEventType === "event.user.steer") && !hasAuthoredEvents) {
+        const authoredEvents = req.external_events || [];
+        const hasUserAuthoredEvent = authoredEvents.some((event) => hasAuthoredUserEvent(event, reactiveEventType));
+        if ((text || reactiveEventType === "event.user.steer") && !hasUserAuthoredEvent) {
             const source =
                 reactiveEventType === "event.user.steer"
                     ? "chat.steer"
@@ -552,7 +582,7 @@ export abstract class ChatBase {
                 },
             });
         });
-        events.push(...(req.external_events || []));
+        events.push(...authoredEvents);
         return {
             external_events: events,
             chat_history: req.chat_history || [],

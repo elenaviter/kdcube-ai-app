@@ -4,7 +4,7 @@ title: "Conversation Event Lane State"
 summary: "SDK/runtime reference for the Redis state record that synchronizes conversation external-event ingress, readers, handlers, and wake handoff."
 status: active
 tags: ["sdk", "events", "external-events", "redis", "react", "synchronization"]
-updated_at: 2026-06-23
+updated_at: 2026-08-17
 keywords:
   [
     "conversation event lane state",
@@ -171,6 +171,28 @@ ingress wake; this post-save wake is a duplicate safety signal and must observe
 the released reservation. An unconsumed `event.user.steer` is terminalized
 instead: it is bound to the turn that was active at ingress and cannot become a
 later turn.
+
+Run-to-completion apps use the same door but do not open a live handler. The
+processor wake reserves `T.consumer.status = scheduled`; the app executes once;
+then the shared door finalizer accounts for the start batch and releases the
+reservation. The wake names one accepted occurrence, so a same-ingress start
+batch may be larger than the wake: for example, sequence 1 is
+`event.user.prompt` and sequence 2 is `event.user.attachment.file`, both sharing
+one `batch_id`. A hosted-runtime batch fold is read-only while the app runs, but
+it records the exact folded lane event ids on turn state. Finalization consumes
+the wake occurrence with the existing cursor primitive, then terminalizes folded
+same-batch siblings by exact event id before `mark_consumer_none()`. It must not
+consume by sequence range: different-`batch_id` work can interleave between
+same-batch siblings and must remain pending for the next turn.
+
+This is still the July release-before-handoff contract: consume the accepted
+start batch, release `T.consumer` to `none`, then publish any duplicate liveness
+wake for remaining work. Same-batch siblings are not later work. A true mid-turn
+followup is outside the folded start batch, remains unconsumed, and may be
+re-woken after release. Native ReAct is unaffected by this folded-batch handoff:
+ReAct advances its own lane state inside `BaseWorkflow`, leaves the reservation
+released and the event accounted, and the shared finalizer returns as a state
+no-op.
 
 A subagent completion (`subagent.converged` / `subagent.failed`) rides this same
 lane as a promotable event: a live parent turn folds it and the promoter acks,

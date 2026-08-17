@@ -12,17 +12,17 @@ delta aggregates — what makes the code-exec panel and canvas streams replay on
 reload). ``runtime/turn_recording.py`` remains as a compatibility re-export.
 
 The chat component's conversation list / fetch / reload reads the per-turn
-``artifact:turn.log`` — materialized into a ``chat:assistant`` record from an
-``assistant.completion`` block. The React workflow writes a rich turn log at
-``finish_turn``; a bundle that serves turns with **any other framework**
-(LangGraph, LangChain, raw calls) via ``execute_core`` writes none, so its
-turns stream live but leave no fetchable record.
+``artifact:turn.log`` — materialized into ``chat:user`` / ``chat:assistant``
+records from user-input and ``assistant.completion`` blocks. The React workflow
+writes a rich turn log at ``finish_turn``; an app that serves turns with **any
+other framework** (LangGraph, LangChain, raw calls) via ``execute_core`` writes
+none, so its turns stream live but leave no fetchable record.
 
 This module makes conversation persistence framework-agnostic: after any turn,
-if no turn log was written, record a **minimal** one carrying the assistant's
-final answer (and, optionally, its progress steps). The user message is not
-recorded here — it is persisted at ingress independent of the agent, and the
-turn-log materializer skips user blocks anyway.
+if no turn log was written, record a **minimal** one carrying the user input
+events that reached the app, the assistant's final answer, and optionally its
+progress steps. Ingress hosts the files and accepts the event batch; this module
+persists the user-facing turn-log shape for non-React runtimes.
 
 Idempotency uses a per-turn signal carried in a mutable dict on a ContextVar
 (``_TURN_STATE``): whoever writes a turn log (React, or this module) mutates
@@ -104,7 +104,13 @@ def _utc_iso() -> str:
     return _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _user_prompt_block(text: str, *, turn_id: str, ts: str) -> Optional[Dict[str, Any]]:
+def _user_prompt_block(
+    text: str,
+    *,
+    turn_id: str,
+    ts: str,
+    user_event_type: str = "event.user.prompt",
+) -> Optional[Dict[str, Any]]:
     """A ``user.prompt`` block — the reload reader (``iter_turn_user_input_entries``)
     rebuilds the ``chat:user`` bubble from the common turn-log contract."""
     body = str(text or "").strip()
@@ -119,7 +125,11 @@ def _user_prompt_block(text: str, *, turn_id: str, ts: str) -> Optional[Dict[str
         "mime": "text/markdown",
         "path": f"conv:ar:{turn_id}.user.prompt",
         "text": body,
-        "meta": {"message_id": "m0", "event_type": "event.user.prompt", "turn_id": turn_id},
+        "meta": {
+            "message_id": "m0",
+            "event_type": str(user_event_type or "event.user.prompt").strip() or "event.user.prompt",
+            "turn_id": turn_id,
+        },
     }
 
 
@@ -141,6 +151,8 @@ def _user_context_event_block(event: Any, *, turn_id: str, batch_id: str, ts: st
         return None
     if event_type.startswith("event.user.prompt") or event_type.startswith("event.user.followup") \
             or event_type.startswith("event.user.steer"):
+        return None
+    if event_type.startswith("event.user.attachment"):
         return None
     payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
     ref = str(
@@ -167,7 +179,13 @@ def _user_context_event_block(event: Any, *, turn_id: str, batch_id: str, ts: st
     }
 
 
-def _user_attachment_meta_block(att: Dict[str, Any], *, turn_id: str, ts: str) -> Optional[Dict[str, Any]]:
+def _user_attachment_meta_block(
+    att: Dict[str, Any],
+    *,
+    turn_id: str,
+    batch_id: str,
+    ts: str,
+) -> Optional[Dict[str, Any]]:
     """A ``user.attachment.meta`` block for one uploaded file — reloads as an
     ``artifact:user.attachment`` row and carries a pullable ``conv:fi:`` ref, mirroring
     the React user-attachment block. Requires a real basename filename."""
@@ -187,7 +205,13 @@ def _user_attachment_meta_block(att: Dict[str, Any], *, turn_id: str, ts: str) -
         "visibility": "external",
         "ts": ts,
     }
-    meta: Dict[str, Any] = {"filename": filename, "mime": mime, "turn_id": turn_id, "message_id": "m0"}
+    meta: Dict[str, Any] = {
+        "filename": filename,
+        "mime": mime,
+        "turn_id": turn_id,
+        "message_id": "m0",
+        "batch_id": batch_id,
+    }
     for key in ("hosted_uri", "rn", "key"):
         val = str(att.get(key) or "").strip()
         if val:
@@ -314,6 +338,7 @@ def build_minimal_turn_log_payload(
     ts: Optional[str] = None,
     conversation_title: Optional[str] = None,
     user_prompt_text: str = "",
+    user_event_type: str = "event.user.prompt",
     user_attachments: Optional[Sequence[Dict[str, Any]]] = None,
     user_events: Optional[Sequence[Dict[str, Any]]] = None,
     batch_id: str = "",
@@ -334,7 +359,12 @@ def build_minimal_turn_log_payload(
     now = ts or _utc_iso()
     blocks: List[Dict[str, Any]] = []
     # 1) the user's message (reloads the chat:user bubble)
-    user_block = _user_prompt_block(user_prompt_text, turn_id=turn_id, ts=now)
+    user_block = _user_prompt_block(
+        user_prompt_text,
+        turn_id=turn_id,
+        ts=now,
+        user_event_type=user_event_type,
+    )
     batch = str(batch_id or "").strip() or f"{turn_id}.batch"
     if user_block:
         user_block["meta"]["batch_id"] = batch
@@ -348,7 +378,7 @@ def build_minimal_turn_log_payload(
             blocks.append(ctx_block)
     # 2) the user's uploaded attachments (reload + pullable conv:fi: refs)
     for att in user_attachments or []:
-        att_block = _user_attachment_meta_block(att, turn_id=turn_id, ts=now)
+        att_block = _user_attachment_meta_block(att, turn_id=turn_id, batch_id=batch, ts=now)
         if att_block:
             blocks.append(att_block)
     # 3) the agent's progress steps
@@ -383,6 +413,172 @@ def build_minimal_turn_log_payload(
     if title:
         payload["conversation_title"] = title
     return payload
+
+
+def _turn_log_payload_from_item(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not isinstance(item, dict):
+        return None
+    candidates = [
+        item.get("payload"),
+        item.get("data"),
+    ]
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        if isinstance(candidate.get("blocks"), list):
+            return dict(candidate)
+        nested = candidate.get("payload")
+        if isinstance(nested, dict) and isinstance(nested.get("blocks"), list):
+            return dict(nested)
+        turn_log = candidate.get("turn_log")
+        if isinstance(turn_log, dict) and isinstance(turn_log.get("blocks"), list):
+            return dict(turn_log)
+    return None
+
+
+def _json_fingerprint(value: Any) -> str:
+    try:
+        return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    except Exception:
+        return str(value)
+
+
+def _block_fingerprint(block: Dict[str, Any]) -> str:
+    if not isinstance(block, dict):
+        return _json_fingerprint(block)
+    meta = block.get("meta") if isinstance(block.get("meta"), dict) else {}
+    btype = str(block.get("type") or "")
+    if btype == ASSISTANT_COMPLETION_BLOCK_TYPE:
+        return _json_fingerprint({
+            "type": btype,
+            "text": block.get("text") or "",
+            "error": bool(meta.get("error")),
+            "error_type": meta.get("error_type") or "",
+        })
+    if btype == "user.prompt":
+        return _json_fingerprint({
+            "type": btype,
+            "text": block.get("text") or "",
+            "event_type": meta.get("event_type") or "",
+            "batch_id": meta.get("batch_id") or "",
+            "path": block.get("path") or "",
+        })
+    if btype.startswith("user.attachment."):
+        return _json_fingerprint({
+            "type": btype,
+            "path": block.get("path") or "",
+            "filename": meta.get("filename") or "",
+            "hosted_uri": meta.get("hosted_uri") or "",
+            "rn": meta.get("rn") or "",
+            "key": meta.get("key") or "",
+        })
+    if btype.startswith("event."):
+        event = meta.get("event") if isinstance(meta.get("event"), dict) else {}
+        return _json_fingerprint({
+            "type": btype,
+            "id": event.get("id") or block.get("id") or "",
+            "event_source_id": meta.get("event_source_id") or event.get("event_source_id") or "",
+            "object_ref": meta.get("object_ref") or event.get("object_ref") or "",
+            "batch_id": meta.get("batch_id") or "",
+            "path": block.get("path") or "",
+        })
+    return _json_fingerprint({
+        "type": btype,
+        "path": block.get("path") or "",
+        "text": block.get("text") or "",
+        "meta": meta,
+    })
+
+
+def _merge_unique_sequence(existing: Any, incoming: Any) -> List[Any]:
+    merged: List[Any] = []
+    seen = set()
+    for item in list(existing or []) + list(incoming or []):
+        key = _json_fingerprint(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+    return merged
+
+
+def _merge_turn_log_payload(existing: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge another fallback write for the same turn without erasing prior input.
+
+    A visible user send can be split into sibling internal events (prompt, files,
+    context). Some non-React integrations may re-enter the same turn for a later
+    sibling event. The later pass is not a complete replacement for the first pass,
+    so preserve existing blocks and append only genuinely new incoming blocks.
+    """
+    if not isinstance(existing, dict) or not isinstance(existing.get("blocks"), list):
+        return incoming
+    if not isinstance(incoming, dict) or not isinstance(incoming.get("blocks"), list):
+        return existing
+
+    merged = dict(existing)
+    blocks: List[Dict[str, Any]] = [
+        dict(block) if isinstance(block, dict) else block
+        for block in (existing.get("blocks") or [])
+    ]
+    seen = {_block_fingerprint(block) for block in blocks if isinstance(block, dict)}
+    for block in incoming.get("blocks") or []:
+        if not isinstance(block, dict):
+            continue
+        fp = _block_fingerprint(block)
+        if fp in seen:
+            continue
+        seen.add(fp)
+        blocks.append(dict(block))
+
+    merged["blocks"] = blocks
+    merged["blocks_count"] = len(blocks)
+    if not merged.get("ts") and incoming.get("ts"):
+        merged["ts"] = incoming.get("ts")
+    if incoming.get("end_ts"):
+        merged["end_ts"] = incoming.get("end_ts")
+    if not merged.get("conversation_title") and incoming.get("conversation_title"):
+        merged["conversation_title"] = incoming.get("conversation_title")
+    if incoming.get("sources_used") or existing.get("sources_used"):
+        merged["sources_used"] = _merge_unique_sequence(existing.get("sources_used"), incoming.get("sources_used"))
+    if incoming.get("sources_pool") or existing.get("sources_pool"):
+        merged["sources_pool"] = _merge_unique_sequence(existing.get("sources_pool"), incoming.get("sources_pool"))
+    if incoming.get("forks") or existing.get("forks"):
+        merged["forks"] = _merge_unique_sequence(existing.get("forks"), incoming.get("forks"))
+    return merged
+
+
+async def _latest_turn_log_payload(
+    *,
+    conversation_client: Any,
+    user: str,
+    conversation_id: str,
+    turn_id: str,
+    bundle_id: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    recent = getattr(conversation_client, "recent", None)
+    if not callable(recent):
+        return None
+    try:
+        res = await recent(
+            kinds=["artifact:turn.log"],
+            roles=("artifact",),
+            limit=5,
+            days=3650,
+            user_id=user,
+            conversation_id=conversation_id,
+            bundle_id=bundle_id,
+            all_tags=[f"turn:{turn_id}"],
+            with_payload=True,
+        )
+    except Exception:
+        return None
+    for item in list((res or {}).get("items") or []):
+        if turn_id and item.get("turn_id") not in (None, "", turn_id):
+            continue
+        payload = _turn_log_payload_from_item(item)
+        if payload is not None:
+            return payload
+    return None
 
 
 def build_error_turn_log_payload(
@@ -616,6 +812,7 @@ async def record_minimal_turn_log_if_absent(
     steps: Optional[Sequence[Dict[str, Any]]] = None,
     conversation_title: Optional[str] = None,
     user_prompt_text: str = "",
+    user_event_type: str = "event.user.prompt",
     user_attachments: Optional[Sequence[Dict[str, Any]]] = None,
     user_events: Optional[Sequence[Dict[str, Any]]] = None,
     batch_id: str = "",
@@ -649,11 +846,21 @@ async def record_minimal_turn_log_if_absent(
         final_answer=answer, turn_id=turn_id, steps=steps,
         conversation_title=conversation_title,
         user_prompt_text=user_prompt_text,
+        user_event_type=user_event_type,
         user_attachments=user_attachments,
         user_events=user_events,
         batch_id=batch_id,
         assistant_files=assistant_files,
     )
+    prior_payload = await _latest_turn_log_payload(
+        conversation_client=conversation_client,
+        user=user,
+        conversation_id=conversation_id,
+        turn_id=turn_id,
+        bundle_id=bundle_id,
+    )
+    if prior_payload is not None:
+        payload = _merge_turn_log_payload(prior_payload, payload)
     await save(
         tenant=tenant, project=project, user=user,
         conversation_id=conversation_id, user_type=user_type,

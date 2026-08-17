@@ -4,7 +4,7 @@ title: "Settle Your Solution In A KDCube App"
 summary: "Executable procedure a coding agent (or engineer) follows to host an existing Python agent — in its own framework — as a KDCube app: preserve the solution as an independently maintainable package, add a thin async wrap (turn, stream, state scope, accounted services, prompt composition, per-turn rebuild), then satisfy the canonical app-package contract. Worked instance: ported-langgraph-agents@2026-07-13."
 status: draft
 tags: ["recipes", "kdcube-for-agents", "settle", "wrap", "langgraph", "streaming", "bundle", "app", "scaled-serving", "turn-workspace", "attachments"]
-updated_at: 2026-07-16
+updated_at: 2026-08-17
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-write-bundle-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/chat/chat-stream-events-README.md
@@ -200,11 +200,14 @@ beside it (the exact bug the worked instance surfaced live: the agent answered a
 in at the top of `execute_core` — read the conversation lane, take the wakeup
 event's `batch_id` siblings in lane order, skip anything an earlier turn already
 consumed. STRICTLY READ-ONLY: no consumption marks, no reservation changes — lane
-bookkeeping stays with the door. The triggering prompt still owns the turn and its
-finalize; same-batch attachment siblings enrich model input and do not become extra
-reactive turns. The built-in ReAct agent is immune (it folds the
-lane itself), which is why this bites only run-to-completion host adapters. Worked
-instance: `platform/turn_batch.py::fold_turn_external_events` + `tests/test_turn_batch.py`
+bookkeeping stays with the door. The fold records the exact folded lane event ids
+on the turn state, so the door can later terminalize those same-batch siblings
+after `execute_core` returns without consuming different-batch interleaved work. The
+triggering prompt still owns the turn and its finalize; same-batch attachment
+siblings enrich model input and do not become extra reactive turns. The built-in
+ReAct agent is immune (it folds the lane itself), which is why this bites only
+run-to-completion host adapters. Worked instance:
+`platform/turn_batch.py::fold_turn_external_events` + `tests/test_turn_batch.py`
 (including the exact surfaced case: prompt + hosted PNG in one batch).
 
 ### 3b. Streaming — `stream_adapter.py`

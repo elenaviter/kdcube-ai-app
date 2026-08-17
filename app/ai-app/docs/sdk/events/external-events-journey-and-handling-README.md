@@ -4,7 +4,7 @@ title: "External Events Journey And Handling"
 summary: "Current end-to-end journey for conversation-scoped external events: ingress admission, Redis lane ordering, bundle callbacks, policy-gated timeline sharing, ready-queue wakeups, processor resolution, and ReAct folding."
 status: active
 tags: ["sdk", "events", "external-events", "processor", "react", "timeline", "redis"]
-updated_at: 2026-06-25
+updated_at: 2026-08-17
 keywords:
   [
     "external event journey",
@@ -227,6 +227,11 @@ ReAct agent loop consumes updated TL
         |     if this turn was superseded:
         |       normal exception rollback; no stale committed output
 ```
+
+If the accepted batch has zero reactive events, the processor side of the diagram
+does not run: no wake is enqueued, no turn starts, and no reactive-lane finalizer
+is involved. The lane records still follow the configured retention/callback
+rules.
 
 There is one event protocol: `ExternalEventPayload`. The ready queue may carry
 a small `ExternalEventLaneWakeup`, but that wakeup is only a pointer to the
@@ -527,6 +532,32 @@ ExternalEventLaneWakeup.event_lane.sequence
 It intentionally does **not** contain `request`. The prompt, attachments,
 followup text, steer text, or generic/domain event payload are recovered from the lane
 event's stored `task_payload`.
+
+## Start Batches Versus Wake Pointers
+
+A wake pointer and a turn input batch are deliberately different. Ingress writes
+one ordered accepted batch to the lane. If the batch contains reactive user work,
+the ready queue carries a wake for one selected occurrence from that batch. The
+processor resolves the wake back to the lane before invoking the app.
+
+For native ReAct, the live `ContextBrowser` opens the handler and drains the lane
+itself. For a run-to-completion hosted runtime, the rehydrated
+`state["external_events"]` may contain only the wake occurrence. The hosted
+runtime therefore folds the wake occurrence's same-`batch_id` lane siblings at
+turn start so prompt text, attachments, and context objects are one visible user
+input. That fold is read-only: it does not mark lane records consumed and does
+not touch the consumer reservation.
+
+The shared door finalizer performs the accounting after `execute_core` returns.
+If the fold saw same-batch siblings, it records their exact lane event ids on turn
+state. Finalization consumes the wake occurrence through the normal lane cursor
+and terminalizes folded siblings by exact event id before releasing the consumer
+reservation. This prevents a same-ingress attachment from remaining pending and
+being re-woken as a second run for the same visible send, without consuming an
+accepted occurrence from a different `batch_id` whose sequence may interleave
+with the batch siblings. Work that arrives later, with a different accepted
+occurrence outside the folded batch, is still pending work and can schedule the
+next serialized turn after release.
 
 ## Built-In User Events
 

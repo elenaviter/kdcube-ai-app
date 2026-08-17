@@ -2134,11 +2134,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             payload["provider_id"] = provider
         try:
             LOGGER.info(
-                "[connection-hub.delegated_to_kdcube] start OAuth route user=%s provider=%s connector=%s claims=%s",
+                "[connection-hub.delegated_to_kdcube] start OAuth route user=%s provider=%s connector=%s account=%s claims=%s mode=%s",
                 platform_user_id,
                 payload.get("provider_id") or "",
                 payload.get("connector_app_id") or "",
+                payload.get("account_id") or "<new>",
                 len(payload.get("claims") or []) if isinstance(payload.get("claims"), list) else 0,
+                payload.get("claims_mode") or "add",
             )
             return await _delegated_to_kdcube_operations(self, platform_user_id).start_oauth(
                 payload,

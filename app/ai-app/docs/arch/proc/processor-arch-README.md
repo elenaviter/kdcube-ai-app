@@ -255,6 +255,12 @@ If a live React owner exists:
 - `followup` can be folded into the active turn and influence the next decision boundary
 - `steer` can be folded into the active turn, cancel the active generation/tool phase when possible, and then bound React to a short finalize window
 
+If the invoked bundle is a run-to-completion hosted runtime rather than native
+ReAct, there is no live `ContextBrowser` reader. The runtime folds only the
+wakeup occurrence's same-`batch_id` start batch into the turn input; later
+different-`batch_id` reactive work remains in the lane and can schedule the next
+turn after the current turn releases the lane.
+
 ### 4.2 Claim on proc
 
 Each proc worker runs a fair lane loop.
@@ -313,8 +319,11 @@ On terminal completion:
   - emit `chat.complete`
   - ack the inflight claim
   - persist turn artifacts
-  - release the lane consumer after ContextBrowser post-save handoff has queued
-    a wake for any remaining unconsumed reactive lane work
+  - release the lane consumer after the runtime-specific lane handoff:
+    native ReAct uses ContextBrowser post-save handoff, while
+    run-to-completion hosted runtimes use the shared door finalizer to consume
+    the wake occurrence plus exact folded same-`batch_id` siblings before
+    waking remaining reactive lane work
   - set conversation state to `idle` or keep/return it to work-pending state
     according to the handoff path
   - emit final `conv_status`
@@ -377,10 +386,11 @@ sequenceDiagram
     I-->>C: HTTP status=followup_accepted or steer_accepted
     I-->>C: chat_service type=queue.continuation.accepted
 
-    alt runtime owns live timeline and consumes event
+    alt native ReAct owns live timeline and consumes event
         R->>M: read pending external event
         R->>R: Apply followup during active turn or stop on steer at safe checkpoint
-    else event remains unconsumed after artifacts persist
+    else hosted run-to-completion or event remains unconsumed after artifacts persist
+        Note over R,M: Hosted run-to-completion folded only the start batch; different batch_id waits.
         R->>Q: post-save handoff LPUSH ExternalEventLaneWakeup
         Note over P1,P2: P2 may be the same or a different proc worker
         P2->>Q: BRPOPLPUSH claim handoff wakeup
@@ -1259,8 +1269,11 @@ That architecture is now much safer for long-running workers:
 - it lets React consume those events during execution
 - it lets live followup stay on the same turn
 - it lets live steer stop the current turn at a safe checkpoint
-- it uses ContextBrowser post-save handoff to wake remaining unconsumed reactive
-  lane work
+- native ReAct uses ContextBrowser post-save handoff to wake remaining
+  unconsumed reactive lane work
+- it lets run-to-completion hosted runtimes fold one start batch and rely on the
+  shared door finalizer for exact same-batch sibling consumption and later-work
+  wakeup
 
 The next major step is no longer "improve wake handoff".
 It is to replace the current queue-centric execution model with a real conversation scheduler:

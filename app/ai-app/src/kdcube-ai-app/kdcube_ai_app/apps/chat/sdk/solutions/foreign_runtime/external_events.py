@@ -31,6 +31,26 @@ from typing import Any, Dict, List
 
 LOGGER = logging.getLogger("kdcube.foreign_runtime.external_events")
 
+FOLDED_EXTERNAL_EVENTS_BATCH_ID_STATE_KEY = "_kdcube_folded_external_events_batch_id"
+FOLDED_EXTERNAL_EVENTS_MESSAGE_IDS_STATE_KEY = "_kdcube_folded_external_events_message_ids"
+
+
+def folded_external_events_message_ids(state: Any) -> List[str]:
+    if not isinstance(state, dict):
+        return []
+    raw = state.get(FOLDED_EXTERNAL_EVENTS_MESSAGE_IDS_STATE_KEY)
+    if not isinstance(raw, list):
+        return []
+    out: List[str] = []
+    seen = set()
+    for item in raw:
+        value = str(item or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
 
 def _lane_wakeup(comm_context: Any) -> Any:
     """The `ExternalEventLaneWakeup` this turn was dispatched from, or None
@@ -120,9 +140,20 @@ async def fold_turn_external_events(entrypoint: Any, state: Dict[str, Any]) -> L
         bodies = [body for body in (_accepted_body(item) for item in siblings) if body]
         if len(bodies) <= 1:
             return events
+        try:
+            message_ids = [
+                str(getattr(item, "message_id", "") or "").strip()
+                for item in siblings
+                if str(getattr(item, "message_id", "") or "").strip()
+            ]
+            if isinstance(state, dict) and message_ids:
+                state[FOLDED_EXTERNAL_EVENTS_BATCH_ID_STATE_KEY] = batch_id
+                state[FOLDED_EXTERNAL_EVENTS_MESSAGE_IDS_STATE_KEY] = message_ids
+        except Exception:
+            pass
         LOGGER.info(
-            "[foreign-runtime] turn batch fold: %d event(s) in this turn's batch (dispatch carried %d)",
-            len(bodies), len(events),
+            "[foreign-runtime] turn batch fold: %d event(s) in this turn's batch (dispatch carried %d) batch_id=%s",
+            len(bodies), len(events), batch_id,
         )
         return bodies
     except Exception:

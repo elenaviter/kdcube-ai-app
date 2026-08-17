@@ -59,9 +59,13 @@ Processor
   invoke bundle @on_reactive_event once for this scheduled processor turn
   |
   v
-Bundle / ReAct
-  ContextBrowser performs the initial fold, then its live listener folds later
-  lane events into the same turn before subsequent model renders
+  Bundle runtime
+    native ReAct:
+      ContextBrowser performs the initial fold, then its live listener folds
+      later lane events into the same turn before subsequent model renders
+    run-to-completion hosted runtime:
+      fold only the wakeup occurrence's start batch, then let the shared door
+      terminalize folded same-batch siblings before lane release
 ```
 
 The important boundary is:
@@ -148,6 +152,26 @@ consumer acknowledgement, not on `scheduled`.
 The resolved payload is still a full `ExternalEventPayload`, so communicator,
 economics, runtime context, and non-ReAct workflows can use the same processor
 execution machinery.
+
+## Native ReAct Versus Run-To-Completion Hosted Runtimes
+
+Native ReAct opens a `ContextBrowser` handler and owns the lane while the turn is
+alive. A later reactive batch that arrives before the close gate can be accepted
+by that live handler, folded into the current timeline, and rendered by the same
+turn. If it is not accepted before close, post-save handoff wakes a later turn.
+
+Run-to-completion hosted runtimes, including foreign-runtime adapters such as
+LG-ReAct, do not keep a live lane reader open. They receive one processor wake,
+fold only the wakeup occurrence's same-`batch_id` start batch into
+`state["external_events"]`, execute once, and return. The shared door finalizer
+then consumes the wake occurrence and terminalizes the exact folded same-batch
+event ids before releasing `T.consumer`.
+
+For that hosted-runtime path, a different-`batch_id` event is not part of the
+start batch, even if it arrives close in time or its lane sequence is adjacent.
+It remains pending and can schedule the next serialized turn after release. Lane
+`sequence` is still the ordering field; `batch_id` groups one visible ingress
+batch; event ids identify the exact folded records the hosted turn actually used.
 
 ## Lane State, Live Reader, And Handoff
 

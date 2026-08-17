@@ -202,12 +202,12 @@ same door over OAuth, allowed by `public_clients` in ②.
 Some namespaces have **no external account** — the conversation namespace
 (`conv`) and user memory (`mem`) are the user's own KDCube data. They are
 INTERNAL named services served by the same `named_services` door, so they need no
-provider (①) and no per-account consent (⑥); their read/write **is** a
-namespace-level claim (e.g. `conv:read`), which is why those — and only those —
-appear in the connection `scopes` alongside `named_services:use`:
+provider (①) and no per-account consent (⑥). Their read/write grants still live
+in the named-services resource catalog, not in the consuming MCP connection's
+initial `scopes`:
 
 ```yaml
-scopes: [named_services:use, conv:read]     # + mem's claim, to reach memory via this door
+scopes: [named_services:use]     # door admission; conv operations ask conversations:read on demand
 ```
 
 Memory can be reached **two ways**, and both are valid — the point is that a

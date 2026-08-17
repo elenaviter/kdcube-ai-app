@@ -110,6 +110,7 @@ def test_fold_delivers_the_hosted_attachment_beside_the_prompt(monkeypatch):
     folded = asyncio.run(mod.fold_turn_external_events(_entrypoint(), state))
 
     assert [item["event_id"] for item in folded] == ["evt-prompt", "evt-att"]
+    assert mod.folded_external_events_message_ids(state) == ["m-prompt", "m-att"]
     hosted = hosted_external_event_attachments(folded)
     assert len(hosted) == 1
     assert hosted[0]["hosted_uri"] == "conv/turn_1/files/photo.png"

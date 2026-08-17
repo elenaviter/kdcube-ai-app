@@ -23,6 +23,9 @@ from kdcube_ai_app.apps.chat.sdk.solutions.chatbot.entrypoint import BaseEntrypo
 from kdcube_ai_app.apps.chat.sdk.solutions.chatbot.reactive_lane import (
     finalize_reactive_event_lane,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.external_events import (
+    folded_external_events_message_ids,
+)
 from kdcube_ai_app.apps.chat.sdk.infra.economics.defaults import DEFAULT_QUOTA_POLICIES
 from kdcube_ai_app.apps.chat.sdk.infra.economics.plan_resolution import (
     resolve_plan_id,
@@ -1718,6 +1721,7 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
                     redis=getattr(self, "redis", None),
                     comm_context=self.comm_context,
                     turn_id=str(turn_id or ""),
+                    consumed_event_ids=folded_external_events_message_ids(state),
                 )
 
         await self._invoke_post_run_hook(state=state, result=result, econ_ctx=econ_ctx)

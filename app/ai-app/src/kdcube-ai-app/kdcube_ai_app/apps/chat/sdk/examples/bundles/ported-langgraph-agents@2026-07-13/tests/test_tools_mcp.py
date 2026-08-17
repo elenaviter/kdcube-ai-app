@@ -31,6 +31,16 @@ _PLAIN_CONNS = [
     {"name": "code_exec", "kind": "python", "alias": "code_exec", "allowed": ["run_python"]},
 ]
 _MCP_CONN = {"name": "memory", "kind": "mcp", "url": "https://h/api/mcp/mem", "delegated": True, "scopes": ["memories:read"]}
+_NAMED_SERVICES_CONN = {
+    "name": "named_services",
+    "kind": "mcp",
+    "server_id": "named_services",
+    "alias": "named_services",
+    "url": "https://h/api/mcp/named_services",
+    "resource": "*/api/integrations/bundles/*/*/kdcube-services@1-0/public/mcp/named_services*",
+    "delegated": True,
+    "scopes": ["named_services:use"],
+}
 
 
 def test_mcp_connections_filters_by_kind() -> None:
@@ -135,6 +145,29 @@ def test_consent_stub_raises_the_demand_at_the_ATTEMPT_not_at_build() -> None:
     assert announced == consents                       # the ATTEMPT announced it
     assert result["ok"] is False
     assert result["consent"]["grant"]["payload"]["claims"] == ["memories:read"]
+
+
+def test_named_services_pending_grant_asks_only_for_the_door() -> None:
+    """The pre-bind stub cannot know which namespace operation will be called.
+
+    For the named-services MCP door it must therefore ask only for the door
+    admission grant. Slack account claims and conv operation grants are raised
+    later by the named-services bridge from the resource catalog.
+    """
+    m = _mcp_module()
+
+    async def no_grant(conn, user_sub):
+        return None
+
+    _tools, consents = asyncio.run(m.load_mcp_tools_for_connections(
+        [_NAMED_SERVICES_CONN], user_sub="u1", application="app", agent_id="lg-react",
+        bearer_provider=no_grant,
+    ))
+    assert len(consents) == 1
+    assert consents[0].claims == ["named_services:use"]
+    payload = consents[0].consent["grant"]["payload"]
+    assert payload["claims"] == ["named_services:use"]
+    assert "conv:read" not in payload["claims"]
 
 
 def test_no_user_drop_stays_silent() -> None:

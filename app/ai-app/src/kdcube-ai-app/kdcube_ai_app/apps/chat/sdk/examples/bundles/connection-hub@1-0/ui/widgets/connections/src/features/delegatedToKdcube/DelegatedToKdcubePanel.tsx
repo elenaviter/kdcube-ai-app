@@ -191,6 +191,21 @@ function resolveConnectorAppId(provider: DelegatedToKdcubeProvider | undefined, 
   return (carriers[0] || enabled[0])?.connector_app_id || '';
 }
 
+function connectorAppIsEnabled(provider: DelegatedToKdcubeProvider | undefined, connectorAppId?: string): boolean {
+  const app = connectorAppId ? provider?.connector_apps?.[connectorAppId] : undefined;
+  return Boolean(app && app.enabled !== false);
+}
+
+function accountConnectorAppId(
+  provider: DelegatedToKdcubeProvider | undefined,
+  account: DelegatedToKdcubeAccount,
+  requestedClaims: string[],
+): string {
+  return connectorAppIsEnabled(provider, account.connector_app_id)
+    ? account.connector_app_id || ''
+    : resolveConnectorAppId(provider, requestedClaims);
+}
+
 function firstConnectorAppId(provider?: DelegatedToKdcubeProvider): string {
   return enabledConnectorApps(provider)[0]?.connector_app_id || '';
 }
@@ -225,7 +240,9 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
   // form resolves to a connector that can carry them (auto-selecting the single
   // capable one) and falls back to the first enabled connector.
   const enabledConnectors = useMemo(() => enabledConnectorApps(selectedProvider), [selectedProvider]);
-  const selectedConnectorAppId = connectorAppId || resolveConnectorAppId(selectedProvider, claims);
+  const selectedConnectorAppId = connectorAppIsEnabled(selectedProvider, connectorAppId)
+    ? connectorAppId
+    : resolveConnectorAppId(selectedProvider, claims);
   const suggestedClaims = defaultClaims(selectedProvider, selectedConnectorAppId);
   // Deep-links and prefills may carry claims of another provider; only
   // claims this provider declares may reach the OAuth start. If nothing
@@ -293,7 +310,7 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
   // accounts get the form prefilled so the user pastes a fresh secret.
   const reconnect = (account: DelegatedToKdcubeAccount) => {
     const provider = providers[account.provider_id];
-    const appId = account.connector_app_id || resolveConnectorAppId(provider, account.claims || []);
+    const appId = accountConnectorAppId(provider, account, account.claims || []);
     const accountClaims = account.claims?.length ? account.claims : defaultClaims(provider, appId);
     if (oauthEnabled(provider, appId)) {
       void launchOAuth(account.provider_id, appId, accountClaims, {
@@ -310,29 +327,41 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
   // access, unticking removes it.
   const manageAccess = (account: DelegatedToKdcubeAccount) => {
     const provider = providers[account.provider_id];
-    const appId = account.connector_app_id || resolveConnectorAppId(provider, account.claims || []);
     const merged = Array.from(new Set([
       ...(account.claims || []),
       ...(deepLink.accountId === account.account_id ? deepLink.claims : []),
     ]));
+    const targetClaims = merged.length ? merged : defaultClaims(provider, accountConnectorAppId(provider, account, merged));
+    const appId = accountConnectorAppId(provider, account, targetClaims);
+    const needsCredential = !oauthEnabled(provider, appId);
     prefillForAccount(
       account,
-      merged.length ? merged : defaultClaims(provider, appId),
-      'This account keeps exactly the checked access: tick to add, untick to remove, then reconnect.',
+      targetClaims,
+      needsCredential
+        ? 'Enter a fresh credential with exactly the checked access: tick to add, untick to remove, then reconnect.'
+        : 'This account keeps exactly the checked access: tick to add, untick to remove, then re-approve.',
     );
   };
 
-  const prefillForAccount = (account: DelegatedToKdcubeAccount, targetClaims: string[], notice: string) => {
+  const prefillForAccount = (
+    account: DelegatedToKdcubeAccount,
+    targetClaims: string[],
+    notice: string,
+  ) => {
     // The pane is summoned by managedAccountId; log the inputs so a "nothing
     // happened" click is diagnosable from the console, not by inspecting DOM.
+    const provider = providers[account.provider_id];
+    const appId = accountConnectorAppId(provider, account, targetClaims);
     console.info('[connect-route] prefillForAccount -> summoning connect pane', {
       accountId: account.account_id,
       provider: account.provider_id,
-      connectorApp: account.connector_app_id || '(default)',
+      storedConnectorApp: account.connector_app_id || '(none)',
+      resolvedConnectorApp: appId || '(none)',
+      oauthEnabled: oauthEnabled(provider, appId),
       claims: targetClaims,
     });
     setProviderId(account.provider_id);
-    setConnectorAppId(account.connector_app_id || '');
+    setConnectorAppId(appId);
     setManagedAccountId(account.account_id);
     setClaims(targetClaims);
     setEmail(account.email || '');
@@ -379,7 +408,7 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
     if (!planProvider) return undefined;
     const candidates = accounts.filter((account) =>
       account.provider_id === deepLink.providerId
-      && (!deepLink.connectorAppId || !account.connector_app_id || account.connector_app_id === deepLink.connectorAppId));
+      && (!deepLink.connectorAppId || accountConnectorAppId(planProvider, account, planRequestedClaims) === deepLink.connectorAppId));
     if (deepLink.accountId) {
       const exact = candidates.find((account) => account.account_id === deepLink.accountId);
       if (exact) return exact;
@@ -417,13 +446,14 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
       console.info('[connect-route] runPlanAction connect: OAuth NOT enabled -> prefill credential form (no direct connect)');
       setProviderId(planProvider.provider_id);
       setConnectorAppId(appId);
+      setManagedAccountId('');
       setClaims(targetClaims);
       setFormNotice(`Enter the ${providerLabel(planProvider)} account details and its credential below.`);
       formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       return;
     }
     if (!planAccount) return;
-    const accountAppId = planAccount.connector_app_id || appId;
+    const accountAppId = accountConnectorAppId(planProvider, planAccount, targetClaims) || appId;
     if (oauthEnabled(planProvider, accountAppId)) {
       // A consent-plan approval ADDS to the account's held access; the
       // server unions the claims so nothing already approved is dropped.
@@ -481,10 +511,16 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
   };
 
   const submit = async () => {
-    if (!selectedProviderId || !selectedConnectorAppId || !secretValue || selectedClaims.length === 0) return;
+    if (
+      !selectedProviderId
+      || !selectedConnectorAppId
+      || selectedClaims.length === 0
+      || !secretValue
+    ) return;
     await dispatch(connectDelegatedToKdcubeCredential({
       providerId: selectedProviderId,
       connectorAppId: selectedConnectorAppId,
+      ...(managedAccountId ? { accountId: managedAccountId, claimsMode: 'replace' as const } : {}),
       // The account email is the user-facing identity of a pasted-in
       // credential; a separate provider subject is an OAuth-callback concern.
       externalSubject: email,
@@ -499,6 +535,8 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
     setDisplayName('');
     setWorkspace('');
     setSecretValue('');
+    setManagedAccountId('');
+    setClaims([]);
     void dispatch(loadDelegatedToKdcube());
   };
 

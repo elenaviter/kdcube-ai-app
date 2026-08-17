@@ -1421,6 +1421,64 @@ async def test_start_oauth_for_an_existing_account_adds_to_held_claims(monkeypat
     assert "provider.read" not in replaced["provider_scopes"]
 
 
+@pytest.mark.asyncio
+async def test_complete_oauth_reapproval_preserves_explicit_account_and_replaces_claims(monkeypatch):
+    """Manage access re-approves an existing OAuth account.
+
+    The browser starts OAuth with account_id + claims_mode=replace; the callback
+    must update that exact account, not infer a fresh account from provider
+    profile facts and not silently union unticked claims back in.
+    """
+    _install_fake_storage(monkeypatch)
+    ops = operations_for_user(user_id="user-1", config=_multi_claim_oauth_config())
+    state_store = MemoryOAuthStateStore()
+    existing = await ops.store.upsert_account(
+        ConnectedAccount(
+            account_id="acct-managed",
+            provider_id="test",
+            connector_app_id="",
+            external_subject="legacy-subject",
+            claims=("test:read",),
+        )
+    )
+    await ops.store.set_credential(
+        existing.credential_id,
+        {"oauth": True, "access_token": "old-token", "claims": ["test:read"]},
+    )
+
+    started = await ops.start_oauth(
+        {
+            "provider_id": "test",
+            "connector_app_id": "default",
+            "claims": ["test:files"],
+            "account_id": existing.account_id,
+            "claims_mode": "replace",
+        },
+        user_id="user-1",
+        callback_url="https://kdcube.example.test/oauth/callback",
+        state_store=state_store,
+        state_secret="state-secret",
+    )
+    completed = await ops.complete_oauth(
+        code="code-1",
+        state=started["authorize_url"].split("state=", 1)[1].split("&", 1)[0],
+        callback_url="https://kdcube.example.test/oauth/callback",
+        state_store=state_store,
+        state_secret="state-secret",
+        client_secret_resolver=lambda **kwargs: "test-secret",
+    )
+
+    assert completed["account"]["account_id"] == "acct-managed"
+    assert completed["account"]["connector_app_id"] == "default"
+    assert completed["account"]["claims"] == ["test:files"]
+    stored = await ops.store.get_account("acct-managed")
+    credential = await ops.store.get_credential(stored.credential_id if stored else "")
+    assert stored is not None
+    assert stored.claims == ("test:files",)
+    assert credential["access_token"] == "token-1"
+    assert credential["claims"] == ["test:files"]
+
+
 def test_consent_payload_lists_the_blocked_tools_for_its_provider():
     """The banner's second option ("turn off the tools that need it") needs the
     blocked tool names — scoped to the consent's provider, with tools failed by

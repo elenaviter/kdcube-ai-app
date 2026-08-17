@@ -41,8 +41,10 @@ Properties:
 
 ## Shape B — whole surface
 
-One delegated connection to the door with the union of allowed claims, plus a
-companion `kind: named_service` entry declaring the consumed namespaces:
+One delegated connection to the door, plus a companion `kind: named_service`
+entry declaring the consumed namespaces. The MCP connection asks only for the
+door grant; namespace-operation grants are selected from the Connection Hub
+resource catalog and raised on demand by the named-services bridge:
 
 ```yaml
 - name: named_services
@@ -53,7 +55,7 @@ companion `kind: named_service` entry declaring the consumed namespaces:
   resource: "*/api/integrations/bundles/*/*/kdcube-services@1-0/public/mcp/named_services*"
   transport: streamable_http
   delegated: true
-  scopes: [named_services:use, conv:read]   # conv is internal (namespace claim); Slack's real claims consent per account
+  scopes: [named_services:use]   # door grant only; conv uses conversations:read per operation; Slack is per-account
 
 - name: named_services_roster
   kind: named_service
@@ -65,13 +67,14 @@ companion `kind: named_service` entry declaring the consumed namespaces:
 
 Properties:
 
-- **One consent covers the surface.** The grant keys on the connection's
-  `resource`; the user grants this agent the door once. Per call, the `@mcp`
-  guard still enforces the scope claims (`selected_tool_grants` on the door's
-  auth config), so `scopes` remains the fine-grained ceiling.
+- **One door grant covers entry.** The grant keys on the connection's
+  `resource`; the user grants this agent access to the named-services door once.
+  Per call, the named-services bridge applies the resource catalog's namespace
+  and operation policy. `conv` reads ask for `conversations:read` only when the
+  agent actually calls a conversation operation.
 - **One picker toggle.** The whole named-services capability opts in/out as a
-  unit; per-namespace narrowing moves into `scopes` (admin) rather than the
-  picker (user).
+  unit; per-namespace narrowing lives in the resource catalog and the
+  capabilities picker, not in the MCP connection's initial `scopes`.
 - **The prompt teaches the realms.** The inventory entry binds NO tools in this
   bundle (`select_bound_tools` reads only `kind: python`; `mcp_connections`
   only `kind: mcp`) — it feeds the SDK instruction mechanism: the bridge

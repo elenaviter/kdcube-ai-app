@@ -248,11 +248,11 @@ bundles:
                   #   scopes: [named_services:use]   # slack read/write is the real per-account claim, not a door scope
                   #
                   # Example 3 — WHOLE-SURFACE SHAPE: ONE delegated connection to
-                  # the same named-services door serves ALL namespaces the grant's
-                  # scopes allow. One per-agent consent covers the surface; one
-                  # picker toggle (the alias) turns it on/off; per-namespace
-                  # control lives in `scopes`. `named_services_list` on the door
-                  # is the runtime source of truth for what is actually served.
+                  # the same named-services door serves all namespaces selected
+                  # in the resource catalog. One per-agent consent admits the
+                  # agent to the door; per-namespace operation grants are owned
+                  # by the connection-hub resource catalog and are raised on
+                  # demand by the named-services bridge.
                   # The companion `kind: named_service` entry binds NO tools in
                   # this bundle — it declares which namespaces the agent consumes,
                   # so the system prompt carries the namespace roster with
@@ -267,7 +267,7 @@ bundles:
                   #   resource: "*/api/integrations/bundles/*/*/kdcube-services@1-0/public/mcp/named_services*"
                   #   transport: streamable_http
                   #   delegated: true
-                  #   scopes: [named_services:use, conv:read]   # conv is built-in; slack read/write is the real per-account claim
+                  #   scopes: [named_services:use]   # door grant only; conv uses conversations:read per operation; slack read/write is per-account
                   # - name: named_services_roster
                   #   kind: named_service
                   #   alias: named_services

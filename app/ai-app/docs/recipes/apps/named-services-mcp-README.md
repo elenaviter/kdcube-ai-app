@@ -4,7 +4,7 @@ title: "Make A Named Service Agent-Friendly (MCP)"
 summary: "What a named-service namespace should implement so a generic external agent (Claude over MCP) can discover, search, read files, and act through object refs alone — using conv as the worked example and mail, Slack, and sheets as integration namespaces."
 status: active
 tags: ["recipes", "kdcube-for-agents", "named-services", "mcp", "conv", "mail", "slack", "sheets", "search", "files", "schema", "agent"]
-updated_at: 2026-07-27
+updated_at: 2026-08-17
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/consume-mcp-service-README.md
@@ -102,7 +102,7 @@ agent in Connection Hub (or from the chat consent demand, one click):
   resource: "*/api/integrations/bundles/*/*/kdcube-services@1-0/public/mcp/named_services*"
   transport: streamable_http
   delegated: true
-  scopes: [named_services:use]   # Slack's real claims consent per account (Delegated to KDCube), not in scopes
+  scopes: [named_services:use]   # Door only. Namespace and provider claims are catalog-derived per call.
 ```
 
 `resource` must byte-match the deployment's configured delegated-resource id
@@ -111,6 +111,13 @@ exact connection semantics and the two-consent chain (agent grant + the user's
 own connected-account consent, checked per call):
 [Connect An MCP Service To A KDCube Agent](consume-mcp-service-README.md),
 [Agents Acting On Behalf Of The User](../../sdk/solutions/connections/agent-acting-for-user/agent-acting-for-user-README.md).
+
+For the hosted named-services bridge, the connection-level `scopes` list is an
+admission contract for the MCP door. Keep it to `named_services:use`. Do not put
+conversation grants such as `conversations:read` or provider claims such as
+`slack:post` in that list. The named-service bridge raises those requirements
+from the Connection Hub resource catalog only when the agent calls an operation
+that needs them.
 
 Either way, consent grants concrete tools/grants/identity-scope; the surface
 enforces them per call. The rest of this recipe assumes the agent is connected
@@ -473,10 +480,12 @@ error = delegated_consent_required
 ```
 
 A hosted in-turn agent's tool wrap raises that block as the standard scoped
-chat demand — the user approves exactly the missing claims, and the approval
-merges into the agent's existing grant record. This leg asks narrower than
-connect time ever can: a connection consents with its whole declared scope
-list, while the door names the single grant the operation missed.
+chat demand. The user approves exactly the missing claims, and the approval
+merges into the agent's existing grant record. For the hosted named-services
+bridge, connect time should ask only for the MCP door grant
+(`named_services:use`). Namespace grants and provider-backed claims are not
+connection scopes; the bridge derives them from the catalog and names the
+specific missing grant for the operation that was attempted.
 
 The SECOND boundary: if the agent has the MCP grant but the user-to-provider
 side cannot satisfy the call, integration namespaces answer with one structured

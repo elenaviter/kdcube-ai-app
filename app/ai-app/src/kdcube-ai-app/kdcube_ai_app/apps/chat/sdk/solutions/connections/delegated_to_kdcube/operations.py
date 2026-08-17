@@ -118,6 +118,43 @@ class DelegatedToKdcubeOperations:
         # conversation events for pending demands (see consent_demand.py).
         self.consent_granted_notifier = consent_granted_notifier
 
+    async def _notify_consent_granted(
+        self,
+        *,
+        provider_id: str,
+        connector_app_id: str,
+        claims: tuple[str, ...],
+        account_id: str,
+    ) -> None:
+        if self.consent_granted_notifier is None:
+            return
+        try:
+            LOGGER.info(
+                "[delegated.ops] consent notifier start user=%s provider=%s connector=%s account=%s claims=%s",
+                self.store.user_id,
+                provider_id,
+                connector_app_id,
+                account_id,
+                ",".join(claims),
+            )
+            result = self.consent_granted_notifier(
+                provider_id=provider_id,
+                connector_app_id=connector_app_id,
+                claims=list(claims),
+                account_id=account_id,
+            )
+            if hasattr(result, "__await__"):
+                await result
+            LOGGER.info(
+                "[delegated.ops] consent notifier done user=%s provider=%s connector=%s account=%s",
+                self.store.user_id,
+                provider_id,
+                connector_app_id,
+                account_id,
+            )
+        except Exception:
+            LOGGER.warning("[delegated.consent] granted notifier failed (best-effort)", exc_info=True)
+
     async def catalog(self, *, provider_id: str = "") -> dict[str, Any]:
         accounts = await self.store.list_accounts(provider_id=provider_id)
         LOGGER.info(
@@ -273,11 +310,11 @@ class DelegatedToKdcubeOperations:
         if connector_app_id not in provider.connector_apps:
             raise ValueError(f"connector app is not configured: {connector_app_id}")
         credential = _credential_from_payload(payload)
-        if not credential:
-            raise ValueError("credential is required")
         claims = _clean_claims(provider, connector_app_id, payload.get("claims"))
         if not claims:
             raise ValueError("at least one provider claim is required")
+        if not credential:
+            raise ValueError("credential is required")
         LOGGER.info(
             "[delegated.ops] connect credential claims resolved user=%s provider=%s connector=%s claims=%s",
             self.store.user_id,
@@ -335,33 +372,12 @@ class DelegatedToKdcubeOperations:
             )
         # The grant is an authored conversation event: notify (best-effort)
         # so pending demands in chat conversations learn the consent landed.
-        if self.consent_granted_notifier is not None:
-            try:
-                LOGGER.info(
-                    "[delegated.ops] consent notifier start user=%s provider=%s connector=%s account=%s claims=%s",
-                    self.store.user_id,
-                    provider_id,
-                    connector_app_id,
-                    stored.account_id,
-                    ",".join(claims),
-                )
-                result = self.consent_granted_notifier(
-                    provider_id=provider_id,
-                    connector_app_id=connector_app_id,
-                    claims=list(claims),
-                    account_id=stored.account_id,
-                )
-                if hasattr(result, "__await__"):
-                    await result
-                LOGGER.info(
-                    "[delegated.ops] consent notifier done user=%s provider=%s connector=%s account=%s",
-                    self.store.user_id,
-                    provider_id,
-                    connector_app_id,
-                    stored.account_id,
-                )
-            except Exception:
-                LOGGER.warning("[delegated.consent] granted notifier failed (best-effort)", exc_info=True)
+        await self._notify_consent_granted(
+            provider_id=provider_id,
+            connector_app_id=connector_app_id,
+            claims=claims,
+            account_id=stored.account_id,
+        )
         return {"ok": True, "account": stored.public_dict()}
 
     async def start_oauth(
@@ -444,6 +460,8 @@ class DelegatedToKdcubeOperations:
             provider_id=provider_id,
             connector_app_id=connector_app_id,
             claims=claims,
+            account_id=account_id,
+            claims_mode=claims_mode,
             return_hint=as_str(payload.get("return_hint") or payload.get("return_to")),
             source=source,
             ttl_seconds=ttl_seconds,
@@ -502,12 +520,16 @@ class DelegatedToKdcubeOperations:
             raise ValueError("OAuth state user does not match integration store")
         provider_id = as_str(payload.get("provider_id"))
         connector_app_id = as_str(payload.get("connector_app_id"))
+        account_id = as_str(payload.get("account_id"))
+        claims_mode = as_str(payload.get("claims_mode") or "add").lower() or "add"
         LOGGER.info(
-            "[delegated.oauth] state consumed user=%s provider=%s connector=%s claims=%s state=%s",
+            "[delegated.oauth] state consumed user=%s provider=%s connector=%s account=%s claims=%s mode=%s state=%s",
             user_id,
             provider_id,
             connector_app_id,
+            account_id or "<new>",
             ",".join(as_str_list(payload.get("claims"))),
+            claims_mode,
             state_digest(state),
         )
         provider = self.config.provider(provider_id)
@@ -577,6 +599,8 @@ class DelegatedToKdcubeOperations:
                 "display_name": profile.get("display_name") or profile.get("name"),
                 "workspace": profile.get("workspace"),
                 "claims": claims,
+                "account_id": account_id,
+                "claims_mode": claims_mode,
                 "credential": credential,
                 "metadata": {
                     "oauth_source": payload.get("source"),

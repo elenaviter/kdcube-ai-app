@@ -69,6 +69,9 @@ from kdcube_ai_app.apps.chat.sdk.solutions.chatbot.turn_reporting import (
 from kdcube_ai_app.apps.chat.sdk.solutions.chatbot.reactive_lane import (
     finalize_reactive_event_lane,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.external_events import (
+    folded_external_events_message_ids,
+)
 from kdcube_ai_app.storage.storage import create_storage_backend
 from kdcube_ai_app.infra.accounting.calculator import RateCalculator
 from kdcube_ai_app.apps.chat.sdk.viz.tsx_transpiler import ClientSideTSXTranspiler
@@ -2781,6 +2784,7 @@ class BaseEntrypoint:
                         redis=getattr(self, "redis", None),
                         comm_context=self.comm_context,
                         turn_id=str(turn_id or ""),
+                        consumed_event_ids=folded_external_events_message_ids(state),
                     )
 
     async def _record_turn_log_fallback(
@@ -2848,6 +2852,7 @@ class BaseEntrypoint:
         # and record them as turn-log blocks (the reload reader rebuilds the user bubble
         # + file cards from these). All best-effort — never fail the turn on recovery.
         user_prompt_text = ""
+        user_event_type = "event.user.prompt"
         user_attachments: list = []
         user_events: list = []
         batch_id = ""
@@ -2859,6 +2864,11 @@ class BaseEntrypoint:
             )
             events = [e for e in ((state or {}).get("external_events") or []) if isinstance(e, dict)]
             user_prompt_text = external_events_text(events) or ""
+            for event in events:
+                event_type = str(event.get("type") or "").strip()
+                if event_type in {"event.user.prompt", "event.user.followup", "event.user.steer"}:
+                    user_event_type = event_type
+                    break
             user_attachments = list(hosted_external_event_attachments(events) or [])
             # The CONTEXT OBJECTS the user sent with the message — a pinned post,
             # a canvas object, anything a surface attached. They arrive as events
@@ -2871,8 +2881,19 @@ class BaseEntrypoint:
                 if candidate:
                     batch_id = candidate
                     break
+            try:
+                event_types = [str(e.get("type") or "") for e in events]
+                self.logger.log(
+                    f"[turn-log-fallback] recovered user input conversation={thread_id} turn={turn_id} "
+                    f"events={len(events)} event_types={json.dumps(event_types[:12], ensure_ascii=False)} "
+                    f"user_event_type={user_event_type} prompt_len={len(user_prompt_text)} "
+                    f"attachments={len(user_attachments)} batch_id={batch_id or '-'}",
+                    "INFO",
+                )
+            except Exception:
+                pass
         except Exception:
-            user_prompt_text, user_attachments, user_events = user_prompt_text, [], []
+            user_prompt_text, user_event_type, user_attachments, user_events = user_prompt_text, user_event_type, [], []
         # Assistant files: a bundle that hosts files (e.g. code exec) surfaces them on
         # `state["hosted_files"]` or `result["files"]` (compact rows: rn/hosted_uri/
         # logical_path/mime/filename).
@@ -2893,7 +2914,7 @@ class BaseEntrypoint:
                 except Exception:
                     pass
                 return
-            await record_minimal_turn_log_if_absent(
+            wrote_turn_log = await record_minimal_turn_log_if_absent(
                 conversation_client=client,
                 tenant=tenant,
                 project=project,
@@ -2907,6 +2928,7 @@ class BaseEntrypoint:
                 steps=(result or {}).get("step_logs") or None,
                 conversation_title=conversation_title or None,
                 user_prompt_text=user_prompt_text,
+                user_event_type=user_event_type,
                 user_attachments=user_attachments,
                 user_events=user_events,
                 batch_id=batch_id,
@@ -2915,6 +2937,8 @@ class BaseEntrypoint:
             try:
                 self.logger.log(
                     f"[turn-log-fallback] recorded conversation={thread_id} turn={turn_id} "
+                    f"wrote={wrote_turn_log} user_event_type={user_event_type} "
+                    f"prompt_len={len(user_prompt_text)} attachments={len(user_attachments)} "
                     f"title={conversation_title!r}",
                     "INFO",
                 )

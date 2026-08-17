@@ -4,7 +4,7 @@ title: "Conversation Event Bus Orchestrator"
 summary: "Current conversation external-event bus orchestrator and its shared Redis synchronization table."
 status: active
 tags: ["service", "comm", "conversation-event-bus", "external-events", "react", "redis"]
-updated_at: 2026-06-25
+updated_at: 2026-08-17
 keywords:
   [
     "conversation event bus orchestrator",
@@ -82,6 +82,7 @@ by proc or the Reader/Consumer. It is not derived from processor heartbeat.
 | Reader/Consumer | Start after handler open, set `T.consumer.status = active`, accept lane events into the live turn path while `T.handler.status == open`, and update `T.last_processed_*`. |
 | Turn finalization | Persist turn artifacts after the ReAct handler has closed. |
 | ContextBrowser post-save handoff | After persistence and before releasing the Reader/Consumer, inspect lane/table state and publish a wake through `EventLaneWakePublisher` when reactive work remains. |
+| Run-to-completion hosted-runtime door finalizer | For hosted runtimes that do not open a live handler, consume the wake occurrence plus exact folded same-`batch_id` siblings, release `T.consumer`, then wake remaining reactive lane work. |
 
 Subagent delegation authors `subagent.*` events onto conversation lanes through
 this orchestrator (charter on the child lane, contribution/completions on the
@@ -233,6 +234,34 @@ running the Redis script.
 The wake queue does not choose which lane event is processed. It wakes the
 lane. Under the conversation lock, the Reader and ReAct runtime use the lane
 state and event timestamps to decide what can be accepted.
+
+## Run-To-Completion Hosted Runtime Boundary
+
+The flow above is the native ReAct handler flow. A run-to-completion hosted
+runtime, such as a foreign-runtime adapter, uses the same wake scheduling step
+but does not open `T.handler` and does not start the live Reader/Consumer.
+
+For that path:
+
+```text
+proc schedules wake -> T.consumer = scheduled
+hosted runtime folds wake event's same-batch siblings into one start input
+execute_core runs once
+shared door finalizer:
+  consumes the wake occurrence through the lane cursor
+  terminalizes folded same-batch siblings by exact event id
+  sets T.consumer = none
+  publishes wake for remaining reactive lane work, if any
+```
+
+This is not a replacement for ReAct's live folding. Native ReAct can still accept
+later batches into the current turn while the handler is open. Hosted
+run-to-completion runtimes fold only the start batch; different-`batch_id` events
+remain pending and can schedule the next serialized turn after release.
+
+Lane `sequence` remains the ordering field. `batch_id` groups one accepted
+ingress batch. Exact event ids are used only to terminalize the folded sibling
+records that the hosted runtime actually used.
 
 ## Freshness
 

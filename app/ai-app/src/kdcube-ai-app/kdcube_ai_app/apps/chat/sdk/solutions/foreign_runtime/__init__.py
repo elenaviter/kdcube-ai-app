@@ -32,6 +32,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.dispatch import (
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.external_events import (
     fold_turn_external_events,
+    folded_external_events_message_ids,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.identity import (
     TurnIdentity,
@@ -95,6 +96,7 @@ __all__ = [
     "emit_turn_timing",
     "finalize_conversation_title",
     "fold_turn_external_events",
+    "folded_external_events_message_ids",
     "load_mcp_server_instructions_safe",
     "named_service_door_servers",
     "named_service_door_tools",

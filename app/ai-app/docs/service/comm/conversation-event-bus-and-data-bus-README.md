@@ -90,6 +90,13 @@ event that arrives while that turn is alive. The running `ContextBrowser` owns
 those later lane reads and sends accepted events through the ReAct
 external-event hook under the Redis handler-owner fence.
 
+That live folding statement is specific to native ReAct-style runtimes that open
+a `ContextBrowser` handler. A run-to-completion hosted runtime uses the same
+conversation event bus and processor wake, but folds only the wake occurrence's
+same-`batch_id` start batch into its one execution. Different-`batch_id` reactive
+work remains in the lane and can schedule a later serialized turn after the
+hosted runtime's shared door finalizer releases the lane.
+
 The durable Postgres conversation-state record is a projection used by UI and
 admission logic. It is not the conversation-event-bus lease. Turn liveness,
 reclaim, and permission to fold an event are determined by the Redis event

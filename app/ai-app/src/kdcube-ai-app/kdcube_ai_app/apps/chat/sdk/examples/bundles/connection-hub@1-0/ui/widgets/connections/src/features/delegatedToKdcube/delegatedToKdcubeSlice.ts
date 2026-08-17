@@ -50,6 +50,8 @@ export const loadDelegatedToKdcube = createAsyncThunk<DelegatedToKdcubeCatalogRe
 export interface ConnectCredentialArgs {
   providerId: string;
   connectorAppId: string;
+  accountId?: string;
+  claimsMode?: 'add' | 'replace';
   externalSubject?: string;
   email?: string;
   displayName?: string;
@@ -70,6 +72,8 @@ export const connectDelegatedToKdcubeCredential = createAsyncThunk<
       const res = await postOp<DelegatedToKdcubeMutationResult>('delegated_to_kdcube_connect_credential', {
         provider_id: args.providerId,
         connector_app_id: args.connectorAppId,
+        ...(args.accountId ? {account_id: args.accountId} : {}),
+        ...(args.claimsMode ? {claims_mode: args.claimsMode} : {}),
         external_subject: args.externalSubject || undefined,
         email: args.email || undefined,
         display_name: args.displayName || undefined,

@@ -4,7 +4,7 @@ title: "Delegate A KDCube Service To An External Client"
 summary: "User-facing recipe for connecting Claude or another external client to a KDCube service through Connection Hub delegated credentials."
 status: active
 tags: ["recipes", "connections", "connection-hub", "delegated-credentials", "oauth", "claude", "mcp", "consent"]
-updated_at: 2026-08-07
+updated_at: 2026-08-17
 keywords: ["external MCP client", "delegated credential", "per-account binding", "account selection", "Connection Hub recovery", "resource grant"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md
@@ -203,6 +203,12 @@ The OAuth consent view displays the configured namespace/operation rows. The
 stored named-service policy is enforced again by the bridge at every call; a
 generic `named_services_action` tool does not authorize actions in every
 namespace.
+
+Hosted agents that connect to this bridge should declare only the MCP door
+grant in their connection `scopes`, normally `named_services:use`. Namespace
+grants (`conversations:read`, `memories:read`, provider operation grants, and
+similar) come from the Connection Hub resource catalog and are raised only for
+the specific operation the caller attempted.
 
 If the namespace uses Slack, Gmail, or another connected provider, its
 provider-account claims remain a second prerequisite under **Delegated to
