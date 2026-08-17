@@ -101,6 +101,7 @@ test('capabilities slice: load, optimistic patch, save reconcile', () => {
     disabled: {},
     model: null,
     instructions: null,
+    presentation: null,
     cachePolicy: null,
     pending: null,
     dirty: false,

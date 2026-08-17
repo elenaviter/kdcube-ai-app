@@ -1032,6 +1032,7 @@ export function hydrateHistoricalConversation(conversation: ConversationDTO): Ch
           ).length
           turn = {
             ...turn,
+            createdAt: Math.min(turn.createdAt, ts),
             answer: text,
             artifacts: [
               ...turn.artifacts,

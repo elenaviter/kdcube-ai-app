@@ -37,6 +37,7 @@ from kdcube_ai_app.apps.chat.sdk.integrations.inline_files import (
     InlineFileError,
     inline_files_workspace,
     materialize_inline_files,
+    materialized_conversation_file_ref,
     resolve_payload_file_entries,
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.named_service_consent import (
@@ -1623,10 +1624,35 @@ class SlackNamedServiceProvider(NamedServiceProvider):
                     for ref in consumed if root is not None else []:
                         delete_staged(root, ref)
             else:
-                result = await _upload(
-                    _text(payload.get("file_path") or payload.get("path")),
-                    _text(payload.get("filename")),
-                )
+                file_path = _text(payload.get("file_path") or payload.get("path"))
+                if file_path.startswith("conv:fi:"):
+                    try:
+                        async with materialized_conversation_file_ref(
+                            file_path,
+                            tenant=_text(ctx.tenant),
+                            project=_text(ctx.project),
+                            user_id=_text(ctx.user_id),
+                            conversation_id=_text(ctx.conversation_id),
+                        ) as materialized:
+                            materialized_name = _text(materialized.get("filename")) or "slack-file"
+                            result = await _upload(
+                                materialized_name,
+                                _text(payload.get("filename")) or materialized_name,
+                            )
+                    except InlineFileError as exc:
+                        return NamedServiceResponse.error_response(
+                            code="slack_file_ref_materialization_failed",
+                            message=str(exc),
+                            status=400,
+                            provider=self._provider_identity(),
+                            namespace=request.namespace or SLACK_NAMESPACE,
+                            object_ref=request.object_ref,
+                        )
+                else:
+                    result = await _upload(
+                        file_path,
+                        _text(payload.get("filename")),
+                    )
             if not isinstance(result, Mapping) or not result.get("ok"):
                 return _error_from_tool(result if isinstance(result, Mapping) else {}, request=request, default_code="slack_upload_failed")
             ret = result.get("ret") if isinstance(result.get("ret"), Mapping) else {}

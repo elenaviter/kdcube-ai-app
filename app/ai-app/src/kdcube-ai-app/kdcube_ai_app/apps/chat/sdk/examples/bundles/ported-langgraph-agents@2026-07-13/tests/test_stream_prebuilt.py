@@ -21,6 +21,8 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
+from langgraph.errors import GraphRecursionError
+
 from kdcube_ai_app.apps.chat.sdk.runtime import comm_ctx
 from kdcube_ai_app.apps.chat.sdk.runtime.dynamic_module_loader import load_dynamic_module_for_path
 
@@ -178,6 +180,90 @@ class _MetadataOnlyAgentNodeGraph:
         }
 
 
+class _VisibleToolPreambleGraph:
+    """Some chat models emit short visible text before a tool call in several
+    ReAct rounds. If those fragments stay on the answer channel, each model round
+    needs a boundary so the UI does not concatenate them into one sentence."""
+
+    async def astream_events(self, inputs, config, *, version=None):
+        yield {"event": "on_chain_start", "name": "model", "metadata": {"langgraph_node": "model"}}
+        yield {
+            "event": "on_chat_model_stream",
+            "name": "model",
+            "metadata": {"langgraph_node": "model"},
+            "data": {"chunk": _chunk(content="Let me check the schema:")},
+        }
+        yield {
+            "event": "on_chat_model_stream",
+            "name": "model",
+            "metadata": {"langgraph_node": "model"},
+            "data": {"chunk": _chunk(content="", tool_call_chunks=[{"name": "named_services_schema", "id": "1"}])},
+        }
+        yield {
+            "event": "on_chain_end",
+            "name": "model",
+            "metadata": {"langgraph_node": "model"},
+            "data": {"output": {"messages": [_ai("Let me check the schema:", tool_calls=[{"name": "named_services_schema", "id": "1"}])]}},
+        }
+        yield {"event": "on_tool_start", "name": "named_services_schema", "run_id": "r1", "metadata": {"langgraph_node": "tools"}}
+        yield {"event": "on_tool_end", "name": "named_services_schema", "run_id": "r1", "metadata": {"langgraph_node": "tools"}, "data": {"output": _ai("schema")}}
+
+        yield {"event": "on_chain_start", "name": "model", "metadata": {"langgraph_node": "model"}}
+        yield {
+            "event": "on_chat_model_stream",
+            "name": "model",
+            "metadata": {"langgraph_node": "model"},
+            "data": {"chunk": _chunk(content="Now let me encode it:")},
+        }
+        yield {
+            "event": "on_chat_model_stream",
+            "name": "model",
+            "metadata": {"langgraph_node": "model"},
+            "data": {"chunk": _chunk(content="", tool_call_chunks=[{"name": "run_python", "id": "2"}])},
+        }
+        yield {
+            "event": "on_chain_end",
+            "name": "model",
+            "metadata": {"langgraph_node": "model"},
+            "data": {"output": {"messages": [_ai("Now let me encode it:", tool_calls=[{"name": "run_python", "id": "2"}])]}},
+        }
+        yield {"event": "on_tool_start", "name": "run_python", "run_id": "r2", "metadata": {"langgraph_node": "tools"}}
+        yield {"event": "on_tool_end", "name": "run_python", "run_id": "r2", "metadata": {"langgraph_node": "tools"}, "data": {"output": _ai("encoded")}}
+
+        yield {"event": "on_chain_start", "name": "model", "metadata": {"langgraph_node": "model"}}
+        yield {
+            "event": "on_chat_model_stream",
+            "name": "model",
+            "metadata": {"langgraph_node": "model"},
+            "data": {"chunk": _chunk(content="Done.")},
+        }
+        yield {
+            "event": "on_chain_end",
+            "name": "model",
+            "metadata": {"langgraph_node": "model"},
+            "data": {"output": {"messages": [_ai("Done.")]}},
+        }
+
+
+class _RecursionLimitGraph:
+    async def astream_events(self, inputs, config, *, version=None):
+        yield {
+            "event": "on_tool_start",
+            "name": "named_services_action",
+            "run_id": "r1",
+            "metadata": {"langgraph_node": "tools"},
+            "data": {"input": {"namespace": "slack", "action": "upload_file"}},
+        }
+        yield {
+            "event": "on_tool_end",
+            "name": "named_services_action",
+            "run_id": "r1",
+            "metadata": {"langgraph_node": "tools"},
+            "data": {"output": {"ok": False, "error": {"code": "file_path_required"}}},
+        }
+        raise GraphRecursionError("Recursion limit of 25 reached without hitting a stop condition.")
+
+
 def _run(graph):
     async def _go():
         comm = _FakeComm()
@@ -233,6 +319,34 @@ def test_metadata_langgraph_node_drives_answer_delta_when_event_name_is_wrapper(
     assert answer == "final answer"
     assert comm.deltas == ["final ", "answer"]
     assert comm.completed is True
+
+
+def test_visible_model_round_preambles_are_separated_in_answer_stream() -> None:
+    comm, answer = _run(_VisibleToolPreambleGraph())
+
+    assert answer == "Let me check the schema:\n\nNow let me encode it:\n\nDone."
+    assert comm.deltas == [
+        "Let me check the schema:",
+        "\n\n",
+        "Now let me encode it:",
+        "\n\n",
+        "Done.",
+    ]
+    assert comm.completed is True
+
+
+def test_graph_recursion_limit_completes_turn_with_terminal_answer() -> None:
+    comm, answer = _run(_RecursionLimitGraph())
+
+    assert "ReAct loop reached its iteration limit" in answer
+    assert comm.deltas == [answer]
+    assert comm.completed is True
+    assert comm.complete_data == {"final_answer": answer}
+    done = next(
+        p for p in comm.step_payloads
+        if p["status"] == "completed" and p["step"] == "react_loop_limit"
+    )
+    assert "Recursion limit of 25" in done["markdown"]
 
 
 # ── tool-call visibility in the Steps view ───────────────────────────────────

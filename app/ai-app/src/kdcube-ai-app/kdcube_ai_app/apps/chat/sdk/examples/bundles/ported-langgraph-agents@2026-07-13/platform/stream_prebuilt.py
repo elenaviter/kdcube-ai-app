@@ -41,6 +41,12 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
+try:
+    from langgraph.errors import GraphRecursionError
+except Exception:  # pragma: no cover - import guard for stripped offline envs
+    class GraphRecursionError(RuntimeError):
+        pass
+
 from kdcube_ai_app.apps.chat.sdk.runtime import comm_ctx
 from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.stream_contract import (
     content_text,
@@ -98,6 +104,14 @@ async def _emit_complete(answer: str) -> bool:
     return True
 
 
+def _recursion_limit_answer() -> str:
+    return (
+        "I stopped because the ReAct loop reached its iteration limit before "
+        "producing a final answer. The tool attempts and their results are shown "
+        "in Steps."
+    )
+
+
 async def stream_react_turn(
     graph: Any,
     inputs: Dict[str, Any],
@@ -120,12 +134,14 @@ async def stream_react_turn(
     model_turn_has_tool_call = False
     model_turn_active = False
     model_turn_streamed_answer = False
+    model_turn_started_with_prior_answer = False
 
     def _reset_model_turn() -> None:
-        nonlocal model_turn_has_tool_call, model_turn_active, model_turn_streamed_answer
+        nonlocal model_turn_has_tool_call, model_turn_active, model_turn_streamed_answer, model_turn_started_with_prior_answer
         model_turn_has_tool_call = False
         model_turn_active = True
         model_turn_streamed_answer = False
+        model_turn_started_with_prior_answer = bool(answer)
     # Steps are keyed by their `step` string client-side, so every tool INVOCATION
     # gets its own key (`run_python`, `run_python (2)`, …) — a retry loop shows as
     # N rows with their actual arguments, not one row silently overwritten.
@@ -133,85 +149,121 @@ async def stream_react_turn(
     tool_run_step: Dict[str, tuple] = {}  # run_id -> (step_key, title, markdown)
     answer_delta_count = 0
 
-    async for event in graph.astream_events(inputs, run_config, version="v2"):
-        kind = event.get("event")
-        name = event.get("name")
-        node = (event.get("metadata") or {}).get("langgraph_node")
+    try:
+        event_iter = graph.astream_events(inputs, run_config, version="v2")
+        async for event in event_iter:
+            kind = event.get("event")
+            name = event.get("name")
+            node = (event.get("metadata") or {}).get("langgraph_node")
 
-        is_agent_node = _is_agent_node_event(name, node, agent_node)
+            is_agent_node = _is_agent_node_event(name, node, agent_node)
 
-        if kind in {"on_chain_start", "on_chat_model_start"} and is_agent_node:
-            # A new model turn begins — until proven otherwise it might be final.
-            _reset_model_turn()
+            if kind in {"on_chain_start", "on_chat_model_start"} and is_agent_node:
+                # A new model turn begins — until proven otherwise it might be final.
+                _reset_model_turn()
 
-        elif kind == "on_chat_model_stream" and is_agent_node:
-            chunk = (event.get("data") or {}).get("chunk")
-            # A tool-call chunk marks this agent turn as a tool-deciding turn: it
-            # is NOT the answer, so never stream it as answer text.
-            if getattr(chunk, "tool_call_chunks", None):
-                if not model_turn_active:
-                    _reset_model_turn()
-                model_turn_has_tool_call = True
-            token = _content_text(getattr(chunk, "content", ""))
-            if token and not model_turn_has_tool_call:
-                if not model_turn_active:
-                    _reset_model_turn()
-                answer += token
-                if await _emit_answer_delta(token, idx):
-                    answer_delta_count += 1
-                idx += 1
-                model_turn_streamed_answer = True
-
-        elif kind == "on_tool_start":
-            # Surface each tool run as a progress step showing HOW it was called:
-            # title = the call signature, body = the arguments (large values as
-            # fenced blocks; empty args stated explicitly).
-            tool_args = (event.get("data") or {}).get("input")
-            title, markdown = _tool_call_views(str(name), tool_args)
-            seq = tool_call_seq.get(str(name), 0) + 1
-            tool_call_seq[str(name)] = seq
-            step_key = str(name) if seq == 1 else f"{name} ({seq})"
-            run_id = str(event.get("run_id") or "")
-            if run_id:
-                tool_run_step[run_id] = (step_key, title, markdown)
-            LOGGER.info("[ported-langgraph] lg-react tool START: %s", title)
-            await comm_ctx.step(step=step_key, status="running", title=title, markdown=markdown)
-
-        elif kind == "on_tool_end":
-            run_id = str(event.get("run_id") or "")
-            step_key, title, markdown = tool_run_step.pop(
-                run_id, (str(name), str(name), "")
-            )
-            result_markdown = _tool_result_view((event.get("data") or {}).get("output"))
-            if result_markdown:
-                markdown = (
-                    f"{markdown}\n\n---\n\n{result_markdown}"
-                    if str(markdown or "").strip()
-                    else result_markdown
-                )
-            LOGGER.info("[ported-langgraph] lg-react tool END: %s", title)
-            await comm_ctx.step(step=step_key, status="completed", title=title, markdown=markdown)
-
-        elif kind == "on_chain_end" and is_agent_node:
-            # The agent turn just finished. Read its last message (authoritative):
-            #   - has tool_calls  -> intermediate turn; the next cycle continues.
-            #   - no tool_calls   -> the FINAL answer. If token streaming already
-            #     produced answer deltas, leave them alone; otherwise emit the
-            #     returned content as the offline/non-streaming fallback.
-            out = (event.get("data") or {}).get("output") or {}
-            msgs = out.get("messages") if isinstance(out, dict) else None
-            last = msgs[-1] if msgs else None
-            has_tool_calls = bool(getattr(last, "tool_calls", None)) or model_turn_has_tool_call
-            if last is not None and not has_tool_calls and not model_turn_streamed_answer:
-                content = _content_text(getattr(last, "content", ""))
-                if content:
-                    answer += content
-                    if await _emit_answer_delta(content, idx):
+            elif kind == "on_chat_model_stream" and is_agent_node:
+                chunk = (event.get("data") or {}).get("chunk")
+                # A tool-call chunk marks this agent turn as a tool-deciding turn: it
+                # is NOT the answer, so never stream it as answer text.
+                if getattr(chunk, "tool_call_chunks", None):
+                    if not model_turn_active:
+                        _reset_model_turn()
+                    model_turn_has_tool_call = True
+                token = _content_text(getattr(chunk, "content", ""))
+                if token and not model_turn_has_tool_call:
+                    if not model_turn_active:
+                        _reset_model_turn()
+                    if model_turn_started_with_prior_answer and not model_turn_streamed_answer:
+                        answer += "\n\n"
+                        if await _emit_answer_delta("\n\n", idx):
+                            answer_delta_count += 1
+                        idx += 1
+                    answer += token
+                    if await _emit_answer_delta(token, idx):
                         answer_delta_count += 1
                     idx += 1
-            model_turn_has_tool_call = False
-            model_turn_active = False
-            model_turn_streamed_answer = False
+                    model_turn_streamed_answer = True
+
+            elif kind == "on_tool_start":
+                # Surface each tool run as a progress step showing HOW it was called:
+                # title = the call signature, body = the arguments (large values as
+                # fenced blocks; empty args stated explicitly).
+                tool_args = (event.get("data") or {}).get("input")
+                title, markdown = _tool_call_views(str(name), tool_args)
+                seq = tool_call_seq.get(str(name), 0) + 1
+                tool_call_seq[str(name)] = seq
+                step_key = str(name) if seq == 1 else f"{name} ({seq})"
+                run_id = str(event.get("run_id") or "")
+                if run_id:
+                    tool_run_step[run_id] = (step_key, title, markdown)
+                LOGGER.info("[ported-langgraph] lg-react tool START: %s", title)
+                await comm_ctx.step(step=step_key, status="running", title=title, markdown=markdown)
+
+            elif kind == "on_tool_end":
+                run_id = str(event.get("run_id") or "")
+                step_key, title, markdown = tool_run_step.pop(
+                    run_id, (str(name), str(name), "")
+                )
+                result_markdown = _tool_result_view((event.get("data") or {}).get("output"))
+                if result_markdown:
+                    markdown = (
+                        f"{markdown}\n\n---\n\n{result_markdown}"
+                        if str(markdown or "").strip()
+                        else result_markdown
+                    )
+                LOGGER.info("[ported-langgraph] lg-react tool END: %s", title)
+                await comm_ctx.step(step=step_key, status="completed", title=title, markdown=markdown)
+
+            elif kind == "on_chain_end" and is_agent_node:
+                # The agent turn just finished. Read its last message (authoritative):
+                #   - has tool_calls  -> intermediate turn; the next cycle continues.
+                #   - no tool_calls   -> the FINAL answer. If token streaming already
+                #     produced answer deltas, leave them alone; otherwise emit the
+                #     returned content as the offline/non-streaming fallback.
+                out = (event.get("data") or {}).get("output") or {}
+                msgs = out.get("messages") if isinstance(out, dict) else None
+                last = msgs[-1] if msgs else None
+                has_tool_calls = bool(getattr(last, "tool_calls", None)) or model_turn_has_tool_call
+                if last is not None and not has_tool_calls and not model_turn_streamed_answer:
+                    content = _content_text(getattr(last, "content", ""))
+                    if content:
+                        if model_turn_started_with_prior_answer:
+                            answer += "\n\n"
+                            if await _emit_answer_delta("\n\n", idx):
+                                answer_delta_count += 1
+                            idx += 1
+                        answer += content
+                        if await _emit_answer_delta(content, idx):
+                            answer_delta_count += 1
+                        idx += 1
+                model_turn_has_tool_call = False
+                model_turn_active = False
+                model_turn_streamed_answer = False
+    except GraphRecursionError as exc:
+        LOGGER.warning("[ported-langgraph] lg-react graph recursion limit reached", exc_info=True)
+        if answer:
+            answer += "\n\n"
+            if await _emit_answer_delta("\n\n", idx):
+                answer_delta_count += 1
+            idx += 1
+        fallback = _recursion_limit_answer()
+        answer += fallback
+        if await _emit_answer_delta(fallback, idx):
+            answer_delta_count += 1
+        await comm_ctx.step(
+            step="react_loop_limit",
+            status="completed",
+            title="ReAct Loop Limit",
+            markdown=str(exc),
+        )
+        complete_emitted = await _emit_complete(answer)
+        LOGGER.info(
+            "[ported-langgraph] lg-react turn completed after recursion limit: "
+            "answer_len=%d answer_delta_count=%d complete_emitted=%s",
+            len(answer), answer_delta_count, complete_emitted,
+        )
+        return answer
 
     complete_emitted = await _emit_complete(answer)
     LOGGER.info(

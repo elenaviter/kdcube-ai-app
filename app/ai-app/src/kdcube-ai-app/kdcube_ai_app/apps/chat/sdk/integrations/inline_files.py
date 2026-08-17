@@ -27,7 +27,7 @@ import pathlib
 import shutil
 import tempfile
 import uuid
-from typing import Any, Iterator, Mapping
+from typing import Any, AsyncIterator, Iterator, Mapping
 
 from kdcube_ai_app.apps.chat.sdk.runtime import run_ctx
 from kdcube_ai_app.apps.chat.sdk.runtime.comm_ctx import (
@@ -35,6 +35,9 @@ from kdcube_ai_app.apps.chat.sdk.runtime.comm_ctx import (
     get_current_request_context,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace import artifact_outdir_for
+from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace.references import (
+    CONVERSATION_FILE_REF_PREFIX,
+)
 
 MAX_INLINE_FILE_BYTES = 10 * 1024 * 1024
 MAX_INLINE_TOTAL_BYTES = 25 * 1024 * 1024
@@ -198,6 +201,45 @@ def resolve_payload_file_entries(
     return normalized, consumed
 
 
+@contextlib.asynccontextmanager
+async def materialized_conversation_file_ref(
+    file_ref: str,
+    *,
+    tenant: str,
+    project: str,
+    user_id: str,
+    conversation_id: str = "",
+    storage_path: str | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    """Materialize a current actor's durable ``conv:fi:`` ref into a tool workspace."""
+    ref = str(file_ref or "").strip()
+    if not ref.startswith(CONVERSATION_FILE_REF_PREFIX):
+        raise InlineFileError("Conversation file refs must start with conv:fi:.")
+
+    tenant_id = str(tenant or "").strip()
+    project_id = str(project or "").strip()
+    owner_id = str(user_id or "").strip()
+    if not tenant_id or not project_id or not owner_id:
+        raise InlineFileError("Conversation file refs require a bound tenant, project, and user.")
+
+    from kdcube_ai_app.apps.chat.sdk.runtime.harness import workspace as sdk_workspace
+
+    with inline_files_workspace() as artifact_root:
+        reports = await sdk_workspace.pull_refs_into_dir(
+            refs=[ref],
+            dest_dir=artifact_root,
+            tenant=tenant_id,
+            project=project_id,
+            user_id=owner_id,
+            conversation_id=str(conversation_id or "").strip(),
+            storage_path=storage_path,
+        )
+        report = reports[0] if reports else {}
+        if not report.get("ok"):
+            raise InlineFileError("Conversation file is not available to the current user or does not exist.")
+        yield report
+
+
 def _current_turn_id() -> str:
     ctx = get_current_request_context()
     return str(getattr(getattr(ctx, "routing", None), "turn_id", "") or "").strip()
@@ -256,5 +298,6 @@ __all__ = [
     "has_turn_workspace",
     "inline_files_workspace",
     "materialize_inline_files",
+    "materialized_conversation_file_ref",
     "resolve_payload_file_entries",
 ]

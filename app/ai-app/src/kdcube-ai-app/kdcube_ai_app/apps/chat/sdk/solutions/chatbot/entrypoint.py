@@ -3013,6 +3013,7 @@ class BaseEntrypoint:
 
         await self._record_failed_turn_log(
             exc=exc,
+            state=state,
             tenant=tenant,
             project=project,
             user_id=user_id,
@@ -3027,6 +3028,7 @@ class BaseEntrypoint:
         self,
         *,
         exc: BaseException,
+        state: Optional[Dict[str, Any]] = None,
         tenant: Optional[str],
         project: Optional[str],
         user_id: Optional[str],
@@ -3050,6 +3052,48 @@ class BaseEntrypoint:
 
         if turn_log_was_recorded():
             return
+        user_prompt_text = ""
+        user_event_type = "event.user.prompt"
+        user_attachments: list = []
+        user_events: list = []
+        batch_id = ""
+        try:
+            from kdcube_ai_app.apps.chat.sdk.protocol import (
+                external_events_text,
+                hosted_external_event_attachments,
+            )
+            events = [e for e in ((state or {}).get("external_events") or []) if isinstance(e, dict)]
+            user_prompt_text = external_events_text(events) or ""
+            for event in events:
+                event_type = str(event.get("type") or "").strip()
+                if event_type in {"event.user.prompt", "event.user.followup", "event.user.steer"}:
+                    user_event_type = event_type
+                    break
+            user_attachments = list(hosted_external_event_attachments(events) or [])
+            user_events = list(events)
+            for event in events:
+                payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+                candidate = str(event.get("batch_id") or payload.get("batch_id") or "").strip()
+                if candidate:
+                    batch_id = candidate
+                    break
+            try:
+                self.logger.log(
+                    f"[turn-log-failure] recovered user input conversation={thread_id} turn={turn_id} "
+                    f"events={len(events)} user_event_type={user_event_type} "
+                    f"prompt_len={len(user_prompt_text)} attachments={len(user_attachments)} "
+                    f"batch_id={batch_id or '-'}",
+                    "INFO",
+                )
+            except Exception:
+                pass
+        except Exception:
+            user_prompt_text, user_event_type, user_attachments, user_events = (
+                user_prompt_text,
+                user_event_type,
+                [],
+                [],
+            )
         try:
             client = await self.get_ctx_client()
             if client is None:
@@ -3066,6 +3110,11 @@ class BaseEntrypoint:
                 agent_id=agent_id,
                 error_message=str(exc),
                 error_type=type(exc).__name__,
+                user_prompt_text=user_prompt_text,
+                user_event_type=user_event_type,
+                user_attachments=user_attachments,
+                user_events=user_events,
+                batch_id=batch_id,
             )
         except Exception:
             try:

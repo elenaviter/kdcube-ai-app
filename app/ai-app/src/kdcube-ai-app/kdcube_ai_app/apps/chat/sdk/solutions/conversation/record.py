@@ -588,6 +588,11 @@ def build_error_turn_log_payload(
     error_type: Optional[str] = None,
     steps: Optional[Sequence[Dict[str, Any]]] = None,
     ts: Optional[str] = None,
+    user_prompt_text: str = "",
+    user_event_type: str = "event.user.prompt",
+    user_attachments: Optional[Sequence[Dict[str, Any]]] = None,
+    user_events: Optional[Sequence[Dict[str, Any]]] = None,
+    batch_id: str = "",
 ) -> Dict[str, Any]:
     """A minimal turn-log payload for a **failed** turn: an ``assistant.completion``
     block carrying the error text (so the conversation saves and reloads as an
@@ -597,6 +602,24 @@ def build_error_turn_log_payload(
     now = ts or _utc_iso()
     text = str(error_message or "").strip() or "An error occurred."
     blocks: List[Dict[str, Any]] = []
+    batch = str(batch_id or "").strip() or f"{turn_id}.batch"
+    user_block = _user_prompt_block(
+        user_prompt_text,
+        turn_id=turn_id,
+        ts=now,
+        user_event_type=user_event_type,
+    )
+    if user_block:
+        user_block["meta"]["batch_id"] = batch
+        blocks.append(user_block)
+    for event in user_events or []:
+        ctx_block = _user_context_event_block(event, turn_id=turn_id, batch_id=batch, ts=now)
+        if ctx_block:
+            blocks.append(ctx_block)
+    for att in user_attachments or []:
+        att_block = _user_attachment_meta_block(att, turn_id=turn_id, batch_id=batch, ts=now)
+        if att_block:
+            blocks.append(att_block)
     for step in steps or []:
         if not isinstance(step, dict):
             continue
@@ -634,6 +657,11 @@ async def record_error_turn_log_if_absent(
     agent_id: Optional[str] = None,
     error_type: Optional[str] = None,
     steps: Optional[Sequence[Dict[str, Any]]] = None,
+    user_prompt_text: str = "",
+    user_event_type: str = "event.user.prompt",
+    user_attachments: Optional[Sequence[Dict[str, Any]]] = None,
+    user_events: Optional[Sequence[Dict[str, Any]]] = None,
+    batch_id: str = "",
 ) -> bool:
     """Record a minimal **failed** turn log when none was written this turn.
 
@@ -648,8 +676,25 @@ async def record_error_turn_log_if_absent(
     if not callable(save):
         return False
     payload = build_error_turn_log_payload(
-        error_message=error_message, turn_id=turn_id, error_type=error_type, steps=steps,
+        error_message=error_message,
+        turn_id=turn_id,
+        error_type=error_type,
+        steps=steps,
+        user_prompt_text=user_prompt_text,
+        user_event_type=user_event_type,
+        user_attachments=user_attachments,
+        user_events=user_events,
+        batch_id=batch_id,
     )
+    prior_payload = await _latest_turn_log_payload(
+        conversation_client=conversation_client,
+        user=user,
+        conversation_id=conversation_id,
+        turn_id=turn_id,
+        bundle_id=bundle_id,
+    )
+    if prior_payload is not None:
+        payload = _merge_turn_log_payload(prior_payload, payload)
     await save(
         tenant=tenant, project=project, user=user,
         conversation_id=conversation_id, user_type=user_type,

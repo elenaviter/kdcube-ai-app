@@ -6,7 +6,12 @@ from typing import Any
 
 import pytest
 
-from kdcube_ai_app.apps.chat.sdk.protocol import ExternalEventPayload, ExternalEventRouting
+from kdcube_ai_app.apps.chat.sdk.protocol import (
+    ExternalEventActor,
+    ExternalEventPayload,
+    ExternalEventRouting,
+    ExternalEventUser,
+)
 from kdcube_ai_app.apps.chat.sdk.runtime import run_ctx
 from kdcube_ai_app.apps.chat.sdk.runtime.comm_ctx import bind_current_request_context
 from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace import artifact_outdir_for
@@ -487,6 +492,125 @@ async def test_upload_with_inline_content_stages_bytes_in_ephemeral_workspace():
     assert captured["filename"] == "logo.png"
     assert str(run_ctx.OUTDIR_CV.get("") or "") == ""
     assert not pathlib.Path(captured["outdir"]).exists()
+
+
+@pytest.mark.asyncio
+async def test_upload_with_conversation_file_ref_materializes_without_live_workspace(monkeypatch):
+    provider = _Provider([_account("acc-1", "slack:files:write")])
+    file_ref = "conv:fi:conv_conv-1.turn_1.files/test_image.png"
+    captured: dict[str, Any] = {}
+
+    from kdcube_ai_app.apps.chat.sdk.runtime.harness import workspace as sdk_workspace
+
+    async def _pull(*, refs, dest_dir, tenant, project, user_id, conversation_id="", storage_path=None):
+        assert refs == [file_ref]
+        assert tenant == "demo"
+        assert project == "project"
+        assert user_id == "user-1"
+        assert conversation_id == "conv-1"
+        target = pathlib.Path(dest_dir) / "test_image.png"
+        target.write_bytes(VALID_PNG_BYTES)
+        return [{
+            "ref": file_ref,
+            "ok": True,
+            "filename": "test_image.png",
+            "path": str(target),
+            "size": len(VALID_PNG_BYTES),
+            "mime": "image/png",
+        }]
+
+    async def _upload(**kwargs: Any) -> dict[str, Any]:
+        outdir = str(run_ctx.OUTDIR_CV.get("") or "")
+        captured["outdir"] = outdir
+        captured["file_path"] = kwargs["file_path"]
+        captured["filename"] = kwargs["filename"]
+        root = artifact_outdir_for(pathlib.Path(outdir), create=False)
+        captured["staged_bytes"] = (root / kwargs["file_path"]).read_bytes()
+        return {
+            "ok": True,
+            "ret": {
+                "account_id": kwargs["account_id"],
+                "file_id": "F-UP",
+                "filename": kwargs["filename"],
+                "channel": kwargs["channel"],
+            },
+        }
+
+    monkeypatch.setattr(sdk_workspace, "pull_refs_into_dir", _pull)
+    provider._slack.upload_slack_file = _upload
+    request_payload = ExternalEventPayload(
+        routing=ExternalEventRouting(
+            bundle_id="kdcube-services@1-0",
+            session_id="sess-1",
+            conversation_id="conv-1",
+        ),
+        actor=ExternalEventActor(tenant_id="demo", project_id="project"),
+        user=ExternalEventUser(user_type="registered", user_id="user-1"),
+    )
+
+    token = run_ctx.OUTDIR_CV.set("")
+    try:
+        with bind_current_request_context(request_payload):
+            response = await provider.object_action(
+                NamedServiceContext(
+                    tenant="demo",
+                    project="project",
+                    user_id="user-1",
+                    conversation_id="conv-1",
+                ),
+                NamedServiceRequest(
+                    operation=OBJECT_ACTION,
+                    namespace=SLACK_NAMESPACE,
+                    object_ref="slack:acc-1:channel:C123",
+                    action=ACTION_UPLOAD_FILE,
+                    payload={
+                        "file_path": file_ref,
+                        "filename": "test_image.png",
+                        "title": "Hello from Slack!",
+                    },
+                ),
+            )
+    finally:
+        run_ctx.OUTDIR_CV.reset(token)
+
+    assert response.ok is True
+    assert captured["staged_bytes"] == VALID_PNG_BYTES
+    assert captured["file_path"] == "test_image.png"
+    assert captured["filename"] == "test_image.png"
+    assert str(run_ctx.OUTDIR_CV.get("") or "") == ""
+    assert not pathlib.Path(captured["outdir"]).exists()
+
+
+@pytest.mark.asyncio
+async def test_upload_with_conversation_file_ref_requires_bound_user(monkeypatch):
+    provider = _Provider([_account("acc-1", "slack:files:write")])
+
+    from kdcube_ai_app.apps.chat.sdk.runtime.harness import workspace as sdk_workspace
+
+    async def _pull(**_kwargs: Any):
+        raise AssertionError("conv:fi refs must not be pulled without a bound owner")
+
+    async def _upload(**_kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("upload must not be called when materialization fails")
+
+    monkeypatch.setattr(sdk_workspace, "pull_refs_into_dir", _pull)
+    provider._slack.upload_slack_file = _upload
+
+    response = await provider.object_action(
+        NamedServiceContext(tenant="demo", project="project", user_id="", conversation_id="conv-1"),
+        NamedServiceRequest(
+            operation=OBJECT_ACTION,
+            namespace=SLACK_NAMESPACE,
+            object_ref="slack:acc-1:channel:C123",
+            action=ACTION_UPLOAD_FILE,
+            payload={"file_path": "conv:fi:conv_conv-1.turn_1.files/test_image.png"},
+        ),
+    )
+
+    assert response.ok is False
+    assert response.status == 400
+    assert response.error.code == "slack_file_ref_materialization_failed"
+    assert "bound tenant, project, and user" in response.error.message
 
 
 @pytest.mark.asyncio

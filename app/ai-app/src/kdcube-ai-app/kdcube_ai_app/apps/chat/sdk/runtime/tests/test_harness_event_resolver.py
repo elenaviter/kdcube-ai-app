@@ -58,6 +58,46 @@ async def test_resolve_event_ref_action_downloads_canonical_fi_artifact(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_read_event_ref_bytes_is_scoped_to_current_user(tmp_path):
+    store = ConversationStore(storage_uri=tmp_path.as_uri())
+    await store.put_artifact_file(
+        tenant="tenant",
+        project="project",
+        user="owner-a",
+        fingerprint=None,
+        conversation_id="conversation",
+        turn_id="turn_1",
+        relpath="turn_1/files/secret.txt",
+        data=b"secret",
+        mime="text/plain",
+    )
+    ref = build_logical_artifact_path(
+        turn_id="turn_1",
+        namespace="files",
+        relpath="secret.txt",
+        conversation_id="conversation",
+    )
+
+    data, _meta = await read_event_ref_bytes(
+        ref=ref,
+        tenant="tenant",
+        project="project",
+        user_id="owner-a",
+        storage_path=tmp_path.as_uri(),
+    )
+    assert data == b"secret"
+
+    with pytest.raises(FileNotFoundError):
+        await read_event_ref_bytes(
+            ref=ref,
+            tenant="tenant",
+            project="project",
+            user_id="owner-b",
+            storage_path=tmp_path.as_uri(),
+        )
+
+
+@pytest.mark.asyncio
 async def test_resolve_event_ref_action_reports_unknown_namespace():
     result = await resolve_event_ref_action(
         {"object_ref": "mem:mem_1", "action": "download"},
