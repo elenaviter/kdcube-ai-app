@@ -501,6 +501,14 @@ async def _live_grant_record(request: Any, grant_record: Optional[Dict[str, Any]
     if card is None:
         LOGGER.info("[connection-hub.oauth.guard] registry card %s gone — binding treated as revoked", access_id)
         return None
+    LOGGER.info(
+        "[connection-hub.oauth.guard] registry card resolved access_id=%s client_id=%s "
+        "resources=%s account_scope_providers=%s",
+        access_id,
+        card.client_id,
+        sorted(card.resource_grants.keys()),
+        sorted(card.account_scope.keys()) or "-",
+    )
     resource_grants = card.resource_grants
     all_grants = sorted({str(g) for grants in resource_grants.values() for g in (grants or [])})
     resolved = dict(grant_record)

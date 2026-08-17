@@ -78,6 +78,25 @@ def test_load_upload_file_rejects_absolute_paths_outside_artifacts(monkeypatch, 
 
 
 @pytest.mark.asyncio
+async def test_upload_file_missing_source_returns_model_actionable_feedback():
+    result = await tools.SlackTools()._upload_slack_file(
+        channel="D123",
+        file_path="",
+        title="",
+        initial_comment="",
+        thread_ts="",
+        filename="",
+        account_id="",
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "file_path_required"
+    assert "payload.file_path" in result["error"]["message"]
+    assert "conv:fi:" in result["error"]["message"]
+    assert "staged_ref" in result["error"]["message"]
+
+
+@pytest.mark.asyncio
 async def test_common_slack_call_returns_auth_retry_marker(monkeypatch):
     class FakeClient:
         async def __aenter__(self):

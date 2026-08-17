@@ -12,6 +12,7 @@ from __future__ import annotations
 from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.stream_contract import (
     content_text,
     tool_call_views,
+    tool_result_view,
 )
 
 
@@ -80,3 +81,41 @@ def test_tool_call_views_signature_line_is_capped() -> None:
     title, _md = tool_call_views("many", args)
     assert len(title) <= 160
     assert title.endswith("…)")
+
+
+# ── tool_result_view ─────────────────────────────────────────────────────────
+
+def test_tool_result_view_summarizes_json_text_mcp_success() -> None:
+    result = {
+        "content": [{
+            "type": "text",
+            "text": (
+                '{"ok": true, "status": 200, "ret": {"items": ['
+                '{"label": "elena.viter @ NestLogic", "object_ref": "slack:account"}'
+                '], "extra": {"kind": "accounts", "count": 1}}}'
+            ),
+        }],
+        "is_error": False,
+    }
+
+    md = tool_result_view(result)
+
+    assert "**Tool result:** ok" in md
+    assert "Items: 1" in md
+    assert "elena.viter @ NestLogic" in md
+    assert '"content"' not in md
+
+
+def test_tool_result_view_summarizes_direct_error_payload() -> None:
+    md = tool_result_view({
+        "ok": False,
+        "status": 400,
+        "error": {
+            "code": "file_path_required",
+            "message": "Pass the conv:fi artifact path as file_path.",
+        },
+    })
+
+    assert "**Tool result:** action needed" in md
+    assert "`file_path_required`" in md
+    assert "conv:fi artifact path" in md

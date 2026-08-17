@@ -160,7 +160,17 @@ async def _process_content(content: Any) -> Any | None:
     if isinstance(content, str):
         return await _process_text(content)
     if isinstance(content, dict):
-        return await _process_dict(content)
+        direct = await _process_dict(content)
+        if direct is not None:
+            return direct
+        if content.get("type") == "text" and isinstance(content.get("text"), str):
+            new_text = await _process_text(content["text"])
+            return {**content, "text": new_text} if new_text is not None else None
+        nested = content.get("content")
+        if isinstance(nested, (str, dict, list)):
+            replaced = await _process_content(nested)
+            return {**content, "content": replaced} if replaced is not None else None
+        return None
     if isinstance(content, list):
         changed = False
         out: List[Any] = []

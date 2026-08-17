@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -32,8 +33,30 @@ class _FakeClient:
         )
 
 
+class _FakeJsonTextResultClient(_FakeClient):
+    async def call_tool(self, name, params):
+        assert name == "echo"
+        return SimpleNamespace(
+            structured_content=None,
+            content=[
+                SimpleNamespace(
+                    type="text",
+                    text=(
+                        '{"ok": false, '
+                        '"error": {"code": "file_path_required", '
+                        '"message": "Pass the conv:fi artifact path as file_path."}, '
+                        '"status": 400}'
+                    ),
+                )
+            ],
+            is_error=True,
+        )
+
+
 @pytest.mark.asyncio
 async def test_loader_uses_sdk_tools_and_records_errors_per_server(monkeypatch) -> None:
+    monkeypatch.setattr(mcp_binding, "mcp_adapters_available", lambda: True)
+
     @asynccontextmanager
     async def open_entry(entry):
         if entry["url"].endswith("denied"):
@@ -59,7 +82,35 @@ async def test_loader_uses_sdk_tools_and_records_errors_per_server(monkeypatch) 
 
 
 @pytest.mark.asyncio
+async def test_tool_call_json_text_result_reaches_model_as_payload(monkeypatch) -> None:
+    monkeypatch.setattr(mcp_binding, "mcp_adapters_available", lambda: True)
+
+    @asynccontextmanager
+    async def open_entry(_entry):
+        yield _FakeJsonTextResultClient()
+
+    monkeypatch.setattr(mcp_binding, "_open_server_entry", open_entry)
+    tools = await mcp_binding.load_mcp_tools_from_server_map({
+        "kdcube-services": {"url": "https://mcp.example/named-services"},
+    })
+
+    result = await tools[0].ainvoke({"value": "ignored"})
+
+    assert result["ok"] is False
+    assert result["status"] == 400
+    assert result["is_error"] is True
+    assert result["error"]["code"] == "file_path_required"
+    assert "content" not in result
+
+
+@pytest.mark.asyncio
 async def test_server_instructions_use_negotiated_client(monkeypatch) -> None:
+    mcp_mod = ModuleType("mcp")
+    client_mod = ModuleType("mcp.client")
+    client_mod.Client = object
+    monkeypatch.setitem(sys.modules, "mcp", mcp_mod)
+    monkeypatch.setitem(sys.modules, "mcp.client", client_mod)
+
     @asynccontextmanager
     async def open_entry(_entry):
         yield _FakeClient()

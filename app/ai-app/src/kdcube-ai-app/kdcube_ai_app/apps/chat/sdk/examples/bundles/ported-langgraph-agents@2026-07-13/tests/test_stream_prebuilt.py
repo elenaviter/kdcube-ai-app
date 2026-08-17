@@ -183,6 +183,81 @@ class _TwoCallsGraph:
         }
 
 
+class _ConsentResultGraph:
+    async def astream_events(self, inputs, config, *, version=None):
+        yield {"event": "on_chain_start", "name": "model", "metadata": {"langgraph_node": "model"}}
+        yield {
+            "event": "on_tool_start",
+            "name": "named_services_search",
+            "run_id": "r1",
+            "metadata": {"langgraph_node": "tools"},
+            "data": {"input": {"namespace": "slack", "query": "direct message"}},
+        }
+        yield {
+            "event": "on_tool_end",
+            "name": "named_services_search",
+            "run_id": "r1",
+            "metadata": {"langgraph_node": "tools"},
+            "data": {
+                "output": {
+                    "ok": False,
+                    "error": {
+                        "code": "needs_connected_account_consent",
+                        "message": "Grant this agent slack:channels on your connected Slack account.",
+                    },
+                    "consent": {
+                        "claims": ["slack:channels"],
+                        "action_label": "Grant this agent access",
+                        "candidates": [{"label": "elena.viter @ NestLogic"}],
+                    },
+                }
+            },
+        }
+        yield {
+            "event": "on_chain_end",
+            "name": "model",
+            "metadata": {"langgraph_node": "model"},
+            "data": {"output": {"messages": [_ai("done")]}},
+        }
+
+
+class _JsonTextResultGraph:
+    async def astream_events(self, inputs, config, *, version=None):
+        yield {"event": "on_chain_start", "name": "model", "metadata": {"langgraph_node": "model"}}
+        yield {
+            "event": "on_tool_start",
+            "name": "named_services_call",
+            "run_id": "r1",
+            "metadata": {"langgraph_node": "tools"},
+            "data": {"input": {"namespace": "slack", "operation": "object.list"}},
+        }
+        yield {
+            "event": "on_tool_end",
+            "name": "named_services_call",
+            "run_id": "r1",
+            "metadata": {"langgraph_node": "tools"},
+            "data": {
+                "output": {
+                    "content": [{
+                        "type": "text",
+                        "text": (
+                            '{"ok": true, "status": 200, "ret": {"items": ['
+                            '{"label": "elena.viter @ NestLogic", "object_ref": "slack:account"}'
+                            '], "extra": {"kind": "accounts", "count": 1}}}'
+                        ),
+                    }],
+                    "is_error": False,
+                }
+            },
+        }
+        yield {
+            "event": "on_chain_end",
+            "name": "model",
+            "metadata": {"langgraph_node": "model"},
+            "data": {"output": {"messages": [_ai("done")]}},
+        }
+
+
 def test_tool_call_views_signature_and_args_body() -> None:
     m = _stream_module()
     code = "print('x')\n" * 200
@@ -218,6 +293,32 @@ def test_each_tool_invocation_is_its_own_step_with_signature() -> None:
     done = [p for p in comm.step_payloads if p["status"] == "completed" and p["step"].startswith("run_python")]
     assert {p["step"] for p in done} == {"run_python", "run_python (2)"}
     assert all(p["title"] for p in done)
+
+
+def test_completed_tool_step_includes_actionable_consent_result() -> None:
+    comm, _ = _run(_ConsentResultGraph())
+
+    done = next(
+        p for p in comm.step_payloads
+        if p["status"] == "completed" and p["step"] == "named_services_search"
+    )
+    assert "Tool result" in done["markdown"]
+    assert "needs_connected_account_consent" in done["markdown"]
+    assert "`slack:channels`" in done["markdown"]
+    assert "elena.viter @ NestLogic" in done["markdown"]
+
+
+def test_completed_tool_step_summarizes_json_text_mcp_success_result() -> None:
+    comm, _ = _run(_JsonTextResultGraph())
+
+    done = next(
+        p for p in comm.step_payloads
+        if p["status"] == "completed" and p["step"] == "named_services_call"
+    )
+    assert "**Tool result:** ok" in done["markdown"]
+    assert "Items: 1" in done["markdown"]
+    assert "elena.viter @ NestLogic" in done["markdown"]
+    assert '"content"' not in done["markdown"]
 
 
 def _agent_module():

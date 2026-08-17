@@ -64,6 +64,44 @@ def test_agent_grant_consent_announced_from_self_describing_block(monkeypatch):
     }
 
 
+def test_agent_grant_consent_announced_from_normalized_mcp_content_envelope(monkeypatch, caplog):
+    # Live regression (2026-08-17): normalize_mcp_tool_result returns a dict
+    # envelope with content blocks. The old post-processor looked only at the
+    # top-level dict, logged NOT post-processed, and raised no chat banner.
+    import logging
+
+    client = "kdcube-agent:app@v1:main"
+    resource = "*/kdcube-services@1-0/public/mcp/named_services*"
+    denial = json.dumps({
+        "ok": False, "error": "delegated_consent_required",
+        "namespace": "slack", "missing_grants": ["slack:channels"],
+        "consent": {
+            "kind": "delegated_agent_grant", "agent_client_id": client,
+            "resource": resource, "claims": ["slack:channels"],
+            "tool_name": "slack", "namespace": "slack",
+        },
+    })
+    announced = []
+
+    async def fake_announce(consent):
+        announced.append(consent)
+
+    from kdcube_ai_app.apps.chat.sdk.solutions.connections import mcp_consent as consent_mod
+    monkeypatch.setattr(consent_mod, "announce_agent_consent", fake_announce)
+
+    tool = _tool({"content": [{"type": "text", "text": denial}], "isError": False})
+    mcp_result.bind_chat_result_handling([tool])
+    with caplog.at_level(logging.WARNING):
+        result = asyncio.run(tool.coroutine())
+
+    assert len(announced) == 1 and announced[0].claims == ["slack:channels"]
+    out = json.loads(result["content"][0]["text"])
+    assert out["consent"]["grant"]["payload"] == {
+        "client_id": client, "resource": resource, "claims": ["slack:channels"],
+    }
+    assert not any("NOT post-processed" in r.message for r in caplog.records)
+
+
 def test_connected_account_consent_reads_namespace_from_block(monkeypatch):
     # REGRESSION: the namespace comes from the block's `namespace` field — NOT
     # parsed from a tool_id. An empty namespace used to make the announce bail.

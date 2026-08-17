@@ -1603,7 +1603,11 @@ class SlackNamedServiceProvider(NamedServiceProvider):
                 try:
                     resolved, consumed = resolve_payload_file_entries([entry], staging_root=self._staging_root())
                     with inline_files_workspace() as artifact_root:
-                        staged = materialize_inline_files(artifact_root, resolved)
+                        staged = materialize_inline_files(
+                            artifact_root,
+                            resolved,
+                            validate_integrity=True,
+                        )
                         result = await _upload(staged[0]["relpath"], staged[0]["filename"])
                 except InlineFileError as exc:
                     return NamedServiceResponse.error_response(

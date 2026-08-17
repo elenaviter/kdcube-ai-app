@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import json
 from typing import Any, AsyncIterator, Mapping, Optional, Sequence
 
 
@@ -88,6 +89,20 @@ def normalize_mcp_tool_result(result: Any) -> Any:
         _content_block(block)
         for block in (getattr(result, "content", None) or [])
     ]
+    json_payload = _single_json_text_payload(content)
+    if json_payload is not None:
+        is_error = getattr(result, "is_error", None)
+        if is_error is None:
+            is_error = getattr(result, "isError", None)
+        if (
+            isinstance(json_payload, Mapping)
+            and is_error is not None
+            and "is_error" not in json_payload
+            and "isError" not in json_payload
+        ):
+            json_payload = {**json_payload, "is_error": bool(is_error)}
+        return json_payload
+
     payload: dict[str, Any] = {"content": content}
     is_error = getattr(result, "is_error", None)
     if is_error is None:
@@ -95,6 +110,28 @@ def normalize_mcp_tool_result(result: Any) -> Any:
     if is_error is not None:
         payload["is_error"] = bool(is_error)
     return payload
+
+
+def _single_json_text_payload(content: Sequence[Any]) -> Any:
+    if len(content) != 1:
+        return None
+    block = content[0]
+    if isinstance(block, Mapping):
+        if str(block.get("type") or "") != "text":
+            return None
+        text = block.get("text")
+    else:
+        text = getattr(block, "text", None)
+    if not isinstance(text, str):
+        return None
+    raw = text.strip()
+    if not raw.startswith(("{", "[")):
+        return None
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, (dict, list)) else None
 
 
 def _content_block(block: Any) -> Any:

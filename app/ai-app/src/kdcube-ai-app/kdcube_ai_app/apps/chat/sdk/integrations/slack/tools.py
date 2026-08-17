@@ -871,7 +871,16 @@ class SlackTools:
         account_id: str,
     ) -> dict[str, Any]:
         if not str(file_path or "").strip():
-            return _error_result(code="file_path_required", message="KDCube artifact file path is required.", where="slack.upload_slack_file")
+            return _error_result(
+                code="file_path_required",
+                message=(
+                    "Slack upload_file needs one file source. In a chat turn, pass the "
+                    "current KDCube attachment ref such as conv:fi:<turn>.user.attachments/<file> "
+                    "as payload.file_path. For turnless clients, pass staged_ref from request_upload "
+                    "or content_base64 with filename."
+                ),
+                where="slack.upload_slack_file",
+            )
         upload_file, load_error = _load_upload_file(file_path)
         if load_error:
             return _error_result(

@@ -43,7 +43,7 @@ class _Policy:
         return ""
 
 
-def _request(client_id: str, grants=None):
+def _request(client_id: str, grants=None, account_scope=None):
     grants = list(grants or ["named_services:use", "slack:read"])
     return SimpleNamespace(state=SimpleNamespace(delegated_credential={
         "credential": {"attrs": {"grants": grants}},
@@ -55,6 +55,7 @@ def _request(client_id: str, grants=None):
                     *grants,
                 ],
             },
+            "account_scope": dict(account_scope or {}),
         },
     }))
 
@@ -254,3 +255,110 @@ async def test_bounded_action_authorizes_the_exact_action_key(monkeypatch) -> No
     assert captured["request"].action == "post_message"
     assert denied["error"] == "delegated_consent_required"
     assert denied["missing_grants"] == ["slack:files:write"]
+
+
+async def test_tool_call_rebinds_agent_account_scope_before_provider_call(monkeypatch) -> None:
+    # Streamable MCP may invoke the tool after app construction. The bridge must
+    # bind the delegated account_scope at the tool-call boundary too, otherwise
+    # provider-backed Slack checks see an empty agent scope and ask for consent
+    # even after the card shows the account claims.
+    m = _bridge_module()
+    config = {
+        "namespaces": {
+            "slack": {
+                "tools": {
+                    "action": {
+                        "operation": "object.action",
+                        "operations": {
+                            "object.action.upload_file": {
+                                "grants": ["named_services:use", "slack:files:write"]
+                            },
+                        },
+                    }
+                }
+            }
+        }
+    }
+    bridge = m.NamedServicesMcpBridge(
+        config=config,
+        tenant="t",
+        project="p",
+        request=_request(
+            "kdcube-agent:ported-langgraph-agents@2026-07-13:lg-react",
+            ["named_services:use"],
+            account_scope={"slack": {"slack-1": ["slack:files:write"]}},
+        ),
+    )
+
+    from kdcube_ai_app.apps.chat.sdk.solutions.connections.agent_account_scope import (
+        account_claim_scope_for,
+        clear_agent_account_scope,
+    )
+
+    clear_agent_account_scope()
+
+    async def fake_endpoint(_endpoint, request):
+        assert account_claim_scope_for("slack") == {
+            "slack-1": ("slack:files:write",)
+        }
+        return m.NamedServiceResponse.ok_response(namespace="slack")
+
+    monkeypatch.setattr(m, "call_named_service_endpoint", fake_endpoint)
+
+    result = await bridge.object_action(
+        namespace="slack",
+        object_ref="slack:slack-1",
+        action="upload_file",
+        payload_json='{"staged_ref":"upload:1"}',
+    )
+
+    assert result["ok"] is True
+
+
+async def test_account_scope_claim_satisfies_provider_backed_bridge_gate(monkeypatch) -> None:
+    # Live regression (2026-08-17): the grant card carried slack:channels in
+    # account_scope, but the bridge only checked bearer grants and denied
+    # object.list before the provider broker could use the account binding.
+    m = _bridge_module()
+    config = {
+        "namespaces": {
+            "slack": {
+                "tools": {
+                    "call": {
+                        "operation": "*",
+                        "operations": {
+                            "object.list": {
+                                "grants": ["named_services:use", "slack:channels"]
+                            },
+                        },
+                    }
+                }
+            }
+        }
+    }
+    bridge = m.NamedServicesMcpBridge(
+        config=config,
+        tenant="t",
+        project="p",
+        request=_request(
+            "kdcube-agent:ported-langgraph-agents@2026-07-13:lg-react",
+            ["named_services:use"],
+            account_scope={"slack": {"slack-1": ["slack:channels"]}},
+        ),
+    )
+    captured = {}
+
+    async def fake_endpoint(_endpoint, request):
+        captured["request"] = request
+        return m.NamedServiceResponse.ok_response(namespace="slack")
+
+    monkeypatch.setattr(m, "call_named_service_endpoint", fake_endpoint)
+
+    result = await bridge.generic_call(
+        namespace="slack",
+        operation="object.list",
+        filters_json="{}",
+    )
+
+    assert result["ok"] is True
+    assert captured["request"].operation == "object.list"

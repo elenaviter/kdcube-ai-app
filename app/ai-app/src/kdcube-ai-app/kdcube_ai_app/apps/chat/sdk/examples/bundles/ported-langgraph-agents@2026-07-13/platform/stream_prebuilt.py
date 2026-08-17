@@ -44,6 +44,7 @@ from typing import Any, Dict
 from kdcube_ai_app.apps.chat.sdk.runtime import comm_ctx
 from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.stream_contract import (
     content_text,
+    tool_result_view,
     tool_call_views,
 )
 
@@ -59,6 +60,7 @@ LOGGER = logging.getLogger("kdcube.ported_langgraph_agents.stream_react")
 # shared foreign-runtime seam's; local aliases for readability.
 
 _tool_call_views = tool_call_views
+_tool_result_view = tool_result_view
 _content_text = content_text
 
 
@@ -130,6 +132,13 @@ async def stream_react_turn(
             step_key, title, markdown = tool_run_step.pop(
                 run_id, (str(name), str(name), "")
             )
+            result_markdown = _tool_result_view((event.get("data") or {}).get("output"))
+            if result_markdown:
+                markdown = (
+                    f"{markdown}\n\n---\n\n{result_markdown}"
+                    if str(markdown or "").strip()
+                    else result_markdown
+                )
             LOGGER.info("[ported-langgraph] lg-react tool END: %s", title)
             await comm_ctx.step(step=step_key, status="completed", title=title, markdown=markdown)
 

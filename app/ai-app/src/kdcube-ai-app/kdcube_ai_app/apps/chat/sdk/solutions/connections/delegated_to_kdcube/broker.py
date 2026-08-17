@@ -36,6 +36,17 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.store
 LOGGER = logging.getLogger("kdcube.connections.delegated_to_kdcube")
 
 
+def _scope_summary(scope: Mapping[str, Any], *, limit: int = 6) -> str:
+    parts: list[str] = []
+    for account_id, claims in sorted(dict(scope or {}).items()):
+        claim_list = sorted(str(item) for item in (claims or ()) if str(item or "").strip())
+        shown = ",".join(claim_list[:limit])
+        if len(claim_list) > limit:
+            shown += f",+{len(claim_list) - limit}"
+        parts.append(f"{account_id}:[{shown}]")
+    return "; ".join(parts) or "-"
+
+
 class DelegatedToKdcubeBroker:
     """Resolve provider claims for one platform user."""
 
@@ -164,8 +175,11 @@ class DelegatedToKdcubeBroker:
 
         accounts = await self.store.list_accounts(provider_id=provider_key)
         LOGGER.info(
-            "[delegated.broker] resolve claim=%s provider=%s connector=%s account_key=%s accounts=%s",
+            "[delegated.broker] resolve claim=%s provider=%s connector=%s account_key=%s "
+            "agent_scope_restrict=%s agent_scope=%s accounts=%s",
             claim_key, provider_key, connector_key or "-", account_key or "-",
+            restrict,
+            _scope_summary(scope),
             "; ".join(
                 f"{item.account_id}(status={item.status},claims={','.join(item.claims)})"
                 for item in accounts

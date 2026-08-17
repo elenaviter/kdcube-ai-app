@@ -46,6 +46,11 @@ from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.types import
 )
 
 
+VALID_PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+)
+
+
 def _ctx() -> NamedServiceContext:
     return NamedServiceContext(tenant="demo", project="project", user_id="user-1")
 
@@ -471,14 +476,14 @@ async def test_upload_with_inline_content_stages_bytes_in_ephemeral_workspace():
                 action=ACTION_UPLOAD_FILE,
                 payload={
                     "filename": "logo.png",
-                    "content_base64": base64.b64encode(b"png-bytes").decode(),
+                    "content_base64": base64.b64encode(VALID_PNG_BYTES).decode(),
                     "initial_comment": "the icon",
                 },
             ),
         )
 
     assert response.ok is True
-    assert captured["staged_bytes"] == b"png-bytes"
+    assert captured["staged_bytes"] == VALID_PNG_BYTES
     assert captured["filename"] == "logo.png"
     assert str(run_ctx.OUTDIR_CV.get("") or "") == ""
     assert not pathlib.Path(captured["outdir"]).exists()
@@ -507,6 +512,39 @@ async def test_upload_with_inline_content_requires_filename():
     assert response.ok is False
     assert response.status == 400
     assert response.error.code == "slack_inline_file_invalid"
+
+
+@pytest.mark.asyncio
+async def test_upload_with_truncated_inline_png_fails_before_provider_call():
+    provider = _Provider([_account("acc-1", "slack:files:write")])
+
+    async def _upload(**kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("upload must not be called for truncated inline images")
+
+    provider._slack.upload_slack_file = _upload
+    request_payload = ExternalEventPayload(
+        routing=ExternalEventRouting(bundle_id="kdcube-services@1-0", session_id="sess-1")
+    )
+
+    with bind_current_request_context(request_payload):
+        response = await provider.object_action(
+            _ctx(),
+            NamedServiceRequest(
+                operation=OBJECT_ACTION,
+                namespace=SLACK_NAMESPACE,
+                object_ref="slack:acc-1:channel:C123",
+                action=ACTION_UPLOAD_FILE,
+                payload={
+                    "filename": "broken.png",
+                    "content_base64": base64.b64encode(VALID_PNG_BYTES[:-12]).decode(),
+                },
+            ),
+        )
+
+    assert response.ok is False
+    assert response.status == 400
+    assert response.error.code == "slack_inline_file_invalid"
+    assert "incomplete PNG" in response.error.message
 
 
 @pytest.mark.asyncio

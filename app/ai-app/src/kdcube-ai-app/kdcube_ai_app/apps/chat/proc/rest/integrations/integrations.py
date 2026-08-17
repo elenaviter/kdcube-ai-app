@@ -973,6 +973,168 @@ def _mcp_jsonrpc_method(body: bytes) -> str:
     return ""
 
 
+_MCP_SAFE_ARGUMENT_KEYS = {
+    "account_id",
+    "action",
+    "connector_app_id",
+    "cursor",
+    "kind",
+    "limit",
+    "namespace",
+    "object_ref",
+    "operation",
+    "provider_id",
+    "resource",
+    "tool",
+}
+_MCP_SENSITIVE_ARGUMENT_FRAGMENTS = {
+    "api_key",
+    "apikey",
+    "app_password",
+    "assertion",
+    "authorization",
+    "client_secret",
+    "code",
+    "credential",
+    "password",
+    "refresh_token",
+    "secret",
+    "token",
+}
+
+
+def _short_log_text(value: Any, *, limit: int = 180) -> str:
+    text = str(value).replace("\n", "\\n")
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}...<len={len(text)}>"
+
+
+def _safe_mcp_argument_value(key: str, value: Any) -> Any:
+    lowered = key.lower()
+    if any(fragment in lowered for fragment in _MCP_SENSITIVE_ARGUMENT_FRAGMENTS):
+        return "<redacted>"
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return _short_log_text(value)
+    if isinstance(value, Mapping):
+        keys = [str(k) for k in list(value.keys())[:8]]
+        suffix = "" if len(value) <= 8 else f", +{len(value) - 8}"
+        return f"<object keys={keys}{suffix}>"
+    if isinstance(value, (list, tuple, set)):
+        return f"<{type(value).__name__} len={len(value)}>"
+    return f"<{type(value).__name__}>"
+
+
+def _mcp_tools_call_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
+    params = payload.get("params")
+    if not isinstance(params, Mapping):
+        return {}
+    tool_name = str(params.get("name") or "").strip()
+    arguments = params.get("arguments")
+    if not isinstance(arguments, Mapping):
+        return {
+            "tool_name": tool_name or "<unknown>",
+            "arg_keys": [],
+            "safe_args": {},
+        }
+    arg_keys = sorted(str(key) for key in arguments.keys())
+    safe_args = {
+        key: _safe_mcp_argument_value(key, arguments.get(key))
+        for key in arg_keys
+        if key in _MCP_SAFE_ARGUMENT_KEYS
+    }
+    return {
+        "tool_name": tool_name or "<unknown>",
+        "arg_keys": arg_keys,
+        "safe_args": safe_args,
+    }
+
+
+def _mcp_request_summary(body: bytes) -> dict[str, Any]:
+    if not body:
+        return {"method": "", "body_bytes": 0}
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except Exception:
+        return {"method": "", "body_bytes": len(body), "json_parse": "failed"}
+    if isinstance(payload, list):
+        methods: list[str] = []
+        tools: list[str] = []
+        for item in payload[:12]:
+            if not isinstance(item, Mapping):
+                continue
+            method = str(item.get("method") or "")
+            if method:
+                methods.append(method)
+            if method == "tools/call":
+                tool = _mcp_tools_call_summary(item).get("tool_name")
+                if tool:
+                    tools.append(str(tool))
+        return {
+            "method": "<batch>",
+            "body_bytes": len(body),
+            "batch_count": len(payload),
+            "methods": methods,
+            "tools": tools,
+        }
+    if not isinstance(payload, Mapping):
+        return {"method": "", "body_bytes": len(body), "json_type": type(payload).__name__}
+    method = str(payload.get("method") or "")
+    summary: dict[str, Any] = {"method": method, "body_bytes": len(body)}
+    if method == "tools/call":
+        summary.update(_mcp_tools_call_summary(payload))
+    return summary
+
+
+def _log_bundle_mcp_request(
+        *,
+        transport: str,
+        mcp_path: str,
+        body: bytes,
+) -> None:
+    summary = _mcp_request_summary(body)
+    if summary.get("method") == "tools/call":
+        logger.info(
+            "Bundle MCP request method=%s transport=%s path=%s body_bytes=%s tool=%s arg_keys=%s safe_args=%s",
+            summary.get("method") or "<unknown>",
+            transport,
+            mcp_path or "/",
+            summary.get("body_bytes", 0),
+            summary.get("tool_name") or "<unknown>",
+            summary.get("arg_keys") or [],
+            summary.get("safe_args") or {},
+        )
+        return
+    if summary.get("method") == "<batch>":
+        logger.info(
+            "Bundle MCP request method=<batch> transport=%s path=%s body_bytes=%s batch_count=%s methods=%s tools=%s",
+            transport,
+            mcp_path or "/",
+            summary.get("body_bytes", 0),
+            summary.get("batch_count", 0),
+            summary.get("methods") or [],
+            summary.get("tools") or [],
+        )
+        return
+    if summary.get("json_parse") == "failed":
+        logger.info(
+            "Bundle MCP request method=<unknown> transport=%s path=%s body_bytes=%s json_parse=failed",
+            transport,
+            mcp_path or "/",
+            summary.get("body_bytes", 0),
+        )
+        return
+    logger.info(
+        "Bundle MCP request method=%s transport=%s path=%s body_bytes=%s",
+        summary.get("method") or "<unknown>",
+        transport,
+        mcp_path or "/",
+        summary.get("body_bytes", 0),
+    )
+
+
 def _mcp_response_payload(response: httpx.Response) -> Mapping[str, Any] | None:
     body = response.content or b""
     if not body or len(body) > 128_000:
@@ -1076,6 +1238,7 @@ async def _dispatch_bundle_mcp_request(
     body = await request.body() if body is None else body
     method = _mcp_jsonrpc_method(body)
     dispatch_path = _build_mcp_dispatch_path(transport=transport, mcp_path=mcp_path)
+    _log_bundle_mcp_request(transport=transport, mcp_path=mcp_path, body=body)
     headers = {
         key: value
         for key, value in request.headers.items()

@@ -75,9 +75,45 @@ def _decode_content(entry: Mapping[str, Any], *, filename: str) -> bytes:
     return data
 
 
+def _declared_mime(entry: Mapping[str, Any], *, filename: str) -> str:
+    return (
+        str(entry.get("mime") or entry.get("mime_type") or "").strip().lower()
+        or str(mimetypes.guess_type(filename)[0] or "").strip().lower()
+    )
+
+
+def _validate_common_file_integrity(data: bytes, *, filename: str, mime: str) -> None:
+    """Reject obviously truncated inline media before a provider accepts garbage.
+
+    This is intentionally small and format-specific. Inline base64 is a last
+    resort transport where truncation can still decode to bytes; staged upload
+    remains the preferred path for large or arbitrary files.
+    """
+    suffix = pathlib.PurePosixPath(filename).suffix.lower()
+    if mime == "image/png" or suffix == ".png" or data.startswith(b"\x89PNG\r\n\x1a\n"):
+        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise InlineFileError(f"Inline file {filename!r} is not a valid PNG file.")
+        if not data.endswith(b"\x00\x00\x00\x00IEND\xaeB`\x82"):
+            raise InlineFileError(f"Inline file {filename!r} is an incomplete PNG file.")
+    elif mime == "image/jpeg" or suffix in {".jpg", ".jpeg"} or data.startswith(b"\xff\xd8"):
+        if not data.startswith(b"\xff\xd8") or not data.endswith(b"\xff\xd9"):
+            raise InlineFileError(f"Inline file {filename!r} is an incomplete JPEG file.")
+    elif mime == "image/gif" or suffix == ".gif" or data.startswith((b"GIF87a", b"GIF89a")):
+        if not data.startswith((b"GIF87a", b"GIF89a")) or not data.endswith(b";"):
+            raise InlineFileError(f"Inline file {filename!r} is an incomplete GIF file.")
+    elif mime == "image/webp" or suffix == ".webp" or (data.startswith(b"RIFF") and data[8:12] == b"WEBP"):
+        if len(data) < 12 or not data.startswith(b"RIFF") or data[8:12] != b"WEBP":
+            raise InlineFileError(f"Inline file {filename!r} is not a valid WebP file.")
+        expected = int.from_bytes(data[4:8], "little") + 8
+        if expected != len(data):
+            raise InlineFileError(f"Inline file {filename!r} is an incomplete WebP file.")
+
+
 def materialize_inline_files(
     artifact_root: pathlib.Path,
     entries: list[Any],
+    *,
+    validate_integrity: bool = False,
 ) -> list[dict[str, Any]]:
     """Write inline payload files under the artifact root.
 
@@ -94,6 +130,9 @@ def materialize_inline_files(
             raise InlineFileError(f"Inline file #{index} must be an object with filename and content_base64.")
         filename = _safe_filename(entry.get("filename") or entry.get("name") or "")
         data = _decode_content(entry, filename=filename)
+        mime = _declared_mime(entry, filename=filename)
+        if validate_integrity:
+            _validate_common_file_integrity(data, filename=filename, mime=mime)
         total += len(data)
         if total > MAX_INLINE_TOTAL_BYTES:
             raise InlineFileError(
@@ -107,9 +146,7 @@ def materialize_inline_files(
             {
                 "relpath": rel.as_posix(),
                 "filename": filename,
-                "mime": str(entry.get("mime") or entry.get("mime_type") or "").strip()
-                or mimetypes.guess_type(filename)[0]
-                or "application/octet-stream",
+                "mime": mime or "application/octet-stream",
                 "size_bytes": len(data),
             }
         )

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.credential_view import (
     delegated_credential_view,
@@ -101,8 +101,23 @@ def _result_count(payload: Mapping[str, Any]) -> int | None:
     return count if isinstance(count, int) else None
 
 
-def _credential_grants_from_request(request: Any) -> set[str]:
-    return set(delegated_credential_view(request).grants)
+def _credential_grants_from_request(request: Any, *, required: Iterable[str] = ()) -> set[str]:
+    view = delegated_credential_view(request)
+    available = {str(grant).strip() for grant in view.grants if str(grant).strip()}
+    required_grants = {str(grant).strip() for grant in required if str(grant).strip()}
+    for provider, accounts in dict(view.account_scope or {}).items():
+        provider_key = str(provider or "").strip()
+        if not provider_key or not isinstance(accounts, Mapping):
+            continue
+        provider_prefix = f"{provider_key}:"
+        for claims in dict(accounts).values():
+            if not isinstance(claims, (list, tuple, set)):
+                continue
+            normalized_claims = {str(claim).strip() for claim in claims if str(claim).strip()}
+            if "*" in normalized_claims:
+                available.update(grant for grant in required_grants if grant.startswith(provider_prefix))
+            available.update(claim for claim in normalized_claims if claim != "*")
+    return available
 
 
 def _delegated_grant_record(request: Any) -> dict[str, Any]:
@@ -127,15 +142,34 @@ def _credential_trace_context(request: Any) -> dict[str, Any]:
     if not view.present:
         return {}
     return {
+        "client_id": view.client_id,
         "authority_id": view.authority_id,
         "delegate_identity": view.subject,
         "grantor_user_id": view.grantor_user_id,
         "identity_scope": view.identity_scope,
         "resource": view.resource,
+        "resources": list(view.resources),
         "grants": sorted(view.grants),
         "tools": list(view.tools),
         "grantor_roles": list(view.grantor_roles),
+        "account_scope": _account_scope_summary(view.account_scope),
     }
+
+
+def _account_scope_summary(scope: Mapping[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    for provider, accounts in dict(scope or {}).items():
+        if not isinstance(accounts, Mapping):
+            continue
+        provider_key = str(provider or "").strip()
+        if not provider_key:
+            continue
+        summary[provider_key] = {
+            str(account_id): sorted(str(claim) for claim in (claims or ()) if str(claim or "").strip())
+            for account_id, claims in dict(accounts).items()
+            if str(account_id or "").strip()
+        }
+    return summary
 
 
 def _runtime_trace_context() -> dict[str, Any]:
@@ -172,24 +206,15 @@ class NamedServicesMcpBridge:
         # Capture the public origin the client connected to so downstream providers
         # can mint absolute out-of-band URLs (e.g. binary file downloads).
         set_public_base_url_from_request(request)
-        # Bind the calling agent's per-provider account scope so the shared
-        # connected-account resolver can restrict which account satisfies a
-        # provider claim (the agent's card names which account(s) per provider).
-        # The identity MUST be bound too, even when the card has no account
-        # bindings yet: a door caller is always a delegated caller, and the
-        # identity is what makes the resolver default-CLOSED (empty binding =
-        # nothing granted → agent-grant consent), instead of falling back to
-        # the non-agent "no restriction" path.
-        from kdcube_ai_app.apps.chat.sdk.solutions.connections.agent_account_scope import (
-            set_agent_account_scope,
-            set_agent_identity,
-        )
-
-        view = delegated_credential_view(request)
-        set_agent_account_scope(view.account_scope)
-        set_agent_identity(
-            client_id=view.client_id,
-            resource=view.resources[0] if view.resources else "",
+        view = self._bind_delegated_request_scope()
+        LOGGER.info(
+            "[kdcube-services.named_services_mcp] credential projection present=%s client_id=%s resources=%s "
+            "grants=%s account_scope=%s",
+            view.present,
+            view.client_id,
+            list(view.resources),
+            sorted(view.grants),
+            _account_scope_summary(view.account_scope),
         )
         catalog_config = _named_service_catalog_config_from_request(request) or self._config
         # The guarded service decides which connector app serves each provider
@@ -205,7 +230,35 @@ class NamedServicesMcpBridge:
         )
         self._catalog = NamedServiceBoundaryCatalog(catalog_config)
 
+    def _bind_delegated_request_scope(self):
+        # Bind the calling agent's per-provider account scope so the shared
+        # connected-account resolver can restrict which account satisfies a
+        # provider claim (the agent's card names which account(s) per provider).
+        # The identity MUST be bound too, even when the card has no account
+        # bindings yet: a door caller is always a delegated caller, and the
+        # identity is what makes the resolver default-CLOSED (empty binding =
+        # nothing granted -> agent-grant consent), instead of falling back to
+        # the non-agent "no restriction" path.
+        #
+        # This is intentionally called both at bridge construction and again at
+        # each tool-call entry. Streamable MCP can execute the tool in a later
+        # task than the app construction path; binding here keeps the
+        # account_scope attached to the exact invocation that reaches providers.
+        from kdcube_ai_app.apps.chat.sdk.solutions.connections.agent_account_scope import (
+            set_agent_account_scope,
+            set_agent_identity,
+        )
+
+        view = delegated_credential_view(self._request)
+        set_agent_account_scope(view.account_scope)
+        set_agent_identity(
+            client_id=view.client_id,
+            resource=view.resources[0] if view.resources else "",
+        )
+        return view
+
     def list_services(self) -> dict[str, Any]:
+        self._bind_delegated_request_scope()
         return {
             "ok": True,
             "services": self._catalog.list_public(),
@@ -284,7 +337,7 @@ class NamedServicesMcpBridge:
             }
         if not required:
             return None
-        available = _credential_grants_from_request(self._request)
+        available = _credential_grants_from_request(self._request, required=required)
         missing = sorted(required - available)
         if not missing:
             return None
@@ -371,12 +424,13 @@ class NamedServicesMcpBridge:
                 "allowed_operations": list(EXPOSED_OPERATIONS),
             }
 
+        self._bind_delegated_request_scope()
         # Log EVERY inbound call attempt (including unknown/unconsented namespaces),
         # before any authorization decision, so denials are always traceable.
         trace = _credential_trace_context(self._request)
         runtime_trace = _runtime_trace_context()
         LOGGER.info(
-            "[kdcube-services.named_services_mcp] start tool=%s operation=%s namespace=%s provider=%s query=%r object_ref=%s delegate=%s grantor=%s authority=%s identity_scope=%s grants=%s runtime_user=%s runtime_type=%s runtime_authority=%s runtime_roles=%s",
+            "[kdcube-services.named_services_mcp] start tool=%s operation=%s namespace=%s provider=%s query=%r object_ref=%s delegate=%s grantor=%s authority=%s identity_scope=%s grants=%s account_scope=%s runtime_user=%s runtime_type=%s runtime_authority=%s runtime_roles=%s",
             tool_name,
             op,
             ns,
@@ -388,6 +442,7 @@ class NamedServicesMcpBridge:
             trace.get("authority_id") or "",
             trace.get("identity_scope") or "",
             trace.get("grants") or [],
+            trace.get("account_scope") or {},
             runtime_trace.get("runtime_user_id") or "",
             runtime_trace.get("runtime_user_type") or "",
             runtime_trace.get("runtime_authority_id") or "",
