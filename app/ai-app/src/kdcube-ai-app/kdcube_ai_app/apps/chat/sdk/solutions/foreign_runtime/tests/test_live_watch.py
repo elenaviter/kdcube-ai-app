@@ -421,3 +421,34 @@ def test_a_failing_heartbeat_does_not_break_the_watch(monkeypatch):
             return watch.arrived()
 
     assert [item["event_id"] for item in _run(scenario())] == ["e1"]
+
+
+def test_an_old_event_the_wakeup_cannot_outrank_is_not_an_arrival(monkeypatch):
+    """The live bug, reduced.
+
+    The turn's own event is read back through a path that did not always carry
+    the same `sequence` the lane's own records carry — so the ordering
+    comparison could not tell old from new, and a stop from a PREVIOUS turn was
+    seen again forty seconds into a turn where nobody pressed anything. The run
+    then refused its own tool calls.
+
+    Here the wakeup carries no usable sequence at all: identity still decides,
+    because an arrival is something that was not on the lane at turn start.
+    """
+    stale_stop = _lane_event(
+        message_id="m-old-stop", sequence=9, batch_id="b0",
+        accepted=_accepted("", event_id="e-old-stop", etype="event.user.steer"),
+    )
+    own = _lane_event(message_id="m-own", sequence=1, accepted=_accepted("go on", event_id="e0"))
+    own.sequence = 0                      # what the wakeup read back looked like
+    source = _FakeSource([stale_stop, own])
+    monkeypatch.setattr(mod, "_lane_source", lambda redis, wakeup: source)
+
+    async def scenario():
+        async with mod.LiveLaneWatch(_entrypoint(), {}, poll_seconds=0.05) as watch:
+            await asyncio.sleep(0.2)
+            return watch.steer_seen, watch.arrived()
+
+    steer, arrived = _run(scenario())
+
+    assert steer is False and arrived == []

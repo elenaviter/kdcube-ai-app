@@ -205,6 +205,22 @@ class LiveLaneWatch:
         for message_id in folded_external_events_message_ids(self._state):
             self._seen.add(message_id)
         self._seen.add(str(getattr(own, "message_id", "") or ""))
+        # EVERYTHING ALREADY ON THE LANE IS HISTORY, NOT AN ARRIVAL.
+        #
+        # The sequence comparison alone was not enough: the wakeup event read
+        # back through `get_event` did not always carry the sequence the same
+        # records carry when read through `read_since`, so `own_sequence` could
+        # be 0 and every older event looked newer. The visible result was a stop
+        # from a PREVIOUS turn being seen again forty seconds into a turn where
+        # nobody pressed anything, and the run refusing its own tool calls.
+        #
+        # Anchoring on identity instead of on ordering cannot drift: an arrival
+        # is an event that was not on the lane when this turn started.
+        try:
+            for item in await source.read_since(0, limit=100) or []:
+                self._seen.add(str(getattr(item, "message_id", "") or ""))
+        except Exception:
+            LOGGER.debug("[live-watch] could not seed the lane baseline", exc_info=True)
         return source, own
 
     async def _heartbeat(self, source: Any) -> None:
