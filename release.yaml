@@ -1,51 +1,51 @@
 platform:
   repo: "kdcube-ai-app"
-  ref: "2026.08.18.242"
+  ref: "2026.08.19.120"
   description: |
-    This release follows 2026.08.15.310.
+    This release follows 2026.08.18.242.
 
-    Hosted agent runtimes now have a complete live-control path without giving
-    the platform ownership of their execution loops. A lane-neutral watcher
-    delivers steer and stop signals to the active runtime; the ported
-    LangGraph adapter cancels the active stream while preserving its
-    checkpoint, and the Claude Code adapter receives the same controls through
-    its runtime hook. Live-control state is stored outside restored Claude Code
-    session checkouts so stale stop state cannot return with a recovered
-    workspace.
+    Application startup now uses a supervised, generation-aware preparation
+    lifecycle. Each application independently resolves and loads its source,
+    runs on_bundle_load(), prepares declared UI surfaces, runs the fenced
+    on_app_deploy() hook, and publishes readiness. Failed preparation retries
+    with backoff, and a newer generation supersedes stale work. Applications
+    can therefore complete long initialization at their own pace while the
+    processor continues serving ready applications.
 
-    Interrupted LangGraph tool calls are repaired as truthful tool results
-    attributed to the tools node. This closes dangling tool-call protocol
-    edges, lets an already stopped thread resume, and keeps interruption facts
-    in the persisted framework state rather than silently rebuilding or
-    rerunning the turn.
+    Health and admission are explicit deployment-neutral contracts.
+    /health/live reports processor liveness; /health reports aggregate service
+    readiness and includes only applications configured with
+    service.readiness: required. Every REST, MCP, chat, Data Bus, scheduled-job,
+    and internal operation checks the addressed application generation before
+    execution. Interactive doors return a structured application_not_ready
+    response, while queued work is deferred for retry. The same contracts apply
+    under Docker Compose, ECS, and Kubernetes probes.
 
-    Conversation event-lane ownership is stricter. New arrivals are measured
-    against the events present when the turn started, and a watcher heartbeat
-    may refresh only a reservation already owned by that watcher. A heartbeat
-    can no longer claim a reservation or promote a consumer to active. Hosted
-    runtime event folding, reload, stream recording, answer recording, and
-    recovery now follow the same shared conversation contracts.
+    ReAct artifact recovery now enforces current-turn locality consistently.
+    Conversation-file and external artifacts must be present in the current
+    ANNOUNCE LOCAL set or materialized during the active turn before file
+    processing. Logical URI references remain distinct from physical workspace
+    paths, timeline references remain directly readable, and canvas-owned
+    materialized artifacts retain their content. Bounded inspection and the
+    thinking instances used by timeline rendering are preserved across rounds.
 
-    Delegated MCP feedback and named-service file delivery have been corrected
-    across hosted runtimes. Governed tool outcomes remain visible to the agent,
-    and file uploads are represented through the conversation delivery path
-    rather than being lost at a framework boundary.
+    Full and compact ReAct tool catalogs now serialize structured purpose,
+    return, and example contracts as deterministic JSON, preserving nested MCP
+    schemas in model instructions. The shipped Workspace configuration uses
+    compact catalog forms, the extra-lite instruction profile, and its
+    configured Haiku decision model as coherent serving defaults.
 
-    Git-backed app materialization now treats sparse checkout as a caller-owned
-    decision. The bundle store reads descriptor arguments instead of process
-    environment, fetches only the configured package folder when sparse mode is
-    requested, and retains a full-clone fallback for repositories that cannot
-    satisfy the optimized path.
+    Hosted-agent documentation now defines effective-turn and event-lane
+    ownership for external execution loops. The LangGraph agent surface covers
+    per-turn graph construction, framework-owned checkpoints, model accounting,
+    and stopped tool-call repair. The Claude Code conversation recipe records
+    truthful lane folding, refusal, stream capture, and stop reconciliation.
 
-    Conversation-title generation has a larger bounded output budget and now
-    reports when that ceiling truncates a title. Default descriptors no longer
-    include private press configuration, and the press app descriptor and docs
-    use the current package identity.
-
-    Repository hygiene removes accidentally tracked conversation-debug dumps,
-    runtime identity-store copies, and generated dashboard siblings. Canonical
-    TypeScript frontend sources remain in place, and narrow ignore rules keep
-    these local or generated artifacts out of future releases.
+    Fresh installation descriptors select the application-hosted Google
+    session authority through Connection Hub and align the default application
+    inventory, governed named-service catalog, scene, and CLI recommendation.
+    The default platform descriptor is pinned to the previous published
+    platform release as its installation baseline.
 
 config:
-  version: "2026.08.18.242"
+  version: "2026.08.19.120"
