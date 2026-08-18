@@ -3552,10 +3552,9 @@ def gather_configuration(
     current_proxy_cfg = env_main.entries.get("NGINX_PROXY_RUNTIME_CONFIG_PATH", (None, None))[1] or ""
     if "delegated" in current_proxy_cfg:
         default_auth = "delegated"
-    # The interactive prompt recommends bundle by default on a fresh init bootstrapped from
-    # the repo shipped defaults (no user-supplied descriptor and no explicit --auth-type),
-    # where the "simple" auth.type is only a baseline. An explicit auth choice — a
-    # user-supplied descriptor or --auth-type flag — is honored as-is via default_auth.
+    # The shipped descriptor and the fresh-install picker both select application-hosted
+    # login by default. Keep the picker recommendation for older staged defaults, while an
+    # explicit user descriptor or --auth-type choice remains authoritative via default_auth.
     recommend_bundle_auth = os.getenv("KDCUBE_RECOMMEND_BUNDLE_AUTH", "").lower() in {
         "1",
         "true",

@@ -15,22 +15,24 @@ context:
 # simple -> simple; bundle -> session; cognito/delegated -> cognito.
 # ---------------------------------------------------------------------------
 auth:
-  type: "simple"  # deployment mode: simple | cognito | delegated | bundle
-  idp: "simple"   # backend AUTH_PROVIDER: simple | cognito | session
-
-  # Token / cookie header names (new)
-  id_token_header_name: "X-ID-Token"         # ID_TOKEN_HEADER_NAME
-  auth_token_cookie_name: "__Secure-LATC"    # AUTH_TOKEN_COOKIE_NAME
-  id_token_cookie_name: "__Secure-LITC"      # ID_TOKEN_COOKIE_NAME
-  masqueraded_token_cookie_name: "__Secure-LMTC" # MASQUERADED_TOKEN_COOKIE_NAME
-  jwks_cache_ttl_seconds: 86400              # JWKS_CACHE_TTL_SECONDS
+  type: "bundle"   # deployment mode: simple | cognito | delegated | bundle
+  idp: "session"   # backend AUTH_PROVIDER: simple | cognito | session
   turnstile_development_token: ""            # optional local/dev frontend Turnstile bypass token; leave empty outside development
 
   authenticators:
     connection_hub:
-      enabled: false
+      enabled: true
       app_id: "connection-hub@1-0"
       operation: "request_authenticate"
+
+  # Select the Google-backed platform session provider declared in the
+  # Connection Hub authority registry in bundles.yaml. kdcube init collects
+  # the Google Web client ID and bootstrap administrator email.
+  connection_hub:
+    bundle_id: "connection-hub@1-0"
+    authority_id: "kdcube.platform"
+    provider_id: "workspace_google_session"
+    entrypoint: "login"
 
   # OIDC service account credentials → secrets.yaml: auth.oidc.{admin_email,admin_username,admin_password}
 
@@ -288,9 +290,11 @@ paths:
 # ---------------------------------------------------------------------------
 frontend:
  config:
-   auth:
-     authType: "simple"
-     token: "" # local installer materializes the development credential; never put a production secret in frontend config
+   # Browser auth derives as "bundle" from auth.type/auth.idp. The Workspace
+   # login entrypoint issues the platform session cookies.
+   # auth:
+   #   authType: "simple"
+   #   token: "" # development credential only; never put a production secret in frontend config
    # auth:
    #   authType: "cognito"
    #   idTokenHeaderName: "X-ID-Token"
@@ -303,8 +307,6 @@ frontend:
    #   totpAppName: "Example App"
    #   totpIssuer: "Example App"
    #   apiBase: "/auth/"
-   # auth:
-   #   authType: "bundle"
    routesPrefix: "/platform"
    debug:
      injectDebugCommands: false
@@ -315,9 +317,9 @@ frontend:
 # ---------------------------------------------------------------------------
 platform:
   repo: "git@github.com:kdcube/kdcube.git"
-  ref: "2026.4.12.500"
+  ref: "2026.08.18.242"
   config:
-    version: "2026.4.12.500"
+    version: "2026.08.18.242"
 
   # -------------------------------------------------------------------------
   # Component-scoped settings.

@@ -9,6 +9,7 @@
 #   kdcube-services@1-0       managed MCP surfaces + named-services bridge
 #   website@2026-07-12        application-hosted site registry example
 #   user-memories@2026-06-26  the mem provider + memories widget
+#   ported-langgraph-agents@2026-07-13  hosted external-agent examples
 #   workspace@2026-03-31-13-36  showcase scene + chat wired to everything
 #
 # Placeholders:
@@ -117,26 +118,6 @@ bundles:
                 - kdcube:role:super-admin
               delegable_permissions:
                 - instr:write
-            - grant: tasks:read
-              label: Read KDCube tasks
-              description: Read task objects through delegated named-service tools.
-              delegable_roles:
-              - kdcube:role:registered
-              - kdcube:role:paid
-              - kdcube:role:privileged
-              - kdcube:role:super-admin
-              delegable_permissions:
-              - tasks:read
-            - grant: tasks:write
-              label: Write KDCube tasks
-              description: Create or update task objects through delegated named-service tools.
-              delegable_roles:
-              - kdcube:role:registered
-              - kdcube:role:paid
-              - kdcube:role:privileged
-              - kdcube:role:super-admin
-              delegable_permissions:
-              - tasks:write
             - grant: canvas:read
               label: Read KDCube canvas
               description: Read canvas objects through delegated named-service tools.
@@ -157,16 +138,6 @@ bundles:
               - kdcube:role:super-admin
               delegable_permissions:
               - canvas:write
-            - grant: knowledge:read
-              label: Read KDCube knowledge
-              description: Read KDCube knowledge notes through delegated MCP tools.
-              delegable_roles:
-              - kdcube:role:registered
-              - kdcube:role:paid
-              - kdcube:role:privileged
-              - kdcube:role:super-admin
-              delegable_permissions:
-              - knowledge:read
             - grant: named_services:use
               label: Use KDCube named services
               description: Discover and call configured KDCube named-service namespaces through delegated MCP tools.
@@ -569,106 +540,6 @@ bundles:
                             grants:
                             - named_services:use
                             - memories:write
-                  task:
-                    label: Tasks
-                    description: KDCube task objects for the approving user.
-                    authority_id: delegated_client
-                    tools:
-                      about:
-                        operation: provider.about
-                        label: About tasks
-                        description: Explain the task namespace and how to use it.
-                        grants:
-                        - named_services:use
-                        - tasks:read
-                      list:
-                        operation: object.list
-                        label: List tasks
-                        description: List task objects visible to the delegated connection.
-                        grants:
-                        - named_services:use
-                        - tasks:read
-                      schema:
-                        operation: object.schema
-                        label: Task schema
-                        description: Read the object schema for tasks.
-                        grants:
-                        - named_services:use
-                        - tasks:read
-                      search:
-                        operation: object.search
-                        label: Search tasks
-                        description: Search task objects visible to the delegated connection.
-                        grants:
-                        - named_services:use
-                        - tasks:read
-                      upsert:
-                        operation: object.upsert
-                        label: Write task
-                        description: Create or update a task object.
-                        grants:
-                        - named_services:use
-                        - tasks:write
-                      host_file:
-                        operation: object.host_file
-                        label: Host task file
-                        description: Host or register a file/ref in the task namespace.
-                        grants:
-                        - named_services:use
-                        - tasks:write
-                      delete:
-                        operation: object.delete
-                        label: Delete task
-                        description: Delete or archive a task object.
-                        grants:
-                        - named_services:use
-                        - tasks:write
-                      call:
-                        label: Generic task call
-                        description: Generic task namespace call with per-operation grants.
-                        operations:
-                          provider.about:
-                            label: About tasks
-                            description: Explain the task namespace and how to use it.
-                            grants:
-                            - named_services:use
-                            - tasks:read
-                          object.list:
-                            label: List tasks
-                            description: List task objects visible to the delegated connection.
-                            grants:
-                            - named_services:use
-                            - tasks:read
-                          object.schema:
-                            label: Task schema
-                            description: Read the object schema for tasks.
-                            grants:
-                            - named_services:use
-                            - tasks:read
-                          object.search:
-                            label: Search tasks
-                            description: Search task objects visible to the delegated connection.
-                            grants:
-                            - named_services:use
-                            - tasks:read
-                          object.upsert:
-                            label: Write task
-                            description: Create or update a task object.
-                            grants:
-                            - named_services:use
-                            - tasks:write
-                          object.host_file:
-                            label: Host task file
-                            description: Host or register a file/ref in the task namespace.
-                            grants:
-                            - named_services:use
-                            - tasks:write
-                          object.delete:
-                            label: Delete task
-                            description: Delete or archive a task object.
-                            grants:
-                            - named_services:use
-                            - tasks:write
                   cnv:
                     label: Canvas
                     description: KDCube canvas objects for the approving user.
@@ -2056,29 +1927,6 @@ bundles:
                   description: Read a memory note by id.
                   grants:
                   - memories:read
-            - resource: '*/api/integrations/bundles/*/*/knowledge@1-0/public/mcp/knowledge_managed*'
-              label: KDCube knowledge MCP
-              tools:
-                get_access_context:
-                  label: Get access context
-                  description: Inspect the current knowledge access context.
-                  grants:
-                  - knowledge:read
-                about:
-                  label: About KDCube knowledge
-                  description: Explain when and how to use the KDCube knowledge server.
-                  grants:
-                  - knowledge:read
-                search:
-                  label: Search knowledge
-                  description: Search KDCube knowledge visible to this delegated connection.
-                  grants:
-                  - knowledge:read
-                read_refs:
-                  label: Read references
-                  description: Read exact knowledge or source references returned by search.
-                  grants:
-                  - knowledge:read
             consent_ui:
               mode: authority_provider
               authority_id: kdcube.platform
@@ -2807,7 +2655,7 @@ bundles:
           \ board (or “Pin board to chat”)\nto share its top pins at once. From a pin you can also open it in its app\nor\
           \ download it.</p>\n<h4>What goes on it</h4>\n<ul>\n  <li><strong>Your text</strong> — notes or drafts (markdown).</li>\n\
           \  <li><strong>Attachments</strong> — files you drop in.</li>\n  <li><strong>Chat pins</strong> — conversations\
-          \ and files from chat.</li>\n  <li><strong>Task pins</strong> — a task from the Tasks panel.</li>\n  <li><strong>Memory\
+          \ and files from chat.</li>\n  <li><strong>Memory\
           \ pins</strong> — a saved memory from Memories.</li>\n</ul>\n<p>Pins connect things to actions: once shared, the\
           \ assistant can use\nthem as sources to build on, or act on them in the apps they live in —\nand it can add, comment\
           \ on, or refine cards.</p>\n"
@@ -2983,12 +2831,6 @@ bundles:
                 user_types: []
                 roles: []
         as_consumer:
-          mcp:
-            services:
-              mcpServers:
-                knowledge:
-                  transport: streamable-http
-                  url: https://<PUBLIC_HOST>/api/integrations/bundles/<TENANT>/<PROJECT>/knowledge@1-0/public/mcp/knowledge
           default_agent: main
           agents:
             main:
@@ -3230,15 +3072,6 @@ bundles:
               - kind: named_service
                 alias: named_services
                 namespaces:
-                  task:
-                    allowed:
-                    - provider.about
-                    - object.list
-                    - object.search
-                    - object.schema
-                    - object.upsert
-                    - object.host_file
-                    - object.delete
                   mem:
                     announce:
                       enabled: true
@@ -3315,30 +3148,8 @@ bundles:
                   delete_object:
                     strategy:
                     - exploitation
-                name: task_service
-              - kind: mcp
-                server_id: knowledge
-                alias: knowledge
-                allowed:
-                - '*'
-                tool_traits:
-                  '*':
-                    strategy:
-                    - exploration
-                name: knowledge
+                name: named_services
               event_sources:
-              - kind: named_service
-                namespace: task
-                enabled: true
-                discovery:
-                  mode: service_discovery
-                policies:
-                  block_production:
-                    mode: provider
-                    operation: block.produce
-                  pull:
-                    mode: provider
-                    operation: object.get
               - kind: named_service
                 namespace: mem
                 enabled: true
@@ -3377,24 +3188,6 @@ bundles:
                     operation: object.get
           ui:
             scene:
-              external_panels:
-              - id: task_panel
-                label: Tasks
-                title: Tasks
-                bundle_id: task-tracker@1-0
-                widget_alias: task_tracker_tasks
-                widget_message_type: kdcube-task-tracker-widget-command
-                service_event_type: task_tracker.task.changed
-                service_forward_message_type: kdcube-task-tracker-task-changed
-                open_message_types:
-                - kdcube-task-tracker-open-issue
-                - kdcube-task-tracker-create-issue
-                surfaces:
-                  task_tracker.issue_list:
-                    label: task list
-                    expanded: false
-                    command:
-                      action: refresh
               components:
                 stats:
                   enabled: false
@@ -3409,38 +3202,10 @@ bundles:
                     w: 720
                     h: 520
                   order: 40
-                # Task editor owns the issue-editor surface: task pins and
-                # the task list's "Open editor" summon it via provider
-                # surface open. Surface-command-only (no rail button).
-                task_wizard:
-                  enabled: true
-                  bundle_id: task-tracker@1-0
-                  widget_alias: task_tracker_wizard
-                  route: widgets/task_tracker_wizard/?host_controls=1
-                  title: KDCube Task Editor
-                  accent: green
-                  gated: true
-                  views: false
-                  rail: false
-                  placement: floating
-                  size:
-                    w: 620
-                    h: 720
-                  target_surfaces:
-                  - task_tracker.issue_editor
-                  order: 45
             canvas:
               resolvers:
               - kind: named_service
                 namespace: mem
-                enabled: true
-                discovery:
-                  mode: service_discovery
-                allowed:
-                - object.resolve
-                - object.action
-              - kind: named_service
-                namespace: task
                 enabled: true
                 discovery:
                   mode: service_discovery
