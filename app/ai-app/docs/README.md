@@ -101,6 +101,7 @@ Curated index of platform, service, and SDK documentation.
 * Per-User Agent Capabilities: [capabilities-README.md](sdk/solutions/user-settings/capabilities-README.md)
 * User Memory: [how-react-remembers-README.md](sdk/memory/how-react-remembers-README.md)
 * Claude Code Agent: [claude-code-README.md](sdk/agents/claude/claude-code-README.md)
+* LangGraph Agent: [langgraph-agent-README.md](sdk/agents/langgraph/langgraph-agent-README.md)
 
 ## Runtime, Storage, And Execution
 
