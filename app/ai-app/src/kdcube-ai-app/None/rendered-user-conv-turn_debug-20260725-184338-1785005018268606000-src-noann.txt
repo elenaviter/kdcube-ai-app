@@ -1,5 +1,0 @@
-model_visible_tokens_estimate: 1
-message_blocks: 1
-cache_markers: 0
-
-hello
