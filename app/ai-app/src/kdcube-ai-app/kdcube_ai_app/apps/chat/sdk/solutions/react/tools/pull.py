@@ -43,18 +43,20 @@ LOGGER = logging.getLogger("kdcube.react.pull")
 TOOL_SPEC = {
     "id": "react.pull",
     "purpose": (
-        "Materialize artifact refs locally under OUT_DIR and return the paths that other tools should use next. "
-        "conv:fi: refs already belong to the ReAct artifact model and have the normal logical/physical path rules. "
+        "Materialize artifact refs locally under OUT_DIR and return the URI and physical path that other tools can use next. "
+        "conv:fi: refs already belong to the ReAct artifact model and have the normal URI/physical-path rules. "
         "Artifacts have URIs, and those URIs may appear anywhere in the rendered context. "
         "Externally owned artifact URIs, such as cnv:, mem:, or task:, are opaque owner handles resolved only when a registered namespace rehoster is available. "
+        "Current-turn locality rule: when a conv:fi: or externally owned artifact is not listed under the current ANNOUNCE [WORKSPACE] LOCAL tree, use react.pull in this turn before react.read, search, code, or file processing operates on that artifact. "
+        "A pull or workspace listing from an earlier turn does not make the artifact local in the current turn. "
         "conv:ev: refs identify event objects on the timeline; they are not artifact refs and are not accepted by react.pull. "
         "If an event/object contains object_ref, use its value as an item in react.pull.paths. "
         "If another event field contains an artifact URI for a separately stored bytes or snapshot body, use that artifact URI as an item in react.pull.paths. "
         "Unsupported namespaces are reported by the pull result. "
         "For an externally owned ref, react.pull calls the registered namespace rehoster, copies the artifact into a ReAct artifact surface, "
-        "and returns the materialized conv:fi: logical_path plus physical_path. "
+        "and returns the materialized conv:fi: URI in logical_path plus its physical path in physical_path. "
         "The rehoster chooses whether the artifact lands into files, git/snapshots, external attachments, or another supported ReAct artifact surface. "
-        "Use those returned paths with react.read, react.rg, or later artifact operations (tools that take physical paths use physical_path). "
+        "For a parameter that accepts a URI, pass the URI returned in logical_path; for a parameter that accepts a physical path, pass physical_path. "
         "Use this for versioned files/folders you need locally as historical reference material. "
         "Pulled content stays under its historical turn root as reference material; checkout copies versioned files into the editable current-turn workspace. "
         "Folder/slice pulls are supported for conv:fi:conv_<conversation_id>.turn_<id>.git/projects/<scope-or-subtree>. "
@@ -64,7 +66,7 @@ TOOL_SPEC = {
         "Choose share by where the pulled file goes next. "
         "You need the artifact locally for inspection, search, processing as reference material, or a subsequent project checkout -> share=false (default); the user receives no file from the pull. "
         "The USER should receive the file itself as a download (they asked for the file, or the deliverable IS this binary) -> share=true; the file is hosted and delivered to the user (Files tab). "
-        "The file goes to ANOTHER SERVICE (mail/slack attachment, host_file into a namespace) -> share=false; pass the returned logical_path/physical_path in that action's file field (e.g. attachment_paths, file_ref) — the service reads the bytes itself. "
+        "The file goes to ANOTHER SERVICE (mail/slack attachment, host_file into a namespace) -> share=false; pass the returned URI or physical path accepted by that action's file field (e.g. attachment_paths, file_ref) — the service reads the bytes itself. "
         "share delivers exactly ONE file: pull a single exact file ref with share=true. A folder/subtree pull, or a pull of several "
         "refs at once, is NOT shared (the call reports that share was not applied)."
     ),
@@ -74,7 +76,7 @@ TOOL_SPEC = {
             "share=true delivers the ONE pulled file to the user as a download (hosted, visibility=external, kind=file) — "
             "use it when the user should get the file itself. It applies to a single exact file ref only — "
             "a folder/subtree pull or a multi-ref pull is never delivered. "
-            "Sending a pulled file to another service needs no share: pass the returned path to that action's file field."
+            "Sending a pulled file to another service needs no share: pass the returned URI or physical path according to that action's file-field contract."
         ),
         "paths": (
             "list[str] of artifact refs to materialize locally. Each item is either a normal conv:fi: ref or an externally owned ref shown by the runtime. "
@@ -92,10 +94,10 @@ TOOL_SPEC = {
     },
     "returns": (
         "JSON object with requested refs and compact pulled summaries. "
-        "Folder pulls are grouped by logical_root/physical_root with file_count, bounded tree, and path_rule. "
-        "Exact file pulls return one logical_path/physical_path item. "
-        "Externally owned refs return object_ref plus the resolved/rehosted conv:fi: logical_path, physical_path, materialization scope (surface), mime, size_bytes, and file_count when available. "
-        "When share=true, each delivered file is also listed under shared with its logical_path. "
+        "Folder pulls are grouped by logical_root (URI) and physical_root (physical path), with file_count, bounded tree, and path_rule. "
+        "Exact file pulls return one item with logical_path (URI) and physical_path (physical path). "
+        "Externally owned refs return object_ref plus the resolved/rehosted conv:fi: URI in logical_path, its physical path in physical_path, materialization scope (surface), mime, size_bytes, and file_count when available. "
+        "When share=true, each delivered file is also listed under shared with its URI in logical_path. "
         "user_delivery reports what the user received from this call. "
         "Diagnostics such as missing, invalid, and errors are included only when non-empty."
     ),
@@ -578,8 +580,8 @@ async def handle_react_pull(*, react: Any = None, ctx_browser: Any, state: Dict[
         payload["user_delivery"] = (
             "none — these files are local reference material for this turn; the user received no file from this call. "
             "To hand ONE pulled file to the user as a download, pull its exact ref with share=true. "
-            "To send a pulled file to another service, pass its logical_path/physical_path in that action's "
-            "file field (e.g. attachment_paths, file_ref)."
+            "To send a pulled file to another service, pass its URI or physical path according to that action's "
+            "file-field contract (e.g. attachment_paths, file_ref)."
         )
     else:
         payload["user_delivery"] = (

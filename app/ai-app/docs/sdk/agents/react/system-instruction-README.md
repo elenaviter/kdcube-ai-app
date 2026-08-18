@@ -50,10 +50,10 @@ the protocol. `REACT_HARNESS_TOOL_AVAILABILITY` tells the agent that the
 current catalogs are the authority for configured capabilities, including
 optional tool families. `REACT_HARNESS_CONTEXT_AND_ARTIFACT_ACCESS` explains
 the model input shape, the universal artifact-URI model, distributed turn
-locality, namespace-based access, and shape-driven inspection. Both blocks are
-inserted by `compose_decision_system_text(...)` before the selected body, so
-Full, Lite, Extra Lite, and an explicit complete body receive the same harness
-facts.
+locality, the current-turn pull precondition for materializable artifacts,
+namespace-based access, and shape-driven inspection. Both blocks are inserted
+by `compose_decision_system_text(...)` before the selected body, so Full, Lite,
+Extra Lite, and an explicit complete body receive the same harness facts.
 
 `instruction_body` is the explicit complete-body selector shown in the diagram;
 it does not mean the appended agent-admin customization. Admin customization is

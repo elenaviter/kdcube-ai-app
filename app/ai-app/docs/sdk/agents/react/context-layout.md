@@ -72,8 +72,8 @@ addressable when the task needs more of it.
 | Tool call or result | `conv:tc:...call`, `conv:tc:...result` | `react.read` |
 | Event | `conv:ev:...events/<event_path>` | `react.read` |
 | Source rows, summaries, skills | `conv:so:...`, `conv:ws:...`, `conv:su:...`, `sk:...` | `react.read` |
-| File or attachment | `conv:fi:...` | When absent from current-turn `[WORKSPACE] LOCAL`, `react.pull`; then `react.read` or a file-processing tool |
-| Connected-system artifact | `cnv:...`, `mem:...`, `task:...`, another registered namespace | `react.pull`, then continue from the returned paths |
+| File or attachment | `conv:fi:...` | When absent from current-turn `[WORKSPACE] LOCAL`, `react.pull`; then pass its URI or physical path according to the next tool parameter |
+| Connected-system artifact | `cnv:...`, `mem:...`, `task:...`, another registered namespace | `react.pull`; then pass the returned URI or physical path according to the next tool parameter |
 
 An event can identify both itself and another artifact. For example:
 
@@ -94,9 +94,15 @@ ledger for bytes already materialized on that worker. An artifact URI rendered
 in any context layer remains an access handle; pruning and compaction determine
 which artifacts and summaries are present in the current model view. When more
 artifact content or file processing is needed, the URI namespace and tool
-contract determine the access path. Current-turn materialization returns MIME,
-size, fit, line-shape, and path metadata that guide whole reading, bounded
-search/ranges, or programmatic inspection.
+contract determine the access path. For `conv:fi:` and external-owner
+artifacts, current-turn locality is a precondition even for `react.read`: if
+the target is absent from current ANNOUNCE `[WORKSPACE] LOCAL`, the agent calls
+`react.pull` in this turn and waits for its result before continuing. Earlier
+turn materialization does not carry forward. Timeline/context records such as
+`conv:tc:` and `conv:ev:` remain directly readable because they are not
+workspace files. Current-turn materialization returns MIME, size, fit,
+line-shape, and path metadata that guide whole reading, bounded search/ranges,
+or programmatic inspection.
 
 The exact tool contracts and large-artifact inspection flow are owned by
 [React Tools](./react-tools-README.md).

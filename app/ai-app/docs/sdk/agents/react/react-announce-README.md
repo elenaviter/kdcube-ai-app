@@ -121,6 +121,14 @@ ANNOUNCE [WORKSPACE] LOCAL
   current-turn path -> bytes already materialized on this worker
 ```
 
+For materializable `conv:fi:` and external-owner artifacts, this ledger is a
+tool precondition. Before `react.read`, local search, generated code, or file
+processing operates on one, its path must be present in the current LOCAL tree;
+otherwise the agent pulls it in this turn and waits for the pull result. A
+prior-turn pull, read, checkout, or workspace listing does not satisfy the
+current-turn gate. Timeline/context records such as `conv:tc:` and `conv:ev:`
+are directly readable and do not represent workspace files.
+
 It can include:
 - `implementation: custom|git`
 - `current_turn_root`

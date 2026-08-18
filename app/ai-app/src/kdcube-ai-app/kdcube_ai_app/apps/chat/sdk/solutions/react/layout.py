@@ -981,8 +981,8 @@ def build_announce_workspace_lines(
     lines.append("")
     lines.append("  LOCAL — materialized on disk THIS turn.")
     lines.append("  This tree is the current-turn locality ledger: only paths listed below, or created during this turn, have bytes on this worker.")
-    lines.append("  A visible artifact URI or an earlier turn's pull does not make its bytes local now. Before local inspection, search, or processing needs an external or historical artifact, explicitly call react.pull in THIS turn.")
-    lines.append("  react.read exposes model-visible content through logical artifact URIs. File-processing tools use paths listed here or paths created in this turn.")
+    lines.append("  CURRENT-TURN LOCALITY GATE: before react.read reads a conv:fi: or owner-backed artifact, or before search, code, or file processing uses artifact bytes, its path must appear below. If absent, call react.pull in THIS turn and wait for its successful result before continuing.")
+    lines.append("  A pull, read, checkout, or workspace listing from an earlier turn does not satisfy this gate. Timeline/context records such as conv:tc: and conv:ev: remain directly readable because they are not workspace files.")
     local_entries = _workdir_entries()
     local_lines: List[str] = []
     for entry in local_entries:

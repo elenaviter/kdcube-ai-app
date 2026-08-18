@@ -46,15 +46,21 @@ URI. Artifact URIs persist across turns. Each turn may run on a different
 worker and receives a fresh local artifact workspace.
 
 ANNOUNCE `[WORKSPACE] LOCAL` reports the artifact bytes already materialized on
-the worker handling this turn. When `react.rg`, `react.patch`, code, or another
-file-processing tool needs a referenced artifact, `react.pull` materializes it
-in the current turn and returns the logical and physical paths to use.
-`react.checkout` additionally places a pulled historical
+the worker handling this turn. For a `conv:fi:` or external-owner artifact,
+the current-turn LOCAL tree is a precondition for `react.read`, `react.rg`,
+`react.patch`, code, and other file processing. If the target is absent, the
+agent calls `react.pull` in this turn, waits for the successful result, and uses
+the returned URI for a URI-accepting parameter or the returned physical path
+for a physical-path parameter. The pull result names these fields
+`logical_path` and `physical_path`, respectively. A prior-turn pull, read,
+checkout, or workspace listing does not satisfy this gate. `react.checkout`
+additionally places a pulled historical
 `git/projects/...` artifact in the current editable project tree.
 
-`react.read` presents bounded artifact content in model-visible context. The
-LOCAL ledger and current-turn pull results present byte locality for local
-tools. The full context/artifact-URI model is documented in
+Timeline/context records such as `conv:ar:`, `conv:tc:`, and `conv:ev:` use
+`react.read` directly because they are not workspace files. `react.read`
+presents bounded artifact content in model-visible context. The full
+context/artifact-URI model is documented in
 [Context Layout](./context-layout.md#artifacts-and-uris).
 
 ## Path Contracts

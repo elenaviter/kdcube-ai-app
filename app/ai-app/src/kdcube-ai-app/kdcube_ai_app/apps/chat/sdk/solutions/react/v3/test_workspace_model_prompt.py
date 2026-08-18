@@ -251,7 +251,20 @@ def test_harness_signals_survive_every_body_selection_mode():
         assert text.count("[REACT HARNESS CONTEXT AND ARTIFACT ACCESS]") == 1
         assert "The current tool catalogs are the authority" in text
         assert "Every artifact has a URI" in text
+        assert "Rendered artifact metadata exposes this URI as `logical_path`" in text
+        assert '"artifact URI" and "logical path" name the same artifact identifier' in text
+        assert "A logical path is distinct from `physical_path`" in text
         assert "every turn starts with a fresh local artifact workspace" in text
+        assert "Current-turn locality is a required precondition" in text
+        assert "Before `react.read` reads a `conv:fi:` or owner-backed artifact" in text
+        assert "A pull, read, checkout, or workspace listing from an earlier turn does not satisfy" in text
+        assert "if the next tool parameter accepts a URI:" in text
+        assert "pass the artifact URI" in text
+        assert "if the next tool parameter accepts a physical path:" in text
+        assert "pass the artifact's current-turn physical path" in text
+        assert "pass the URI returned in logical_path" in text
+        assert "pass the returned physical_path" in text
+        assert "use that current-turn materialization" not in text
 
 
 def test_build_decision_system_text_composes_lite_blocks_without_optional_exec_guidance():
@@ -372,6 +385,9 @@ def test_compact_tool_catalog_preserves_react_artifact_recovery_contracts():
     )
 
     assert "min(requested max_text_symbols, active runtime cap)" in text
+    assert "if the target path is absent from the current ANNOUNCE [WORKSPACE] LOCAL tree" in text
+    assert "A pull, read, checkout, or workspace listing from an earlier turn does not satisfy this precondition" in text
+    assert "when a conv:fi: or externally owned artifact is not listed" in text
     assert "its conv:ev: URI identifies the event" in text
     assert "pass the object_ref value in react.pull.paths" in text
     assert "If another event field contains an artifact URI" in text

@@ -109,7 +109,10 @@ def list_event_sources() -> list[Any]:
 
 @event_source_resolver(
     namespace="cnv",
-    description="Route cnv: canvas refs to the canvas read event source for owner block-production policies.",
+    description=(
+        "Route cnv: board refs to the canvas read event source; canvas-owned artifact refs keep "
+        "their materialized content."
+    ),
 )
 async def resolve_canvas_event_source_ref(
     *,
@@ -121,6 +124,15 @@ async def resolve_canvas_event_source_ref(
     uri = str(ref or (f"{namespace}:{key}" if key else "")).strip()
     if not uri:
         return {"ok": False, "ref": uri, "error": "missing_ref"}
+    storage_key = str(key or (uri.split(":", 1)[1] if ":" in uri else "")).strip().lstrip("/")
+    if _looks_like_canvas_storage_key(storage_key):
+        return {
+            "ok": False,
+            "ref": uri,
+            "object_ref": uri,
+            "namespace": namespace,
+            "error": "canvas_owned_artifact_uses_materialized_content",
+        }
     return {
         "ok": True,
         "ref": uri,

@@ -12,6 +12,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.canvas.events.policies import (
     project_canvas_tool_result_blocks,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.canvas.events.resolver import CanvasArtifactResolver
+from kdcube_ai_app.apps.chat.sdk.solutions.canvas.events.resolver import resolve_canvas_event_source_ref
 from kdcube_ai_app.apps.chat.sdk.solutions.react.proto import RuntimeCtx
 
 
@@ -27,6 +28,29 @@ class _FakeStore:
     bundle_id = "bundle@1"
     artifact_resolver_name = "canvas.bundle_artifact_storage"
     artifacts = _FakeArtifacts()
+
+
+@pytest.mark.asyncio
+async def test_canvas_event_source_resolver_routes_board_refs_to_canvas_read():
+    result = await resolve_canvas_event_source_ref(ref="cnv:main@7")
+
+    assert result["ok"] is True
+    assert result["event_source_id"] == "canvas.read"
+
+
+@pytest.mark.asyncio
+async def test_canvas_event_source_resolver_keeps_owned_object_as_artifact_content():
+    object_ref = (
+        "cnv:canvas/users/user-1/canvases/cnv_user-1_main/objects/"
+        "user-text/card-1/v000004.md"
+    )
+
+    result = await resolve_canvas_event_source_ref(ref=object_ref)
+
+    assert result["ok"] is False
+    assert result["object_ref"] == object_ref
+    assert result["error"] == "canvas_owned_artifact_uses_materialized_content"
+    assert "event_source_id" not in result
 
 
 def test_canvas_artifact_download_returns_url_not_json_bytes():

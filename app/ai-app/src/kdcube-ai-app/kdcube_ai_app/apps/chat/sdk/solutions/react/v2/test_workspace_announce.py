@@ -70,7 +70,9 @@ def test_build_announce_text_includes_git_workspace_summary(tmp_path):
     assert "current_turn_root: turn_123/" in announce_text
     assert "materialized on disk THIS turn." in announce_text
     assert "This tree is the current-turn locality ledger" in announce_text
-    assert "A visible artifact URI or an earlier turn's pull does not make its bytes local now" in announce_text
+    assert "CURRENT-TURN LOCALITY GATE" in announce_text
+    assert "before react.read reads a conv:fi: or owner-backed artifact" in announce_text
+    assert "A pull, read, checkout, or workspace listing from an earlier turn does not satisfy this gate" in announce_text
     assert "turn_123/" in announce_text and "writable" in announce_text
     assert "turn_122/" in announce_text and "read-only" in announce_text
     assert "checked out from conv:fi:turn_122.git/projects/projectA" in announce_text
@@ -152,8 +154,8 @@ def test_build_announce_text_renders_empty_current_turn_namespaces(tmp_path):
     )
 
     assert "This tree is the current-turn locality ledger" in announce_text
-    assert "explicitly call react.pull in THIS turn" in announce_text
-    assert "react.read exposes model-visible content through logical artifact URIs" in announce_text
+    assert "If absent, call react.pull in THIS turn and wait for its successful result" in announce_text
+    assert "Timeline/context records such as conv:tc: and conv:ev: remain directly readable" in announce_text
     assert "turn_123/   (current turn · writable)" in announce_text
     assert "    git/projects/ (empty)" in announce_text
     assert "    files/ (empty)" in announce_text

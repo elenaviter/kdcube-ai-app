@@ -7,6 +7,7 @@ from types import ModuleType, SimpleNamespace
 
 from kdcube_ai_app.apps.chat.sdk.events import EventSourceSubsystem, event_source_declaration
 from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace import artifact_outdir_for
+from kdcube_ai_app.apps.chat.sdk.solutions.canvas.events import resolver as canvas_event_resolver
 from kdcube_ai_app.apps.chat.sdk.solutions.react.events import block_production_policy
 from kdcube_ai_app.apps.chat.sdk.solutions.react.proto import RuntimeCtx
 from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.tools.read import handle_react_read
@@ -380,6 +381,83 @@ async def test_ranged_read_keeps_client_selected_chunk_instead_of_owner_projecti
         if b.get("type") == "react.tool.result"
     )
     assert not any("OWNER BLOCK" in (b.get("text") or "") for b in ctx.timeline.blocks)
+
+
+@pytest.mark.asyncio
+async def test_read_canvas_owned_large_markdown_keeps_artifact_preview(tmp_path):
+    event_sources = EventSourceSubsystem(modules=[{
+        "mod": canvas_event_resolver,
+        "alias": "canvas",
+    }])
+    runtime = RuntimeCtx(
+        turn_id="turn_read",
+        outdir=str(tmp_path),
+        workdir=str(tmp_path),
+        event_sources=event_sources,
+    )
+    ctx = FakeBrowser(runtime)
+    object_ref = (
+        "cnv:canvas/users/user-1/canvases/cnv_user-1_main/objects/"
+        "user-text/card-1/v000004.md"
+    )
+    physical_path = (
+        "turn_read/attachments/cnv/canvas/users/user-1/canvases/"
+        "cnv_user-1_main/objects/user-text/card-1/v000004.md"
+    )
+    logical_path = (
+        "conv:fi:turn_read.user.attachments/cnv/canvas/users/user-1/canvases/"
+        "cnv_user-1_main/objects/user-text/card-1/v000004.md"
+    )
+    target = artifact_outdir_for(tmp_path) / physical_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    prefix = "\n".join([
+        "## Export descriptors",
+        "",
+        "```bash",
+        "export OUT_DIR=\"$HOME/.kdcube/exports/example\"",
+        "kdcube config export --out-dir \"$OUT_DIR\"",
+        "```",
+        "",
+        "https://example.test/article",
+        "",
+        "",
+    ]) + "![pasted image](data:image/png;base64,"
+    suffix = ")"
+    markdown = prefix + ("A" * (132_146 - len(prefix) - len(suffix))) + suffix
+    assert len(markdown) == 132_146
+    assert len(markdown.splitlines()) == 10
+    target.write_text(markdown, encoding="utf-8")
+    state = {
+        "last_decision": {"tool_call": {"params": {"paths": [logical_path]}}},
+        "pulled_logical_refs": {
+            logical_path: {
+                "object_ref": object_ref,
+                "physical_path": physical_path,
+                "mime": "text/markdown",
+            }
+        },
+    }
+
+    await handle_react_read(
+        ctx_browser=ctx,
+        state=state,
+        tool_call_id="r_canvas_object",
+    )
+
+    artifact_blocks = [
+        block
+        for block in ctx.timeline.blocks
+        if block.get("type") == "react.tool.result" and block.get("path") == logical_path
+    ]
+    assert artifact_blocks
+    assert any("## Export descriptors" in (block.get("text") or "") for block in artifact_blocks)
+    assert any("[READ PREVIEW TRUNCATED]" in (block.get("text") or "") for block in artifact_blocks)
+    assert not any(block.get("meta", {}).get("owner_projected") is True for block in artifact_blocks)
+    assert not any(
+        "[CANVAS TOOL RESULT]" in (block.get("text") or "")
+        for block in ctx.timeline.blocks
+        if block.get("type") == "react.tool.result"
+    )
 
 
 @pytest.mark.asyncio
