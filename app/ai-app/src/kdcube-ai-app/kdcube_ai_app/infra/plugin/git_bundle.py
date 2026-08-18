@@ -571,6 +571,60 @@ async def git_bundle_cache_status(
     return GitBundleCacheStatus(True, "current", paths, marker=marker)
 
 
+async def invalidate_git_bundle_cache(
+    *,
+    bundle_id: Optional[str],
+    git_url: str,
+    git_ref: Optional[str] = None,
+    git_subdir: Optional[str] = None,
+    bundles_root: Optional[pathlib.Path] = None,
+    logger: Optional[AgentLogger] = None,
+) -> bool:
+    """Make the next ``ensure_git_bundle`` converge with the remote.
+
+    The cache marker equates "current" with "marker commit == local HEAD".
+    That is right for a ref pinned to a commit — nothing can have moved — and
+    permanently wrong for a BRANCH: after the first materialization the marker
+    always matches HEAD, so the clone is declared current forever and the
+    fetch/reset step never runs again. Seen live: a store clone serving a
+    branch sat 114 commits behind origin while every sync reported success,
+    because the sync's ensure returned on ``status.current`` before fetching.
+
+    Removing the marker is the narrow, honest invalidation: ensure's cache
+    status reads ``missing_marker``, stops trusting the clone, and re-drives
+    the fetch + ``checkout --force`` + ``reset --hard origin/<ref>``. That
+    reset is DESTRUCTIVE to local work in the clone — the caller owns the
+    dirty/ahead guard and must have cleared it before calling this. This
+    function only makes staleness visible; it never checks.
+
+    Returns whether a marker existed to remove.
+    """
+    log = logger or AgentLogger("git.bundle")
+    bid = (bundle_id or "").strip() or _repo_name_from_url(git_url)
+    normalized_git_url = await normalize_git_remote_url(git_url)
+    root = bundles_root or resolve_managed_bundles_root()
+    async with _async_redis_bundle_lock(bundle_id=bid, git_ref=git_ref):
+        async with _async_bundle_lock(bundle_id=bid, git_ref=git_ref, bundles_root=root):
+            paths = compute_git_bundle_paths(
+                bundle_id=bid,
+                git_url=normalized_git_url,
+                git_ref=git_ref,
+                git_subdir=git_subdir,
+                bundles_root=root,
+            )
+            marker_file = _marker_path(paths.repo_root)
+            if not marker_file.exists():
+                return False
+            marker_file.unlink(missing_ok=True)
+            log.log(
+                f"[git.bundle] cache marker invalidated for {bid} "
+                f"(ref={git_ref or 'default'}) — the next ensure converges "
+                "with the remote",
+                level="INFO",
+            )
+            return True
+
+
 async def _clone_maybe_sparse(
     *,
     git_url: str,
