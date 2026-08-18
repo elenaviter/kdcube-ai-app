@@ -1,10 +1,10 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/sdk/events/reactive-turn-delivery-README.md
 title: "Reactive Turn Delivery"
-summary: "Framework-neutral contract for ordered reactive delivery: an open ReAct handler may fold new work into its live turn, while a run-to-completion agent receives one accepted start batch per serialized turn; both release the lane before any liveness handoff."
+summary: "Framework-neutral contract for ordered reactive delivery: ReAct may fold live, while a foreign runtime folds the whole pending lane once and watches control read-only; both release before liveness handoff."
 status: active
 tags: ["sdk", "events", "external-events", "turns", "react", "run-to-completion", "followup", "steer", "ordering"]
-updated_at: 2026-08-17
+updated_at: 2026-08-18
 keywords:
   [
     "reactive turn delivery",
@@ -36,8 +36,9 @@ serialized turn for this conversation?
 ```
 
 The delivery contract is the same for every agent. What differs is whether the
-agent owns a live handler that can fold new work or consumes one fixed start
-batch. That choice determines which runtime finalizer releases the lane.
+agent owns a live handler that can fold new work or takes one read-only snapshot
+of the pending lane before it runs. That choice determines which runtime
+finalizer releases the lane.
 
 For the Redis state fields this page refers to (`T.consumer.status`,
 `T.handler.status`, the reactive cursor), see the
@@ -71,13 +72,12 @@ turn-starting event (prompt / queued followup)
                  →  optionally publish a duplicate liveness wake
 ```
 
-The wakeup is the only thing that starts a new agent turn. A wakeup points at
-one accepted lane occurrence, not at the whole request body. The turn's input can
-still be an accepted start batch: a prompt and same-ingress attachment events
-share a `batch_id`, while the wake names only the prompt occurrence. `run()` is
-the shared `@on_reactive_event` door on the app base (`BaseEntrypoint.run` /
-`BaseEntrypointWithEconomics.run`); it calls your `execute_core`, which reads the
-accepted start batch out of `state`/`params` and produces the turn.
+The wakeup is the only thing that starts a new agent turn. It points at one
+accepted lane occurrence, not at the complete input. `run()` is the shared
+`@on_reactive_event` door on the app base (`BaseEntrypoint.run` /
+`BaseEntrypointWithEconomics.run`). Native ReAct opens the live handler there; a
+foreign-runtime adapter reads the whole still-pending lane once, sequence orders
+it, and maps that snapshot into its framework input before `execute_core` runs.
 
 ## Ordered, serialized delivery
 
@@ -128,22 +128,22 @@ duplicate liveness wake for anything still unconsumed. ReAct owns its lane
 lifecycle end-to-end, inside its own workflow. See
 [Event Ingress To React Turn](./event-ingress-to-react-turn-README.md).
 
-### 2. Run-to-completion — one start batch, one turn
+### 2. Run-to-completion — one pending snapshot, one turn
 
 A run-to-completion `execute_core` (a ported graph, a bespoke loop) runs
-start-to-finish and does **not** watch the lane. It consumes exactly the accepted
-start batch; a followup that lands mid-turn is *not* folded. Because the wake
-names only one occurrence, a hosted runtime that needs attachments folds the
-wakeup occurrence's same-`batch_id` siblings before reading input. That fold is
-read-only on the lane and records the exact folded lane event ids on the turn
-state. Because the hosted runtime never opens the handler, it never releases the
-reservation on its own; the platform accounts for the folded batch by id and
-releases the consumer *for* the agent, from the door, after the turn. That is the
-finalize invariant below.
+start-to-finish without opening the ReAct handler. At turn start its adapter
+performs one read-only lane fold. It selects the wake occurrence and every other
+still-pending occurrence, skips consumed/promoted/failed work, sorts by lane
+sequence, and records the exact selected message ids on turn state. The snapshot
+can contain several user messages and their attachments across several ingress
+batches; the model reads them together, in order, and answers once.
 
-The net behavior for a run-to-completion agent: **one accepted start batch → one
-turn**, strictly serialized and in order. Work that arrives mid-turn stays in the
-lane and becomes eligible to schedule after the current turn releases it.
+After that snapshot, a foreign-runtime watcher may observe control but does not
+fold content into the running loop. Its turn-owned heartbeat keeps the
+`scheduled` reservation fresh. LangGraph steer cancels the stream while its
+checkpointer retains the last completed node; ordinary arrivals remain pending.
+Because the runtime never opens the handler, the shared door accounts for the
+snapshot by exact id and releases the consumer after the turn.
 
 ## The finalize invariant (`reactive_lane`)
 
@@ -156,17 +156,17 @@ branch**:
 
 ```text
 already_released = T.consumer.status == "none"
-own_accounted    = the turn's start batch is consumed / past the reactive cursor
+own_accounted    = the wake occurrence is consumed / past the reactive cursor
 
 if already_released and own_accounted:
     return                       # no-op
 
 # otherwise a run-to-completion turn still owns the reservation:
-mark the wake occurrence consumed         # normal lane cursor
-mark folded start-batch siblings consumed # exact event ids, not a range
-release the consumer (→ none)
-optionally re-wake pending reactive work  # duplicate liveness signal
-expire an unconsumed event.user.steer     # active-turn control, never future work
+mark the wake occurrence consumed          # normal lane cursor
+mark every folded snapshot event consumed  # exact ids, not a range
+release this turn's reservation (→ none)
+optionally wake ONE eligible later intent  # after the last steer boundary
+terminalize a bare event.user.steer
 ```
 
 The `already_released and own_accounted` state is *exactly* what a ReAct turn's
@@ -175,21 +175,17 @@ The `already_released and own_accounted` state is *exactly* what a ReAct turn's
 the predicate is false and the door releases it. The finalize reuses only the
 existing lane primitives (the same exactly-once `mark_consumed_up_to` a
 `BaseWorkflow` uses for the wake occurrence, exact `mark_consumed_event` for
-folded siblings, `mark_consumer_none`, and the wake re-publish); it adds no new
-orchestrator behavior and touches nothing on the ReAct path. The folded event-id
+the folded snapshot, owner-fenced `mark_consumer_none`, and the wake re-publish);
+it does not infer an agent type and touches nothing on the ReAct path. The folded event-id
 input is absent for native ReAct, so the shared finalizer remains inert there by
 state.
 
-For a run-to-completion batch, consuming only the wakeup occurrence is not
-enough. If the prompt is sequence 1 and its same-ingress attachment is sequence
-2, the door must mark the prompt through the cursor and the attachment by exact
-event id after `execute_core` sees both events. Otherwise the attachment remains
-pending, and the post-turn liveness handoff can schedule a second run for the
-same visible user send. A later followup has its own accepted occurrence outside
-the folded start batch; it remains unconsumed and can still schedule the next
-serialized turn after release. If a different followup interleaves between the
-prompt and attachment lane sequences, exact-id consumption leaves it pending; a
-sequence-range consume would incorrectly swallow it.
+Consuming only the wake occurrence is not enough. If the snapshot contains a
+prompt, its attachment, and two messages queued during the previous turn, all
+four were shown to this turn and all four exact lane occurrences must be
+accounted after it returns. A sequence-range consume is not equivalent: an
+arrival may land after the snapshot while the runtime is already executing and
+must remain pending for the handoff.
 
 A batch with no reactive event enqueues no processor wake. It is retained or
 callbacked according to the normal external-event rules, but it does not enter
@@ -218,9 +214,10 @@ change what the composer *offers*, not what is delivered:
 
 **What arrives while a turn runs now waits for the handoff, for the whole turn.**
 That used to hold for thirty seconds: a run-to-completion turn never marked the
-lane consumer, so `scheduled` went stale (`scheduled_ttl_ms`, 30 000 ms) and a
+lane reservation, so `scheduled` went stale (`scheduled_ttl_ms`, 30 000 ms) and a
 later message was admitted as its own turn. The watcher heartbeats the consumer
-on its poll, so the reservation lasts as long as the turn does.
+on its poll, but only when `consumer_turn_id` matches and status is still
+`scheduled`, so the reservation lasts as long as the owning turn does.
 
 **The handoff wakes ONE turn**, not one per pending event, and the fold takes the
 whole pending lane rather than the wakeup's own batch. Two messages typed during
@@ -248,7 +245,7 @@ Before the finalize existed, a run-to-completion turn left the reservation
 dropped as `scheduled_consumer_fresh` — the turn "completed" in the UI but the
 *next* message never reached `execute_core` (nothing in the processor log). It
 self-recovered only after the TTL went stale, which read as intermittent
-"second/third turn hangs." The finalizer now accounts for the start batch,
+"second/third turn hangs." The finalizer now accounts for the start snapshot,
 releases the reservation, and only then may publish a liveness wake.
 
 ## Boundary

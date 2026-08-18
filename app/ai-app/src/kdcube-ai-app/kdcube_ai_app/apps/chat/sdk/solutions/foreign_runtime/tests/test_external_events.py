@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
-"""The foreign-runtime turn-batch fold (``foreign_runtime/external_events.py``).
+"""The foreign-runtime pending-lane fold (``foreign_runtime/external_events.py``).
 
 The lane-wakeup dispatch hands a run-to-completion turn ONE external event
-(the prompt), while the user's attachments ride separate lane events of the
-same ingress batch. The fold must deliver the whole batch — the exact
-surfaced bug was a hosted agent answering "whats here" blind to the attached
-image. Read-only on the lane: nothing here consumes or reserves anything.
+(the prompt), while attachments and queued messages are separate lane events.
+The fold must deliver every pending occurrence together, in lane order. The
+first surfaced bug was a hosted agent answering "whats here" blind to the
+attached image; the widening also prevents one answer per queued correction.
+Read-only on the lane: nothing here consumes or reserves anything.
 
 Ported from the ported-langgraph-agents bundle's tests/test_turn_batch.py
 (the seam is that module generalized). Offline: the lane source is faked;

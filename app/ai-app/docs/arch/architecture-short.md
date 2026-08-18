@@ -4,7 +4,7 @@ title: "Architecture Short"
 summary: "Concise current architecture of KDCube: one tenant/project deployment, directional app surfaces, ordered conversation eventing, app Data Bus, authority, storage, isolation, and accounting."
 status: current
 tags: ["arch", "architecture", "overview", "apps", "runtime"]
-updated_at: 2026-08-13
+updated_at: 2026-08-18
 keywords: ["KDCube architecture", "app surfaces", "as provider", "as consumer", "conversation event lane", "isolated execution"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
@@ -126,12 +126,12 @@ tenant + project + user + conversation + agent
 
 Reactive ingress atomically writes one prepared batch to the lane and admits one
 bodyless wake to the processor queue. Non-reactive events enter only the lane.
-The lane sequence defines order; the queue schedules work. One accepted start
-batch, possibly containing same-ingress sibling events, starts one app turn.
+The lane sequence defines order; the queue schedules one serialized app turn.
 Native ReAct can fold eligible later events through owner-fenced lane handling.
-The current run-to-completion adapter consumes only its start batch, so later
-events wait for another turn. A custom adapter must wire live folding
-explicitly. Unconsumed `event.user.steer` expires and never becomes future work.
+The current run-to-completion adapter folds the whole pending lane once at
+start, keeps only its own scheduled reservation fresh, and watches control
+read-only while later content remains pending. At handoff a bare steer expires;
+textual steer remains pending without waking a turn.
 
 Conversation Event Bus events carry prompts, attachments, followups, steers,
 approvals, callbacks, and future-turn context. The Data Bus carries app-owned

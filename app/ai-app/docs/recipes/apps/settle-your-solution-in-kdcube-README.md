@@ -4,7 +4,7 @@ title: "Settle Your Solution In A KDCube App"
 summary: "Executable procedure a coding agent (or engineer) follows to host an existing Python agent — in its own framework — as a KDCube app: preserve the solution as an independently maintainable package, add a thin async wrap (turn, stream, state scope, accounted services, prompt composition, per-turn rebuild), then satisfy the canonical app-package contract. Worked instance: ported-langgraph-agents@2026-07-13."
 status: draft
 tags: ["recipes", "kdcube-for-agents", "settle", "wrap", "langgraph", "streaming", "bundle", "app", "scaled-serving", "turn-workspace", "attachments"]
-updated_at: 2026-08-17
+updated_at: 2026-08-18
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-write-bundle-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/chat/chat-stream-events-README.md
@@ -177,38 +177,36 @@ Decision Table". A plain wrap uses `BaseEntrypoint`; derive a richer family clas
 only if you want KDCube's own economics/memory surfaces too.
 
 **Delivery is ordered — you get it for free.** The `execute_core` seam is fed by
-the **event bus**: each triggering reactive event owns one serialized turn per
-conversation, in arrival order. A message sent while a turn is running waits and
-becomes the *next* turn — a run-to-completion loop never runs two turns of one
-conversation at once. The lane bookkeeping (finalizing the current reservation and
-re-waking queued reactive work) is done for you at the door; you write no event-bus
-code. Use a capability provider whose `ConversationCaps` reports
-`accepts_followup: false` and `accepts_steer: false` for a run-to-completion loop
-(the worked app uses `simple_model_pick`) — a mid-turn message is then queued for
-the next turn. For the mechanism and how a loop that *can* consume mid-turn opts in, see
+the **event bus**: one turn owns the conversation lane at a time. Messages that
+queued while the previous foreign-runtime turn ran are folded together, in
+sequence order, when the next turn starts; the loop never runs two turns of one
+conversation concurrently. The lane bookkeeping (owned reservation heartbeat,
+exact accounting, release, and at most one liveness wake) is done at the door.
+Declare only the controls the adapter actually implements. The worked LangGraph
+app reports `accepts_followup: false` and `accepts_steer: true`: follow-ups stay
+pending, while its read-only watcher cancels the graph stream on steer. For the
+mechanism and how a loop that can consume content mid-turn opts in, see
 [Reactive Turn Delivery](../../sdk/events/reactive-turn-delivery-README.md) and
 [Connect Your Agentic Loop To Ordered Message Delivery](../dataflow/connect-agentic-loop-to-ordered-delivery-README.md).
 
-**Fold the turn's batch — the input is the batch, not the wakeup event.** A user
-message with attachments arrives at ingress as ONE batch of external events — the
-prompt event plus one `event.user.attachment.file` event per hosted file, all
-sharing a `batch_id` — but the lane wakeup that starts your turn names only *one*
-of those events, and the rehydrated `state["external_events"]` carries only that
-one. Read as-is, your turn sees the prompt and is blind to the files that arrived
-beside it (the exact bug the worked instance surfaced live: the agent answered a
-"what's in this file?" turn as if no file existed). The wrap folds the batch back
-in at the top of `execute_core` — read the conversation lane, take the wakeup
-event's `batch_id` siblings in lane order, skip anything an earlier turn already
-consumed. STRICTLY READ-ONLY: no consumption marks, no reservation changes — lane
-bookkeeping stays with the door. The fold records the exact folded lane event ids
-on the turn state, so the door can later terminalize those same-batch siblings
-after `execute_core` returns without consuming different-batch interleaved work. The
-triggering prompt still owns the turn and its finalize; same-batch attachment
-siblings enrich model input and do not become extra reactive turns. The built-in
-ReAct agent is immune (it folds the lane itself), which is why this bites only
-run-to-completion host adapters. Worked instance:
+**Fold the whole pending lane — the input is not the wakeup event.** The wakeup
+names one accepted occurrence, while the lane may also contain its attachment
+siblings and several messages queued during the previous turn. At the top of
+`execute_core`, read the lane once, keep the wake occurrence plus every other
+pending occurrence, skip consumed/promoted/failed work, and sort by lane
+sequence. This fold is STRICTLY READ-ONLY: no consumption marks and no
+reservation changes. Stamp each accepted body with its batch, sequence, and
+arrival time so the model can relate cargo to the message that carried it.
+
+Record the exact selected lane message ids on turn state. After
+`execute_core` returns, the shared door accounts for exactly those ids and
+releases the reservation; anything arriving after the snapshot remains pending.
+This fixes both failure shapes: an agent no longer misses the file beside a
+prompt, and it no longer answers the first of several queued corrections without
+seeing the rest. The built-in ReAct agent is unaffected because it owns a live
+handler and folds through its own workflow. Worked instance:
 `platform/turn_batch.py::fold_turn_external_events` + `tests/test_turn_batch.py`
-(including the exact surfaced case: prompt + hosted PNG in one batch).
+(delegating to `sdk.solutions.foreign_runtime.external_events`).
 
 ### 3b. Streaming — `stream_adapter.py`
 

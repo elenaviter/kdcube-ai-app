@@ -21,7 +21,7 @@ keywords:
     "rehosting",
     "turn lifecycle",
   ]
-updated_at: 2026-08-14
+updated_at: 2026-08-18
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/runtimes-map-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/README.md
@@ -68,28 +68,31 @@ two ways (the [runtimes map](runtimes-map-README.md), §3): an app's direct surf
 `@api`, `@mcp`, widgets — answer in place, request/response, and supported
 entries can *submit* conversational work; work **for the agent** lands on the
 **conversation event lane**: the ordered work lane for one conversation. The
-lane reserves one accepted start batch for one turn. That batch may contain
-same-ingress siblings, such as a prompt and its attachments. Same-conversation
-turns serialize across workers while different conversations run in parallel
+lane reserves one turn at a time. Native ReAct may fold through an open handler;
+a foreign runtime takes the whole pending lane as one read-only start snapshot.
+Same-conversation turns serialize across workers while different conversations run in parallel
 ([Reactive Turn Delivery](../sdk/events/reactive-turn-delivery-README.md)).
 
 What makes the lane an *agent* concept rather than plumbing is what happens
 when events arrive **while a turn is running**. Ingress appends busy-turn
 events — `followup`, `steer`, and other supported external events — into one
-shared, Redis-backed conversation event source. The active turn holds a
-fenced owner lease on that source and listens live:
+shared, Redis-backed conversation event source. What happens next belongs to
+the adapter's declared consumption model:
 
-- a **follow-up** folds into the current turn: it lands on the turn's own
+- native ReAct holds a fenced live handler; a **follow-up** folds into the current turn, lands on the turn's own
   timeline as a real block, can trigger another decision round before
   completion, and mints extra iteration credit for the turn;
-- a **steer** folds as a control interrupt: it cancels the active generation
+- native ReAct folds a **steer** as a control interrupt: it cancels the active generation
   or cancellable tool phase where possible (in isolated execution that
   becomes a container/subprocess kill), then the agent re-enters with the
   steer already on its timeline for a bounded finalize;
-- an eligible continuation event no live owner consumes remains in the lane
-  and becomes schedulable after the current turn releases;
-- an unconsumed `event.user.steer` **expires**. A steer controls only the turn
-  that was active when it arrived and is never promoted as future work.
+- a foreign runtime keeps its turn-owned `scheduled` reservation fresh and
+  watches read-only. LangGraph steer cancels its stream; Claude Code can deliver
+  follow-up/steer at its next tool boundary. Content not proven delivered stays
+  pending;
+- at handoff a bare steer is terminalized. Textual steer stays pending but does
+  not start a turn; at most one eligible reactive event after the last steer
+  wakes the next whole-pending fold.
 
 ```text
    followup / steer / external event, arriving MID-TURN
@@ -97,14 +100,12 @@ fenced owner lease on that source and listens live:
                         v
       shared conversation event source (Redis-backed)
                         |
-              classify + check live ownership
-                 |              |              |
-                 v              v              v
-   FOLD into the running   QUEUE eligible     EXPIRE unconsumed
-   turn when consumed      continuation       event.user.steer
-   followup -> +round      for a later turn   (never future work)
-   steer -> interrupt ->
-            bounded finalize
+              classify by consumption model
+                 |                 |                 |
+                 v                 v                 v
+   ReAct: FOLD live       foreign: RETAIN       handoff: TERMINALIZE
+   followup -> +round     pending + watch       bare steer; wake once
+   steer -> interrupt     control read-only     only after last steer
 ```
 
 Eligible domain and subagent-completion events use the same fold-or-queue
@@ -114,12 +115,12 @@ event shapes:
 
 The two worked apps split exactly along this line. The native `workspace`
 agent opens the live lane handler and folds mid-turn events at decision
-boundaries. The LangGraph app takes the safe default: it folds the turn's
-**ingress batch** before reading inputs (`platform/turn_batch.py` —
-attachments ride sibling lane events of the prompt, so a run-to-completion
-door must fold the batch or the agent sees the prompt alone), runs the graph
-start to finish, and lets eligible mid-turn messages wait for the next turn.
-It does not consume live steer; an unconsumed steer expires.
+boundaries. The LangGraph app folds the **whole pending lane** before reading
+inputs (`platform/turn_batch.py` delegates to the shared foreign-runtime seam),
+runs the graph under a read-only watch, and leaves later content pending. Its
+capabilities declare `accepts_followup: false` and `accepts_steer: true`: steer
+cancels the stream, the adapter repairs any interrupted tool-call boundary, and
+the checkpointer retains the last completed node.
 
 ## 2. Two Layers Of Memory/State, Two Owners
 
@@ -272,7 +273,7 @@ or integrated:
 | Horizontal scale | state keys on the conversation, the agent is rebuilt per turn, so any worker can take the next turn |
 | Ordered conversations under concurrency | the event lane serializes per conversation, parallelizes across conversations |
 | Any-event ingestion | a common request/event context across transports; conversational work enters the lane, while namespaces own block production for domain events |
-| Live follow-up and steer | the shared event source + owner lease; a live ReAct turn can fold both, eligible continuations can queue, and an unconsumed steer expires |
+| Live follow-up and steer | the shared event source plus adapter-specific control: ReAct folds both live; a foreign runtime watches read-only; a bare stop expires at handoff while textual steer remains pending without starting a turn |
 | Live streaming back to the initiator, across communicator-enabled runtimes | a comm spec crosses with supported work and the far side rebuilds it; selected recordable events and durable turn blocks later hydrate the conversation view |
 | Durable history, restore, titles | the platform timeline and turn recording, framework-neutral |
 | Cross-conversation search | the same record, searchable under the caller's user boundary |
@@ -297,14 +298,14 @@ The two worked apps make the difference concrete:
 | Construction | agent built fresh per turn from `config.react` ⊕ `surfaces.as_consumer` (inventory, instructions, traits, event sources) | dispatcher resolves the agent id, builds a fresh graph per turn bound to the turn's identity |
 | Working memory | the rendered session view over the timeline (age-graded detail, refresh-by-URI) | the framework checkpointer on KDCube Postgres, keyed by platform-scoped agent + user + conversation identity |
 | Timeline role | source of truth — state and record are one | reflection — inputs/outputs captured into the record |
-| Mid-turn events | folds follow-up/steer live at decision boundaries | folds the accepted ingress batch at start; eligible mid-turn messages wait for the next turn, while unconsumed steer expires |
+| Mid-turn events | folds follow-up/steer live at decision boundaries | folds the whole pending lane once at start; watches read-only afterward; steer cancels the stream while later content remains pending |
 | Tools | SDK tools + named services + MCP, taught by composed instruction blocks | app `@tool`s + selected SDK wrappers + MCP tools + consent placeholders, mapped by the adapter |
 | Generated code | full exec path with exported tool catalog (nested `tool_call` through the supervisor) | `run_python` — isolated computation + hosted files; nested catalog exported only if the adapter passes specs |
 | Streaming | channel protocol through the communicator | LangGraph events mapped to chat events by the stream adapters (`platform/stream_*.py`) |
 
 What the worked integrated agent **gains** without changing its reasoning
 core is the common hosted-agent layer it actually wires: hosting, restore,
-search, ordered start-batch handling, horizontal serving, accounting on
+search, ordered pending-lane handling, horizontal serving, accounting on
 integrated paths, consent-gated tools, the same workspace grammar (fresh per
 turn, refs in, produced files hosted out), and the same pull-over-URI
 primitives the native agent uses (`pull_refs_into_dir`; the ReAct tools are one
@@ -326,6 +327,12 @@ It is the clearest illustration that the platform record and a framework's
 working memory are genuinely different layers: the record is still captured
 and serves restore/search, while the framework's continuity lives in its own
 files.
+
+Its live-control files are deliberately outside that restored checkout, under
+`.kdcube-live/`. A turn-stamped `PreToolUse` hook reads each follow-up once
+before the next tool call and denies the next call on steer. Keeping ephemeral
+control beside, rather than inside, the git-restored session prevents an old
+stop from being restored into a later turn.
 
 Hosting a **CLI** runtime adds three seam facts an in-process runtime never
 meets:
@@ -359,10 +366,10 @@ a person, webhook, automation, or MCP client submits work
         |
         v
 ingress normalizes to ExternalEventPayload
-  and atomically appends the accepted start batch to the conversation source
+  and atomically appends accepted events to the conversation source
         |
         v
-the lane reserves the accepted batch for ONE turn <- serialized per conversation
+the lane reserves ONE turn <- serialized per conversation
         |
         v
 run() binds identity, opens turn + accounting context,
@@ -372,8 +379,8 @@ run() binds identity, opens turn + accounting context,
 execute_core(...)
   native: compose instructions, render the session view
           from the timeline, enter ReAct rounds
-  ported: fold the ingress batch, restore the checkpointer
-          thread, build the graph fresh, run to completion
+  ported: fold the whole pending lane, restore the checkpointer
+          thread, build the graph fresh, run under a read-only watch
         |
         +-- tools cross their fences as needed:
         |     exec -> supervisor/executor; accounts -> credential broker;

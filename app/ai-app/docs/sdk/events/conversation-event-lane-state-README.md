@@ -1,10 +1,10 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/sdk/events/conversation-event-lane-state-README.md
 title: "Conversation Event Lane State"
-summary: "SDK/runtime reference for the Redis state record that synchronizes conversation external-event ingress, readers, handlers, and wake handoff."
+summary: "SDK/runtime reference for the Redis state record that synchronizes conversation external-event ingress, live handlers, owned run-to-completion reservations, and wake handoff."
 status: active
 tags: ["sdk", "events", "external-events", "redis", "react", "synchronization"]
-updated_at: 2026-08-17
+updated_at: 2026-08-18
 keywords:
   [
     "conversation event lane state",
@@ -51,6 +51,7 @@ T.last_processed_event_timestamp
 T.last_processed_event_id
 T.last_processed_reactive_event_timestamp
 
+T.consumer.turn_id
 T.consumer.status                        active | scheduled | none
 T.consumer.status_at
 ```
@@ -65,6 +66,7 @@ Field meanings:
 | `T.last_processed_event_timestamp` | Reader/Consumer while holding `lock(T)` | Maximum event-envelope timestamp accepted into the live turn path for any event type. |
 | `T.last_processed_event_id` | Reader/Consumer while holding `lock(T)` | Event id for the latest accepted event at `T.last_processed_event_timestamp`; used as the tie-breaker when multiple events share a timestamp. |
 | `T.last_processed_reactive_event_timestamp` | Reader/Consumer while holding `lock(T)` | Maximum event-envelope timestamp accepted into the live turn path for reactive events. |
+| `T.consumer.turn_id` (`consumer_turn_id`) | Proc and Reader/Consumer while holding `lock(T)` | Runtime turn that owns the current `scheduled` or `active` reservation. Ownership fences heartbeat and release. |
 | `T.consumer.status` | Proc and Reader/Consumer while holding `lock(T)` | `scheduled`, `active`, or `none`. |
 | `T.consumer.status_at` | Same writer as `T.consumer.status`, and Reader acknowledgements | Latest real lane-local acknowledgement timestamp for `T.consumer.status`. |
 
@@ -90,6 +92,7 @@ the client receives a rejection. Ingress does not write `T.handler.*`,
 Proc reads wake items. Under `lock(T)`, proc sets:
 
 ```text
+T.consumer.turn_id = wake routing turn id
 T.consumer.status = scheduled
 T.consumer.status_at = now
 ```
@@ -108,6 +111,7 @@ T.handler.status_at = now
 Reader/Consumer activation sets:
 
 ```text
+T.consumer.turn_id = handler runtime turn id
 T.consumer.status = active
 T.consumer.status_at = now
 ```
@@ -123,6 +127,7 @@ lock(T)
     mark accepted source entries consumed
     update T.last_processed_event_timestamp
     update T.last_processed_reactive_event_timestamp
+    set T.consumer.turn_id = handler runtime turn id
     set T.consumer.status = active
     set T.consumer.status_at = now
   else:
@@ -163,6 +168,7 @@ event. After artifacts persist, the Reader/Consumer is released:
 ```text
 T.consumer.status = none
 T.consumer.status_at = now
+T.consumer.turn_id = ""
 ```
 
 ContextBrowser then publishes one liveness wake when unprocessed, promotable
@@ -173,26 +179,30 @@ instead: it is bound to the turn that was active at ingress and cannot become a
 later turn.
 
 Run-to-completion apps use the same door but do not open a live handler. The
-processor wake reserves `T.consumer.status = scheduled`; the app executes once;
-then the shared door finalizer accounts for the start batch and releases the
-reservation. The wake names one accepted occurrence, so a same-ingress start
-batch may be larger than the wake: for example, sequence 1 is
-`event.user.prompt` and sequence 2 is `event.user.attachment.file`, both sharing
-one `batch_id`. A hosted-runtime batch fold is read-only while the app runs, but
-it records the exact folded lane event ids on turn state. Finalization consumes
-the wake occurrence with the existing cursor primitive, then terminalizes folded
-same-batch siblings by exact event id before `mark_consumer_none()`. It must not
-consume by sequence range: different-`batch_id` work can interleave between
-same-batch siblings and must remain pending for the next turn.
+processor wake reserves `T.consumer.status = scheduled` for
+`T.consumer.turn_id`. Before the foreign runtime starts, its adapter reads the
+lane without consuming it and folds the **whole pending snapshot**: the wake
+occurrence, same-ingress attachments and context, and any still-pending messages
+queued while the previous turn ran. Consumed, promoted, and failed occurrences
+stay out; selected occurrences are sequence ordered and their exact lane message
+ids are recorded on turn state. A single fold may therefore span several
+`batch_id` values.
 
-This is still the July release-before-handoff contract: consume the accepted
-start batch, release `T.consumer` to `none`, then publish any duplicate liveness
-wake for remaining work. Same-batch siblings are not later work. A true mid-turn
-followup is outside the folded start batch, remains unconsumed, and may be
-re-woken after release. Native ReAct is unaffected by this folded-batch handoff:
-ReAct advances its own lane state inside `BaseWorkflow`, leaves the reservation
-released and the event accounted, and the shared finalizer returns as a state
-no-op.
+While the foreign runtime runs, its lane watcher remains read-only. It calls
+`heartbeat_scheduled_consumer(turn_id=...)`, which refreshes `status_at` only
+when both the `scheduled` status and reservation owner match. It does not open a
+handler, mark the consumer `active`, or fold arriving content. LangGraph may use
+the same watch to cancel its stream on steer; Claude Code may deliver control at
+its own tool boundary. Content not proven delivered remains pending.
+
+The shared door finalizer consumes the wake occurrence with the existing cursor
+primitive, terminalizes every event in the start snapshot by exact message id,
+and calls `mark_consumer_none(turn_id=...)`. Events arriving after the snapshot
+remain pending. After release it emits at most one liveness wake for eligible
+reactive intent after the last steer. A bare steer is terminalized; textual steer
+stays pending but does not itself start a turn. Native ReAct is unaffected:
+`BaseWorkflow` already leaves the reservation released and the event accounted,
+so the shared finalizer is a state-based no-op.
 
 A subagent completion (`subagent.converged` / `subagent.failed`) rides this same
 lane as a promotable event: a live parent turn folds it and the promoter acks,
@@ -214,18 +224,19 @@ scheduled_is_fresh =
   and now - T.consumer.status_at <= event_bus.consumer.scheduled_ttl_ms
 ```
 
-`T.consumer.status_at` is written by the lane Consumer or proc. Processor
-heartbeat can help diagnose long-running work, but it does not replace this
-lane-local acknowledgement.
+`T.consumer.status_at` is written by proc, the live lane Consumer, or the
+matching foreign-runtime reservation watcher. Processor heartbeat can help
+diagnose long-running work, but it does not replace this lane-local
+acknowledgement.
 
-**A long turn must keep writing it.** Native ReAct does, through
-`mark_consumer_active`. A run-to-completion hosted turn did not, so its
-`scheduled` reservation went stale after 30 seconds while the turn itself ran
-for minutes — and a message typed after that was admitted as a new turn instead
-of waiting for the handoff, which reads as a turn that simply started. The
-foreign-runtime lane watcher now heartbeats the consumer on its poll, so the
-reservation lasts as long as the turn. A lane that stops being marked still goes
-stale, which is the self-healing path for a worker that died.
+**A long turn must keep writing it through the primitive for its ownership
+model.** Native ReAct calls `mark_consumer_active` while its handler is open. A
+foreign runtime calls `heartbeat_scheduled_consumer(turn_id=...)`; the update is
+ignored unless that same turn still owns a `scheduled` reservation, and the
+status remains `scheduled`. Before this heartbeat existed, a hosted turn's
+reservation went stale after 30 seconds while the turn itself ran for minutes,
+allowing a later message to start another turn. A worker that dies stops
+heartbeating, so TTL expiry remains the self-healing path.
 
 A fresh `active` acknowledgement suppresses a wake only while
 `T.handler.status == open`. `handler=closed, consumer=active` is a recoverable
@@ -256,12 +267,13 @@ Core operations:
 
 | Operation | Writer role |
 | --- | --- |
-| `schedule_consumer_from_wake(wake_event_timestamp=...)` | Proc after reading a wake item. |
+| `schedule_consumer_from_wake(wake_event_timestamp=..., turn_id=...)` | Proc after reading a wake item; records the reservation owner. |
 | `open_handler(turn_id=...)` | BaseWorkflow / ContextBrowser handler setup before timeline load. |
 | `mark_consumer_active(turn_id=...)` | Reader/Consumer activation or active acknowledgement. |
+| `heartbeat_scheduled_consumer(turn_id=...)` | Foreign-runtime watcher; refreshes only its matching scheduled reservation. |
 | `accept_events_for_open_handler(events, turn_id=..., accept=...)` | Reader/Consumer lane drain. |
 | `try_close_handler(turn_id=..., handler_processed_event_timestamp=...)` | ReAct handler close gate. |
-| `mark_consumer_none()` | Reader/Consumer release after turn finalization. |
+| `mark_consumer_none(turn_id=...)` | Owner-fenced release after turn finalization. |
 
 Each lock holder records its operation, process, task, and acquisition time in
 the lock value. A timeout reports those fields plus the remaining lock TTL,

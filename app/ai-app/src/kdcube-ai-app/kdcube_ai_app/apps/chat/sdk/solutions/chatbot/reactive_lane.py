@@ -22,10 +22,10 @@ agent-type branch:
     own event is already accounted for (consumed, or covered by the reactive
     cursor) → no-op. This is exactly the post-ReAct lane state, so a ReAct turn is
     inert here with no ``if react`` check.
-  * Otherwise (a run-to-completion turn left it reserved) → release the consumer,
-    mark the turn's own event consumed for exactly-once, and re-wake any reactive
-    event that landed during the turn (a queued followup) so it promotes to the
-    next turn.
+  * Otherwise (a run-to-completion turn left it reserved) → account for the wake
+    and every exact event id in its read-only pending-lane snapshot, release the
+    turn-owned consumer reservation, and wake at most one eligible intent after
+    the last steer boundary.
 
 It reuses the existing lane primitives only: the source's ``mark_consumed_up_to``
 (the same exactly-once mark ``BaseWorkflow`` uses), the orchestrator's
@@ -103,7 +103,8 @@ def _is_bare_steer(event: Any) -> bool:
     It asks a RUNNING turn to wrap up. Reaching this function means the turn
     already ended, so there is nothing left to ask, and waking a turn for it
     means the model is handed an empty message: pressing stop bought a turn
-    instead of saving one. A steer WITH text is an instruction and still wakes.
+    instead of saving one. A steer WITH text remains pending, but the steer
+    itself still does not wake a turn.
     """
     from kdcube_ai_app.apps.chat.sdk.protocol import external_event_text
 
@@ -317,13 +318,11 @@ async def finalize_reactive_event_lane(
             except Exception:
                 log.debug("reactive lane finalize: mark_consumed_up_to failed", exc_info=True)
 
-        # A single visible UI send arrives as an ingress batch: prompt plus
-        # sibling attachments/context events. The foreign-runtime batch fold reads
-        # those siblings into this turn, so the finalizer must terminalize those
-        # exact lane occurrences before liveness re-wake scans the lane. This is
-        # deliberately exact-id based, not a sequence-range consume: an
-        # accepted occurrence from a different batch can interleave between
-        # same-batch siblings and must remain pending for the next turn.
+        # The foreign-runtime start fold may span several ingress batches: the
+        # wake occurrence, attachment/context siblings, and messages queued
+        # while the previous turn ran. Finalize exactly what this turn saw.
+        # A range consume would also swallow an event that arrived after the
+        # snapshot while execute_core was already running.
         folded_ids = []
         seen_folded_ids = set()
         for item in consumed_event_ids or []:
@@ -345,7 +344,7 @@ async def finalize_reactive_event_lane(
                 log.debug("reactive lane finalize: mark_consumed_event failed", exc_info=True)
         if folded_ids:
             log.info(
-                "[reactive-lane] run-to-completion consumed folded event batch "
+                "[reactive-lane] run-to-completion consumed folded lane snapshot "
                 "conversation=%s turn_id=%s own_sequence=%s folded_events=%s exact_consumed=%s",
                 getattr(source, "conversation_id", None),
                 turn_id,

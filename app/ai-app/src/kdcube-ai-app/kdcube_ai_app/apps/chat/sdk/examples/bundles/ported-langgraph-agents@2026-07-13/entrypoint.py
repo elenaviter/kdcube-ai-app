@@ -980,11 +980,11 @@ class LGPortedAgentsBundle(BaseEntrypointWithEconomics):
         # Built fresh every turn — no in-process graph cache (scaled serving).
         graph = await self._build_graph(agent_id, disabled=disabled)
 
-        # (batch fold) the lane-wakeup dispatch hands a run-to-completion turn
-        # only its single wakeup event (the prompt) — the attachment events
-        # that arrived in the SAME ingress batch ride separate lane events.
-        # Fold the batch back in (bundle-local, read-only on the lane; see
-        # platform/turn_batch.py). Fail-open: the dispatched events stand.
+        # (pending-lane fold) dispatch names one wake occurrence. Read the whole
+        # still-pending lane once so this turn also sees attachment/context
+        # siblings and messages queued while the previous turn ran. The shared
+        # seam is read-only and records exact ids for door finalization.
+        # Fail-open: the dispatched events stand.
         state["external_events"] = await fold_turn_external_events(self, state)
 
         # (state mapping) pull the user's question out of the platform external
@@ -1100,9 +1100,10 @@ class LGPortedAgentsBundle(BaseEntrypointWithEconomics):
         # the run. This agent does not consume live events into its own loop —
         # that loop is LangGraph's and folding into it mid-run would contradict
         # the graph's own iteration — so the watcher is read-only and everything
-        # it saw, the steer included, is still PENDING when the run is cancelled.
-        # The handoff folds it into the next turn, and the checkpointer holds the
-        # last completed node, so a stop loses nothing that finished.
+        # it saw is still PENDING when the run is cancelled. Finalization spends
+        # a bare steer as the stop boundary and wakes only for later intent;
+        # retained text is folded when a later turn starts. The checkpointer
+        # holds the last completed node, so a stop loses nothing that finished.
         async def _run_turn_stoppable() -> Dict[str, Any]:
             outcome = await run_until_stopped(self, state, _run_turn)
             if not outcome.stopped:

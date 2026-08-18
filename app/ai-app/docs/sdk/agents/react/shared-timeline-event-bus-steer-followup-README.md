@@ -3,6 +3,7 @@ id: repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/shared-timeline-event-bu
 title: "Shared Timeline Event Bus for Steer and Followup"
 summary: "How active React turns consume followup and steer events through the shared conversation event bus while preserving turn ownership and fallback continuation execution."
 tags: ["sdk", "agents", "react", "timeline", "steer", "followup", "continuations", "redis"]
+updated_at: 2026-08-18
 keywords:
   [
     "shared timeline",
@@ -178,7 +179,9 @@ Ingress already handles busy conversations:
 - continuations are published into the shared per-conversation external event source
 - the live React owner can now consume them through the active timeline listener
 - processor may promote the next eligible unconsumed continuation after the
-  current task completes; an unconsumed `event.user.steer` expires
+  current task completes; at a foreign-runtime handoff, an unconsumed bare
+  `event.user.steer` is terminalized, while steer text stays pending without
+  waking a turn by itself
 
 This is now both:
 - a shared live timeline contribution model for active React turns

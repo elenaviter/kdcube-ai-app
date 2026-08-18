@@ -195,10 +195,12 @@ either way — offline turns emit a single answer delta instead of a token strea
 
 ## Both agents are run-to-completion
 
-Each agent runs a turn to completion and does **not** consume in-turn
-followups/steers; a followup sent mid-turn is promoted to the next turn (the
-queued-next contract). In-turn followup/steer is an advanced reactive-port tier
-neither agent implements — the correct default for a ported LangGraph agent.
+Each agent folds the whole pending conversation lane once at turn start, then
+runs under the shared foreign-runtime read-only watcher. Follow-ups arriving
+after that snapshot remain pending for the next fold. Steer cancels the graph
+stream; the checkpointer keeps the last completed node and the adapter repairs a
+dangling tool-call boundary before the thread is used again. The capability
+contract is therefore `accepts_followup: false`, `accepts_steer: true`.
 
 ## Links
 

@@ -4,7 +4,7 @@ title: "Architecture Long"
 summary: "Detailed current KDCube architecture: deployment scope, app catalogs and surfaces, ingress, ordered conversation lanes, Data Bus and relay, identity and delegation, cross-runtime context, isolated execution, storage, scaling, sites, and economics."
 status: current
 tags: ["arch", "architecture", "runtime", "apps", "events", "identity", "execution", "storage"]
-updated_at: 2026-08-13
+updated_at: 2026-08-18
 keywords: ["KDCube architecture", "tenant project", "app provider consumer", "conversation event bus", "data bus", "isolated execution", "Connection Hub", "site catalog"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
@@ -319,17 +319,17 @@ work but does not contain the authoritative event body or define its order.
 
 ```text
 reactive ingress
-  atomically append one prepared start batch to lane L
+  atomically append one prepared event batch to lane L
   atomically admit one ExternalEventLaneWakeup pointer to queue Q
 
 non-reactive ingress
   append events to lane L only
 ```
 
-The processor consumes the wake, resolves the accepted start batch from lane
+The processor consumes the wake, resolves its accepted occurrence from lane
 state, reconstructs `ExternalEventPayload` from retained `task_payload`, and
-invokes the routed app's conversation-event surface. One start batch may
-contain same-ingress sibling events.
+invokes the routed app's conversation-event surface. The adapter determines how
+the turn reads the ordered lane.
 
 A live turn consumes later events through `ContextBrowser`. Ownership combines:
 
@@ -354,11 +354,11 @@ commit an answer, or become conversation head.
 
 `@on_reactive_event` starts one scheduled app turn. Native KDCube ReAct can fold
 eligible later events into that live turn. A run-to-completion adapter,
-including the current ported LangGraph reference, consumes only its accepted
-start batch; later events wait for another turn. A custom adapter gets live
-folding only when it wires that consumer explicitly. Passive versus promotable
-behavior is decided by the event's retained `task_payload`, not by
-`reactive: false` alone.
+including the current ported LangGraph reference, folds the whole pending lane
+once at start and watches read-only afterward. Its turn-owned scheduled
+heartbeat prevents a duplicate starter without granting live-fold authority;
+later arrivals remain pending. Passive versus promotable behavior is decided by
+the event's retained `task_payload`, not by `reactive: false` alone.
 
 ## 9. Event Materialization
 
@@ -383,8 +383,10 @@ producing service or explicit source-owned processing.
 Steer and followup are semantic event types nested inside the uniform external
 event transport envelope. Eligible followups may add bounded iteration credit;
 a steer requests active-phase cancellation and bounded finalization. This does
-not promise synchronous termination of every possible external process. An
-unconsumed `event.user.steer` expires and never becomes future work.
+not promise synchronous termination of every possible external process. At a
+foreign-runtime handoff, an unconsumed bare `event.user.steer` is terminalized;
+a steer carrying text stays pending for a later fold but does not wake a turn by
+itself.
 
 ## 10. Data Bus And Client Relay
 

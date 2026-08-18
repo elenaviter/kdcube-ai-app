@@ -4,7 +4,7 @@ title: "What I Should Know Before Writing a KDCube App"
 summary: "A builder's mind map for KDCube apps: async runtime rules, provider and consumer surfaces, identity and delegation, configuration, storage, concurrency, eventing, conversations, economics, UI, telemetry, isolated execution, and operational checks."
 status: current
 tags: ["recipe", "app", "bundle", "builder", "runtime", "async", "surfaces", "storage", "eventing", "economics"]
-updated_at: 2026-08-13
+updated_at: 2026-08-18
 keywords:
   [
     "KDCube app ingredients",
@@ -398,8 +398,9 @@ the event body. The active lane owner reads accepted events and the app's one
 
 - KDCube ReAct may keep the lane open and fold eligible later events into its
   active turn.
-- A run-to-completion framework adapter gets a fixed start batch. Later events
-  create a later turn.
+- A foreign runtime folds the whole pending lane once at turn start, keeps its
+  owned `scheduled` reservation fresh, and may watch control read-only. Events
+  arriving after the fold remain pending for the handoff.
 
 Do not assume every agent has ReAct's live-fold behavior. Read
 [External Events Journey and Handling](../sdk/events/external-events-journey-and-handling-README.md).

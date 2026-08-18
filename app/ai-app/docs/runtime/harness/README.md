@@ -3,7 +3,7 @@ id: repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/README.md
 title: "Agent Harness Runtime"
 summary: "Framework-neutral event, timeline, and workspace contracts shared by KDCube agent adapters."
 tags: ["runtime", "harness", "agents", "events", "timeline", "workspace"]
-updated_at: 2026-07-18
+updated_at: 2026-08-18
 keywords:
   [
     "agent harness",
@@ -80,7 +80,7 @@ An adapter decides how to use those contracts:
 | Adapter concern | Example |
 | --- | --- |
 | Model protocol | ReAct channels and actions; a ported graph's own state transitions. |
-| Scheduling semantics | ReAct can fold eligible events during a live turn; a run-to-completion graph may consume a batch only at turn start. |
+| Scheduling semantics | ReAct can fold eligible events during a live turn; a foreign runtime folds one read-only whole-pending snapshot at turn start and may watch control afterward. |
 | Model tools | `react.pull`, `react.read`, and `react.checkout` are ReAct-facing tools over shared workspace/resolver primitives. |
 | Prompt projection | ReAct ANNOUNCE, compaction, context cache, and round layout remain ReAct-owned. |
 | Tool/result rendering | The common timeline projection validates provider-owned patches; each adapter decides when to invoke it and how to expose the result. |

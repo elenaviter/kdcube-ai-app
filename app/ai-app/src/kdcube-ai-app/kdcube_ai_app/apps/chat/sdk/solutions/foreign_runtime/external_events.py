@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 #
-# ── external_events.py ── deliver the WHOLE ingress batch to this turn ──
+# ── external_events.py ── deliver the WHOLE pending lane to this turn ──
 #
 # A browser message arrives at ingress as one BATCH of external events —
 # context events, the user prompt, and one `event.user.attachment.file` event
@@ -14,8 +14,8 @@
 # the attachment events (the model answers "whats here" blind to the attached
 # image).
 #
-# This module is the foreign-runtime equivalent of ReAct's lane fold: read the
-# lane and hand back EVERY event still pending at the start of this turn, in
+# This module is the foreign-runtime turn-start equivalent of ReAct's live lane
+# fold: read the lane and hand back EVERY event still pending at turn start, in
 # lane order, as accepted-event dicts. READ-ONLY on the lane: no consumption
 # marks, no reservation changes — lane bookkeeping stays with the shared
 # finalize.
@@ -25,9 +25,9 @@
 # while a turn was running therefore produced two more turns, answered in
 # isolation: the agent replied to the first without knowing the second existed,
 # and a second message that CORRECTED the first was read only after the work it
-# corrected had been paid for. ReAct never had this problem — it folds the
-# pending lane into its next iteration — so the foreign-runtime seam now folds
-# the same way it does.
+# corrected had been paid for. The foreign-runtime seam now folds the complete
+# pending snapshot once before its native loop starts; ReAct still owns a live
+# handler and may fold again at its own iteration boundaries.
 
 from __future__ import annotations
 
@@ -242,7 +242,7 @@ async def fold_turn_external_events(entrypoint: Any, state: Dict[str, Any]) -> L
         return bodies
     except Exception:
         LOGGER.warning(
-            "[foreign-runtime] turn batch fold failed; using the dispatched events",
+            "[foreign-runtime] pending-lane fold failed; using the dispatched events",
             exc_info=True,
         )
         return events

@@ -1,7 +1,7 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/service/comm/conversation-event-bus-and-data-bus-README.md
 title: "Conversation Event Bus And Data Bus"
-summary: "How conversation external events and the app-scoped Data Bus fit together, including transport shape, routing, persistence, ordering, replies, and bridge patterns."
+summary: "How conversation external events and the app-scoped Data Bus fit together, including transport shape, routing, persistence, ordering, live and foreign-runtime consumption, replies, and bridge patterns."
 status: active
 tags: ["service", "comm", "conversation-events", "data-bus", "socketio", "redis-streams", "app-runtime", "bundle-legacy-field"]
 keywords:
@@ -92,10 +92,11 @@ external-event hook under the Redis handler-owner fence.
 
 That live folding statement is specific to native ReAct-style runtimes that open
 a `ContextBrowser` handler. A run-to-completion hosted runtime uses the same
-conversation event bus and processor wake, but folds only the wake occurrence's
-same-`batch_id` start batch into its one execution. Different-`batch_id` reactive
-work remains in the lane and can schedule a later serialized turn after the
-hosted runtime's shared door finalizer releases the lane.
+conversation event bus and processor wake, but folds the whole still-pending lane
+once before execution. It keeps its own `scheduled` reservation fresh and may
+watch control without opening a live handler. Events arriving after that
+snapshot remain pending; after release the shared finalizer emits at most one
+wake for eligible intent after the last steer.
 
 The durable Postgres conversation-state record is a projection used by UI and
 admission logic. It is not the conversation-event-bus lease. Turn liveness,

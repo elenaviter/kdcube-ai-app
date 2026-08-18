@@ -1,7 +1,7 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/arch/proc/events-orchestration-README.md
 title: "Proc Events Orchestration"
-summary: "Processor-side orchestration for external events: ready-queue wakeups, lane payload resolution, lane-state scheduling, and boundaries with ReAct timeline folding."
+summary: "Processor-side orchestration for external events: ready-queue wakeups, lane payload resolution, owner-fenced scheduling, native ReAct folding, and foreign-runtime pending snapshots."
 status: active
 tags: ["arch", "proc", "events", "external-events", "redis", "processor", "react"]
 keywords:
@@ -64,8 +64,9 @@ Processor
       ContextBrowser performs the initial fold, then its live listener folds
       later lane events into the same turn before subsequent model renders
     run-to-completion hosted runtime:
-      fold only the wakeup occurrence's start batch, then let the shared door
-      terminalize folded same-batch siblings before lane release
+      fold the whole pending lane once in sequence order
+      heartbeat only this turn's scheduled reservation and watch control read-only
+      let the shared door account exact ids, release, and wake at most one later intent
 ```
 
 The important boundary is:

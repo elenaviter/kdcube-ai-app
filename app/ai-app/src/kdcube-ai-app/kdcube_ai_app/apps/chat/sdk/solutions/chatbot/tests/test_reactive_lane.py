@@ -186,8 +186,8 @@ async def test_release_rewakes_mid_turn_followup_not_own_event(monkeypatch):
 
     await rl.finalize_reactive_event_lane(redis=object(), comm_context=_comm_context())
 
-    # The mid-turn followup is re-woken (promoted to the next turn); the turn's
-    # own event is never re-woken (no double run).
+    # The mid-turn followup provides one liveness wake for the next fold; the
+    # turn's own event is never re-woken (no double run).
     assert published == ["evt-followup"]
 
 

@@ -17,7 +17,7 @@ keywords:
     "private proxy",
     "cross app identity",
   ]
-updated_at: 2026-08-12
+updated_at: 2026-08-18
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/how-to-integrate-with-kdcube-apps-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/integrate-cross-app-surface-README.md
@@ -308,7 +308,8 @@ app A API/webhook/service adapter
   -> build target app/conversation identity in RequestContext + IngressConfig
   -> ChatIngressSubmitter.submit(... external_events[] ...)
   -> atomic conversation-lane admission
-  -> one accepted start batch for the next target turn
+  -> reserve one serialized target turn
+  -> target adapter maps its live or pending-lane input
   -> target app @on_reactive_event / run()
   -> timeline + communicator output
 ```

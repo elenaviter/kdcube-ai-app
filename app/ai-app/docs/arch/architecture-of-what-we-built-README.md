@@ -4,7 +4,7 @@ title: "Architecture Of What We Built"
 summary: "Current platform-runtime map of KDCube: one tenant/project deployment, browser and external ingress, app loading, ordered conversation eventing, Data Bus, tenant/project/session relay, identity and authority, storage ownership, isolated execution, economics, and deployment profiles."
 status: current
 tags: ["arch", "architecture", "runtime", "services", "ingress", "events", "authority", "execution", "deployment"]
-updated_at: 2026-08-13
+updated_at: 2026-08-18
 keywords: ["platform architecture", "runtime architecture", "tenant project deployment", "conversation event lane", "data bus", "SSE relay", "cross runtime context", "isolated execution", "application site catalog"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
@@ -190,12 +190,13 @@ id cursor drives the close gate, including explicit advancement for events that
 produce no timeline blocks. Superseded turns cannot fold new events or become
 conversation head.
 
-One accepted start batch starts one `@on_reactive_event` app turn. The batch may
-contain same-ingress sibling events. Native KDCube ReAct can fold eligible later
-events into the live turn. A run-to-completion adapter, including the current
-ported LangGraph reference, consumes only its accepted start batch; later work
-waits for a future turn. A custom adapter must wire live folding explicitly.
-Unconsumed `event.user.steer` expires and never becomes future work.
+One accepted reactive occurrence wakes one serialized `@on_reactive_event` app
+turn. Native KDCube ReAct can fold eligible later events into the live turn. A
+run-to-completion adapter, including the current ported LangGraph reference,
+folds the whole pending lane once, then watches read-only while later content
+stays pending. Its owned scheduled heartbeat is not live-folding authority. At
+handoff a bare steer expires; textual steer remains pending without starting a
+turn, and only eligible intent after the last steer can wake the next turn.
 
 ## Conversation Event Bus, Data Bus, And Relay
 

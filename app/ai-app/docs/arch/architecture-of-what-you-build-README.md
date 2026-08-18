@@ -4,7 +4,7 @@ title: "Architecture Of What You Build"
 summary: "Builder architecture for KDCube apps: optional surface families, provider and consumer directions, existing or ready agents, scenes, named-service realms, events, websites, storage, authority, and package contracts."
 status: current
 tags: ["arch", "architecture", "apps", "surfaces", "provider", "consumer", "named-services", "scene"]
-updated_at: 2026-08-13
+updated_at: 2026-08-18
 keywords: ["KDCube app architecture", "as provider", "as consumer", "app surfaces", "named service", "scene", "default chat"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
@@ -116,12 +116,12 @@ the graph inside every turn from configuration and shared/checkpointed state;
 the graph instance exists for that turn only. Long-lived app instances retain
 connections, not graph or conversation state.
 
-The current run-to-completion reference consumes one accepted start batch per
-turn; that batch may contain same-ingress sibling events. Events arriving later
-wait for a future turn. Native KDCube ReAct can fold eligible later events into
-its live turn. A custom adapter gets that behavior only when it wires the live
-conversation-event consumer explicitly. Unconsumed `event.user.steer` expires;
-it is never promoted into future work.
+The current run-to-completion reference folds the whole pending lane once per
+turn, in sequence order, then watches control read-only while later content
+remains pending. Its owner-fenced scheduled heartbeat prevents another starter
+without claiming ReAct's live handler. Native KDCube ReAct can fold eligible
+later events into its live turn. At foreign-runtime handoff a bare steer expires;
+textual steer remains pending but does not itself start a turn.
 
 Or use KDCube ReAct when you want a ready harness with a logical workspace,
 tools, skills, files, web search, named services, conversation events,

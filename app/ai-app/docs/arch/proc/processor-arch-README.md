@@ -1,7 +1,7 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/arch/proc/processor-arch-README.md
 title: "Processor Architecture"
-summary: "Current processor architecture: queue claiming, lane-backed external-event wakeups, execution, recovery, shutdown, and shared followup/steer behavior."
+summary: "Current processor architecture: queue claiming, lane-backed external-event wakeups, owner-fenced native and foreign runtime execution, recovery, shutdown, and followup/steer behavior."
 tags: ["arch", "proc", "processor", "queues", "redis", "sse", "shutdown"]
 keywords: ["proc", "chat processor", "inflight", "drain", "turn interruption", "steer", "followup", "redis streams"]
 see_also:
@@ -256,10 +256,11 @@ If a live React owner exists:
 - `steer` can be folded into the active turn, cancel the active generation/tool phase when possible, and then bound React to a short finalize window
 
 If the invoked bundle is a run-to-completion hosted runtime rather than native
-ReAct, there is no live `ContextBrowser` reader. The runtime folds only the
-wakeup occurrence's same-`batch_id` start batch into the turn input; later
-different-`batch_id` reactive work remains in the lane and can schedule the next
-turn after the current turn releases the lane.
+ReAct, there is no live `ContextBrowser` reader. The runtime folds the whole
+pending lane once into turn input, in sequence order, then watches read-only.
+The watcher refreshes only that turn's `scheduled` reservation and may translate
+steer at a runtime-specific boundary. Later content remains pending until the
+current turn accounts for its exact start snapshot and releases the lane.
 
 ### 4.2 Claim on proc
 
@@ -390,8 +391,8 @@ sequenceDiagram
         R->>M: read pending external event
         R->>R: Apply followup during active turn or stop on steer at safe checkpoint
     else hosted run-to-completion or event remains unconsumed after artifacts persist
-        Note over R,M: Hosted run-to-completion folded only the start batch; different batch_id waits.
-        R->>Q: post-save handoff LPUSH ExternalEventLaneWakeup
+        Note over R,M: Hosted runtime folded the pending lane once; later arrivals stay pending under a read-only watch.
+        R->>Q: release, then at most one eligible post-steer handoff wake
         Note over P1,P2: P2 may be the same or a different proc worker
         P2->>Q: BRPOPLPUSH claim handoff wakeup
         P2->>M: Resolve event.task_payload by event_id
@@ -1286,9 +1287,10 @@ That architecture is now much safer for long-running workers:
 - it lets live steer stop the current turn at a safe checkpoint
 - native ReAct uses ContextBrowser post-save handoff to wake remaining
   unconsumed reactive lane work
-- it lets run-to-completion hosted runtimes fold one start batch and rely on the
-  shared door finalizer for exact same-batch sibling consumption and later-work
-  wakeup
+- it lets run-to-completion hosted runtimes fold the whole pending lane once,
+  heartbeat only their owned scheduled reservation, watch control read-only,
+  and rely on the shared door for exact-id accounting, release, and one-wake
+  handoff semantics
 
 The next major step is no longer "improve wake handoff".
 It is to replace the current queue-centric execution model with a real conversation scheduler:
