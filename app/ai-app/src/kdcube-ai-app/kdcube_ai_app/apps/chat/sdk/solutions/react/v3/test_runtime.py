@@ -11,7 +11,11 @@ import pytest
 from kdcube_ai_app.apps.chat.sdk.events.event_bus.exceptions import ExternalEventLaneTurnSuperseded
 from kdcube_ai_app.apps.chat.sdk.solutions.react.v3.runtime import ReactSolverV2
 from kdcube_ai_app.apps.chat.sdk.solutions.react.round import ReactRound
-from kdcube_ai_app.apps.chat.sdk.solutions.react.layout import build_tool_catalog, build_tools_block
+from kdcube_ai_app.apps.chat.sdk.solutions.react.layout import (
+    build_instruction_catalog_block,
+    build_tool_catalog,
+    build_tools_block,
+)
 from kdcube_ai_app.apps.chat.sdk.runtime.tool_subsystem import ToolSubsystem
 
 
@@ -158,6 +162,42 @@ def test_compact_tool_catalog_preserves_semantic_kernel_parameter_docs():
     assert "Path(OUTPUT_DIR) / artifact_rel" in rendered
     assert "artifact_path.parent.mkdir(parents=True, exist_ok=True)" in rendered
     assert "prog_name:str? — Short name used for UI labeling." in rendered
+
+
+@pytest.mark.parametrize("detail", ["full", "compact"])
+def test_instruction_catalog_renders_structured_mcp_return_schema(detail):
+    output_schema = {
+        "type": "object",
+        "properties": {
+            "visible_tools": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+        },
+        "required": ["visible_tools"],
+    }
+
+    rendered = build_instruction_catalog_block(
+        consumer="test",
+        tool_catalog=[
+            {
+                "id": "mcp.knowledge.get_access_context",
+                "doc": {
+                    "purpose": "Return the active knowledge access context.",
+                    "args": {},
+                    "returns": output_schema,
+                },
+            },
+        ],
+        include_skill_gallery=False,
+        tool_catalog_detail=detail,
+    )
+
+    assert '"required": ["visible_tools"]' in rendered
+    assert '"visible_tools"' in rendered
+    assert '"items": {"type": "string"}' in rendered
+    assert '"type": "array"' in rendered
+    assert "'visible_tools'" not in rendered
 
 
 @pytest.mark.asyncio

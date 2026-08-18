@@ -710,24 +710,52 @@ bundles:
                         label: task editor
                         expanded: true
                         command_from_open: provider_surface_open
-        # react:
-        #   default_agent:            # or a per-agent key (e.g. main)
-        #     # Per-user model choice for the strong decision role
-        #     # (solver.react.v2.decision.v2.strong). Users pick ONE of these
-        #     # in the chat composer menu; the pick overrides role_models for
-        #     # their turns. Entries mirror the economics price-table rows, so
-        #     # every allowed model is one the platform accounts for. Absent
-        #     # list keeps the model choice invisible.
-        #     supported_models:
-        #       - model: claude-sonnet-4-6
-        #         provider: anthropic
-        #         label: Sonnet 4.6
-        #       - model: claude-opus-4-6
-        #         provider: anthropic
-        #         label: Opus 4.6
-        #       - model: claude-haiku-4-5-20251001
-        #         provider: anthropic
-        #         label: Haiku 4.5
+        react:
+          agents:
+            main:
+              role_models:
+                solver.react.v2.decision.v2.strong:
+                  provider: anthropic
+                  model: claude-haiku-4-5-20251001
+              instructions:
+                tool_catalog_detail: compact
+                skills_form: compact
+          default_agent:
+            # Per-user choices in the chat composer. A stored user or
+            # conversation choice overrides these descriptor defaults.
+            supported_models:
+              - model: claude-haiku-4-5-20251001
+                provider: anthropic
+                label: Haiku 4.5
+              - model: claude-opus-5
+                provider: anthropic
+                label: Opus 5
+              - model: claude-sonnet-5
+                provider: anthropic
+                label: Sonnet 5
+              - model: claude-fable-5
+                provider: anthropic
+                label: Fable 5
+            instruction_profiles:
+              default: extra-lite
+              options:
+                - id: full
+                  label: Full
+                  description: The complete battle-proven instruction set.
+                - id: lite
+                  label: Lite (moderate)
+                  description: Full-signal moderate set at ~40% of the full size.
+                  blocks:
+                    - lite:all_capabilities
+                - id: extra-lite
+                  label: Extra Lite (local models)
+                  description: Distilled single-action instruction set for locally served models.
+                  multi_action_mode: "off"
+                  include_skill_gallery: false
+                  tool_catalog_detail: compact
+                  skills_form: compact
+                  blocks:
+                    - xlite:workspace_exec
         execution:
           runtime:
             mode: docker

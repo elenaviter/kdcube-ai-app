@@ -2662,6 +2662,13 @@ bundles:
       react:
         agents:
           main:
+            role_models:
+              solver.react.v2.decision.v2.strong:
+                provider: anthropic
+                model: claude-haiku-4-5-20251001
+            instructions:
+              tool_catalog_detail: compact
+              skills_form: compact
             subagents:
               allowed: true
               model: strong_agent
@@ -2670,9 +2677,6 @@ bundles:
           event_source_pipeline:
             enabled: true
           supported_models:
-          - model: claude-sonnet-4-6
-            provider: anthropic
-            label: Sonnet 4.6
           - model: claude-haiku-4-5-20251001
             provider: anthropic
             label: Haiku 4.5
@@ -2701,10 +2705,9 @@ bundles:
           #   provider: custom
           #   label: Mistral 7B Instruct v0.2 (local)
           #   num_ctx: 32768
-          # Users pick an instruction set per conversation alongside the model:
-          # `full` is the platform default body; `extra-lite` is the distilled
-          # set sized for serving-constrained local models (pairs with the
-          # provider: custom entries above).
+          # Users pick an instruction set per conversation alongside the model.
+          # Workspace starts with the distilled `extra-lite` profile; users may
+          # select `full` or `lite` when a task needs their broader instruction set.
           # A profile's `blocks` compose the instruction body in the order given.
           # One unified vocabulary: `full` (the complete default set; monolithic),
           # `lite:<profile>` / `xlite:<profile>` (a whole moderate/extra-lite
@@ -2714,7 +2717,7 @@ bundles:
           # predefined: instr:profile:full|lite|extra-lite.
           # Profiles: core · workspace · workspace_exec · document · web · all_capabilities.
           instruction_profiles:
-            default: full
+            default: extra-lite
             options:
             - id: full
               label: Full

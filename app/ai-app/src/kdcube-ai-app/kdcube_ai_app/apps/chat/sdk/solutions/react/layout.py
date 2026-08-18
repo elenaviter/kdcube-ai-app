@@ -2247,6 +2247,20 @@ def build_tool_catalog(adapters: Optional[List[Dict[str, Any]]] = None,
     return tool_catalog
 
 
+def _catalog_contract_text(value: Any) -> str:
+    """Render prose or structured tool contracts as deterministic text."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list, tuple)):
+        try:
+            return json.dumps(value, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError):
+            pass
+    return str(value)
+
+
 def build_tools_block(
         tool_catalog: Optional[List[Dict[str, Any]]],
         *,
@@ -2276,10 +2290,10 @@ def build_tools_block(
 
     for idx, tool in enumerate(tool_catalog, start=1):
         tid = tool.get("id", "unknown")
-        purpose = tool.get("purpose", "")
+        purpose = _catalog_contract_text(tool.get("purpose", ""))
         is_async = tool.get("is_async", False)
         args = tool.get("args", {})
-        returns = tool.get("returns", "")
+        returns = _catalog_contract_text(tool.get("returns", ""))
         examples = tool.get("examples", [])
         constraints = tool.get("constraints", [])
         namespaces_applicable = tool.get("namespaces_applicable")
@@ -2395,7 +2409,7 @@ def build_tools_block(
             for ex_idx, example in enumerate(examples, start=1):
                 if isinstance(example, dict):
                     desc = example.get("description", "")
-                    code = example.get("code", "")
+                    code = _catalog_contract_text(example.get("code", ""))
                     if desc:
                         lines.append(f"       {ex_idx}. {desc}")
                     if code:
@@ -2413,7 +2427,7 @@ def build_tools_block(
 def _compact_catalog_text(value: Any) -> str:
     """Whitespace-normalize catalog contract text. NEVER truncates — a cut
     purpose/param/return description is a lost contract."""
-    return re.sub(r"\s+", " ", str(value or "")).strip()
+    return re.sub(r"\s+", " ", _catalog_contract_text(value)).strip()
 
 
 def _annotation_node_name(node: ast.AST) -> str:
