@@ -58,8 +58,8 @@ surface, config, visibility, APIs, tools, event policies, resolvers, storage,
 and tests. Use [Bundle Subsystem Integration](bundle-subsystem-integration-README.md)
 before mounting shared UI such as memory or canvas.
 
-For the full lifecycle of discovery, preload, build, request-time fallback,
-shared-storage locks, signatures, and concurrent workers, see
+For the full lifecycle of discovery, supervised preparation, side-effect-free
+serving, shared-storage locks, signatures, and concurrent workers, see
 [UI Components Lifecycle](./ui-components-lifecycle-README.md).
 
 For mounted bundle source edits and descriptor-backed widget config changes,
@@ -554,18 +554,19 @@ triggers a full rebuild via `build_command`.
 **How to force a rebuild**:
 
 - `touch` any non-ignored file under the widget's `src_folder` (changes
-  `mtime_ns` → changes the signature)
+  `mtime_ns` -> changes the signature), then run the supported app reload
 - change anything in `build_command` (e.g. add a no-op flag)
-- delete the signature file directly:
-  `rm <bundle_storage_root>/.ui.widgets/<safe_alias>.signature`
-- bump the bundle id (rarely useful for local development)
+- save a new immutable app ref or run `kdcube bundle reload <bundle_id>` after
+  a local source change
 
-**Concurrency**: startup preload is coordinated through Redis app-generation
-claims, so workers on ECS can divide app preload work instead of all taking the
-same app. The UI build itself still runs inside a shared-storage lock keyed by
-the bundle storage root, so request-time fallback and any missed preload case
-remain safe on EFS. Workers that arrive after the signature was written hit the
-cache and skip the build.
+Do not edit or delete runtime signatures directly. They are derived state; app
+source/config and the reload operation are the write surface.
+
+**Concurrency**: each proc owns bounded per-app preparation tasks and runs
+process-local `on_bundle_load`. The UI build runs inside a shared-storage lock
+keyed by the app storage root, so workers converge safely on EFS. Workers that
+arrive after the signature was written re-check it and skip duplicate
+publication. Requests only serve a ready prepared app and never own the build.
 
 The widget route serves the built app and supports SPA subpath fallback:
 

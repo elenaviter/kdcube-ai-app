@@ -7,7 +7,7 @@ import pytest
 
 from kdcube_ai_app.apps.chat.proc.app_deployment import coordinator
 from kdcube_ai_app.apps.chat.proc.app_deployment.coordinator import (
-    deploy_loaded_bundle_static_surfaces,
+    deploy_loaded_bundle_app_resources,
 )
 from kdcube_ai_app.infra.plugin.bundle_loader import (
     BundleInterfaceManifest,
@@ -121,7 +121,7 @@ async def test_deployment_runs_once_and_persists_resolved_policy(monkeypatch, tm
         singleton=True,
     )
 
-    first = await deploy_loaded_bundle_static_surfaces(
+    first = await deploy_loaded_bundle_app_resources(
         workflow=workflow,
         module=SimpleNamespace(),
         agentic_spec=agentic_spec,
@@ -129,7 +129,7 @@ async def test_deployment_runs_once_and_persists_resolved_policy(monkeypatch, tm
         tenant="tenant-a",
         project="project-a",
     )
-    second = await deploy_loaded_bundle_static_surfaces(
+    second = await deploy_loaded_bundle_app_resources(
         workflow=workflow,
         module=SimpleNamespace(),
         agentic_spec=agentic_spec,
@@ -150,7 +150,7 @@ async def test_deployment_runs_once_and_persists_resolved_policy(monkeypatch, tm
     }
 
     props["surfaces"]["as_provider"]["widget"]["stats"]["visibility"]["roles"] = ["admin"]
-    third = await deploy_loaded_bundle_static_surfaces(
+    third = await deploy_loaded_bundle_app_resources(
         workflow=workflow,
         module=SimpleNamespace(),
         agentic_spec=agentic_spec,
@@ -162,3 +162,64 @@ async def test_deployment_runs_once_and_persists_resolved_policy(monkeypatch, tm
     assert third.widgets["stats"].roles == ["admin"]
     assert workflow.deploy_calls == 2
     assert workflow.build_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_app_resources_barrier_runs_without_static_widget_deployment(
+    monkeypatch, tmp_path: Path
+) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    storage_root = tmp_path / "storage"
+
+    async def _descriptor_props(**kwargs):
+        del kwargs
+        return {}
+
+    async def _storage_root(**kwargs):
+        del kwargs
+        return storage_root
+
+    monkeypatch.setattr(coordinator, "static_widget_deployment_enabled", lambda: False)
+    monkeypatch.setattr(coordinator, "get_bundle_props_from_authority", _descriptor_props)
+    monkeypatch.setattr(coordinator, "resolve_app_storage_root", _storage_root)
+    monkeypatch.setattr(
+        coordinator,
+        "get_settings",
+        lambda: SimpleNamespace(
+            PLATFORM=SimpleNamespace(
+                APPLICATIONS=SimpleNamespace(
+                    BUNDLES_PRELOAD_LOCK_TTL_SECONDS=30,
+                    BUNDLES_PRELOAD_BUNDLE_LOCK_TTL_SECONDS=30,
+                )
+            )
+        ),
+    )
+
+    workflow = _Workflow(storage_root)
+    bundle_spec = SimpleNamespace(
+        id="app@1-0",
+        path=str(source_root),
+        module="entrypoint",
+        singleton=True,
+        repo=None,
+        ref=None,
+        subdir=None,
+        git_commit="commit-1",
+    )
+    agentic_spec = BundleSpec(
+        id="app@1-0", path=str(source_root), module="entrypoint", singleton=True
+    )
+
+    manifest = await deploy_loaded_bundle_app_resources(
+        workflow=workflow,
+        module=SimpleNamespace(),
+        agentic_spec=agentic_spec,
+        bundle_spec=bundle_spec,
+        tenant="tenant-a",
+        project="project-a",
+    )
+
+    assert manifest is None
+    assert workflow.deploy_calls == 1
+    assert workflow.build_calls == 0

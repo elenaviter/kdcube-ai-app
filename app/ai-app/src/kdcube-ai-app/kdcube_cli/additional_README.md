@@ -1017,7 +1017,8 @@ Note: secrets descriptors are **not** prefilled or cached.
 
 The CLI stages `bundles.yaml` into the workdir and, when enabled:
 - mounts the runtime workspace `config/` directory at `/config`
-- sets `BUNDLES_PRELOAD_ON_START=1` in `.env.proc` by default
+- schedules supervised preparation for every configured app; no generated
+  preload toggle is required in `.env.proc`
 - enables bundle git resolution and env sync on startup
 
 Current proc behavior:

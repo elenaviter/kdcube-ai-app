@@ -317,6 +317,12 @@ services:
       - kdcube-secrets
     ports:
       - "${CHAT_PROCESSOR_PORT:-8020}:8020"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8020/health/live >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 180s
 
   metrics:
     image: kdcube-metrics:latest

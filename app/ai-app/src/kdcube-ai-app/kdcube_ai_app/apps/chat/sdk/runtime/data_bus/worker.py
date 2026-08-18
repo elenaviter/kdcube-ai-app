@@ -46,6 +46,10 @@ from kdcube_ai_app.infra.plugin.bundle_loader import (
     get_workflow_instance_async,
     load_bundle_manifest,
 )
+from kdcube_ai_app.infra.plugin.app_readiness import (
+    ApplicationNotReadyError,
+    application_readiness_registry,
+)
 
 _log = logging.getLogger("kdcube.data_bus.worker")
 
@@ -272,6 +276,22 @@ class DataBusBundleWorker:
 
     async def _process_claim(self, claim: DataBusClaim) -> None:
         message = claim.message
+        try:
+            application_readiness_registry.require_ready(
+                tenant=message.tenant,
+                project=message.project,
+                application_id=message.bundle_id,
+            )
+        except ApplicationNotReadyError as exc:
+            _log.info(
+                "[data_bus] Deferring claim while application is unavailable: "
+                "bundle=%s subject=%s message=%s state=%s",
+                message.bundle_id,
+                message.subject,
+                message.message_id,
+                exc.snapshot.state.value,
+            )
+            return
         handler_spec = self.handler_specs.get(message.subject)
         if handler_spec is None:
             result = DataBusResult.error_result(
@@ -540,10 +560,26 @@ class DataBusRuntimeManager:
 
     async def reconcile(self, registry: Any) -> None:
         from kdcube_ai_app.apps.chat.sdk.runtime.bundle_scheduler import _make_headless_config, is_bundle_enabled
+        from kdcube_ai_app.infra.plugin.app_readiness import (
+            ApplicationNotReadyError,
+            application_readiness_registry,
+        )
         from kdcube_ai_app.infra.plugin.bundle_store import get_bundle_props
 
         desired: Dict[_DataBusWorkerKey, Tuple[str, BundleSpec, Any, Dict[str, DataBusHandlerSpec], Tuple[str, ...]]] = {}
         for bundle_id, entry in (getattr(registry, "bundles", None) or {}).items():
+            try:
+                application_readiness_registry.require_ready(
+                    tenant=self._tenant,
+                    project=self._project,
+                    application_id=bundle_id,
+                )
+            except ApplicationNotReadyError:
+                _log.info(
+                    "[data_bus] Application is not ready; handlers remain inactive: bundle=%s",
+                    bundle_id,
+                )
+                continue
             path = entry.path if hasattr(entry, "path") else entry.get("path", "")
             module = entry.module if hasattr(entry, "module") else entry.get("module")
             singleton = entry.singleton if hasattr(entry, "singleton") else entry.get("singleton", False)

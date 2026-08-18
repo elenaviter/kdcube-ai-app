@@ -588,11 +588,27 @@ class BundleSchedulerManager:
             load_bundle_manifest,
         )
         from kdcube_ai_app.infra.plugin.bundle_store import get_bundle_props
+        from kdcube_ai_app.infra.plugin.app_readiness import (
+            ApplicationNotReadyError,
+            application_readiness_registry,
+        )
 
         desired: Dict[_JobKey, Tuple[str, str, str, str, str, Any, Any]] = {}
         # desired[key] = (schedule_signature, cron_expr, cron_tz, method_name, span, bundle_spec, bundle_config)
 
         for bundle_id, entry in (registry.bundles or {}).items():
+            try:
+                application_readiness_registry.require_ready(
+                    tenant=self._tenant,
+                    project=self._project,
+                    application_id=bundle_id,
+                )
+            except ApplicationNotReadyError:
+                _log.info(
+                    "[scheduler] Application is not ready; scheduled jobs remain inactive: bundle=%s",
+                    bundle_id,
+                )
+                continue
             path = entry.path if hasattr(entry, "path") else entry.get("path", "")
             module = entry.module if hasattr(entry, "module") else entry.get("module")
             singleton = (

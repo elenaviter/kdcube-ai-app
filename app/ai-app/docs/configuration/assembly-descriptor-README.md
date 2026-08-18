@@ -3,13 +3,15 @@ id: repo:kdcube-ai-app/app/ai-app/docs/configuration/assembly-descriptor-README.
 title: "Platform Assembly Descriptor"
 summary: "Platform-level non-secret deployment configuration in assembly.yaml: tenant/project identity, auth, ports, storage backends, local runtime paths, and frontend/runtime wiring."
 tags: ["service", "configuration", "platform", "deployment", "assembly", "descriptor"]
-keywords: ["platform deployment identity", "tenant and project scope", "auth and cognito settings", "service port layout", "storage and workspace backends", "runtime path wiring", "bundle descriptor provider", "frontend build metadata", "local compose topology", "aws deployment mapping"]
+keywords: ["platform deployment identity", "tenant and project scope", "auth and cognito settings", "service port layout", "storage and workspace backends", "runtime path wiring", "application preparation concurrency", "application preparation retry", "bundle descriptor provider", "frontend build metadata", "local compose topology", "aws deployment mapping"]
+updated_at: 2026-08-18
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/descriptors-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/service-runtime-configuration-mapping-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/bundles-descriptor-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/secrets-descriptor-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/gateway-descriptor-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/arch/proc/application-startup-health-and-readiness-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md
 ---
 # Platform Assembly Descriptor
@@ -98,6 +100,9 @@ These env vars are the direct runtime surface for assembly-backed settings.
 | `CLAUDE_CODE_SESSION_STORE_IMPLEMENTATION` | `storage.claude_code_session.type` | `get_settings()` | CLI local compose, direct local service run |
 | `CLAUDE_CODE_SESSION_GIT_REPO` | `storage.claude_code_session.repo` | `get_settings()` | CLI local compose, direct local service run |
 | `BUNDLES_PRELOAD_BUNDLE_LOCK_TTL_SECONDS` | `platform.services.proc.bundles.bundles_preload_bundle_lock_ttl_seconds` | `get_settings().PLATFORM.APPLICATIONS` | proc in all modes |
+| `APPLICATION_PREPARATION_CONCURRENCY` | `platform.services.proc.bundles.application_preparation_concurrency` | `get_settings().PLATFORM.APPLICATIONS` | proc in all modes |
+| `APPLICATION_PREPARATION_RETRY_INITIAL_SECONDS` | `platform.services.proc.bundles.application_preparation_retry_initial_seconds` | `get_settings().PLATFORM.APPLICATIONS` | proc in all modes |
+| `APPLICATION_PREPARATION_RETRY_MAX_SECONDS` | `platform.services.proc.bundles.application_preparation_retry_max_seconds` | `get_settings().PLATFORM.APPLICATIONS` | proc in all modes |
 | `BUNDLE_SCHEDULER_RECONCILE_INTERVAL_SECONDS` | `platform.services.proc.bundles.bundle_scheduler_reconcile_interval_seconds` | `get_settings().PLATFORM.APPLICATIONS` | proc in all modes |
 
 ## Fields that are always meaningful
@@ -612,15 +617,21 @@ platform:
   services:
     proc:
       bundles:
-        static_widget_delivery_mode: shadow
+        static_widget_delivery_mode: deployed
         bundles_preload_bundle_lock_ttl_seconds: 300
+        application_preparation_concurrency: 4
+        application_preparation_retry_initial_seconds: 2
+        application_preparation_retry_max_seconds: 60
         bundle_scheduler_reconcile_interval_seconds: 0
 ```
 
 | Field | Settings API | Meaning |
 |---|---|---|
-| `static_widget_delivery_mode` | `get_settings().PLATFORM.APPLICATIONS.STATIC_WIDGET_DELIVERY_MODE` | `legacy` resolves the app and checks the stored build signature on the request path; `shadow` also publishes deployment manifests but still serves through legacy; `deployed` prefers the role-guarded manifest path and falls back when its manifest is missing or stale |
-| `bundles_preload_bundle_lock_ttl_seconds` | `get_settings().PLATFORM.APPLICATIONS.BUNDLES_PRELOAD_BUNDLE_LOCK_TTL_SECONDS` | per-bundle startup preload claim TTL in seconds; stale claims may be retried by another proc |
+| `static_widget_delivery_mode` | `get_settings().PLATFORM.APPLICATIONS.STATIC_WIDGET_DELIVERY_MODE` | `legacy` serves prepared files through the app-resolving route; `shadow` also publishes deployment manifests but still serves through legacy; `deployed` prefers the role-guarded manifest path and falls back to prepared legacy serving when its manifest is missing or stale. No mode builds from an HTTP request. |
+| `bundles_preload_bundle_lock_ttl_seconds` | `get_settings().PLATFORM.APPLICATIONS.BUNDLES_PRELOAD_BUNDLE_LOCK_TTL_SECONDS` | compatibility-named lower bound used by the shared app-resource generation lock; a crashed owner's heartbeat stops and another worker may retry after expiry |
+| `application_preparation_concurrency` | `get_settings().PLATFORM.APPLICATIONS.APPLICATION_PREPARATION_CONCURRENCY` | maximum process-local application preparation tasks running concurrently; minimum `1` |
+| `application_preparation_retry_initial_seconds` | `get_settings().PLATFORM.APPLICATIONS.APPLICATION_PREPARATION_RETRY_INITIAL_SECONDS` | initial retry delay after an app preparation attempt fails |
+| `application_preparation_retry_max_seconds` | `get_settings().PLATFORM.APPLICATIONS.APPLICATION_PREPARATION_RETRY_MAX_SECONDS` | maximum delay for per-app exponential retry backoff |
 | `bundle_scheduler_reconcile_interval_seconds` | `get_settings().PLATFORM.APPLICATIONS.BUNDLE_SCHEDULER_RECONCILE_INTERVAL_SECONDS` | periodic scheduler reconciliation interval in seconds; `0` disables the periodic loop |
 
 The scheduler still reconciles on proc startup and on bundle update
@@ -630,6 +641,11 @@ that want scheduler convergence even if a notification is missed.
 The static-widget deployment mode is assembly-only. See
 [App Deployment And Static Widget Delivery](../sdk/bundle/app-deployment-and-static-widget-delivery-README.md)
 for the lifecycle, policy manifest, local/EFS behavior, and rollback switch.
+
+Application preparation runs for every configured app. Aggregate readiness
+policy is selected per app through `bundles.items[].service.readiness`, not by
+an assembly-wide preload switch. See
+[Application Startup, Health, And Readiness](../arch/proc/application-startup-health-and-readiness-README.md).
 
 ### `events`
 

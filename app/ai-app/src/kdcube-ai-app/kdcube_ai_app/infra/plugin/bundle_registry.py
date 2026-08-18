@@ -324,6 +324,18 @@ async def _apply_git_resolution(reg: Dict[str, Dict[str, Any]], source: str = "u
     return out
 
 
+async def resolve_git_bundle_entry_async(
+    bundle_id: str,
+    entry: Dict[str, Any],
+    *,
+    source: str = "application.preparation",
+) -> Dict[str, Any]:
+    """Materialize one Git-backed app without serializing the full registry."""
+    normalized = _normalize({"id": bundle_id, **dict(entry or {})})
+    resolved = await _apply_git_resolution({normalized["id"]: normalized}, source=source)
+    return dict(resolved[normalized["id"]])
+
+
 def _warn_missing_bundle_path_once(*, bundle_id: str, path_val: str, source: str, repo: Optional[str] = None) -> None:
     key = (bundle_id, path_val)
     with _REG_LOCK:

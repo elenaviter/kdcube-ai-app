@@ -18,6 +18,12 @@ from kdcube_ai_app.apps.chat.sdk.runtime.bundle_scheduler import (
     BundleSchedulerManager,
     _JobKey,
 )
+from kdcube_ai_app.infra.plugin.app_readiness import (
+    ApplicationLifecycleState,
+    ApplicationReadinessMode,
+    DesiredApplicationState,
+    application_readiness_registry,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +118,48 @@ def test_reconcile_schedules_job_for_bundle():
         assert _JobKey(bundle_id="echo.ui", job_alias="heartbeat") in mgr._tasks
         await mgr.shutdown()
         assert len(mgr._tasks) == 0
+    _run(_t())
+
+
+def test_reconcile_keeps_unready_application_jobs_inactive_until_ready():
+    manifest = _make_manifest([_make_job_spec(alias="heartbeat")])
+    pm, pp, ph = _patches(manifest)
+
+    async def _t():
+        application_readiness_registry.replace_desired(
+            tenant="t",
+            project="p",
+            applications={
+                "echo.ui": DesiredApplicationState(
+                    generation="generation-a",
+                    readiness=ApplicationReadinessMode.INDEPENDENT,
+                )
+            },
+        )
+        mgr = BundleSchedulerManager(redis=None, tenant="t", project="p", instance_id="i1")
+        try:
+            with pm, pp, ph:
+                await mgr.reconcile(_make_registry("echo.ui"))
+                assert len(mgr._tasks) == 0
+
+                assert application_readiness_registry.transition(
+                    tenant="t",
+                    project="p",
+                    application_id="echo.ui",
+                    generation="generation-a",
+                    state=ApplicationLifecycleState.READY,
+                    attempt=1,
+                )
+                await mgr.reconcile(_make_registry("echo.ui"))
+            assert _JobKey(bundle_id="echo.ui", job_alias="heartbeat") in mgr._tasks
+        finally:
+            await mgr.shutdown()
+            application_readiness_registry.deactivate_scope(
+                tenant="t",
+                project="p",
+                clear=True,
+            )
+
     _run(_t())
 
 

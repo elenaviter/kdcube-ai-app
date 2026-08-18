@@ -27,6 +27,7 @@ from kdcube_ai_app.apps.chat.proc.app_deployment.policy import (
     static_widget_explicitly_disabled,
 )
 from kdcube_ai_app.apps.chat.proc.app_deployment.storage import (
+    app_resources_signature_path,
     deployment_manifest_ready,
     deployment_signature_path,
     load_deployment_manifest,
@@ -263,7 +264,7 @@ async def _surface_projection(
     )
 
 
-async def deploy_loaded_bundle_static_surfaces(
+async def deploy_loaded_bundle_app_resources(
     *,
     workflow: Any,
     module: Any,
@@ -274,8 +275,12 @@ async def deploy_loaded_bundle_static_surfaces(
     pg_pool: Any = None,
     redis: Any = None,
 ) -> AppStaticSurfaceManifest | None:
-    if not static_widget_deployment_enabled():
-        return None
+    """Reconcile the resources required by one desired app generation.
+
+    ``on_app_deploy`` is the app-level resource barrier. Deployed static UI is
+    one participant in that barrier and is skipped when its delivery mode is
+    disabled; non-UI app resources still reconcile.
+    """
 
     bundle_id = str(getattr(bundle_spec, "id", None) or agentic_spec.id).strip()
     descriptor_props = await get_bundle_props_from_authority(
@@ -284,13 +289,116 @@ async def deploy_loaded_bundle_static_surfaces(
         bundle_id=bundle_id,
     ) or {}
     effective_props = _apply_effective_props(workflow, descriptor_props)
+    storage_root = await resolve_app_storage_root(
+        spec=bundle_spec,
+        tenant=tenant,
+        project=project,
+        ensure=True,
+    )
+    if storage_root is None:
+        raise RuntimeError(f"Bundle storage is unavailable for app deployment: {bundle_id}")
+
+    logger = AgentLogger("bundle.on_app_deploy", getattr(getattr(workflow, "config", None), "log_level", "INFO"))
+    source_generation = source_generation_for_spec(bundle_spec)
+    descriptor_props_hash = props_fingerprint(descriptor_props)
+    source_fingerprint = await app_source_fingerprint(bundle_spec)
+    resource_generation = hashlib.sha256(
+        _stable_json(
+            {
+                "schema_version": DEPLOYMENT_SCHEMA_VERSION,
+                "tenant": tenant,
+                "project": project,
+                "bundle_id": bundle_id,
+                "source_generation": source_generation,
+                "app_source_fingerprint": source_fingerprint,
+                "props_fingerprint": descriptor_props_hash,
+                "runtime_generation": static_widget_runtime_generation(),
+            }
+        ).encode("utf-8")
+    ).hexdigest()
+    settings = get_settings()
+    lock_ttl = max(
+        900,
+        int(settings.PLATFORM.APPLICATIONS.BUNDLES_PRELOAD_LOCK_TTL_SECONDS),
+        int(settings.PLATFORM.APPLICATIONS.BUNDLES_PRELOAD_BUNDLE_LOCK_TTL_SECONDS),
+    )
+
+    async def _deploy_app_resources() -> None:
+        await _invoke_on_app_deploy(
+            workflow=workflow,
+            module=module,
+            bundle_spec=bundle_spec,
+            agentic_spec=agentic_spec,
+            storage_root=storage_root,
+            tenant=tenant,
+            project=project,
+            props=effective_props,
+            pg_pool=pg_pool,
+            redis=redis,
+            logger=logger,
+        )
+
+    await run_once_for_shared_bundle_storage(
+        storage_root=storage_root,
+        operation="app-deploy-resources",
+        signature_path=app_resources_signature_path(storage_root),
+        signature=resource_generation,
+        ready=lambda: True,
+        action=_deploy_app_resources,
+        logger=logger,
+        owner_metadata={
+            "kind": "app-resources",
+            "bundle_id": bundle_id,
+            "tenant": tenant,
+            "project": project,
+        },
+        lock_wait_seconds=float(lock_ttl),
+        lock_ttl_seconds=float(lock_ttl),
+        allow_existing_on_timeout=False,
+        log_prefix="[bundle.deploy.resources]",
+    )
+
+    if not static_widget_deployment_enabled():
+        return None
+
+    return await _reconcile_static_surfaces(
+        workflow=workflow,
+        bundle_spec=bundle_spec,
+        bundle_id=bundle_id,
+        tenant=tenant,
+        project=project,
+        descriptor_props=descriptor_props,
+        effective_props=effective_props,
+        storage_root=storage_root,
+        logger=logger,
+        source_generation=source_generation,
+        source_fingerprint=source_fingerprint,
+        descriptor_props_hash=descriptor_props_hash,
+        lock_ttl=lock_ttl,
+    )
+
+
+async def _reconcile_static_surfaces(
+    *,
+    workflow: Any,
+    bundle_spec: Any,
+    bundle_id: str,
+    tenant: str,
+    project: str,
+    descriptor_props: dict[str, Any],
+    effective_props: dict[str, Any],
+    storage_root: pathlib.Path,
+    logger: AgentLogger,
+    source_generation: str,
+    source_fingerprint: str,
+    descriptor_props_hash: str,
+    lock_ttl: int,
+) -> AppStaticSurfaceManifest | None:
     bundle_enabled, bundle_allowed_roles, widgets = await _surface_projection(
         workflow=workflow,
         bundle_id=bundle_id,
         props=effective_props,
     )
-    source_generation = source_generation_for_spec(bundle_spec)
-    descriptor_props_hash = props_fingerprint(descriptor_props)
     signature_payload = {
         "schema_version": DEPLOYMENT_SCHEMA_VERSION,
         "tenant": tenant,
@@ -302,7 +410,6 @@ async def deploy_loaded_bundle_static_surfaces(
         "bundle_allowed_roles": bundle_allowed_roles,
         "widgets": {alias: surface.model_dump(mode="json") for alias, surface in sorted(widgets.items())},
     }
-    source_fingerprint = await app_source_fingerprint(bundle_spec)
     deployment_signature = hashlib.sha256(
         _stable_json(
             {
@@ -317,35 +424,10 @@ async def deploy_loaded_bundle_static_surfaces(
         deployment_signature=deployment_signature,
         generated_at=datetime.now(timezone.utc).isoformat(),
     )
-    storage_root = await resolve_app_storage_root(
-        spec=bundle_spec,
-        tenant=tenant,
-        project=project,
-        ensure=True,
-    )
-    if storage_root is None:
-        raise RuntimeError(f"Bundle storage is unavailable for app deployment: {bundle_id}")
-
-    settings = get_settings()
-    logger = AgentLogger("bundle.on_app_deploy", getattr(getattr(workflow, "config", None), "log_level", "INFO"))
-
     async def _deploy() -> None:
         logger.log(
-            f"[bundle.on_app_deploy] start: bundle={bundle_id} tenant={tenant} project={project}",
+            f"[bundle.deploy.ui] start: bundle={bundle_id} tenant={tenant} project={project}",
             level="INFO",
-        )
-        await _invoke_on_app_deploy(
-            workflow=workflow,
-            module=module,
-            bundle_spec=bundle_spec,
-            agentic_spec=agentic_spec,
-            storage_root=storage_root,
-            tenant=tenant,
-            project=project,
-            props=effective_props,
-            pg_pool=pg_pool,
-            redis=redis,
-            logger=logger,
         )
         ensure_ui_build = getattr(workflow, "_ensure_ui_build", None)
         if callable(ensure_ui_build):
@@ -354,16 +436,10 @@ async def deploy_loaded_bundle_static_surfaces(
                 await result
         await write_deployment_manifest(storage_root, manifest)
         logger.log(
-            f"[bundle.on_app_deploy] done: bundle={bundle_id} tenant={tenant} project={project} "
+            f"[bundle.deploy.ui] done: bundle={bundle_id} tenant={tenant} project={project} "
             f"widgets={sorted(widgets)} signature={deployment_signature[:12]}",
             level="INFO",
         )
-
-    lock_ttl = max(
-        900,
-        int(settings.PLATFORM.APPLICATIONS.BUNDLES_PRELOAD_LOCK_TTL_SECONDS),
-        int(settings.PLATFORM.APPLICATIONS.BUNDLES_PRELOAD_BUNDLE_LOCK_TTL_SECONDS),
-    )
 
     async def _deployment_ready() -> bool:
         return await deployment_manifest_ready(
@@ -387,12 +463,13 @@ async def deploy_loaded_bundle_static_surfaces(
         },
         lock_wait_seconds=float(lock_ttl),
         lock_ttl_seconds=float(lock_ttl),
+        allow_existing_on_timeout=False,
         log_prefix="[bundle.deploy]",
     )
     return await load_deployment_manifest(storage_root)
 
 
-async def deploy_registry_bundle_static_surfaces(
+async def deploy_registry_bundle_app_resources(
     *,
     entry: Any,
     tenant: str,
@@ -400,8 +477,7 @@ async def deploy_registry_bundle_static_surfaces(
     pg_pool: Any = None,
     redis: Any = None,
 ) -> AppStaticSurfaceManifest | None:
-    if not static_widget_deployment_enabled():
-        return None
+    """Load a registry app and reconcile its desired resource generation."""
     bundle_spec = bundle_entry_to_spec(entry)
     agentic_spec = BundleSpec(
         id=bundle_spec.id,
@@ -417,7 +493,7 @@ async def deploy_registry_bundle_static_surfaces(
         pg_pool=pg_pool,
         redis=redis,
     )
-    return await deploy_loaded_bundle_static_surfaces(
+    return await deploy_loaded_bundle_app_resources(
         workflow=workflow,
         module=module,
         agentic_spec=agentic_spec,

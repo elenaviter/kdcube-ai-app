@@ -3,7 +3,8 @@ id: repo:kdcube-ai-app/app/ai-app/docs/configuration/service-runtime-configurati
 title: "Service Runtime Configuration Mapping"
 summary: "Cross-descriptor runtime mapping for the platform: which file or env owns which runtime values across CLI compose, direct local runs, and AWS deployment."
 tags: ["service", "configuration", "env", "descriptors"]
-keywords: ["descriptor to runtime mapping", "compose versus direct run versus aws", "descriptor file locations", "runtime env translation", "bundle descriptor provider mapping", "secrets provider mapping", "workspace backend mapping", "mode specific configuration contract", "local mount variables", "deployment runtime configuration overview"]
+keywords: ["descriptor to runtime mapping", "compose versus direct run versus aws", "descriptor file locations", "runtime env translation", "application preparation mapping", "bundle descriptor provider mapping", "secrets provider mapping", "workspace backend mapping", "mode specific configuration contract", "local mount variables", "deployment runtime configuration overview"]
+updated_at: 2026-08-18
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/descriptors-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/runtime-read-write-contract-README.md
@@ -11,6 +12,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/assembly-descriptor-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/bundles-descriptor-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/secrets-descriptor-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/arch/proc/application-startup-health-and-readiness-README.md
 ---
 # Service Runtime Configuration Mapping
 
@@ -195,10 +197,13 @@ fails fast until Redis Cluster key-slot migration is complete.
 | `BUNDLES_YAML_DESCRIPTOR_PATH` | `bundles.yaml` | local bundle descriptor authority | proc in direct local run; optional explicit path in compose/k8s |
 | `BUNDLES_DESCRIPTOR_PROVIDER` | `platform.services.proc.bundles.descriptor_provider` | `assembly.yaml` | proc in all modes |
 | `BUNDLES_FORCE_ENV_ON_STARTUP` | n/a | current bundle descriptor authority | proc in all modes |
-| `BUNDLES_PRELOAD_ON_START` | `platform.services.proc.bundles.bundles_preload_on_start` | `assembly.yaml` | proc in all modes |
+| `BUNDLES_PRELOAD_ON_START` | `platform.services.proc.bundles.bundles_preload_on_start` | `assembly.yaml` | compatibility field parsed by settings; supervised preparation now runs for every configured app regardless of this value |
 | n/a (assembly-only) | `platform.services.proc.bundles.static_widget_delivery_mode` | `assembly.yaml` | `legacy`, `shadow`, or `deployed`; see the static-widget deployment guide |
-| `BUNDLES_PRELOAD_LOCK_TTL_SECONDS` | `platform.services.proc.bundles.bundles_preload_lock_ttl_seconds` | `assembly.yaml` | proc in all modes; coarse preload coordination TTL |
-| `BUNDLES_PRELOAD_BUNDLE_LOCK_TTL_SECONDS` | `platform.services.proc.bundles.bundles_preload_bundle_lock_ttl_seconds` | `assembly.yaml` | proc in all modes; per-bundle preload claim TTL |
+| `BUNDLES_PRELOAD_LOCK_TTL_SECONDS` | `platform.services.proc.bundles.bundles_preload_lock_ttl_seconds` | `assembly.yaml` | compatibility-named shared app-resource lock TTL lower bound |
+| `BUNDLES_PRELOAD_BUNDLE_LOCK_TTL_SECONDS` | `platform.services.proc.bundles.bundles_preload_bundle_lock_ttl_seconds` | `assembly.yaml` | compatibility-named shared app-resource lock TTL lower bound |
+| `APPLICATION_PREPARATION_CONCURRENCY` | `platform.services.proc.bundles.application_preparation_concurrency` | `assembly.yaml` | proc in all modes; bounded process-local app preparation concurrency |
+| `APPLICATION_PREPARATION_RETRY_INITIAL_SECONDS` | `platform.services.proc.bundles.application_preparation_retry_initial_seconds` | `assembly.yaml` | proc in all modes; initial per-app retry delay |
+| `APPLICATION_PREPARATION_RETRY_MAX_SECONDS` | `platform.services.proc.bundles.application_preparation_retry_max_seconds` | `assembly.yaml` | proc in all modes; maximum exponential retry delay |
 | `BUNDLE_SCHEDULER_RECONCILE_INTERVAL_SECONDS` | `platform.services.proc.bundles.bundle_scheduler_reconcile_interval_seconds` | `assembly.yaml` | proc in all modes; `0` disables the periodic loop |
 | `BUNDLE_GIT_RESOLUTION_ENABLED` | bundle items use `repo` / `ref` | `bundles.yaml` | proc in all modes |
 
@@ -412,7 +417,7 @@ For deployment-scoped bundle props in cloud:
 ## Related docs
 
 - Descriptor ownership and mode differences:
-  - [descriptors-README.md](../cicd/descriptors-README.md)
+  - [descriptors-README.md](../service/cicd/descriptors-README.md)
 - One-page runtime helper contract:
   - [runtime-read-write-contract-README.md](runtime-read-write-contract-README.md)
 - Per-descriptor docs:

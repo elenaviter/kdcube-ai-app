@@ -992,12 +992,6 @@ async def test_static_widget_subpaths_fall_back_to_index_html(monkeypatch, tmp_p
         del args, kwargs
         return SimpleNamespace(id="bundle.demo", path=str(tmp_path), module="entrypoint", singleton=False)
 
-    load_keys = []
-
-    async def _run_static_bundle_entrypoint_load_once(**kwargs):
-        load_keys.append(kwargs["load_key"])
-        return None
-
     storage_root = tmp_path / "bundle-storage"
     ui_root = storage_root / "ui" / "widgets" / "preferences"
     ui_root.mkdir(parents=True)
@@ -1011,7 +1005,6 @@ async def test_static_widget_subpaths_fall_back_to_index_html(monkeypatch, tmp_p
     monkeypatch.setattr(integrations, "_load_bundle_workflow", _load_bundle_workflow)
     monkeypatch.setattr(integrations, "_authoritative_bundle_props", _store_get_bundle_props)
     monkeypatch.setattr(integrations, "_resolve_bundle_spec_from_runtime", _resolve_bundle_async)
-    monkeypatch.setattr(integrations, "run_static_bundle_entrypoint_load_once", _run_static_bundle_entrypoint_load_once)
     monkeypatch.setattr(bundle_storage, "storage_for_spec", lambda **kwargs: storage_root)
 
     response = await integrations.serve_bundle_widget_path(
@@ -1032,20 +1025,6 @@ async def test_static_widget_subpaths_fall_back_to_index_html(monkeypatch, tmp_p
     assert "contentWidth" in html
     assert "viewportWidth" in html
     assert "<div id=\"root\"></div>" in html
-    assert load_keys == [
-        integrations.static_bundle_entrypoint_load_key(
-            tenant="tenant-a",
-            project="project-a",
-            bundle_id="bundle.demo",
-            storage_root=storage_root,
-        ),
-        integrations.static_bundle_entrypoint_load_key(
-            tenant="tenant-a",
-            project="project-a",
-            bundle_id="bundle.demo::widget-build::preferences",
-            storage_root=storage_root,
-        ),
-    ]
 
 
 @pytest.mark.asyncio
@@ -1080,10 +1059,6 @@ async def test_public_static_widget_index_injects_resize_reporter(monkeypatch, t
         del args, kwargs
         return SimpleNamespace(id="bundle.demo", path=str(tmp_path), module="entrypoint", singleton=False)
 
-    async def _run_static_bundle_entrypoint_load_once(**kwargs):
-        del kwargs
-        return None
-
     storage_root = tmp_path / "bundle-storage"
     ui_root = storage_root / "ui" / "widgets" / "preferences"
     ui_root.mkdir(parents=True)
@@ -1097,7 +1072,6 @@ async def test_public_static_widget_index_injects_resize_reporter(monkeypatch, t
     monkeypatch.setattr(integrations, "_load_bundle_workflow", _load_bundle_workflow)
     monkeypatch.setattr(integrations, "_authoritative_bundle_props", _store_get_bundle_props)
     monkeypatch.setattr(integrations, "_resolve_bundle_spec_from_runtime", _resolve_bundle_async)
-    monkeypatch.setattr(integrations, "run_static_bundle_entrypoint_load_once", _run_static_bundle_entrypoint_load_once)
     monkeypatch.setattr(bundle_storage, "storage_for_spec", lambda **kwargs: storage_root)
 
     response = await integrations.serve_public_static_bundle_widget_path(

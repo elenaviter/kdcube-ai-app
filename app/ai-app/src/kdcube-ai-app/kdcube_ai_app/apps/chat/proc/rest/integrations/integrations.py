@@ -101,16 +101,17 @@ from kdcube_ai_app.infra.plugin.bundle_loader import (
     get_cached_manifest,
     get_workflow_instance,
     get_workflow_instance_async,
-    is_static_bundle_entrypoint_path,
     load_bundle_manifest,
-    peek_cached_singleton_for_spec,
     provider_surface_auth,
     provider_surface_csrf,
     resolve_bundle_api_endpoint,
     resolve_bundle_mcp_endpoint,
-    run_static_bundle_entrypoint_load_once,
-    static_bundle_entrypoint_load_key,
 )
+from kdcube_ai_app.infra.plugin.app_readiness import (
+    ApplicationNotReadyError,
+    application_readiness_registry,
+)
+from kdcube_ai_app.infra.plugin.bundle_registry import ADMIN_BUNDLE_ID
 from kdcube_ai_app.apps.chat.sdk.solutions.chat import DEFAULT_CHAT_WIDGET_ALIAS
 from kdcube_ai_app.apps.chat.proc.app_deployment.coordinator import (
     props_fingerprint,
@@ -503,6 +504,16 @@ def _resolve_path_scope(*, tenant: str, project: str) -> tuple[str, str]:
     if expected_project and project_id != expected_project:
         raise HTTPException(status_code=403, detail="Requested project is not served by this proc")
     return tenant_id, project_id
+
+
+def _require_application_ready(*, tenant: str, project: str, application_id: str) -> None:
+    if application_id == ADMIN_BUNDLE_ID:
+        return
+    application_readiness_registry.require_ready(
+        tenant=tenant,
+        project=project,
+        application_id=application_id,
+    )
 
 
 def _bind_route_scope_to_config_request(
@@ -971,6 +982,51 @@ def _mcp_jsonrpc_method(body: bytes) -> str:
     if isinstance(payload, Mapping):
         return str(payload.get("method") or "")
     return ""
+
+
+def _mcp_application_not_ready_payload(
+        body: bytes,
+        *,
+        diagnosis: Mapping[str, Any],
+) -> Dict[str, Any] | List[Dict[str, Any]] | None:
+    try:
+        request_payload = json.loads(body.decode("utf-8"))
+    except Exception:
+        return None
+
+    def _error_for(item: Any) -> Dict[str, Any] | None:
+        if not isinstance(item, Mapping) or "id" not in item:
+            return None
+        return {
+            "jsonrpc": "2.0",
+            "id": item.get("id"),
+            "error": {
+                "code": -32001,
+                "message": "Application is not ready",
+                "data": dict(diagnosis),
+            },
+        }
+
+    if isinstance(request_payload, list):
+        errors = [error for item in request_payload if (error := _error_for(item)) is not None]
+        return errors or None
+    return _error_for(request_payload)
+
+
+async def _mcp_application_not_ready_response(
+        request: Request,
+        exc: ApplicationNotReadyError,
+) -> JSONResponse:
+    body = await request.body()
+    protocol_payload = _mcp_application_not_ready_payload(
+        body,
+        diagnosis=exc.public_payload,
+    )
+    return JSONResponse(
+        status_code=503,
+        content=protocol_payload or exc.public_payload,
+        headers={"Retry-After": "2"},
+    )
 
 
 _MCP_SAFE_ARGUMENT_KEYS = {
@@ -1466,6 +1522,25 @@ class BundleStatusRequest(BaseModel):
     tenant: Optional[str] = None
     project: Optional[str] = None
     bundle_id: str
+
+
+class BundlePreparationRetryRequest(BaseModel):
+    tenant: Optional[str] = None
+    project: Optional[str] = None
+
+
+def _application_preparation_diagnostic(
+        *,
+        tenant: str,
+        project: str,
+        application_id: str,
+) -> Dict[str, Any] | None:
+    snapshot = application_readiness_registry.snapshot(
+        tenant=tenant,
+        project=project,
+        application_id=application_id,
+    )
+    return snapshot.diagnostic_payload() if snapshot is not None else None
 
 
 def _bundles_channel(fmt: str, *, tenant: str, project: str) -> str:
@@ -2235,24 +2310,34 @@ async def set_bundle_props(
                 actor=session.username or session.user_id or "unknown",
                 source="admin",
             )
-            return {"status": "ok", "bundle_id": bundle_id, "tenant": tenant_id, "project": project_id}
         elif payload.op != "replace":
             raise HTTPException(status_code=400, detail="Invalid op; use 'replace' or 'merge'")
-
-        await store_put_bundle_props(
-            redis,
-            tenant=tenant_id,
-            project=project_id,
-            bundle_id=bundle_id,
-            props=props,
-            actor=session.username or session.user_id or "unknown",
-            source="admin",
-        )
+        else:
+            await store_put_bundle_props(
+                redis,
+                tenant=tenant_id,
+                project=project_id,
+                bundle_id=bundle_id,
+                props=props,
+                actor=session.username or session.user_id or "unknown",
+                source="admin",
+            )
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve)) from ve
     except HTTPException:
         raise
 
+    await _invalidate_deployed_widget_manifests(
+        tenant=tenant_id,
+        project=project_id,
+        bundle_ids={bundle_id},
+    )
+    await _reconcile_local_application_lifecycle(
+        request,
+        tenant=tenant_id,
+        project=project_id,
+        force={bundle_id},
+    )
     return {"status": "ok", "bundle_id": bundle_id, "tenant": tenant_id, "project": project_id}
 
 
@@ -2308,6 +2393,17 @@ async def reset_bundle_props_from_code(
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve)) from ve
 
+    await _invalidate_deployed_widget_manifests(
+        tenant=tenant_id,
+        project=project_id,
+        bundle_ids={bundle_id},
+    )
+    await _reconcile_local_application_lifecycle(
+        request,
+        tenant=tenant_id,
+        project=project_id,
+        force={bundle_id},
+    )
     return {"status": "ok", "bundle_id": bundle_id, "tenant": tenant_id, "project": project_id, "source": "code"}
 
 
@@ -2609,6 +2705,11 @@ async def internal_bundle_status(payload: BundleStatusRequest, request: Request)
     bundle_id = str(payload.bundle_id or "").strip()
     if not bundle_id:
         raise HTTPException(status_code=400, detail="bundle_id is required")
+    preparation = _application_preparation_diagnostic(
+        tenant=tenant_id,
+        project=project_id,
+        application_id=bundle_id,
+    )
 
     redis = _get_app_redis(request)
     try:
@@ -2621,6 +2722,7 @@ async def internal_bundle_status(payload: BundleStatusRequest, request: Request)
             "bundle_id": bundle_id,
             "declared": False,
             "loaded": False,
+            "preparation": preparation,
             "last_error": {
                 "type": type(exc).__name__,
                 "message": str(exc),
@@ -2638,6 +2740,7 @@ async def internal_bundle_status(payload: BundleStatusRequest, request: Request)
             "bundle_id": bundle_id,
             "declared": False,
             "loaded": False,
+            "preparation": preparation,
             "authority": describe_authoritative_bundle_store(tenant_id, project_id),
         }
 
@@ -2669,6 +2772,7 @@ async def internal_bundle_status(payload: BundleStatusRequest, request: Request)
             "cached_after": get_cached_manifest(spec) is not None,
             "entry": entry_dict,
             "path_exists": path_exists,
+            "preparation": preparation,
             "interface": descriptor,
             "authority": describe_authoritative_bundle_store(tenant_id, project_id),
         }
@@ -2684,6 +2788,7 @@ async def internal_bundle_status(payload: BundleStatusRequest, request: Request)
             "cached_after": get_cached_manifest(spec) is not None,
             "entry": entry_dict,
             "path_exists": path_exists,
+            "preparation": preparation,
             "last_error": {
                 "type": type(exc).__name__,
                 "message": str(exc),
@@ -2692,6 +2797,106 @@ async def internal_bundle_status(payload: BundleStatusRequest, request: Request)
             },
             "authority": describe_authoritative_bundle_store(tenant_id, project_id),
         }
+
+
+async def _retry_application_preparation(
+        *,
+        request: Request,
+        tenant: str,
+        project: str,
+        application_id: str,
+) -> Dict[str, Any]:
+    settings = get_settings()
+    if tenant != settings.TENANT or project != settings.PROJECT:
+        raise HTTPException(
+            status_code=409,
+            detail="Application preparation is process-local to the configured tenant/project",
+        )
+    lifecycle = getattr(request.app.state, "application_lifecycle", None)
+    if lifecycle is None:
+        raise HTTPException(status_code=503, detail="Application lifecycle supervisor is not running")
+    try:
+        await lifecycle.retry(application_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    await asyncio.sleep(0)
+    return {
+        "status": "accepted",
+        "tenant": tenant,
+        "project": project,
+        "application_id": application_id,
+        "preparation": _application_preparation_diagnostic(
+            tenant=tenant,
+            project=project,
+            application_id=application_id,
+        ),
+    }
+
+
+@admin_router.post(
+    "/admin/integrations/bundles/{bundle_id}/preparation/retry",
+    status_code=202,
+)
+async def admin_retry_application_preparation(
+        bundle_id: str,
+        request: Request,
+        payload: BundlePreparationRetryRequest | None = None,
+        session: UserSession = Depends(auth_without_pressure()),
+):
+    del session
+    settings = get_settings()
+    return await _retry_application_preparation(
+        request=request,
+        tenant=(payload.tenant if payload else None) or settings.TENANT,
+        project=(payload.project if payload else None) or settings.PROJECT,
+        application_id=str(bundle_id or "").strip(),
+    )
+
+
+@admin_router.get("/admin/integrations/applications/readiness", status_code=200)
+async def admin_application_readiness(
+        tenant: Optional[str] = None,
+        project: Optional[str] = None,
+        session: UserSession = Depends(auth_without_pressure()),
+):
+    del session
+    settings = get_settings()
+    tenant_id = tenant or settings.TENANT
+    project_id = project or settings.PROJECT
+    aggregate = application_readiness_registry.aggregate(
+        tenant=tenant_id,
+        project=project_id,
+    )
+    snapshots = application_readiness_registry.scope_snapshots(
+        tenant=tenant_id,
+        project=project_id,
+    )
+    return {
+        "tenant": tenant_id,
+        "project": project_id,
+        "aggregate": aggregate.diagnostic_payload(),
+        "applications": {
+            application_id: snapshot.diagnostic_payload()
+            for application_id, snapshot in snapshots.items()
+        },
+    }
+
+
+@internal_router.post("/internal/bundles/retry-preparation", status_code=202)
+async def internal_retry_application_preparation(
+        payload: BundleStatusRequest,
+        request: Request,
+):
+    client_ip = request.client.host if request.client else ""
+    if client_ip not in _LOCALHOST:
+        raise HTTPException(status_code=403, detail="Internal endpoint: localhost only")
+    settings = get_settings()
+    return await _retry_application_preparation(
+        request=request,
+        tenant=payload.tenant or settings.TENANT,
+        project=payload.project or settings.PROJECT,
+        application_id=str(payload.bundle_id or "").strip(),
+    )
 
 
 async def _invalidate_deployed_widget_manifests(
@@ -2714,6 +2919,28 @@ async def _invalidate_deployed_widget_manifests(
         await invalidate_deployment_manifest(storage_root)
 
 
+async def _reconcile_local_application_lifecycle(
+        request: Request,
+        *,
+        tenant: str,
+        project: str,
+        registry: BundlesRegistry | None = None,
+        force: Set[str] | List[str] | None = None,
+) -> None:
+    """Publish changed desired state without making the admin request own preparation."""
+    settings = get_settings()
+    if tenant != settings.TENANT or project != settings.PROJECT:
+        return
+    lifecycle = getattr(request.app.state, "application_lifecycle", None)
+    if lifecycle is None:
+        return
+    desired = registry or await load_registry(_get_app_redis(request), tenant, project)
+    await lifecycle.reconcile(
+        desired,
+        force={str(value).strip() for value in (force or ()) if str(value).strip()},
+    )
+
+
 async def _do_set_bundles(
         payload: AdminBundlesUpdateRequest,
         request: Request,
@@ -2725,9 +2952,12 @@ async def _do_set_bundles(
     project_id = payload.project or settings.PROJECT
     from kdcube_ai_app.infra.plugin.bundle_registry import (
         set_registry_async,
-        upsert_bundles_async,
     )
-    from kdcube_ai_app.infra.plugin.bundle_loader import clear_bundle_loader_caches
+    from kdcube_ai_app.infra.plugin.bundle_loader import (
+        BundleSpec,
+        evict_bundle_scope,
+        invalidate_static_bundle_entrypoint_loads,
+    )
     from kdcube_ai_app.apps.chat.sdk.runtime.local_sidecars import stop_local_sidecars_for_bundle_ids
     from kdcube_ai_app.infra.plugin.bundle_store import (
         load_registry as store_load,
@@ -2743,6 +2973,20 @@ async def _do_set_bundles(
         bundles_patch, props_map = store_split_bundles_and_props(payload.bundles or {})
         current = await store_load(redis, tenant_id, project_id)
         updated = store_apply(current, payload.op, bundles_patch, payload.default_bundle_id)
+        if payload.op == "replace":
+            changed_bundle_ids = {
+                str(bundle_id).strip()
+                for bundle_id in set(current.bundles or {}) | set(updated.bundles or {})
+                if str(bundle_id).strip()
+            }
+        elif payload.op == "merge":
+            changed_bundle_ids = {
+                str(bundle_id).strip()
+                for bundle_id in bundles_patch
+                if str(bundle_id).strip()
+            }
+        else:
+            raise HTTPException(status_code=400, detail="Invalid op; use 'replace' or 'merge'")
         await store_save(
             redis,
             updated,
@@ -2768,15 +3012,17 @@ async def _do_set_bundles(
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
 
+    reg = {bid: be.model_dump() for bid, be in updated.bundles.items()}
+    default_id = updated.default_bundle_id
     if tenant_id == settings.TENANT and project_id == settings.PROJECT:
-        if payload.op == "replace":
-            await set_registry_async(bundles_patch, payload.default_bundle_id)
-        elif payload.op == "merge":
-            await upsert_bundles_async(bundles_patch, payload.default_bundle_id)
-        else:
-            raise HTTPException(status_code=400, detail="Invalid op; use 'replace' or 'merge'")
+        await set_registry_async(
+            reg,
+            default_id,
+            resolve_git=False,
+            source="admin.save",
+        )
         stopped_sidecars = stop_local_sidecars_for_bundle_ids(
-            bundle_ids={str(bid).strip() for bid in (payload.bundles or {}).keys() if str(bid).strip()},
+            bundle_ids=changed_bundle_ids,
             tenant=tenant_id,
             project=project_id,
             terminate_timeout_sec=2.0,
@@ -2790,17 +3036,36 @@ async def _do_set_bundles(
                 stopped_sidecars,
                 list((payload.bundles or {}).keys()),
             )
-        reg = {bid: be.model_dump() for bid, be in updated.bundles.items()}
-        default_id = updated.default_bundle_id
-        clear_bundle_loader_caches()
-    else:
-        reg = {bid: be.model_dump() for bid, be in updated.bundles.items()}
-        default_id = updated.default_bundle_id
+        for bundle_id in sorted(changed_bundle_ids):
+            entry = (updated.bundles or {}).get(bundle_id) or (current.bundles or {}).get(bundle_id)
+            if entry is None:
+                continue
+            evict_bundle_scope(
+                BundleSpec(
+                    id=bundle_id,
+                    path=entry.path,
+                    module=entry.module,
+                    singleton=bool(entry.singleton),
+                ),
+                drop_sys_modules=True,
+            )
+            invalidate_static_bundle_entrypoint_loads(
+                bundle_id=bundle_id,
+                tenant=tenant_id,
+                project=project_id,
+            )
 
     await _invalidate_deployed_widget_manifests(
         tenant=tenant_id,
         project=project_id,
-        bundle_ids=set((payload.bundles or {}).keys()),
+        bundle_ids=changed_bundle_ids,
+    )
+    await _reconcile_local_application_lifecycle(
+        request,
+        tenant=tenant_id,
+        project=project_id,
+        registry=updated,
+        force=changed_bundle_ids,
     )
 
     try:
@@ -2808,6 +3073,7 @@ async def _do_set_bundles(
             "type": "bundles.update",
             "op": payload.op,
             "bundles": bundles_patch,
+            "changed_bundle_ids": sorted(changed_bundle_ids),
             "default_bundle_id": payload.default_bundle_id,
             "tenant": tenant_id,
             "project": project_id,
@@ -2882,7 +3148,12 @@ async def _do_reload_bundles_from_authority(
     bundles_dict = {bid: entry.model_dump() for bid, entry in reg.bundles.items()}
     eviction_result: dict[str, int] | None = None
     if tenant_id == settings.TENANT and project_id == settings.PROJECT:
-        await set_registry_async(bundles_dict, reg.default_bundle_id)
+        await set_registry_async(
+            bundles_dict,
+            reg.default_bundle_id,
+            resolve_git=False,
+            source="admin.reload-authority",
+        )
         target_bundle_ids = (
             {requested_bundle_id}
             if requested_bundle_id
@@ -2945,6 +3216,11 @@ async def _do_reload_bundles_from_authority(
         project=project_id,
         bundle_ids=changed_bundle_ids,
     )
+
+    if tenant_id == settings.TENANT and project_id == settings.PROJECT:
+        lifecycle = getattr(request.app.state, "application_lifecycle", None)
+        if lifecycle is not None:
+            await lifecycle.reconcile(reg, force=set(changed_bundle_ids))
 
     msg = {
         "type": "bundles.update",
@@ -3105,7 +3381,7 @@ async def serve_static_asset(
         session: UserSession = Depends(require_auth(RequireUser())),
 ):
     """
-        Serve static assets built by BaseEntrypoint._ensure_ui_build().
+        Serve static assets published by supervised application preparation.
         Files are read from <bundle_storage_root>/ui/<path>.
 
         URL: GET /api/integrations/static/{tenant}/{project}/{bundle_id}/{path}
@@ -3115,6 +3391,11 @@ async def serve_static_asset(
     from kdcube_ai_app.infra.plugin.bundle_storage import storage_for_spec
 
     tenant_id, project_id = _resolve_path_scope(tenant=tenant, project=project)
+    _require_application_ready(
+        tenant=tenant_id,
+        project=project_id,
+        application_id=bundle_id,
+    )
     spec = resolved_spec
     if spec is None:
         spec = await _resolve_bundle_spec_from_runtime(
@@ -3129,113 +3410,8 @@ async def serve_static_asset(
     storage_root = storage_for_spec(spec=spec, tenant=tenant_id, project=project_id, ensure=False)
     ui_root = storage_root / "ui" if storage_root else None
 
-    should_refresh_entrypoint = is_static_bundle_entrypoint_path(path)
-    load_key = static_bundle_entrypoint_load_key(
-        tenant=tenant_id,
-        project=project_id,
-        bundle_id=bundle_id,
-        storage_root=storage_root,
-    )
-    if should_refresh_entrypoint:
-        await run_static_bundle_entrypoint_load_once(
-            load_key=load_key,
-            load_coro_factory=lambda: _load_bundle_props_defaults(
-                bundle_id=bundle_id,
-                tenant=tenant_id,
-                project=project_id,
-                request=request,
-                session=session,
-                evict_before_load=False,
-                resolved_spec=spec,
-            ),
-        )
-        storage_root = storage_for_spec(spec=spec, tenant=tenant_id, project=project_id, ensure=False)
-        ui_root = storage_root / "ui" if storage_root else None
-
-        # Signature-aware main-view rebuild on HTML-entrypoint hits.
-        # `_load_bundle_props_defaults` warms the bundle (which runs
-        # `on_bundle_load` → `_ensure_ui_build`) the first time; afterwards
-        # the on-load coalescer would skip the build coro and a source
-        # edit would never trigger a rebuild. The explicit signature-aware
-        # call below sidesteps that: it consults the workflow's
-        # `compute_ui_main_view_signature()` cheaply, and on a mismatch
-        # falls through to the workflow's `_ensure_ui_build()`, which
-        # in turn hits `run_once_for_shared_bundle_storage` for cross-
-        # worker / cross-machine arbitration on EFS.
-        if ui_root is not None:
-            cached_workflow = peek_cached_singleton_for_spec(spec)
-            if cached_workflow is not None and hasattr(cached_workflow, "_ensure_ui_build"):
-                async def _ensure_main_view_ui_build_from_workflow() -> None:
-                    ensure_ui_build = getattr(cached_workflow, "_ensure_ui_build", None)
-                    if not callable(ensure_ui_build):
-                        return
-                    try:
-                        maybe_result = ensure_ui_build()
-                        if inspect.isawaitable(maybe_result):
-                            await maybe_result
-                    except HTTPException:
-                        raise
-                    except Exception as exc:
-                        logger.exception(
-                            "Bundle main-view UI build failed tenant=%s project=%s bundle=%s",
-                            tenant_id,
-                            project_id,
-                            bundle_id,
-                        )
-                        raise HTTPException(
-                            status_code=500,
-                            detail=f"Bundle '{bundle_id}' main-view UI build failed: {exc}",
-                        ) from exc
-
-                def _main_view_source_signature() -> Optional[str]:
-                    compute = getattr(cached_workflow, "compute_ui_main_view_signature", None)
-                    if not callable(compute):
-                        return None
-                    try:
-                        return compute()
-                    except Exception:
-                        return None
-
-                main_view_build_load_key = static_bundle_entrypoint_load_key(
-                    tenant=tenant_id,
-                    project=project_id,
-                    bundle_id=f"{bundle_id}::main-view-build",
-                    storage_root=storage_root,
-                )
-                await run_static_bundle_entrypoint_load_once(
-                    load_key=main_view_build_load_key,
-                    load_coro_factory=_ensure_main_view_ui_build_from_workflow,
-                    signature_provider=_main_view_source_signature,
-                )
-                storage_root = storage_for_spec(spec=spec, tenant=tenant_id, project=project_id, ensure=False)
-                ui_root = storage_root / "ui" if storage_root else None
-
     if not ui_root or not ui_root.exists():
-        # Build/refresh on HTML entrypoint requests. This triggers
-        # on_bundle_load(), which calls BaseEntrypoint._ensure_ui_build() and
-        # lets its signature cache decide whether a rebuild is necessary.
-        fallback_load_key = static_bundle_entrypoint_load_key(
-            tenant=tenant_id,
-            project=project_id,
-            bundle_id=f"{bundle_id}::main-ui-fallback",
-            storage_root=storage_root,
-        )
-        await run_static_bundle_entrypoint_load_once(
-            load_key=fallback_load_key,
-            load_coro_factory=lambda: _load_bundle_props_defaults(
-                bundle_id=bundle_id,
-                tenant=tenant_id,
-                project=project_id,
-                request=request,
-                session=session,
-                evict_before_load=False,
-                resolved_spec=spec,
-            ),
-        )
-        storage_root = storage_for_spec(spec=spec, tenant=tenant_id, project=project_id, ensure=False)
-        ui_root = storage_root / "ui" if storage_root else None
-        if not ui_root or not ui_root.exists():
-            raise HTTPException(status_code=404, detail=f"Bundle '{bundle_id}' does not have a UI defined")
+        raise HTTPException(status_code=404, detail=f"Bundle '{bundle_id}' does not have a built UI")
 
     # Prevent path traversal
     try:
@@ -3938,6 +4114,8 @@ async def _fetch_bundle_widget_payload(
             result = await _invoke_bundle_callable(fn, **extra)
     except HTTPException:
         raise
+    except ApplicationNotReadyError:
+        raise
     except Exception as e:
         logger.exception(
             "Bundle widget failed tenant=%s project=%s bundle=%s widget=%s method=%s",
@@ -4307,126 +4485,8 @@ async def _serve_legacy_static_widget_app(
     ui_root = storage_root / "ui" / "widgets" / widget_spec.alias if storage_root else None
     cleaned_path = str(widget_path or "index.html").strip().lstrip("/") or "index.html"
 
-    async def _ensure_widget_ui_build_from_workflow() -> None:
-        ensure_ui_build = getattr(workflow, "_ensure_ui_build", None)
-        if not callable(ensure_ui_build):
-            return
-        try:
-            maybe_result = ensure_ui_build()
-            if inspect.isawaitable(maybe_result):
-                await maybe_result
-        except HTTPException:
-            raise
-        except Exception as exc:
-            logger.exception(
-                "Bundle widget UI build failed tenant=%s project=%s bundle=%s widget=%s",
-                tenant_id,
-                project_id,
-                spec_resolved.id,
-                widget_spec.alias,
-            )
-            raise HTTPException(
-                status_code=500,
-                detail=f"Bundle widget '{widget_alias}' UI build failed: {exc}",
-            ) from exc
-
-    def _widget_source_signature() -> Optional[str]:
-        """Source-fingerprint provider for the widget UI build.
-
-        Lets `run_static_bundle_entrypoint_load_once` short-circuit only when
-        the cached signature matches the current source state — so a source
-        edit on disk (e.g. someone touched `styles.css`) causes the next
-        HTML-entrypoint request to rebuild, without requiring a manual
-        `kdcube reload`. Returns `None` if the workflow can't compute the
-        signature, in which case the legacy membership-based short-circuit
-        applies.
-        """
-        compute = getattr(workflow, "compute_ui_widget_signature", None)
-        if not callable(compute):
-            return None
-        try:
-            return compute(widget_spec.alias)
-        except Exception:
-            return None
-
-    should_refresh_entrypoint = is_static_bundle_entrypoint_path(cleaned_path)
-    load_key = static_bundle_entrypoint_load_key(
-        tenant=tenant_id,
-        project=project_id,
-        bundle_id=bundle_id,
-        storage_root=storage_root,
-    )
-    build_load_key = static_bundle_entrypoint_load_key(
-        tenant=tenant_id,
-        project=project_id,
-        bundle_id=f"{bundle_id}::widget-build::{widget_spec.alias}",
-        storage_root=storage_root,
-    )
-    if should_refresh_entrypoint:
-        await run_static_bundle_entrypoint_load_once(
-            load_key=load_key,
-            load_coro_factory=lambda: _load_bundle_props_defaults(
-                bundle_id=bundle_id,
-                tenant=tenant_id,
-                project=project_id,
-                request=request,
-                session=session,
-                evict_before_load=False,
-            ),
-        )
-        storage_root = storage_for_spec(spec=spec, tenant=tenant_id, project=project_id, ensure=False)
-        ui_root = storage_root / "ui" / "widgets" / widget_spec.alias if storage_root else None
-
-        # Always consult the widget build coordinator on HTML-entrypoint
-        # requests, with a signature-aware short-circuit. When the source
-        # tree is unchanged the call is a fast no-op (string equality on
-        # the cached fingerprint). When the source tree changed since the
-        # last successful build, we fall through to the build coro — which
-        # in turn hits `run_once_for_shared_bundle_storage` for cross-
-        # worker / cross-machine arbitration on EFS.
-        await run_static_bundle_entrypoint_load_once(
-            load_key=build_load_key,
-            load_coro_factory=_ensure_widget_ui_build_from_workflow,
-            signature_provider=_widget_source_signature,
-        )
-        storage_root = storage_for_spec(spec=spec, tenant=tenant_id, project=project_id, ensure=False)
-        ui_root = storage_root / "ui" / "widgets" / widget_spec.alias if storage_root else None
-
     if not ui_root or not ui_root.exists():
-        # Cold-asset fallback: a static-asset request arrived before any
-        # HTML-entrypoint request had a chance to build. Trigger the build
-        # without a signature_provider so the legacy membership-based
-        # short-circuit still keeps repeated asset hits cheap once the
-        # build finishes.
-        await run_static_bundle_entrypoint_load_once(
-            load_key=build_load_key,
-            load_coro_factory=_ensure_widget_ui_build_from_workflow,
-        )
-        storage_root = storage_for_spec(spec=spec, tenant=tenant_id, project=project_id, ensure=False)
-        ui_root = storage_root / "ui" / "widgets" / widget_spec.alias if storage_root else None
-
-    if not ui_root or not ui_root.exists():
-        fallback_load_key = static_bundle_entrypoint_load_key(
-            tenant=tenant_id,
-            project=project_id,
-            bundle_id=f"{bundle_id}::widget-fallback::{widget_spec.alias}",
-            storage_root=storage_root,
-        )
-        await run_static_bundle_entrypoint_load_once(
-            load_key=fallback_load_key,
-            load_coro_factory=lambda: _load_bundle_props_defaults(
-                bundle_id=bundle_id,
-                tenant=tenant_id,
-                project=project_id,
-                request=request,
-                session=session,
-                evict_before_load=False,
-            ),
-        )
-        storage_root = storage_for_spec(spec=spec, tenant=tenant_id, project=project_id, ensure=False)
-        ui_root = storage_root / "ui" / "widgets" / widget_spec.alias if storage_root else None
-        if not ui_root or not ui_root.exists():
-            raise HTTPException(status_code=404, detail=f"Bundle widget '{widget_alias}' does not have a built UI")
+        raise HTTPException(status_code=404, detail=f"Bundle widget '{widget_alias}' does not have a built UI")
 
     try:
         target = (ui_root / cleaned_path).resolve()
@@ -4473,6 +4533,13 @@ async def _serve_static_widget_app(
         session: UserSession,
         public: bool = False,
 ):
+    tenant_id = str(tenant or "").strip()
+    project_id = str(project or "").strip()
+    _require_application_ready(
+        tenant=tenant_id,
+        project=project_id,
+        application_id=bundle_id,
+    )
     mode = static_widget_delivery_mode()
     if mode == "deployed":
         deployed_response = await _try_serve_deployed_static_widget_app(
@@ -4845,28 +4912,31 @@ async def _call_bundle_mcp_limited(
 ):
     resolved_session = session or _build_mcp_request_session(request)
     sem = _get_integrations_semaphore()
-    if sem:
-        async with sem:
-            return await _call_bundle_mcp_inner(
-                tenant=tenant,
-                project=project,
-                bundle_id=bundle_id,
-                request=request,
-                endpoint_alias=endpoint_alias,
-                route=route,
-                mcp_path=mcp_path,
-                session=resolved_session,
-            )
-    return await _call_bundle_mcp_inner(
-        tenant=tenant,
-        project=project,
-        bundle_id=bundle_id,
-        request=request,
-        endpoint_alias=endpoint_alias,
-        route=route,
-        mcp_path=mcp_path,
-        session=resolved_session,
-    )
+    try:
+        if sem:
+            async with sem:
+                return await _call_bundle_mcp_inner(
+                    tenant=tenant,
+                    project=project,
+                    bundle_id=bundle_id,
+                    request=request,
+                    endpoint_alias=endpoint_alias,
+                    route=route,
+                    mcp_path=mcp_path,
+                    session=resolved_session,
+                )
+        return await _call_bundle_mcp_inner(
+            tenant=tenant,
+            project=project,
+            bundle_id=bundle_id,
+            request=request,
+            endpoint_alias=endpoint_alias,
+            route=route,
+            mcp_path=mcp_path,
+            session=resolved_session,
+        )
+    except ApplicationNotReadyError as exc:
+        return await _mcp_application_not_ready_response(request, exc)
 
 
 async def _call_bundle_mcp_inner(
@@ -4994,6 +5064,8 @@ async def _call_bundle_mcp_inner(
                 body=mcp_request_body,
             )
     except HTTPException:
+        raise
+    except ApplicationNotReadyError:
         raise
     except Exception as e:
         logger.exception(
@@ -5292,6 +5364,8 @@ async def _load_bundle_workflow(
         workflow, _mod = await get_workflow_instance_async(
             spec, wf_config, comm_context=comm_context, redis=redis, pg_pool=pg_pool,
         )
+    except ApplicationNotReadyError:
+        raise
     except Exception as e:
         logger.exception(
             "[call_bundle_op.%s.%s] Failed to load requested bundle id=%s spec=%s",

@@ -8,6 +8,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 from kdcube_ai_app.infra.plugin.bundle_loader import (
+    BundleLoadInvalidatedError,
     BundleSpec,
     _bundle_load_done,
     _bundle_load_key,
@@ -118,6 +119,50 @@ async def test_bundle_on_load_continues_after_waiter_cancellation():
     assert calls == 1
 
     clear_bundle_loader_caches()
+
+
+@pytest.mark.asyncio
+async def test_bundle_on_load_invalidation_does_not_cancel_the_waiting_caller():
+    clear_bundle_loader_caches()
+    spec = BundleSpec(id="test-bundle", path="/tmp/test-bundle", module="entrypoint")
+    config = SimpleNamespace(
+        log_level="INFO",
+        ai_bundle_spec=SimpleNamespace(id="test-bundle"),
+    )
+    comm_context = SimpleNamespace(
+        actor=SimpleNamespace(tenant_id="tenant-a", project_id="project-a"),
+    )
+    started = asyncio.Event()
+
+    class Bundle:
+        async def on_bundle_load(self):
+            started.set()
+            await asyncio.Event().wait()
+
+    load_key = _bundle_load_key(spec, comm_context)
+    waiter = asyncio.create_task(
+        _maybe_run_bundle_on_load(
+            instance=Bundle(),
+            mod=ModuleType("test_bundle"),
+            spec=spec,
+            config=config,
+            comm_context=comm_context,
+            pg_pool=None,
+            redis=None,
+        )
+    )
+
+    await started.wait()
+    inner = _bundle_load_tasks.pop(load_key)
+    inner.cancel()
+
+    with pytest.raises(BundleLoadInvalidatedError, match="changed while its on-load hook was running"):
+        await waiter
+    assert waiter.cancelled() is False
+    assert load_key not in _bundle_load_done
+
+    clear_bundle_loader_caches()
+
 
 @pytest.mark.asyncio
 async def test_static_entrypoint_load_cleanup_allows_retry_after_cancelled_waiter_and_failure():

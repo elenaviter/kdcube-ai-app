@@ -38,7 +38,8 @@ from kdcube_ai_app.apps.chat.sdk.runtime.data_bus.types import (
     DataBusHandlerSpec,
     validate_handler_spec_values,
 )
-from kdcube_ai_app.infra.plugin.bundle_registry import BundleSpec
+from kdcube_ai_app.infra.plugin.app_readiness import application_readiness_registry
+from kdcube_ai_app.infra.plugin.bundle_registry import ADMIN_BUNDLE_ID, BundleSpec
 from kdcube_ai_app.infra.service_hub.inventory import AgentLogger
 _log = logging.getLogger("kdcube.plugin.loader")
 
@@ -1883,6 +1884,10 @@ _bundle_static_entrypoint_load_tasks: dict[str, asyncio.Task] = {}
 _bundle_static_entrypoint_load_lock = asyncio.Lock()
 
 
+class BundleLoadInvalidatedError(RuntimeError):
+    """The runtime invalidated an in-flight bundle load after a config change."""
+
+
 def _is_base_workflow_subclass(target: Any) -> bool:
     """Best-effort check without importing the heavy workflow module here."""
     cls = target if inspect.isclass(target) else type(target)
@@ -2279,6 +2284,19 @@ async def _maybe_run_bundle_on_load(
 
     try:
         await asyncio.shield(task)
+    except asyncio.CancelledError as exc:
+        current_task = asyncio.current_task()
+        if current_task is None or current_task.cancelling():
+            raise
+        bundle_id = str(getattr(getattr(config, "ai_bundle_spec", None), "id", None) or spec.id)
+        logger = AgentLogger("bundle.on_load", getattr(config, "log_level", "INFO"))
+        logger.log(
+            f"[bundle.on_load] invalidated while running: bundle={bundle_id}",
+            level="WARNING",
+        )
+        raise BundleLoadInvalidatedError(
+            f"Bundle {bundle_id!r} changed while its on-load hook was running; retry against the current bundle generation"
+        ) from exc
     except Exception:
         logger = AgentLogger("bundle.on_load", getattr(config, "log_level", "INFO"))
         logger.log("[bundle.on_load] hook failed:\n" + traceback.format_exc(), level="ERROR")
@@ -3087,8 +3105,27 @@ async def get_workflow_instance_async(
         comm_context: ExternalEventPayload,
         pg_pool: Optional[Any] = None,
         redis: Optional[Any] = None,
+        enforce_application_readiness: bool = True,
 ) -> Tuple[Any, types.ModuleType]:
     """Async runtime loader that awaits bundle lifecycle hooks."""
+    if enforce_application_readiness and spec.id != ADMIN_BUNDLE_ID:
+        actor = getattr(comm_context, "actor", None)
+        tenant = str(
+            getattr(actor, "tenant_id", None)
+            or getattr(config, "tenant", None)
+            or ""
+        ).strip()
+        project = str(
+            getattr(actor, "project_id", None)
+            or getattr(config, "project", None)
+            or ""
+        ).strip()
+        if tenant and project:
+            application_readiness_registry.require_ready(
+                tenant=tenant,
+                project=project,
+                application_id=spec.id,
+            )
     instance, mod = get_workflow_instance(
         spec,
         config,
@@ -3116,7 +3153,7 @@ async def get_workflow_instance_async(
 
 class _StartupCommContext:
     """
-    Minimal comm_context stub for startup bundle preloading.
+    Minimal comm_context stub for supervised application preparation.
     """
     class _Actor:
         def __init__(self, tenant: str, project: str) -> None:
@@ -3137,13 +3174,16 @@ async def preload_bundle_async(
     redis: Optional[Any] = None,
 ) -> tuple[Any, types.ModuleType]:
     """
-    Eagerly load a bundle module and run its on_bundle_load hook (if any).
-    Called at proc startup when BUNDLES_PRELOAD_ON_START=1.
+    Load one application in the current proc and await its on_bundle_load hook.
+
+    The application lifecycle supervisor calls this for every desired app
+    generation during startup and live reconciliation. Shared-resource
+    completion never suppresses this process-local hook.
 
     Builds the same descriptor-resolved Config shape used by normal bundle
-    operations, plus a minimal startup comm_context. This ensures
+    operations, plus a minimal lifecycle comm_context. This ensures
     _bundle_load_key() produces the same key that real requests will use, so
-    the hook is not re-run on first actual request.
+    the hook is not re-run after this process admits the app.
     """
     from kdcube_ai_app.infra.service_hub.inventory import (
         ConfigRequest,
@@ -3168,6 +3208,7 @@ async def preload_bundle_async(
         comm_context=comm_ctx,
         pg_pool=pg_pool,
         redis=redis,
+        enforce_application_readiness=False,
     )
 
 

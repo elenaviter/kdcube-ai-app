@@ -35,6 +35,11 @@ from kdcube_ai_app.apps.chat.sdk.runtime.comm_ctx import (
 )
 from kdcube_ai_app.apps.chat.sdk.protocol import ExternalEventPayload
 from kdcube_ai_app.infra.jobs.stream import BackgroundJob, BackgroundJobClaim
+from kdcube_ai_app.infra.plugin.app_readiness import (
+    ApplicationReadinessMode,
+    DesiredApplicationState,
+    application_readiness_registry,
+)
 from kdcube_ai_app.infra.plugin import bundle_store
 
 
@@ -1308,6 +1313,65 @@ async def test_process_task_does_not_scan_lane_after_completion(_patch_processor
     assert conversation_ctx.calls[-1]["new_state"] == "idle"
     assert conversation_ctx.calls[-1]["last_turn_id"] == "turn-1"
     assert relay.conv_status_calls[-1]["kwargs"]["completion"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_process_task_defers_unready_application_before_visible_turn_events(
+    _patch_processor_dependencies,
+):
+    redis = _MinimalRedis()
+    conversation_ctx = _NoopConversationCtx()
+    handler_calls = []
+
+    async def _handler(payload):
+        handler_calls.append(payload)
+        return {}
+
+    processor = _build_processor(
+        redis,
+        handler=_handler,
+        conversation_ctx=conversation_ctx,
+    )
+    task_payload = _build_task_payload("task-unready", user_type="registered")
+    raw_payload = json.dumps(task_payload).encode("utf-8")
+    ready_key = "queue:registered"
+    inflight_key = "queue:inflight:registered"
+    lock_key = "lock:task-unready"
+    redis.seed_list(inflight_key, [raw_payload])
+    redis.lock_ttls[lock_key] = 300
+    processor._current_load = 1
+
+    task_data = dict(task_payload)
+    task_data["_lock_key"] = lock_key
+    task_data["_raw_payload"] = raw_payload
+    task_data["_ready_queue_key"] = ready_key
+    task_data["_inflight_queue_key"] = inflight_key
+
+    application_readiness_registry.replace_desired(
+        tenant="tenant-a",
+        project="project-a",
+        applications={
+            "bundle.demo": DesiredApplicationState(
+                generation="generation-a",
+                readiness=ApplicationReadinessMode.INDEPENDENT,
+            )
+        },
+    )
+    try:
+        await processor._process_task(task_data)
+    finally:
+        application_readiness_registry.deactivate_scope(
+            tenant="tenant-a",
+            project="project-a",
+            clear=True,
+        )
+
+    assert handler_calls == []
+    assert conversation_ctx.calls == []
+    assert redis.lists[inflight_key] == []
+    assert redis.lists[ready_key] == [raw_payload]
+    assert lock_key in redis.delete_calls
+    assert processor.get_current_load() == 0
 
 
 @pytest.mark.asyncio

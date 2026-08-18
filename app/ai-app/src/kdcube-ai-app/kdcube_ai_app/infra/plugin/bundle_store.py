@@ -14,7 +14,7 @@ import shutil
 import fcntl
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Dict, Optional, Tuple, Any, Set
+from typing import Dict, Optional, Tuple, Any, Set, Literal
 from pathlib import Path
 from pydantic import BaseModel, Field, ValidationError
 import kdcube_ai_app.infra.namespaces as namespaces
@@ -902,6 +902,10 @@ def _ensure_admin_bundle(reg: "BundlesRegistry") -> "BundlesRegistry":
         reg.default_bundle_id = ADMIN_BUNDLE_ID
     return reg
 
+class BundleServiceConfig(BaseModel):
+    readiness: Literal["independent", "required"] = "independent"
+
+
 class BundleEntry(BaseModel):
     id: str
     name: Optional[str] = None
@@ -913,6 +917,7 @@ class BundleEntry(BaseModel):
     ref: Optional[str] = None
     subdir: Optional[str] = None
     git_commit: Optional[str] = None
+    service: Optional[BundleServiceConfig] = None
 
 class BundlesRegistry(BaseModel):
     default_bundle_id: Optional[str] = None

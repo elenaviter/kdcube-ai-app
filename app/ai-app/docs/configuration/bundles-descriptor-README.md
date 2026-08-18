@@ -1,10 +1,10 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/configuration/bundles-descriptor-README.md
 title: "Bundles Descriptor"
-summary: "Bundle registry and non-secret bundle deployment configuration in bundles.yaml: default bundle, git or local bundle sources, module paths, and bundle-scoped config."
+summary: "Application registry and non-secret deployment configuration in bundles.yaml: default app, Git or local sources, module paths, readiness policy, and app-scoped config."
 tags: ["service", "configuration", "bundle", "bundle-registry", "deployment", "descriptor", "api-security"]
-keywords: ["bundle registry", "default bundle selection", "git bundle source", "local path bundle source", "bundle module mapping", "bundle configuration", "bundle inventory", "file-backed bundle authority", "bundle reload workflow", "deployment bundle catalog", "operation csrf override"]
-updated_at: 2026-08-14
+keywords: ["bundle registry", "default bundle selection", "git bundle source", "local path bundle source", "bundle module mapping", "bundle configuration", "bundle inventory", "service.readiness", "application readiness policy", "file-backed bundle authority", "bundle reload workflow", "deployment bundle catalog", "operation csrf override"]
+updated_at: 2026-08-18
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/descriptors-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/app-with-agents-README.md
@@ -16,6 +16,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-properties-and-secrets-lifecycle-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-operation-csrf-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-configure-and-run-bundle-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/arch/proc/application-startup-health-and-readiness-README.md
 ---
 # Bundles Descriptor
 
@@ -67,7 +68,38 @@ For the operational local workflow for reusing a runtime, changing bundle roots,
 | `bundles.items[].id` | runtime registry | bundle identifier |
 | `bundles.items[].repo` / `ref` / `subdir` / `module` | proc git resolution | git-backed bundle definition |
 | `bundles.items[].path` / `module` | proc local-path loading | local development bundle definition |
+| `bundles.items[].service.readiness` | proc application lifecycle | aggregate readiness policy: `independent` by default or `required` |
 | `bundles.items[].config` | `self.bundle_prop("...")` | non-secret effective bundle config |
+
+### Application readiness policy
+
+Every configured app is prepared and admission-gated by proc. The optional
+bundle-item `service.readiness` field controls only whether that app contributes
+to aggregate proc readiness:
+
+```yaml
+bundles:
+  items:
+    - id: news@2026-05-20-12-05
+      path: /bundles/kdcube/applications/src/demo/news@2026-05-20-12-05
+      module: entrypoint
+      service:
+        readiness: required
+```
+
+Accepted values:
+
+- `independent` is the default. The app prepares under its own supervised task
+  and its doors return `application_not_ready` until ready, while other apps
+  and aggregate proc readiness can remain available.
+- `required` adds this app to aggregate `GET /health`; proc readiness is `503`
+  until its desired generation is ready.
+
+The field is platform lifecycle metadata beside `path`, `module`, and
+`singleton`. It does not belong under `config`, and `singleton` has no implied
+readiness meaning. See
+[Application Startup, Health, And Readiness](../arch/proc/application-startup-health-and-readiness-README.md)
+for preparation, admission, and health behavior.
 
 ### Application-hosted websites
 
@@ -766,7 +798,7 @@ Important runtime rule:
 
 For the step-by-step workflow, use:
 
-- [how-to-configure-and-run-bundle-README.md](../../sdk/bundle/build/how-to-configure-and-run-bundle-README.md)
+- [how-to-configure-and-run-bundle-README.md](../sdk/bundle/build/how-to-configure-and-run-bundle-README.md)
 
 Reload workflow:
 

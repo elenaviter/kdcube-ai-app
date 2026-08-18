@@ -409,11 +409,13 @@ class EnhancedChatRequestProcessor:
             redis=None,
             pg_pool=None,
             host_drain_detector=None,
+            application_lifecycle=None,
     ):
         self.middleware = middleware
         self.redis = redis or middleware.redis
         self.pg_pool = pg_pool if pg_pool is not None else getattr(middleware, "pg_pool", None)
         self.chat_handler = chat_handler
+        self._application_lifecycle = application_lifecycle
         self.process_id = process_id or os.getpid()
         self.max_concurrent = int(max_concurrent or 5)
         _svc = get_settings().PLATFORM.SERVICE
@@ -952,6 +954,10 @@ class EnhancedChatRequestProcessor:
             self._scheduler is not None,
             self._data_bus_manager is not None,
         )
+
+    async def reconcile_application_runtime(self, reason: str) -> None:
+        """Refresh app-owned scheduler/Data Bus adapters after an app becomes ready."""
+        await self._reconcile_bundle_scheduler_from_authority(reason)
 
     async def _bundle_scheduler_reconcile_loop(self) -> None:
         interval = self._bundle_scheduler_reconcile_interval_sec
@@ -2099,58 +2105,12 @@ class EnhancedChatRequestProcessor:
                     exc_info=True,
                 )
 
-        async def _deploy_changed_static_surfaces(
-                current: BundlesRegistry,
-                bundle_ids: set[str] | list[str],
-                *,
-                reason: str,
-        ) -> None:
-            from kdcube_ai_app.apps.chat.proc.app_deployment.coordinator import (
-                deploy_registry_bundle_static_surfaces,
-            )
-            from kdcube_ai_app.apps.chat.proc.app_deployment.modes import (
-                static_widget_deployment_enabled,
-            )
-
-            if not static_widget_deployment_enabled(settings):
-                return
-            for bundle_id in sorted(str(value).strip() for value in bundle_ids if str(value).strip()):
-                entry = (current.bundles or {}).get(bundle_id)
-                if entry is None:
-                    continue
-                try:
-                    manifest = await deploy_registry_bundle_static_surfaces(
-                        entry=entry,
-                        tenant=tenant,
-                        project=project,
-                        pg_pool=self.pg_pool,
-                        redis=self.redis,
-                    )
-                    logger.info(
-                        "Static widget deployment reconciled: reason=%s tenant=%s project=%s "
-                        "bundle=%s signature=%s",
-                        reason,
-                        tenant,
-                        project,
-                        bundle_id,
-                        manifest.deployment_signature[:12] if manifest is not None else None,
-                    )
-                except Exception:
-                    logger.warning(
-                        "Static widget deployment failed; legacy serving remains available: "
-                        "reason=%s tenant=%s project=%s bundle=%s",
-                        reason,
-                        tenant,
-                        project,
-                        bundle_id,
-                        exc_info=True,
-                    )
-
         async def _catch_up_runtime_snapshot(reason: str, changed_bundle_ids: Optional[set[str]] = None) -> None:
             current = await store_load(self.redis, tenant, project)
             await set_registry_async(
                 {bid: be.model_dump() for bid, be in (current.bundles or {}).items()},
                 current.default_bundle_id,
+                resolve_git=False,
                 source=reason,
             )
             try:
@@ -2278,11 +2238,10 @@ class EnhancedChatRequestProcessor:
                     )
             except Exception:
                 logger.warning("Failed to stop inactive local sidecars after bundle runtime catch-up", exc_info=True)
-            if normalized_changed_bundle_ids:
-                await _deploy_changed_static_surfaces(
+            if self._application_lifecycle is not None:
+                await self._application_lifecycle.reconcile(
                     current,
-                    normalized_changed_bundle_ids,
-                    reason=reason,
+                    force=set(normalized_changed_bundle_ids),
                 )
             if self._scheduler is not None:
                 await self._scheduler.reconcile(current)
@@ -2691,14 +2650,14 @@ class EnhancedChatRequestProcessor:
                                 logger.warning("Cached bundle on_props_changed failed after props update", exc_info=True)
                             try:
                                 current = await store_load(self.redis, tenant, project)
-                                await _deploy_changed_static_surfaces(
-                                    current,
-                                    [bundle_id],
-                                    reason="bundles.props.update",
-                                )
+                                if self._application_lifecycle is not None:
+                                    await self._application_lifecycle.reconcile(
+                                        current,
+                                        force={bundle_id},
+                                    )
                             except Exception:
                                 logger.warning(
-                                    "Static widget deployment catch-up failed after props update: bundle=%s",
+                                    "Application preparation reconcile failed after props update: bundle=%s",
                                     bundle_id,
                                     exc_info=True,
                                 )
@@ -2856,6 +2815,30 @@ class EnhancedChatRequestProcessor:
                 return
 
         assert payload is not None
+
+        from kdcube_ai_app.infra.plugin.app_readiness import (
+            ApplicationNotReadyError,
+            application_readiness_registry,
+        )
+
+        try:
+            application_readiness_registry.require_ready(
+                tenant=payload.actor.tenant_id,
+                project=payload.actor.project_id,
+                application_id=payload.routing.bundle_id,
+            )
+        except ApplicationNotReadyError as exc:
+            logger.info(
+                "Deferring task until application is ready: task_id=%s application=%s state=%s",
+                self._task_logical_id(task_data),
+                exc.snapshot.application_id,
+                exc.snapshot.state.value,
+            )
+            await self._release_unstarted_claimed_work(
+                task_data,
+                reason=f"application-not-ready:{exc.snapshot.application_id}",
+            )
+            return
 
         if current_processor_task is not None:
             if current_processor_task not in self._active_tasks:

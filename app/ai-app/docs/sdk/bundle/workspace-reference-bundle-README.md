@@ -52,8 +52,8 @@ When studying the entrypoint, pay attention to lifecycle inheritance. A bundle
 that subclasses the `BaseEntrypoint` family and overrides `on_bundle_load(...)`
 must keep `await super().on_bundle_load(**kwargs)` in the hook unless it
 intentionally replaces platform prop refresh and UI build behavior. That base
-hook is what lets startup preload build configured `ui.main_view` and
-`ui.widgets.*` assets before a user opens the UI.
+hook is part of supervised app preparation and ensures configured
+`ui.main_view` and `ui.widgets.*` assets are ready before a user opens the UI.
 
 ## Adjacent Patterns
 

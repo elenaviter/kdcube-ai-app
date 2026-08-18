@@ -1208,6 +1208,9 @@ class Settings(PLATFORM_CONFIG):
                 ).strip().lower(),
                 BUNDLES_PRELOAD_LOCK_TTL_SECONDS=self._resolve_int("BUNDLES_PRELOAD_LOCK_TTL_SECONDS", f"{bundles_p}.bundles_preload_lock_ttl_seconds", 900),
                 BUNDLES_PRELOAD_BUNDLE_LOCK_TTL_SECONDS=self._resolve_int("BUNDLES_PRELOAD_BUNDLE_LOCK_TTL_SECONDS", f"{bundles_p}.bundles_preload_bundle_lock_ttl_seconds", 300),
+                APPLICATION_PREPARATION_CONCURRENCY=self._resolve_int("APPLICATION_PREPARATION_CONCURRENCY", f"{bundles_p}.application_preparation_concurrency", 4),
+                APPLICATION_PREPARATION_RETRY_INITIAL_SECONDS=self._resolve_int("APPLICATION_PREPARATION_RETRY_INITIAL_SECONDS", f"{bundles_p}.application_preparation_retry_initial_seconds", 2),
+                APPLICATION_PREPARATION_RETRY_MAX_SECONDS=self._resolve_int("APPLICATION_PREPARATION_RETRY_MAX_SECONDS", f"{bundles_p}.application_preparation_retry_max_seconds", 60),
                 BUNDLE_SCHEDULER_RECONCILE_INTERVAL_SECONDS=self._resolve_int("BUNDLE_SCHEDULER_RECONCILE_INTERVAL_SECONDS", f"{bundles_p}.bundle_scheduler_reconcile_interval_seconds", 60),
                 GIT=GitBundlesConfig(
                     BUNDLE_GIT_RESOLUTION_ENABLED=self._resolve_bool("BUNDLE_GIT_RESOLUTION_ENABLED", f"{git_p}.bundle_git_resolution_enabled", True),

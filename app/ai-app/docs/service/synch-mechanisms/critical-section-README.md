@@ -251,8 +251,9 @@ MCP request or route handler forever.
 ### Git Bundle Materialization
 
 Git-backed bundles are materialized under the managed bundles root. The runtime
-may request this during startup preload, bundle load, route handling, or
-processor task preparation.
+requests this during supervised application preparation and explicit
+reload/repair flows. Normal application doors first require readiness and do
+not become Git materialization owners.
 
 ```text
 descriptor contains git bundle

@@ -7,11 +7,15 @@ from fastapi.testclient import TestClient
 
 from kdcube_ai_app.apps.chat.proc.rest.integrations import mount_integrations_routers
 from kdcube_ai_app.apps.chat.proc.rest.integrations import integrations
+from kdcube_ai_app.infra.plugin.bundle_store import BundleEntry, BundlesRegistry
 
 
 class _Entry:
     def __init__(self, payload):
         self._payload = payload
+        for key, value in payload.items():
+            setattr(self, key, value)
+        self.singleton = bool(payload.get("singleton", False))
 
     def model_dump(self):
         return dict(self._payload)
@@ -45,8 +49,8 @@ def test_internal_reload_authority_reapplies_registry(monkeypatch):
             },
         )
 
-    async def fake_set_registry_async(registry, default_bundle_id):
-        calls["set_registry"] = (registry, default_bundle_id)
+    async def fake_set_registry_async(registry, default_bundle_id, **kwargs):
+        calls["set_registry"] = (registry, default_bundle_id, kwargs)
 
     def fake_clear_bundle_loader_caches():
         calls["cleared"] = True
@@ -81,6 +85,10 @@ def test_internal_reload_authority_reapplies_registry(monkeypatch):
     assert response.json()["source"] == "authority"
     assert calls["reload"][1:] == ("demo-tenant", "demo-project")
     assert calls["set_registry"][1] == "demo.bundle@1.0.0"
+    assert calls["set_registry"][2] == {
+        "resolve_git": False,
+        "source": "admin.reload-authority",
+    }
     assert calls["cleared"] is True
     assert calls["publish"][0] == "kdcube:config:bundles:update:demo-tenant:demo-project"
 
@@ -107,8 +115,8 @@ def test_internal_reload_authority_evicts_requested_bundle_scope(monkeypatch):
             },
         )
 
-    async def fake_set_registry_async(registry, default_bundle_id):
-        calls["set_registry"] = (registry, default_bundle_id)
+    async def fake_set_registry_async(registry, default_bundle_id, **kwargs):
+        calls["set_registry"] = (registry, default_bundle_id, kwargs)
 
     def fake_clear_bundle_loader_caches():
         calls["cleared"] = True
@@ -159,3 +167,114 @@ def test_internal_reload_authority_evicts_requested_bundle_scope(monkeypatch):
         "drop_sys_modules": True,
     }
     assert "cleared" not in calls
+
+
+def test_internal_bundle_update_targets_changed_app_and_schedules_preparation(monkeypatch):
+    app = FastAPI()
+    mount_integrations_routers(app)
+    calls: dict[str, object] = {}
+
+    current = BundlesRegistry(
+        default_bundle_id="stable@1-0",
+        bundles={
+            "changed@1-0": BundleEntry(
+                id="changed@1-0",
+                path="/bundles/changed-old",
+                module="entrypoint",
+            ),
+            "stable@1-0": BundleEntry(
+                id="stable@1-0",
+                path="/bundles/stable",
+                module="entrypoint",
+            ),
+        },
+    )
+
+    class _Redis:
+        async def publish(self, channel, payload):
+            calls["publish"] = (channel, payload)
+            return 1
+
+    class _Lifecycle:
+        async def reconcile(self, registry, *, force=None):
+            calls["lifecycle"] = (registry, force)
+
+    app.state.redis_async = _Redis()
+    app.state.application_lifecycle = _Lifecycle()
+
+    async def _load_registry(redis, tenant, project):
+        del redis
+        calls["load"] = (tenant, project)
+        return current
+
+    async def _save_registry(redis, registry, tenant, project, **kwargs):
+        del redis
+        calls["save"] = (registry, tenant, project, kwargs)
+
+    async def _set_registry(registry, default_bundle_id, **kwargs):
+        calls["set_registry"] = (registry, default_bundle_id, kwargs)
+
+    def _evict(spec, *, drop_sys_modules=True):
+        calls.setdefault("evicted", []).append((spec.id, spec.path, drop_sys_modules))
+        return {}
+
+    def _invalidate_static(**kwargs):
+        calls.setdefault("invalidated", []).append(kwargs)
+        return 1
+
+    async def _invalidate_deployed(**kwargs):
+        calls["deployed"] = kwargs
+
+    monkeypatch.setattr(
+        integrations,
+        "get_settings",
+        lambda: SimpleNamespace(TENANT="demo-tenant", PROJECT="demo-project"),
+    )
+    monkeypatch.setattr(integrations, "_LOCALHOST", {"testclient", "127.0.0.1", "::1"})
+    monkeypatch.setattr(integrations, "_invalidate_deployed_widget_manifests", _invalidate_deployed)
+
+    import kdcube_ai_app.infra.plugin.bundle_store as bundle_store
+    import kdcube_ai_app.infra.plugin.bundle_registry as bundle_registry
+    import kdcube_ai_app.infra.plugin.bundle_loader as bundle_loader
+    import kdcube_ai_app.apps.chat.sdk.runtime.local_sidecars as local_sidecars
+
+    monkeypatch.setattr(bundle_store, "load_registry", _load_registry)
+    monkeypatch.setattr(bundle_store, "save_registry", _save_registry)
+    monkeypatch.setattr(bundle_registry, "set_registry_async", _set_registry)
+    monkeypatch.setattr(bundle_loader, "evict_bundle_scope", _evict)
+    monkeypatch.setattr(bundle_loader, "invalidate_static_bundle_entrypoint_loads", _invalidate_static)
+    monkeypatch.setattr(local_sidecars, "stop_local_sidecars_for_bundle_ids", lambda **kwargs: 0)
+
+    client = TestClient(app)
+    response = client.post(
+        "/internal/bundles/update",
+        json={
+            "op": "merge",
+            "bundles": {
+                "changed@1-0": {
+                    "id": "changed@1-0",
+                    "path": "/bundles/changed-new",
+                    "module": "entrypoint",
+                }
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert calls["set_registry"][2] == {
+        "resolve_git": False,
+        "source": "admin.save",
+    }
+    assert calls["evicted"] == [("changed@1-0", "/bundles/changed-new", True)]
+    assert calls["invalidated"] == [{
+        "bundle_id": "changed@1-0",
+        "tenant": "demo-tenant",
+        "project": "demo-project",
+    }]
+    lifecycle_registry, force = calls["lifecycle"]
+    assert set(lifecycle_registry.bundles) == {
+        "changed@1-0",
+        "kdcube.admin",
+        "stable@1-0",
+    }
+    assert force == {"changed@1-0"}

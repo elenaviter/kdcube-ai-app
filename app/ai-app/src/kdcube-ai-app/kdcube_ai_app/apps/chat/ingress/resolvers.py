@@ -393,7 +393,14 @@ def get_heartbeats_mgr_and_middleware(service_type: str = "chat",
     )
     return middleware, heartbeat_manager
 
-def get_external_request_processor(middleware, chat_handler, app, *, redis=None):
+def get_external_request_processor(
+    middleware,
+    chat_handler,
+    app,
+    *,
+    redis=None,
+    application_lifecycle=None,
+):
     from kdcube_ai_app.apps.chat.processor import EnhancedChatRequestProcessor
     gateway_config = get_gateway_config()
     return EnhancedChatRequestProcessor(
@@ -406,6 +413,7 @@ def get_external_request_processor(middleware, chat_handler, app, *, redis=None)
         task_timeout_sec=900,
         redis=redis,
         pg_pool=getattr(app.state, "pg_pool", None),
+        application_lifecycle=application_lifecycle,
     )
 
 def service_health_checker(middleware):

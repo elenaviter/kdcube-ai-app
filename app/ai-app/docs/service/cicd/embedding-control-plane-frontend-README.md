@@ -3,12 +3,14 @@ id: repo:kdcube-ai-app/app/ai-app/docs/service/cicd/embedding-control-plane-fron
 title: "Embedding The Control Plane Frontend"
 summary: "Deployment pattern for embedding the KDCube control-plane/chat frontend inside another web application while preserving nested bundle widgets and secure frame policies."
 tags: ["service", "cicd", "frontend", "embedding", "iframe", "proxy", "security"]
-keywords: ["control plane iframe embedding", "frame ancestors", "x-frame-options", "bundle widget iframe", "nested iframe deployment", "embedded chatbot frontend"]
+keywords: ["control plane iframe embedding", "frame ancestors", "x-frame-options", "bundle widget iframe", "application readiness", "nested iframe deployment", "embedded chatbot frontend"]
+updated_at: 2026-08-18
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/how-to-integrate-with-kdcube-apps-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/descriptors-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/assembly-descriptor-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/ngrok-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/arch/proc/application-startup-health-and-readiness-README.md
 ---
 # Embedding The Control Plane Frontend
 
@@ -344,17 +346,15 @@ messages for posted and skipped measurements. The most important field is
 `viewportWidth`: if it is small when the final height is huge, the parent page
 or one of its containers has given the iframe a narrow layout box.
 
-When `bundles_preload_on_start` is enabled, bundle UI builds should happen
-during processor startup. Runtime iframe requests should normally find the
-fresh current build already present. If an entrypoint request still triggers
-`npm install`, treat that as a preload/build readiness problem, not as a reason
-to serve stale UI.
+Every proc process schedules supervised preparation for every configured app.
+An iframe request checks app readiness and serves prepared UI; it never starts
+`npm install` or repairs a missing artifact. If an app is still preparing, the
+route returns the app-scoped retryable `503`.
 
-In multi-proc deployments, every proc should still run local bundle preload.
-Per-bundle preload claims let one proc work on bundle A while another proc
-continues with bundle B. Shared storage build signatures and heartbeat-backed
-locks are the final guard that makes each UI build output update once, while
-still allowing stale dead-owner locks to be recovered.
+In multi-proc deployments, every proc runs process-local `on_bundle_load` for
+the app before admission. Shared UI build signatures and heartbeat-backed locks
+coalesce artifact publication and recover stale dead-owner locks. See
+[Application Startup, Health, And Readiness](../../arch/proc/application-startup-health-and-readiness-README.md).
 
 ## Proposed Assembly Descriptor Surface
 

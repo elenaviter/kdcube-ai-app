@@ -4,7 +4,7 @@ title: "Platform Documentation Index"
 summary: "Curated top-level map of the KDCube documentation tree for app builders, integrators, operators, and agents."
 tags: ["docs", "index", "sdk", "service", "ops", "architecture"]
 keywords: ["documentation index", "platform architecture", "configuration guides", "service runtime docs", "app sdk docs", "execution docs", "deployment and operations docs", "app builder docs", "client widgets", "streaming", "memory", "claude code"]
-updated_at: 2026-08-12
+updated_at: 2026-08-18
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/what-you-can-do-with-kdcube-README.md
@@ -14,6 +14,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/architecture-of-what-we-built-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/architecture-of-what-you-build-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/control-plane-web-app-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/arch/proc/application-startup-health-and-readiness-README.md
   - repo:kdcube/app/ai-app/docs/arch/application-hosted-websites-README.md
   - repo:kdcube/app/ai-app/docs/recipes/components/website-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/README.md
@@ -38,6 +39,7 @@ Curated index of platform, service, and SDK documentation.
 * Architecture Of What We Built: [architecture-of-what-we-built-README.md](arch/architecture-of-what-we-built-README.md)
 * Architecture Of What You Build: [architecture-of-what-you-build-README.md](arch/architecture-of-what-you-build-README.md)
 * Control Plane Web App: [control-plane-web-app-README.md](arch/control-plane-web-app-README.md)
+* Application Startup, Health, And Readiness: [application-startup-health-and-readiness-README.md](arch/proc/application-startup-health-and-readiness-README.md)
 * Application-Hosted Website Architecture: [application-hosted-websites-README.md](arch/application-hosted-websites-README.md)
 * Component Recipes: [components/README.md](recipes/components/README.md)
 * Connection Recipes: [connections/README.md](recipes/connections/README.md)
@@ -135,6 +137,7 @@ Curated index of platform, service, and SDK documentation.
 * Architecture Short: [architecture-short.md](arch/architecture-short.md)
 * Architecture Long: [architecture-long.md](arch/architecture-long.md)
 * Control Plane Web App: [control-plane-web-app-README.md](arch/control-plane-web-app-README.md)
+* Application Startup, Health, And Readiness: [application-startup-health-and-readiness-README.md](arch/proc/application-startup-health-and-readiness-README.md)
 * Application-Hosted Website Architecture: [application-hosted-websites-README.md](arch/application-hosted-websites-README.md)
 * Current CLI: [cli-README.md](service/cicd/cli-README.md)
 * Descriptors And CI/CD: [descriptors-README.md](service/cicd/descriptors-README.md)

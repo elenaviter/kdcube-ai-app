@@ -1,28 +1,29 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/app-deployment-and-static-widget-delivery-README.md
 title: "App Deployment And Static Widget Delivery"
-summary: "Experimental fleet-coordinated app deployment and policy-aware static widget serving from local or shared filesystem storage."
-tags: ["sdk", "bundle", "app", "deployment", "widget", "static-ui", "authorization", "efs"]
-keywords: ["on_app_deploy", "static widget delivery mode", "predeployed widget", "policy manifest", "legacy shadow deployed", "local filesystem", "EFS", "role protected widget"]
-updated_at: 2026-07-27
+summary: "Fleet-coordinated app-resource deployment and policy-aware static widget serving from prepared local or shared filesystem artifacts."
+tags: ["sdk", "bundle", "app", "deployment", "widget", "static-ui", "authorization", "readiness", "efs"]
+keywords: ["on_app_deploy", "app resource barrier", "static widget delivery mode", "predeployed widget", "policy manifest", "legacy shadow deployed", "side-effect-free widget request", "local filesystem", "EFS", "role protected widget"]
+updated_at: 2026-08-18
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/ui-components-lifecycle-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-lifecycle-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-widget-integration-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/surfaces/as-provider-surfaces-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/arch/proc/application-startup-health-and-readiness-README.md
 ---
 # App Deployment And Static Widget Delivery
 
-KDCube can prepare app (bundle) widget files before a browser requests them and
-then serve those files without importing or instantiating the app on the request
-path. This path is experimental and runs beside the established request-time
-loader.
+KDCube prepares app-owned shared resources before admitting the app. The
+`on_app_deploy` hook is the fleet-coordinated resource barrier for one exact
+source/config/runtime generation. Static UI compilation and policy-manifest
+publication are optional participants in that barrier.
 
-The design keeps authorization in proc. Built files are not copied to a public
-object-store origin, because widget surfaces may require arbitrary roles,
-registered user types, or authority grants.
+Widget files remain in the app's configured storage and are served by proc.
+Authorization therefore remains in the normal application surface instead of
+being delegated to an unguarded public object-store origin.
 
-## Select The Mode
+## Select The Static Delivery Mode
 
 Configure the mode in `assembly.yaml`:
 
@@ -31,125 +32,135 @@ platform:
   services:
     proc:
       bundles:
-        static_widget_delivery_mode: shadow
+        static_widget_delivery_mode: deployed
 ```
 
-| Mode | Deployment behavior | Request behavior |
-|---|---|---|
-| `legacy` | No new deployment manifest is produced. | The existing workflow-resolving, source-signature-checking path serves the current build and rebuilds only when output is missing or stale. |
-| `shadow` | Startup and live app updates reconcile widget builds and publish manifests. | The existing path still serves every request. Responses carry `X-KDCube-Widget-Delivery: legacy-shadow`. |
-| `deployed` | The same deployment pipeline runs. | Proc first serves an authorized current manifest; a missing/stale artifact falls back to the legacy path. |
+| Mode | Preparation behavior | Request behavior |
+| --- | --- | --- |
+| `legacy` | App preparation builds configured UI; no deployed policy manifest is published. | Proc resolves the ready app and serves its prepared static files through the established route. |
+| `shadow` | App preparation also publishes the static-surface policy manifest. | Proc serves through the legacy route and marks the response `legacy-shadow`. |
+| `deployed` | Same manifest and artifact preparation as shadow. | Proc prefers the bounded manifest path; a missing/stale manifest falls back to prepared legacy serving. |
 
-An absent setting means `legacy`. Use `shadow` to validate a deployment before
-switching that environment to `deployed`.
+All modes require app readiness before serving. No mode imports an app for
+repair, scans source trees, or runs npm/Vite from the browser request.
 
-## What This Optimizes
+## App Resource Barrier
 
-Legacy does **not** rebuild an unchanged widget on every request. It already
-stores build output in bundle storage and coordinates actual npm/Vite work by
-signature. The normal HTML request nevertheless travels through the app
-runtime to prove that stored output is still current. Depending on the app, it
-may:
-
-- resolve config and secrets and construct a request communication context;
-- import or resolve the app module and instantiate a non-singleton entrypoint;
-- perform lifecycle and authority-registration bookkeeping;
-- discover the decorated widget interface and apply effective app props;
-- walk the widget and shared-source trees to compute the current UI signature;
-- enter the process-local and shared-storage build coordinators, which normally
-  short-circuit when the signature is unchanged.
-
-Static asset requests skip the source-signature walk, but they still enter the
-workflow-resolution and policy-discovery path before serving the file.
-
-`deployed` moves app execution, source inspection, and build coordination to
-startup or app-update deployment. A current request reads the small manifest,
-checks it against the active registry and descriptor-props generation, applies
-the recorded authorization policy, and serves the built file. This reduces
-per-request CPU, source/EFS metadata reads, non-singleton construction, and the
-tail risk that a browser request becomes the owner or waiter of reconciliation
-work.
-
-The deployed path is not a public zero-cost file server. It still reads current
-registry/config state and enforces authorization in proc. Its local median gain
-may be small; the principal goal is a shorter, bounded request path and moving
-generation work away from page load.
-
-## Deployment Flow
+The lifecycle is:
 
 ```text
-registry generation or props update
-              |
-              v
-     import app + on_bundle_load       per proc process
-              |
-              v
- shared filesystem generation lock    local filesystem or EFS
-              |
-              v
-         on_app_deploy                 once per shared generation
-              |
-              v
- reconcile configured widget UI builds
-              |
-              v
- atomically publish policy manifest
+desired app generation
+        |
+        v
+process-local on_bundle_load             every proc process
+        |
+        v
+shared app-resource signature + lock     local shared FS or EFS
+        |
+        v
+on_app_deploy                            once per shared generation
+        |
+        +-- app-owned catalogs, schemas, indexes, projections, assets
+        |
+        +-- configured UI ensure         when UI exists
+        |
+        +-- policy manifest              shadow/deployed only
+        |
+        v
+mark desired app generation ready        process-local admission fact
 ```
 
-`on_app_deploy` is an optional async lifecycle hook. It is for idempotent work
-that must finish once for one source/configuration generation before static
-surfaces become current. `on_bundle_load` remains the per-process initialization
-hook. Request-local state belongs in neither hook.
+`on_app_deploy` is optional app code but the resource-barrier phase is part of
+every app's supervised preparation. The hook must be async, idempotent, and
+retry-safe. Its shared signature prevents unchanged resource publication from
+repeating; its lock heartbeat and TTL permit recovery after an interrupted
+owner.
 
-The coordinator uses the existing shared-filesystem lock and heartbeat
-primitive. A crashed owner leaves no current signature; another proc can retry.
+`on_bundle_load` remains process-local and runs in every proc process. Shared
+completion cannot substitute for another process's local initialization.
 
-## Published State
+## Generation Inputs
 
-Each app receives this generated state under its normal bundle storage root:
+The shared resource generation includes:
+
+- app identity and source declaration;
+- resolved Git commit and source fingerprint;
+- descriptor props fingerprint;
+- runtime/resource schema generation.
+
+A source edit, immutable ref change, policy change, build config change, or
+relevant runtime release therefore creates a new resource identity. Completion
+for the prior identity cannot mark the desired app generation ready.
+
+## Published Static State
+
+Each app receives generated state under its normal storage root:
 
 ```text
 <bundle-storage>/<tenant>/<project>/<app-id>/
   ui/widgets/<alias>/...
   .kdcube.app-deployment/
+    app-resources.v1.signature
     static-widget-surfaces.v1.json
     static-widget-surfaces.v1.signature
 ```
 
-Local deployments use their configured local bundle-storage path. ECS
-deployments use the shared EFS mount already configured as bundle storage. This
-feature has no S3 dependency.
+Local deployments use configured local bundle storage. Shared proc deployments
+use the shared filesystem mounted as bundle storage, such as EFS. Static app
+deployment has no S3 requirement.
 
-Proc-facing deployment storage and descriptor operations are async. Local
-filesystem and EFS calls run outside the proc event loop because Python does not
-provide native asynchronous filesystem operations.
-
-The JSON manifest contains:
+The policy manifest contains:
 
 - app source generation and descriptor-props fingerprint;
-- resolved widget `user_types`, `roles`, and authority/grant policy;
-- enabled/static state and the relative artifact directory;
+- resolved widget `user_types`, roles, enabled state, and authority/grant
+  policy;
+- relative prepared artifact directory;
 - build and deployment signatures.
 
 It contains no app secrets, user credentials, or provider tokens.
+
+## UI Build Publication
+
+The UI build contract remains independent of request lifetime:
+
+1. Compute component and shared-source signatures.
+2. Acquire the shared-storage resource lock.
+3. Copy source into a worker-local build tree.
+4. Run npm/Vite in a dedicated process group; transient `node_modules` remain
+   worker-local.
+5. Write output into a shared temporary directory.
+6. Require `index.html` and atomically replace the final artifact.
+7. Write the completion signature.
+8. Release the shared lock.
+9. Clean worker-local source after publication and lock release.
+
+Timeout, generation supersession, and proc shutdown terminate and reap the
+entire build process group. A hard proc death stops the lock heartbeat; another
+worker can retry after lock expiry.
+
+See [UI Components Lifecycle](ui-components-lifecycle-README.md) for exact
+paths, signatures, lock behavior, and author requirements.
 
 ## Deployed Request Path
 
 For `static_widget_delivery_mode: deployed`, proc handles a widget request in
 this order:
 
-1. Resolve the app in the active tenant/project registry.
-2. Read the small generated manifest from bundle storage.
-3. Match its source generation and descriptor-props fingerprint to current
+1. Resolve tenant, project, and app from the active registry.
+2. Require the desired app generation to be ready in this proc.
+3. Read the small generated policy manifest.
+4. Match its source generation and descriptor-props fingerprint to current
    authority state.
-4. Enforce app-level roles plus the widget user-type, role, enabled, and
-   authority-grant policy used by the legacy route.
-5. Serve `index.html` or a built asset from the declared widget directory.
+5. Enforce app roles plus widget user type, role, enabled, and authority-grant
+   policy.
+6. Serve `index.html` or an asset from the declared prepared directory.
 
 A policy denial returns `403` or `404`; it does not fall through. A missing or
-stale manifest falls back to the legacy route, which resolves the app and
-serves the current build or performs a coordinated build when the output is
-missing/stale. The response identifies the path used:
+stale deployment manifest may use prepared legacy serving, which still enforces
+the app surface and still does no build work. Missing built output after the app
+is ready is an artifact invariant failure.
+
+Responses identify the selected serving path:
 
 ```text
 X-KDCube-Widget-Delivery: deployed
@@ -159,49 +170,56 @@ X-KDCube-Widget-Delivery: legacy
 ```
 
 Successful deployed responses also carry a short
-`X-KDCube-App-Deployment` signature.
-
-Authenticated widget assets use private browser caching so a shared proxy
-cannot replay one caller's role-authorized response to another caller. Only
-the explicit `/public/widgets/...` route emits public cache directives.
+`X-KDCube-App-Deployment` signature. Authenticated widget assets use private
+browser caching; only the explicit `/public/widgets/...` route emits public
+cache directives.
 
 ## Startup And Live Changes
 
-`shadow` and `deployed` imply startup preload even when
-`bundles_preload_on_start` is false. The deployment pipeline also runs after:
+Proc schedules every active app generation during startup without waiting for
+the complete app set to finish. Registry and props updates supersede only the
+changed app:
 
-- a `bundles.update` event changes an app source definition;
-- a `bundles.props.update` event changes effective app configuration;
-- an explicit reload republishes the active descriptor state.
+- Bundle Admin Save persists authority, updates the full registry, invalidates
+  the changed app, and schedules its replacement generation.
+- `bundles.update` carries changed app ids to other proc processes.
+- `bundles.props.update` creates a new props/resource generation.
+- explicit Reload replays authority and force-prepares the selected app.
 
-The preload generation includes the app source fingerprint, descriptor-props
-fingerprint, and runtime release identity (`PLATFORM_REF`, `APP_IMAGE_TAG`, or
-`IMAGE_TAG` when supplied). A refreshed local source tree, changed app policy,
-or new runtime image therefore cannot reuse an older deployment completion
-marker merely because the app id and path stayed the same.
+Admin requests return after publishing desired state. The lifecycle supervisor
+owns source materialization, hooks, UI build, retries, and cancellation.
 
-Before a live source reload, proc removes the published manifest pointer. Built
-files remain intact, so legacy fallback stays available while the new
-generation is prepared. Publication is atomic after the build and lifecycle
-hook succeed.
+Direct local source edits become active through the supported app reload or
+runtime refresh. Browser requests deliberately do not poll source trees.
 
-Unlike the legacy HTML route, `deployed` does not poll the source tree for edits
-on every browser request. A local source edit under an unchanged app path
-becomes current through the normal app reload or runtime refresh, which starts
-a new deployment generation. Descriptor and registry updates use their
-existing update events. This is the deliberate exchange: deterministic
-deployment invalidation replaces request-time source scanning.
+## Readiness And Failure
+
+The app is marked ready only after process-local load and required shared
+resource publication succeed. A failure publishes no ready generation and no
+new active static manifest. The app enters retrying state under bounded
+backoff; its doors return the structured retryable `application_not_ready`
+diagnosis.
+
+Only apps declared `service.readiness: required` affect aggregate proc
+`GET /health`. Independent apps remain unavailable only through their own
+doors while preparing.
+
+The full endpoint, queue-deferral, retry, and deployment-adapter contract is in
+[Application Startup, Health, And Readiness](../../arch/proc/application-startup-health-and-readiness-README.md).
 
 ## Verification
 
-1. Set `shadow`, refresh the runtime, and load a widget. Confirm the header is
-   `legacy-shadow` and the manifest exists under bundle storage.
-2. Set `deployed`, refresh, and load the same widget. Confirm the header is
-   `deployed` and the request does not trigger workflow construction,
-   source-signature scanning, or build coordination.
-3. Test a widget restricted to a custom role with an allowed and a denied user.
-   The denied user must receive `403` in both modes.
-4. Change widget visibility or app props and apply them. Until the new manifest
-   is current, the request may say `legacy-fallback`; afterward it says
-   `deployed` and enforces the new policy.
-5. Set `legacy` to return immediately to the established serving path.
+1. Configure one widget and start proc. Confirm the app moves from preparing to
+   ready and the artifact/signature exist before the widget returns `200`.
+2. Set `shadow`. Confirm the manifest exists and the response identifies
+   `legacy-shadow`.
+3. Set `deployed`. Confirm the response identifies `deployed` and a request
+   performs no workflow construction, source scan, or build command.
+4. Test a role-restricted widget with allowed and denied users. The denied user
+   must receive the same policy denial in legacy, shadow, and deployed serving.
+5. Change the app ref or widget props. Confirm Save returns before compilation,
+   the app becomes pending/preparing, and the replacement artifact is published
+   before readiness returns.
+6. Fail the build command. Confirm no new signature or ready generation is
+   published, the build process group is reaped, and supervisor diagnostics
+   show bounded retry state.

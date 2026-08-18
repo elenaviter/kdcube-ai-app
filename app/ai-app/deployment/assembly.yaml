@@ -419,10 +419,12 @@ platform:
         bundle_ref_ttl_seconds: 3600                  # BUNDLE_REF_TTL_SECONDS
         bundles_force_env_on_startup: true            # BUNDLES_FORCE_ENV_ON_STARTUP
         bundles_force_env_lock_ttl_seconds: 60        # BUNDLES_FORCE_ENV_LOCK_TTL_SECONDS
-        bundles_preload_on_start: true                # BUNDLES_PRELOAD_ON_START
-        static_widget_delivery_mode: deployed         # legacy=current request path; shadow=predeploy but serve legacy; deployed=serve authorized prebuilt files with legacy fallback
-        bundles_preload_lock_ttl_seconds: 900         # BUNDLES_PRELOAD_LOCK_TTL_SECONDS
-        bundles_preload_bundle_lock_ttl_seconds: 300  # BUNDLES_PRELOAD_BUNDLE_LOCK_TTL_SECONDS
+        static_widget_delivery_mode: deployed         # legacy=prepared app route; shadow=publish manifest but serve legacy; deployed=authorized manifest path with prepared legacy fallback; requests never build
+        bundles_preload_lock_ttl_seconds: 900         # Compatibility-named lower bound for shared app-resource generation locks
+        bundles_preload_bundle_lock_ttl_seconds: 300  # Compatibility-named lower bound for shared app-resource generation locks
+        application_preparation_concurrency: 4        # Max process-local app preparations running at once
+        application_preparation_retry_initial_seconds: 2 # Retry delay after the first app preparation failure
+        application_preparation_retry_max_seconds: 60 # Maximum per-app preparation retry delay
         bundle_scheduler_reconcile_interval_seconds: 0   # BUNDLE_SCHEDULER_RECONCILE_INTERVAL_SECONDS; 0 disables periodic scheduler catch-up
         git:
           bundle_git_resolution_enabled: true         # BUNDLE_GIT_RESOLUTION_ENABLED

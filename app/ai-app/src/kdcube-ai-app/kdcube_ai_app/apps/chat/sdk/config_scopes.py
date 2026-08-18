@@ -515,6 +515,9 @@ class ApplicationsConfig(BaseModel):
     STATIC_WIDGET_DELIVERY_MODE: Literal["legacy", "shadow", "deployed"] = "legacy"
     BUNDLES_PRELOAD_LOCK_TTL_SECONDS: int = 900
     BUNDLES_PRELOAD_BUNDLE_LOCK_TTL_SECONDS: int = 300
+    APPLICATION_PREPARATION_CONCURRENCY: int = 4
+    APPLICATION_PREPARATION_RETRY_INITIAL_SECONDS: int = 2
+    APPLICATION_PREPARATION_RETRY_MAX_SECONDS: int = 60
     BUNDLE_SCHEDULER_RECONCILE_INTERVAL_SECONDS: int = 60
     GIT: GitBundlesConfig = Field(default_factory=GitBundlesConfig)
 

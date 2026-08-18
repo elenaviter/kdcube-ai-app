@@ -1,10 +1,10 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-lifecycle-README.md
 title: "Bundle Lifecycle"
-summary: "Lifecycle model for bundles: discovery, load, initialization, invocation, hooks, background jobs, singleton state, UI build behavior, and which storage or config surfaces exist at each phase."
-tags: ["sdk", "bundle", "lifecycle", "storage", "configuration", "entrypoint", "background-jobs"]
-keywords: ["bundle discovery and load", "initialization hooks", "invocation phases", "on_job lifecycle", "background job lifecycle", "singleton bundle state", "ui build lifecycle", "storage availability by phase", "configuration availability by phase", "bundle lifecycle model"]
-updated_at: 2026-07-27
+summary: "Application lifecycle model covering supervised preparation, process-local and shared hooks, readiness admission, invocation, background jobs, singleton state, and phase-appropriate storage and configuration."
+tags: ["sdk", "bundle", "lifecycle", "readiness", "storage", "configuration", "entrypoint", "background-jobs"]
+keywords: ["bundle discovery and load", "supervised application preparation", "service.readiness", "initialization hooks", "on_bundle_load", "on_app_deploy", "application admission", "invocation phases", "on_job lifecycle", "background job lifecycle", "singleton bundle state", "ui build lifecycle", "storage availability by phase", "configuration availability by phase", "bundle lifecycle model"]
+updated_at: 2026-08-18
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-developer-guide-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-runtime-README.md
@@ -18,6 +18,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/comm/client-transport-protocols-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/streams/background-jobs-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/design/@longrun-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/arch/proc/application-startup-health-and-readiness-README.md
 ---
 # Bundle Lifecycle
 
@@ -58,12 +59,15 @@ Critical discovery rule:
 ```mermaid
 flowchart TD
     R[Bundle registry entry] --> D["@bundle_entrypoint discovery"]
-    D --> I[Instantiate entrypoint]
-    I --> L[on_bundle_load once per process per tenant/project]
-    L --> Q[Incoming turn or REST operation request]
-    L -. shadow or deployed .-> AD[on_app_deploy once per shared generation]
-    AD --> P[Publish current static-surface manifest]
-    L --> S["@cron due scan"]
+    D --> G[Publish desired application generation]
+    G --> T[Owned preparation task]
+    T --> I[Instantiate or rebind entrypoint]
+    I --> L[on_bundle_load once per app spec in this proc process]
+    L --> AD[on_app_deploy once per shared resource generation]
+    AD --> U[Reconcile configured shared resources and UI]
+    U --> A[Mark desired generation ready]
+    A --> Q[Admit turn, REST, MCP, UI, job, or event]
+    A --> S["@cron due scan"]
     S --> JQ[Redis background job stream]
     JQ --> J["@on_job invocation"]
     Q --> B[Build request routing/comm_context + refresh bundle props]
@@ -80,9 +84,14 @@ flowchart TD
 
 | Phase | When | What happens |
 |---|---|---|
-| Discovery | Proc startup / bundle load | Loader imports the bundle module and finds the class decorated with `@bundle_entrypoint` |
-| Instantiation | Per request by default | Entrypoint instance is created with `config`, `comm_context`, `pg_pool`, `redis` |
-| One-time init | Once per process per tenant/project | `on_bundle_load(...)` may prepare indexes, local caches, repos, or other bundle-local assets |
+| Desired-state publication | Proc startup and each registry/props update | Proc computes the application's desired generation and schedules or supersedes its owned preparation task |
+| Source materialization | During app preparation | Git-backed source is resolved for this app without serializing the complete registry |
+| Discovery and instantiation | During app preparation | Loader imports the module, finds `@bundle_entrypoint`, and creates or rebinds the entrypoint |
+| Process-local init | Once per loaded app spec in each proc process | `on_bundle_load(...)` prepares local handles, caches, repos, indexes, or other process-owned resources |
+| Shared resource deployment | Once per shared app-resource generation | `on_app_deploy(...)` and configured resource reconcilers publish generation-fenced shared state; UI is one participant |
+| Readiness publication | After local and shared preparation succeeds | The current proc marks the desired app generation ready and enables its scheduler/Data Bus adapters |
+| Admission | Before every app door | Unready apps return a structured retryable diagnosis or leave queued work unacknowledged |
+| Instantiation for invocation | Per request by default | A ready app entrypoint is created with `config`, `comm_context`, `pg_pool`, `redis`, or a singleton is rebound |
 | Request prep | Every invocation | Request-bound routing/identity is rebuilt, singleton instances are rebound, bundle props are loaded/merged, hooks can run |
 | Scheduled due scan | According to `@cron(...)` | The cron method may detect due work and enqueue ready jobs; it should stay small and idempotent |
 | Background job invocation | When proc claims a jobs-stream item | Proc rebuilds bundle runtime context and invokes the async `@on_job(job=...)` method |
@@ -90,6 +99,30 @@ flowchart TD
 | Decorated external execution | On demand inside an invocation | `@venv(...)` functions run in a cached per-bundle subprocess venv; the venv is rebuilt only when its `requirements.txt` hash changes |
 | Success completion | Successful invocation | `post_run_hook(...)` can finalize success-only bookkeeping |
 | Turn finalization | Every invocation after completion, error, or cancellation | `on_turn_completed(...)` can release per-turn resources; it must be fast and idempotent |
+
+## Readiness And Admission
+
+Every configured app prepares under its own proc-owned task. App inventory may
+declare aggregate policy beside the source/module fields:
+
+```yaml
+service:
+  readiness: independent  # independent (default) | required
+```
+
+`independent` keeps unrelated proc traffic ready while this app prepares.
+`required` also makes this app contribute to aggregate proc `GET /health`.
+Both modes deny this app's REST, MCP, UI, turn, job, event, and peer-call doors
+until its desired generation is ready.
+
+HTTP callers receive a retryable `503` with `type: application_not_ready`.
+Queue-backed work remains unacknowledged for later delivery. The admission
+check is side-effect-free: callers do not start initialization or deployment
+repair.
+
+See
+[Application Startup, Health, And Readiness](../../arch/proc/application-startup-health-and-readiness-README.md)
+for the canonical state, health, retry, and deployment-adapter contract.
 
 ## Instance lifetime
 
@@ -135,8 +168,8 @@ Important:
 
 | Method | Frequency | Purpose |
 |---|---|---|
-| `on_bundle_load(**kwargs)` | once per process per tenant/project | build indexes, warm caches, clone repos, prepare local read-only assets |
-| `on_app_deploy(**kwargs)` | fleet-coordinated per source/config generation when static deployment is enabled; interrupted work may be retried | finish idempotent deployment preparation before the static-surface manifest is published |
+| `on_bundle_load(**kwargs)` | once per loaded app spec in each proc process | build local indexes, warm caches, clone repos, and prepare process-owned resources before this process admits the app |
+| `on_app_deploy(**kwargs)` | fleet-coordinated per source/config/runtime resource generation; interrupted work may be retried | publish idempotent shared catalogs, schemas, indexes, projections, generated assets, or other app resources |
 | `on_props_changed(...)` | when effective props changed for the active instance | reconcile long-lived side effects after props refresh |
 | `pre_run_hook(state=...)` | every invocation | last-minute validation or reconciliation |
 | `execute_core(state=..., thread_id=..., params=...)` | every invocation | main bundle logic |
@@ -150,6 +183,9 @@ Important:
 - `on_app_deploy(...)` must be async and idempotent; its shared-filesystem lock
   provides at-least-once recovery after an interrupted owner, not a transaction
   around external side effects
+- both hooks run under the process-local application lifecycle supervisor;
+  neither an HTTP request nor the proc lifespan waits for the complete app
+  registry to finish
 - `on_turn_completed(...)` is for fast cleanup only; do not do expensive reporting or user-facing work there
 - do not store request-local state there
 - use storage for durable state, not instance fields
@@ -159,14 +195,16 @@ Important:
 - it runs after effective bundle props changed
 - it is for reconciling long-lived side effects, not for request-local logic
 - it should also be deterministic and idempotent
-- it should not block on slow one-time install/build work that belongs in
-  `on_bundle_load(...)`
+- slow generation preparation belongs to supervised `on_bundle_load(...)` or
+  `on_app_deploy(...)`, not the props-change notification itself
 
-`on_app_deploy(...)` is also different from `on_bundle_load(...)`. It is an
-opt-in, fleet-coordinated deployment phase used by the experimental prebuilt
-static-widget path. See
+`on_app_deploy(...)` is also different from `on_bundle_load(...)`. It is the
+fleet-coordinated shared-resource barrier for every app generation. Static UI
+publication is one optional participant in that barrier. See
 [App Deployment And Static Widget Delivery](app-deployment-and-static-widget-delivery-README.md)
-for its modes, storage contract, and fallback behavior.
+for its static-surface modes and storage contract, and
+[Application Startup, Health, And Readiness](../../arch/proc/application-startup-health-and-readiness-README.md)
+for supervision, readiness, and admission.
 
 `@venv(...)` is separate from `on_bundle_load(...)`:
 - it is not a one-time init hook
@@ -335,29 +373,24 @@ Practical rule:
 ### Save, reload, and UI build are different operations
 
 Changing an app's `repo`, `ref`, `subdir`, `path`, or module in Bundle Admin and
-pressing **Save** activates that registry change. Save does **not** synchronously
-run `npm`, Vite, or another UI build command.
+pressing **Save** activates that registry change. Save publishes the new desired
+state and returns without synchronously resolving source, running lifecycle
+hooks, or invoking npm/Vite. The proc-owned lifecycle task prepares the changed
+app independently.
 
 | Action | Registry and runtime effect | UI effect |
 |---|---|---|
 | Refresh/list/read props | Read-only | No build and no lifecycle transition |
-| Save app | Persist authority, update Redis registry, publish `bundles.update`, evict changed app state | No build inside the Save request; `shadow`/`deployed` reconcile from the event |
-| Reload app / reload from authority | Re-read the existing authority and evict/reapply the selected app | No build inside the reload request; `shadow`/`deployed` reconcile from the event |
-| Reset props from code | Recompute/persist code defaults without `on_bundle_load()` | No build |
-| Open or reload main-view/widget HTML | Load the active app version and inspect the UI signature | Build if output is missing or stale; otherwise serve the current artifact |
-| Proc startup with `bundles_preload_on_start: true` | Load configured app generations once per proc lifespan | May build missing/stale UI before the first browser request |
+| Save app | Persist authority, update the full active registry, evict only changed app state, publish `bundles.update`, and schedule that app generation | The owned app preparation task builds/publishes UI when configured; Save does not wait |
+| Reload app / reload from authority | Re-read authority, evict the selected app, and force its preparation task | UI reconciliation belongs to the replacement task; Reload does not wait |
+| Set or reset props | Persist effective inputs, invalidate that app generation, and schedule preparation | UI and policy manifests reconcile from the new props generation |
+| Open or reload main-view/widget HTML | Check app readiness and serve prepared output | Never builds, imports for repair, or scans source signatures |
+| Proc startup | Publish every desired app generation and start bounded owned tasks | Each task prepares configured UI before marking that app ready |
 
-In `legacy`:
-
-- after changing a Git ref and pressing **Save**, do not also press **Reload
-  app**
-- reload or reopen the app's main view/widget so the browser makes a new HTML
-  entrypoint request
-- that request resolves the saved app version and builds only if its source and
-  build signature are not already current
-- use **Reload app** when the authoritative descriptor was changed outside
-  Bundle Admin, or when an explicit code/static-entrypoint eviction is needed
-- **Reload app** is not a "build now" command
+After changing a Git ref and pressing **Save**, do not immediately press
+**Reload app**. Save already supersedes the old generation. Use Reload when the
+authority changed outside Bundle Admin or when an explicit retry/invalidation
+is needed.
 
 ```text
 Bundle Admin: edit ref -> Save
@@ -372,73 +405,57 @@ Bundle Admin: edit ref -> Save
        bundles.update broadcast
                 |
                 v
-  proc workers evict old code + static load state
+  proc workers evict only changed app state
                 |
                 +---------------------- Save returns
                 |
-       later UI preload or GET index.html
+       owned app preparation task
                 |
                 v
-      resolve saved ref + compute signature
+      resolve source + on_bundle_load
                 |
-          +-----+------+
-          |            |
-       current       stale/missing
-          |            |
-       serve UI      coordinated build
-                       |
-                       v
-                 publish artifact
-                 + valid signature
+      on_app_deploy resource barrier
+                |
+                v
+      publish artifact/signature
+                |
+                v
+       mark generation ready
 ```
 
 If a UI build fails or times out, it publishes neither a completed artifact
-signature nor a permanent failure marker. The owned build task is removed and
-the shared lock is released; the next qualifying preload or HTML request may
-retry. Recovery is demand-driven, not a periodic background retry loop. See
+signature nor a ready app generation. The shared lock is released and the
+supervisor retries that application with bounded backoff. Browser requests
+continue to read readiness and never become retry owners. See
 [UI Components Lifecycle](ui-components-lifecycle-README.md) for cancellation,
 process cleanup, cross-worker locking, and hard-crash recovery.
 
-### Startup preload
+### Supervised application preparation
 
-Proc can preload all active apps at startup:
+Proc prepares every configured app. The legacy `bundles_preload_on_start`
+setting is still parsed for descriptor compatibility but no longer selects
+whether preparation runs. Per-app lifecycle policy and process-level scheduling
+are configured separately:
 
 ```yaml
 platform:
   services:
     proc:
       bundles:
-        bundles_preload_on_start: true
-        bundles_preload_lock_ttl_seconds: 900
-        bundles_preload_bundle_lock_ttl_seconds: 300
+        application_preparation_concurrency: 4
+        application_preparation_retry_initial_seconds: 2
+        application_preparation_retry_max_seconds: 60
 ```
 
-`bundles_preload_on_start` maps to `BUNDLES_PRELOAD_ON_START`. When enabled,
-each proc worker starts the collaborative preload pass once during its lifespan,
-after Git bundle prefetch. Redis generation claims distribute apps across
-workers; shared-storage signatures and locks prevent duplicate UI artifact
-publication.
+Each proc process runs local `on_bundle_load`. Shared app resources use
+generation signatures and storage locks to coalesce publication across
+workers. A worker crash stops its lock heartbeat; lock expiry allows another
+worker to retry. Shared completion never replaces local process initialization.
 
-The preload generation includes app id, path, module, singleton flag,
-`repo/ref/subdir`, and resolved Git commit. A newly saved immutable ref therefore
-has a different generation on the next proc startup.
-
-Important timing:
-
-- startup preload is not a continuously running reconciler
-- saving an app ref while proc is already running invalidates that app but does
-  not restart the completed startup preload loop
-- to warm that changed app immediately, open or reload its main-view/widget
-  HTML entrypoint
-- to preload every active app again, restart proc with
-  `bundles_preload_on_start: true`
-- **Reload app** only reloads/invalidates the app; it does not run the startup
-  preload pass
-
-Preload state is exposed by proc `GET /health` through
-`bundles_preload_ready`, `bundles_preload_errors`,
-`bundles_preload_started_at`, `bundles_preload_finished_at`, and the per-app
-`bundles_preload_status` map.
+Proc `GET /health` reports required-only aggregate readiness and bounded
+per-app state. Full generations, attempts, retry timing, and errors are exposed
+only through authenticated admin diagnostics. The complete contract belongs to
+[Application Startup, Health, And Readiness](../../arch/proc/application-startup-health-and-readiness-README.md).
 
 For the CLI reload sequence, Bundle Admin endpoint, worker broadcast, and
 diagnostic signals, see:
@@ -575,8 +592,8 @@ This context is request-bound. Do not cache it as durable bundle state.
 ## Custom bundle UI
 
 A bundle can ship a custom frontend (for example, a Vite/React SPA) that is
-prepared by startup preload, the optional app-deployment pipeline, or the first
-qualifying HTML request and served to the browser as a standalone panel.
+prepared by the proc-owned application lifecycle and served to the browser as
+a standalone panel after that application is ready.
 
 ### How it works
 
@@ -595,7 +612,8 @@ def configuration(self):
     }
 ```
 
-2. `on_bundle_load(...)` calls `_ensure_ui_build()` which:
+2. Supervised preparation invokes the base `on_bundle_load(...)` and the shared
+   app-resource barrier. Their UI ensure is signature-protected and:
    - resolves `src_folder` relative to the bundle root
    - runs `build_command` (with `<VI_BUILD_DEST_ABSOLUTE_PATH>` substituted)
    - stores the build output under `<bundle_storage_root>/ui/`
@@ -618,8 +636,8 @@ async def on_bundle_load(self, **kwargs):
 ```
 
 The base hook refreshes bundle props and calls `_ensure_ui_build()`. Skipping it
-is the common cause of widgets building only on first selection even though
-bundle preload is enabled.
+breaks the base application lifecycle and prevents the desired generation from
+becoming ready when configured UI cannot be prepared.
 
 3. The built SPA is served by the processor's static endpoint:
 
@@ -627,10 +645,9 @@ bundle preload is enabled.
 GET /api/integrations/static/{tenant}/{project}/{bundle_id}/{path}
 ```
 
-The endpoint computes the content hash of the bundle directory (same algorithm as
-the UI build signature inputs to decide whether the SPA needs rebuilding, then
-serves files from the stable `<bundle_storage_root>/ui/` subtree. Missing paths
-fall back to `index.html` for client-side routing.
+The endpoint checks application readiness and serves files from the stable
+`<bundle_storage_root>/ui/` subtree. Missing client-side routes may fall back to
+`index.html`; the request does not inspect source or run build commands.
 
 ### Notes
 
@@ -639,10 +656,10 @@ fall back to `index.html` for client-side routing.
   workers may reach the lifecycle, but only one publishes a given stale or
   missing build.
 - Saving a changed bundle ref invalidates app/static load state but does not
-  block the Save request on UI compilation. The next preload or HTML request
-  builds if needed.
-- A failed build leaves no valid signature; a later preload or HTML request can
-  retry it.
+  block the Save request on UI compilation. The replacement app task builds if
+  needed and publishes readiness afterward.
+- A failed build leaves no valid signature or ready app generation. The
+  supervisor retries it; an HTML request remains side-effect-free.
 - `node_modules/` and related generated folders are excluded from the build signature so that
   dependency installation during the build does not rotate the build cache unnecessarily.
 - The built UI typically communicates back to the backend through the bundle operations
@@ -677,7 +694,10 @@ See:
 
 ## Practical rules
 
-- Use `on_bundle_load(...)` for heavy preparation that should happen before requests rely on it.
+- Use `on_bundle_load(...)` for process-local preparation that must complete
+  before this proc process admits the application.
+- Use `on_app_deploy(...)` for shared generation-fenced resources.
+- Keep both hooks async, idempotent, and retry-safe.
 - Persist durable state in storage, not on `self`.
 - Use shared local bundle storage for large local reusable assets.
 - Use the bundle storage backend or Redis for distributed state that must survive host changes.

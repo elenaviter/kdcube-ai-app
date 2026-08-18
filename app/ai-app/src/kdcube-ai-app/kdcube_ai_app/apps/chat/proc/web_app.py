@@ -7,8 +7,6 @@ Processor service: runs the queue processor and exposes minimal integrations API
 """
 import asyncio
 import faulthandler
-import hashlib
-import json
 import logging
 import os
 import signal
@@ -17,7 +15,6 @@ import time
 import traceback
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv, find_dotenv
@@ -74,7 +71,6 @@ from kdcube_ai_app.infra.rendering.shared_browser import close_shared_browser
 
 from kdcube_ai_app.apps.chat.emitters import ChatRelayCommunicator
 from kdcube_ai_app.apps.chat.ingress.chat_submitter import ChatIngressSubmitter
-from kdcube_ai_app.apps.chat.processor import prefetch_git_bundles
 from kdcube_ai_app.apps.chat.ingress.resolvers import (
     get_fastapi_adapter,
     get_fast_api_accounting_binder,
@@ -92,24 +88,17 @@ from kdcube_ai_app.apps.chat.ingress.resolvers import (
     service_health_checker,
 )
 from kdcube_ai_app.apps.chat.sdk.config import get_settings, log_secret_statuses
-from kdcube_ai_app.apps.chat.proc.app_deployment.coordinator import (
-    app_source_fingerprint,
-    deploy_loaded_bundle_static_surfaces,
-    props_fingerprint,
-)
-from kdcube_ai_app.apps.chat.proc.app_deployment.modes import (
-    static_widget_deployment_enabled,
-    static_widget_runtime_generation,
-)
 from kdcube_ai_app.apps.chat.sdk.infra.economics.policy import EconomicsLimitException
 from kdcube_ai_app.apps.chat.sdk.runtime.local_sidecars import shutdown_all_local_sidecars
+from kdcube_ai_app.apps.chat.proc.app_lifecycle import ProcApplicationLifecycle
 from kdcube_ai_app.apps.chat.proc.rest.integrations import mount_integrations_routers
-from kdcube_ai_app.infra.namespaces import CONFIG
 from kdcube_ai_app.infra.plugin.bundle_store import (
-    bundle_entry_to_spec,
-    get_bundle_props_from_authority,
     load_registry as load_bundle_runtime_registry,
     resolve_bundle_spec_from_store,
+)
+from kdcube_ai_app.infra.plugin.app_readiness import (
+    ApplicationNotReadyError,
+    application_readiness_registry,
 )
 from kdcube_ai_app.infra.availability.shutdown_diagnostics import (
     install_uvicorn_shutdown_diagnostics,
@@ -242,670 +231,6 @@ def _get_proc_graceful_shutdown_timeout_sec() -> int:
 
 
 PROC_UVICORN_GRACEFUL_SHUTDOWN_TIMEOUT_SEC = _get_proc_graceful_shutdown_timeout_sec()
-
-
-def _git_prefetch_enabled() -> bool:
-    return get_settings().PLATFORM.APPLICATIONS.GIT.BUNDLE_GIT_PREFETCH_ENABLED
-
-
-def _git_resolution_enabled() -> bool:
-    return get_settings().PLATFORM.APPLICATIONS.GIT.BUNDLE_GIT_RESOLUTION_ENABLED
-
-
-def _bundles_preload_enabled() -> bool:
-    settings = get_settings()
-    return bool(
-        settings.PLATFORM.APPLICATIONS.BUNDLES_PRELOAD_ON_START
-        or static_widget_deployment_enabled(settings)
-    )
-
-
-def _bundle_preload_lock_ttl_seconds() -> int:
-    return int(get_settings().PLATFORM.APPLICATIONS.BUNDLES_PRELOAD_LOCK_TTL_SECONDS)
-
-
-def _bundle_preload_bundle_lock_ttl_seconds() -> int:
-    return int(get_settings().PLATFORM.APPLICATIONS.BUNDLES_PRELOAD_BUNDLE_LOCK_TTL_SECONDS)
-
-
-def _bundle_preload_done_ttl_seconds() -> int:
-    return max(_bundle_preload_lock_ttl_seconds(), _bundle_preload_bundle_lock_ttl_seconds()) * 4
-
-
-def _utc_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _bundle_preload_generation(
-        bundle_id: str,
-        entry,
-        *,
-        static_source_fingerprint: str | None = None,
-        static_runtime_generation: str | None = None,
-        static_props_fingerprint: str | None = None,
-) -> str:
-    """
-    Stable app-preload generation. Any descriptor-resolved source change must
-    move workers to a new done key so old successful preloads do not suppress
-    new work.
-    """
-    payload = {
-        "id": str(bundle_id or ""),
-        "path": str(getattr(entry, "path", "") or ""),
-        "module": str(getattr(entry, "module", "") or ""),
-        "singleton": bool(getattr(entry, "singleton", False)),
-        "repo": str(getattr(entry, "repo", "") or ""),
-        "ref": str(getattr(entry, "ref", "") or ""),
-        "subdir": str(getattr(entry, "subdir", "") or ""),
-        "git_commit": str(getattr(entry, "git_commit", "") or ""),
-        "static_widget_deployment_schema": (
-            1 if static_source_fingerprint is not None else 0
-        ),
-        "static_widget_source_fingerprint": str(static_source_fingerprint or ""),
-        "static_widget_runtime_generation": str(static_runtime_generation or ""),
-        "static_widget_props_fingerprint": str(static_props_fingerprint or ""),
-    }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()[:24]
-
-
-async def _redis_get_text(redis, key: str) -> str | None:
-    value = await redis.get(key)
-    if isinstance(value, bytes):
-        return value.decode("utf-8", "ignore")
-    if value is None:
-        return None
-    return str(value)
-
-
-async def _release_redis_claim(redis, *, key: str, token: str) -> bool:
-    try:
-        current_val = await _redis_get_text(redis, key)
-        if current_val == token:
-            await redis.delete(key)
-            return True
-    except Exception:
-        logger.exception("[Bundles] Failed to release preload claim: key=%s", key)
-    return False
-
-
-async def _heartbeat_redis_claim(redis, *, key: str, token: str, ttl_seconds: int) -> None:
-    ttl = max(1, int(ttl_seconds))
-    interval = min(max(0.1, ttl / 3.0), 10.0)
-    while True:
-        await asyncio.sleep(interval)
-        try:
-            current_val = await _redis_get_text(redis, key)
-            if current_val != token:
-                return
-            await redis.expire(key, ttl)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.warning("[Bundles] Failed to heartbeat preload claim: key=%s", key, exc_info=True)
-
-
-def _set_bundle_preload_state(app, bundle_id: str, **updates) -> None:
-    states = getattr(app.state, "bundles_preload_status", None)
-    if not isinstance(states, dict):
-        states = {}
-        app.state.bundles_preload_status = states
-    current = dict(states.get(bundle_id) or {})
-    current.update(updates)
-    states[bundle_id] = current
-
-
-def _is_explicitly_disabled(value) -> bool:
-    if isinstance(value, bool):
-        return not value
-    if isinstance(value, str):
-        return value.strip().lower() in {"0", "false", "no", "off", "disabled"}
-    return False
-
-
-def _enabled_configured_widget_aliases_from_props(props: dict | None) -> list[str]:
-    if not isinstance(props, dict):
-        return []
-    ui = props.get("ui")
-    if not isinstance(ui, dict):
-        return []
-    widgets = ui.get("widgets")
-    if not isinstance(widgets, dict):
-        return []
-
-    aliases: set[str] = set()
-    for alias, cfg in widgets.items():
-        alias_s = str(alias or "").strip()
-        if not alias_s:
-            continue
-        if isinstance(cfg, dict):
-            if _is_explicitly_disabled(cfg.get("enabled", True)):
-                continue
-        elif _is_explicitly_disabled(cfg):
-            continue
-        aliases.add(alias_s)
-    return sorted(aliases)
-
-
-async def _load_authoritative_bundle_props_for_preload(
-        *,
-        tenant: str,
-        project: str,
-        bundle_id: str,
-) -> dict:
-    try:
-        props = await get_bundle_props_from_authority(
-            tenant=tenant,
-            project=project,
-            bundle_id=bundle_id,
-        )
-        return dict(props or {})
-    except Exception as e:
-        raise RuntimeError(
-            "Failed to load authoritative bundle props during preload: "
-            f"tenant={tenant} project={project} bundle={bundle_id}"
-        ) from e
-
-
-async def _validate_preloaded_bundle_manifest(
-    *,
-    bundle_id: str,
-    spec: BundleSpec,
-    tenant: str,
-    project: str,
-) -> None:
-    """
-    Verify that the local worker can discover the bundle surfaces it must serve.
-
-    `@ui_widget`, `@api`, and `@mcp` decorators remain the source of truth.
-    Descriptor `ui.widgets` only configures static build/serve behavior
-    for a widget alias that the bundle actually declares.
-    """
-    from kdcube_ai_app.infra.plugin.bundle_loader import (
-        evict_bundle_scope,
-        load_bundle_manifest,
-    )
-
-    props = await _load_authoritative_bundle_props_for_preload(
-        tenant=tenant,
-        project=project,
-        bundle_id=bundle_id,
-    )
-    expected_static_widgets = _enabled_configured_widget_aliases_from_props(props)
-    manifest = load_bundle_manifest(spec, bundle_id=bundle_id)
-    discovered_widgets = sorted({item.alias for item in manifest.ui_widgets})
-    missing_widgets = sorted(set(expected_static_widgets) - set(discovered_widgets))
-
-    if missing_widgets:
-        evicted = evict_bundle_scope(spec, drop_sys_modules=True)
-        logger.warning(
-            "[Bundles] Manifest/widget mismatch during preload; evicted local "
-            "bundle caches and retrying discovery: id=%s path=%s expected_static_widgets=%s "
-            "discovered_widgets=%s evicted=%s",
-            bundle_id,
-            spec.path,
-            expected_static_widgets,
-            discovered_widgets,
-            evicted,
-        )
-        manifest = load_bundle_manifest(spec, bundle_id=bundle_id)
-        discovered_widgets = sorted({item.alias for item in manifest.ui_widgets})
-        missing_widgets = sorted(set(expected_static_widgets) - set(discovered_widgets))
-
-    if missing_widgets:
-        raise RuntimeError(
-            "Configured static widget aliases are not declared with @ui_widget: "
-            f"bundle={bundle_id} missing={missing_widgets} "
-            f"configured={expected_static_widgets} discovered={discovered_widgets} "
-            f"path={spec.path}"
-        )
-
-    logger.info(
-        "[Bundles] Manifest validated: id=%s path=%s widgets=%s "
-        "configured_static_widgets=%s api=%s mcp=%s ui_main=%s on_message=%s "
-        "on_job=%s cron=%s",
-        bundle_id,
-        spec.path,
-        discovered_widgets,
-        expected_static_widgets,
-        [item.alias for item in manifest.api_endpoints],
-        [item.alias for item in manifest.mcp_endpoints],
-        bool(manifest.ui_main),
-        bool(manifest.on_message),
-        bool(manifest.on_job),
-        [item.alias for item in manifest.scheduled_jobs],
-    )
-
-
-async def _prefetch_git_bundles_loop(app, registry=None) -> None:
-    """
-    Prefetch git bundles once on startup to gate readiness.
-    No retries here; config updates or restarts trigger a new resolution.
-    """
-    try:
-        errors = await prefetch_git_bundles(registry)
-        if not errors:
-            app.state.bundle_git_ready = True
-            app.state.bundle_git_errors = {}
-            return
-        app.state.bundle_git_ready = False
-        app.state.bundle_git_errors = errors
-    except Exception as e:
-        app.state.bundle_git_ready = False
-        app.state.bundle_git_errors = {"_internal": str(e)}
-
-
-async def _initial_git_bundle_prefetch(app) -> None:
-    """
-    Resolve git-backed bundles before bundle preload and scheduler startup.
-
-    The registry already points repo-backed bundles at /managed-bundles/... paths.
-    If scheduler reconcile runs before those paths exist, manifest loading fails
-    on first startup and scheduled jobs are skipped until a later registry update.
-    """
-    app.state.bundle_git_ready = True
-    app.state.bundle_git_errors = {}
-    app.state.bundle_git_task = None
-
-    if not (_git_prefetch_enabled() and _git_resolution_enabled()):
-        return
-
-    settings = get_settings()
-    redis = getattr(app.state, "redis_async", None)
-    if redis is None:
-        return
-    reg_now = await load_bundle_runtime_registry(redis, settings.TENANT, settings.PROJECT)
-    if not any(getattr(entry, "repo", None) for entry in (reg_now.bundles or {}).values()):
-        return
-
-    app.state.bundle_git_ready = False
-    await _prefetch_git_bundles_loop(app, reg_now)
-
-    if app.state.bundle_git_errors:
-        logger.warning(
-            "[Bundles] Git prefetch completed with failures: %s",
-            app.state.bundle_git_errors,
-        )
-    else:
-        logger.info("[Bundles] Git prefetch complete")
-
-
-async def _preload_bundles_loop(app) -> None:
-    """
-    Eagerly load configured app modules and run on_bundle_load hooks.
-
-    Runs after git prefetch (modules must exist on disk before import). All
-    proc workers see the same work list, but Redis claim/done keys make app
-    preload collaborative: a worker claims one not-yet-done app generation,
-    runs it, and marks it done for the cluster. Filesystem once locks inside
-    UI/index builders remain the final guard for shared storage writes.
-    """
-    from kdcube_ai_app.infra.plugin.bundle_loader import preload_bundle_async
-    from kdcube_ai_app.infra.plugin.bundle_registry import ADMIN_BUNDLE_ID
-
-    # Git repos must be cloned before we can import Python modules from them.
-    git_task = getattr(app.state, "bundle_git_task", None)
-    if git_task is not None:
-        try:
-            await git_task
-        except Exception:
-            pass  # git errors already logged in _prefetch_git_bundles_loop
-
-    settings = get_settings()
-    redis = getattr(app.state, "redis_async", None)
-    lock_key = CONFIG.BUNDLES.PRELOAD_LOCK_FMT.format(
-        tenant=settings.TENANT,
-        project=settings.PROJECT,
-    )
-    lock_token = f"{INSTANCE_ID}:{uuid.uuid4().hex}"
-    lock_acquired = False
-    lock_heartbeat_task: asyncio.Task | None = None
-
-    if redis is not None:
-        try:
-            lock_acquired = bool(
-                await redis.set(
-                    lock_key,
-                    lock_token,
-                    ex=_bundle_preload_lock_ttl_seconds(),
-                    nx=True,
-                )
-            )
-        except Exception:
-            logger.exception("[Bundles] Failed to acquire preload lock %s", lock_key)
-            lock_acquired = False
-        if not lock_acquired:
-            logger.info(
-                "[Bundles] Collaborative preload already active; joining work scan: %s",
-                lock_key,
-            )
-        else:
-            lock_heartbeat_task = asyncio.create_task(
-                _heartbeat_redis_claim(
-                    redis,
-                    key=lock_key,
-                    token=lock_token,
-                    ttl_seconds=_bundle_preload_lock_ttl_seconds(),
-                ),
-                name="bundle-preload-global-claim-heartbeat",
-            )
-    else:
-        logger.info("[Bundles] Redis not configured; running preload without lock")
-
-    reg = await load_bundle_runtime_registry(redis, settings.TENANT, settings.PROJECT) if redis is not None else None
-    registry_bundles = (reg.bundles if reg is not None else {}) or {}
-    logger.info(
-        "[Bundles] Preload registry snapshot: total=%s default=%s ids=%s",
-        len(registry_bundles),
-        getattr(reg, "default_bundle_id", None),
-        sorted(registry_bundles.keys()),
-    )
-    app.state.bundles_preload_status = {}
-    app.state.bundles_preload_started_at = _utc_iso()
-    total = 0
-    ok = 0
-    skipped_locked = 0
-    skipped_done = 0
-    errors: dict[str, str] = {}
-    try:
-        for bid, entry in registry_bundles.items():
-            if bid == ADMIN_BUNDLE_ID:
-                continue
-            path = (entry.path or "").strip()
-            _set_bundle_preload_state(
-                app,
-                bid,
-                status="pending",
-                path=path,
-                module=entry.module,
-                singleton=bool(entry.singleton),
-                attempt=1,
-                updated_at=_utc_iso(),
-            )
-            if not path:
-                logger.warning("[Bundles] Preload skip (no path): id=%s", bid)
-                _set_bundle_preload_state(
-                    app,
-                    bid,
-                    status="skipped",
-                    reason="no_path",
-                    finished_at=_utc_iso(),
-                    updated_at=_utc_iso(),
-                )
-                continue
-            total += 1
-            spec = BundleSpec(
-                id=bid,
-                path=path,
-                module=entry.module,
-                singleton=bool(entry.singleton),
-            )
-            bundle_spec = bundle_entry_to_spec(entry)
-            bundle_lock_key = CONFIG.BUNDLES.PRELOAD_BUNDLE_LOCK_FMT.format(
-                tenant=settings.TENANT,
-                project=settings.PROJECT,
-                bundle_id=bid,
-            )
-            deployment_enabled = static_widget_deployment_enabled(settings)
-            source_fingerprint = None
-            runtime_generation = None
-            descriptor_props_fingerprint = None
-            if deployment_enabled:
-                source_fingerprint = await app_source_fingerprint(bundle_spec)
-                runtime_generation = static_widget_runtime_generation()
-                descriptor_props = await _load_authoritative_bundle_props_for_preload(
-                    tenant=settings.TENANT,
-                    project=settings.PROJECT,
-                    bundle_id=bid,
-                )
-                descriptor_props_fingerprint = props_fingerprint(descriptor_props)
-            generation = _bundle_preload_generation(
-                bid,
-                entry,
-                static_source_fingerprint=source_fingerprint,
-                static_runtime_generation=runtime_generation,
-                static_props_fingerprint=descriptor_props_fingerprint,
-            )
-            bundle_done_key = CONFIG.BUNDLES.PRELOAD_BUNDLE_DONE_FMT.format(
-                tenant=settings.TENANT,
-                project=settings.PROJECT,
-                bundle_id=bid,
-                generation=generation,
-            )
-            bundle_lock_token = f"{INSTANCE_ID}:{os.getpid()}:{uuid.uuid4().hex}"
-            bundle_lock_acquired = False
-            bundle_lock_heartbeat_task: asyncio.Task | None = None
-            owner = {
-                "instance_id": INSTANCE_ID,
-                "pid": os.getpid(),
-                "generation": generation,
-            }
-            _set_bundle_preload_state(
-                app,
-                bid,
-                status="claiming",
-                lock_key=bundle_lock_key,
-                done_key=bundle_done_key,
-                generation=generation,
-                owner=owner,
-                updated_at=_utc_iso(),
-            )
-            if redis is not None:
-                try:
-                    done_val = await _redis_get_text(redis, bundle_done_key)
-                    if done_val == generation:
-                        skipped_done += 1
-                        logger.info(
-                            "[Bundles] Preload skip (generation already done): id=%s key=%s generation=%s",
-                            bid,
-                            bundle_done_key,
-                            generation,
-                        )
-                        _set_bundle_preload_state(
-                            app,
-                            bid,
-                            status="skipped_done",
-                            done_key=bundle_done_key,
-                            generation=generation,
-                            skipped_at=_utc_iso(),
-                            updated_at=_utc_iso(),
-                            retryable=False,
-                        )
-                        continue
-                    bundle_lock_acquired = bool(
-                        await redis.set(
-                            bundle_lock_key,
-                            bundle_lock_token,
-                            ex=_bundle_preload_bundle_lock_ttl_seconds(),
-                            nx=True,
-                        )
-                    )
-                except Exception:
-                    logger.exception("[Bundles] Failed to acquire bundle preload lock: id=%s key=%s", bid, bundle_lock_key)
-                    bundle_lock_acquired = False
-                if not bundle_lock_acquired:
-                    try:
-                        done_val = await _redis_get_text(redis, bundle_done_key)
-                    except Exception:
-                        done_val = None
-                    if done_val == generation:
-                        skipped_done += 1
-                        logger.info(
-                            "[Bundles] Preload skip (generation completed while claiming): id=%s key=%s generation=%s",
-                            bid,
-                            bundle_done_key,
-                            generation,
-                        )
-                        _set_bundle_preload_state(
-                            app,
-                            bid,
-                            status="skipped_done",
-                            done_key=bundle_done_key,
-                            generation=generation,
-                            skipped_at=_utc_iso(),
-                            updated_at=_utc_iso(),
-                            retryable=False,
-                        )
-                        continue
-                    skipped_locked += 1
-                    logger.info(
-                        "[Bundles] Preload skip (bundle claimed by another worker): id=%s key=%s done_key=%s owner=%s",
-                        bid,
-                        bundle_lock_key,
-                        bundle_done_key,
-                        owner,
-                    )
-                    _set_bundle_preload_state(
-                        app,
-                        bid,
-                        status="skipped_claimed",
-                        lock_key=bundle_lock_key,
-                        done_key=bundle_done_key,
-                        generation=generation,
-                        skipped_at=_utc_iso(),
-                        updated_at=_utc_iso(),
-                        retryable=True,
-                    )
-                    continue
-                bundle_lock_heartbeat_task = asyncio.create_task(
-                    _heartbeat_redis_claim(
-                        redis,
-                        key=bundle_lock_key,
-                        token=bundle_lock_token,
-                        ttl_seconds=_bundle_preload_bundle_lock_ttl_seconds(),
-                    ),
-                    name=f"bundle-preload-claim-heartbeat:{bid}",
-                )
-            started = time.time()
-            _set_bundle_preload_state(
-                app,
-                bid,
-                status="running",
-                lock_key=bundle_lock_key if redis is not None else None,
-                done_key=bundle_done_key if redis is not None else None,
-                generation=generation,
-                owner=owner,
-                started_at=_utc_iso(),
-                updated_at=_utc_iso(),
-            )
-            logger.info(
-                "[Bundles] Preload start: id=%s path=%s module=%s singleton=%s owner=%s",
-                bid,
-                path,
-                entry.module,
-                bool(entry.singleton),
-                owner,
-            )
-            try:
-                loaded_bundle = await preload_bundle_async(
-                    spec,
-                    bundle_spec,
-                    tenant=settings.TENANT,
-                    project=settings.PROJECT,
-                    pg_pool=app.state.pg_pool,
-                    redis=app.state.redis_async,
-                )
-                await _validate_preloaded_bundle_manifest(
-                    bundle_id=bid,
-                    spec=spec,
-                    tenant=settings.TENANT,
-                    project=settings.PROJECT,
-                )
-                if deployment_enabled:
-                    workflow, module = loaded_bundle
-                    await deploy_loaded_bundle_static_surfaces(
-                        workflow=workflow,
-                        module=module,
-                        agentic_spec=spec,
-                        bundle_spec=bundle_spec,
-                        tenant=settings.TENANT,
-                        project=settings.PROJECT,
-                        pg_pool=app.state.pg_pool,
-                        redis=app.state.redis_async,
-                    )
-                ok += 1
-                duration_ms = int((time.time() - started) * 1000)
-                logger.info("[Bundles] Preload succeeded: id=%s path=%s duration_ms=%s", bid, path, duration_ms)
-                if redis is not None:
-                    try:
-                        await redis.set(
-                            bundle_done_key,
-                            generation,
-                            ex=_bundle_preload_done_ttl_seconds(),
-                        )
-                    except Exception:
-                        logger.warning(
-                            "[Bundles] Failed to mark preload generation done: id=%s key=%s generation=%s",
-                            bid,
-                            bundle_done_key,
-                            generation,
-                            exc_info=True,
-                        )
-                _set_bundle_preload_state(
-                    app,
-                    bid,
-                    status="succeeded",
-                    duration_ms=duration_ms,
-                    finished_at=_utc_iso(),
-                    updated_at=_utc_iso(),
-                    error=None,
-                    retryable=False,
-                )
-            except Exception as e:
-                errors[bid] = str(e)
-                logger.exception("[Bundles] Preload failed: id=%s", bid)
-                _set_bundle_preload_state(
-                    app,
-                    bid,
-                    status="failed",
-                    error=str(e),
-                    duration_ms=int((time.time() - started) * 1000),
-                    finished_at=_utc_iso(),
-                    updated_at=_utc_iso(),
-                    retryable=True,
-                )
-            finally:
-                if bundle_lock_heartbeat_task is not None:
-                    bundle_lock_heartbeat_task.cancel()
-                    try:
-                        await bundle_lock_heartbeat_task
-                    except asyncio.CancelledError:
-                        pass
-                if bundle_lock_acquired and redis is not None:
-                    released = await _release_redis_claim(redis, key=bundle_lock_key, token=bundle_lock_token)
-                    if released:
-                        logger.info("[Bundles] Preload bundle claim released: id=%s key=%s", bid, bundle_lock_key)
-
-        logger.info(
-            "[Bundles] Preload complete: total=%s ok=%s skipped_claimed=%s skipped_done=%s failed=%s",
-            total, ok, skipped_locked, skipped_done, len(errors),
-        )
-        app.state.bundles_preload_ready = True
-        app.state.bundles_preload_errors = errors
-        app.state.bundles_preload_skipped_locked = skipped_locked
-        app.state.bundles_preload_skipped_claimed = skipped_locked
-        app.state.bundles_preload_skipped_done = skipped_done
-        app.state.bundles_preload_finished_at = _utc_iso()
-    except asyncio.CancelledError:
-        logger.warning(
-            "[Bundles] Preload cancelled: total=%s ok=%s skipped_claimed=%s skipped_done=%s failed=%s",
-            total,
-            ok,
-            skipped_locked,
-            skipped_done,
-            len(errors),
-        )
-        app.state.bundles_preload_finished_at = _utc_iso()
-        raise
-    finally:
-        if lock_heartbeat_task is not None:
-            lock_heartbeat_task.cancel()
-            try:
-                await lock_heartbeat_task
-            except asyncio.CancelledError:
-                pass
-        if lock_acquired and redis is not None:
-            await _release_redis_claim(redis, key=lock_key, token=lock_token)
 
 
 async def _safe_shutdown_step(name: str, coro, timeout: float = 5.0) -> None:
@@ -1098,6 +423,8 @@ async def lifespan(app: FastAPI):
                 pg_pool=app.state.pg_pool,
                 redis=app.state.redis_async,
             )
+        except ApplicationNotReadyError:
+            raise
         except Exception as e:
             logger.exception(
                 "Failed to load requested bundle: bundle=%s tenant=%s project=%s",
@@ -1253,11 +580,37 @@ async def lifespan(app: FastAPI):
         app.state.conversation_store = conversation_store
         app.state.chat_submitter = ChatIngressSubmitter(app=app)
 
-        processor = get_external_request_processor(middleware, agentic_app_func, app, redis=redis_async)
+        applications_config = settings.PLATFORM.APPLICATIONS
+        app.state.application_lifecycle = ProcApplicationLifecycle(
+            tenant=settings.TENANT,
+            project=settings.PROJECT,
+            redis=redis_async,
+            pg_pool=app.state.pg_pool,
+            concurrency=applications_config.APPLICATION_PREPARATION_CONCURRENCY,
+            retry_initial_seconds=applications_config.APPLICATION_PREPARATION_RETRY_INITIAL_SECONDS,
+            retry_max_seconds=applications_config.APPLICATION_PREPARATION_RETRY_MAX_SECONDS,
+            logger=logger,
+        )
+
+        processor = get_external_request_processor(
+            middleware,
+            agentic_app_func,
+            app,
+            redis=redis_async,
+            application_lifecycle=app.state.application_lifecycle,
+        )
         app.state.processor = processor
         heartbeat_manager.load_provider = processor.get_current_load
 
+        async def _application_ready(preparation) -> None:
+            await processor.reconcile_application_runtime(
+                f"application-ready:{preparation.application_id}"
+            )
+
+        app.state.application_lifecycle.set_ready_callback(_application_ready)
+
         await heartbeat_manager.start_heartbeat(interval=10)
+        reg = None
         try:
             from kdcube_ai_app.infra.plugin.bundle_store import load_registry as _load_store_registry
             from kdcube_ai_app.infra.plugin.bundle_store import force_env_reset_if_requested
@@ -1265,7 +618,6 @@ async def lifespan(app: FastAPI):
                 get_all as _get_mem_registry,
                 set_registry_async as _set_mem_registry,
             )
-            reg = None
             try:
                 reg = await force_env_reset_if_requested(
                     redis_async,
@@ -1279,7 +631,12 @@ async def lifespan(app: FastAPI):
             if not reg:
                 reg = await _load_store_registry(redis_async)
             bundles_dict = {bid: entry.model_dump() for bid, entry in reg.bundles.items()}
-            await _set_mem_registry(bundles_dict, reg.default_bundle_id)
+            await _set_mem_registry(
+                bundles_dict,
+                reg.default_bundle_id,
+                resolve_git=False,
+                source="proc.startup",
+            )
             from kdcube_ai_app.apps.chat.sdk.solutions.sites import (
                 application_site_catalog_runtime,
                 refresh_application_site_catalog,
@@ -1318,22 +675,13 @@ async def lifespan(app: FastAPI):
                 e,
             )
 
-        # Resolve git-backed bundles before preload/scheduler startup so the
-        # registry's /managed-bundles/... paths exist when manifests are loaded.
-        await _initial_git_bundle_prefetch(app)
-
-        app.state.bundles_preload_ready = True
-        app.state.bundles_preload_errors = {}
-        app.state.bundles_preload_skipped_locked = 0
-        app.state.bundles_preload_skipped_claimed = 0
-        app.state.bundles_preload_skipped_done = 0
-        app.state.bundles_preload_status = {}
-        app.state.bundles_preload_started_at = None
-        app.state.bundles_preload_finished_at = None
-        app.state.bundles_preload_task = None
-        if _bundles_preload_enabled():
-            app.state.bundles_preload_ready = False
-            app.state.bundles_preload_task = asyncio.create_task(_preload_bundles_loop(app))
+        if reg is None:
+            reg = await load_bundle_runtime_registry(
+                redis_async,
+                settings.TENANT,
+                settings.PROJECT,
+            )
+        await app.state.application_lifecycle.reconcile(reg)
 
         await processor.start_processing()
     except Exception:
@@ -1381,25 +729,17 @@ async def lifespan(app: FastAPI):
             timeout=5.0,
         )
         app.state.application_site_catalog_task = None
+    if getattr(app.state, "application_lifecycle", None):
+        await _safe_shutdown_step(
+            "application_lifecycle.shutdown",
+            app.state.application_lifecycle.shutdown(),
+            timeout=20.0,
+        )
     await _safe_shutdown_step(
         "bundle_sidecars.shutdown",
         shutdown_all_local_sidecars(terminate_timeout_sec=10.0, kill_timeout_sec=3.0),
         timeout=20.0,
     )
-    if getattr(app.state, "bundle_git_task", None):
-        app.state.bundle_git_task.cancel()
-        try:
-            await app.state.bundle_git_task
-        except asyncio.CancelledError:
-            pass
-        app.state.bundle_git_task = None
-    if getattr(app.state, "bundles_preload_task", None):
-        app.state.bundles_preload_task.cancel()
-        try:
-            await app.state.bundles_preload_task
-        except asyncio.CancelledError:
-            pass
-        app.state.bundles_preload_task = None
     if hasattr(app.state, "redis_monitor"):
         await _safe_shutdown_step("redis_monitor.stop", app.state.redis_monitor.stop(), timeout=5.0)
     if hasattr(app.state, "pg_pool"):
@@ -1418,11 +758,30 @@ app = FastAPI(
 )
 
 
+@app.exception_handler(ApplicationNotReadyError)
+async def application_not_ready_handler(
+    request: Request,
+    exc: ApplicationNotReadyError,
+):
+    del request
+    return JSONResponse(
+        status_code=503,
+        content=exc.public_payload,
+        headers={"Retry-After": "2", **_proc_debug_headers()},
+    )
+
+
 def _proc_debug_headers() -> dict[str, str]:
+    settings = get_settings()
+    aggregate = application_readiness_registry.aggregate(
+        tenant=settings.TENANT,
+        project=settings.PROJECT,
+    )
     return {
         "X-KDCube-Proc-Instance": str(INSTANCE_ID),
         "X-KDCube-Worker-Pid": str(os.getpid()),
-        "X-KDCube-Bundles-Preload-Ready": str(getattr(app.state, "bundles_preload_ready", True)).lower(),
+        "X-KDCube-Bundles-Preload-Ready": str(aggregate.ready).lower(),
+        "X-KDCube-Applications-Ready": str(aggregate.ready).lower(),
     }
 
 
@@ -1491,12 +850,15 @@ async def gateway_middleware(request: Request, call_next):
     except RuntimeError as e:
         if str(e) == "No response returned.":
             logger.warning(
-                "Request ended without response: method=%s path=%s pid=%s instance=%s preload_ready=%s",
+                "Request ended without response: method=%s path=%s pid=%s instance=%s applications_ready=%s",
                 request.method,
                 request.url.path,
                 os.getpid(),
                 INSTANCE_ID,
-                getattr(app.state, "bundles_preload_ready", True),
+                application_readiness_registry.aggregate(
+                    tenant=get_settings().TENANT,
+                    project=get_settings().PROJECT,
+                ).ready,
             )
             return JSONResponse(
                 status_code=499,
@@ -1515,37 +877,71 @@ async def gateway_middleware(request: Request, call_next):
 
 @app.get("/health")
 async def health():
+    settings = get_settings()
     draining = getattr(app.state, "draining", False)
-    bundles_git_ready = getattr(app.state, "bundle_git_ready", True)
-    bundle_git_errors = getattr(app.state, "bundle_git_errors", {}) or {}
-    bundles_preload_ready = getattr(app.state, "bundles_preload_ready", True)
-    bundles_preload_errors = getattr(app.state, "bundles_preload_errors", {}) or {}
-    bundles_preload_skipped_locked = int(getattr(app.state, "bundles_preload_skipped_locked", 0) or 0)
-    bundles_preload_skipped_claimed = int(
-        getattr(app.state, "bundles_preload_skipped_claimed", bundles_preload_skipped_locked) or 0
+    aggregate = application_readiness_registry.aggregate(
+        tenant=settings.TENANT,
+        project=settings.PROJECT,
     )
-    bundles_preload_skipped_done = int(getattr(app.state, "bundles_preload_skipped_done", 0) or 0)
-    bundles_preload_status = getattr(app.state, "bundles_preload_status", {}) or {}
-    ready = bundles_git_ready and bundles_preload_ready
+    snapshots = application_readiness_registry.scope_snapshots(
+        tenant=settings.TENANT,
+        project=settings.PROJECT,
+    )
+    ready = aggregate.ready
     payload = {
         "status": "draining" if draining else ("ok" if ready else "not_ready"),
         "draining": draining,
         "service": "chat-proc",
         "instance_id": INSTANCE_ID,
-        "bundles_git_ready": bundles_git_ready,
-        "bundles_git_errors": bundle_git_errors,
-        "bundles_preload_ready": bundles_preload_ready,
-        "bundles_preload_errors": bundles_preload_errors,
-        "bundles_preload_skipped_locked": bundles_preload_skipped_locked,
-        "bundles_preload_skipped_claimed": bundles_preload_skipped_claimed,
-        "bundles_preload_skipped_done": bundles_preload_skipped_done,
-        "bundles_preload_started_at": getattr(app.state, "bundles_preload_started_at", None),
-        "bundles_preload_finished_at": getattr(app.state, "bundles_preload_finished_at", None),
-        "bundles_preload_status": bundles_preload_status,
+        "applications_ready": aggregate.ready,
+        **aggregate.diagnostic_payload(),
+        "applications": {
+            application_id: {
+                "readiness": snapshot.readiness.value,
+                "state": snapshot.state.value,
+                "ready": snapshot.ready,
+            }
+            for application_id, snapshot in snapshots.items()
+        },
     }
     if draining or not ready:
         return JSONResponse(status_code=503, content=payload)
     return payload
+
+
+@app.get("/health/live")
+async def health_live():
+    draining = getattr(app.state, "draining", False)
+    payload = {
+        "status": "draining" if draining else "ok",
+        "draining": draining,
+        "service": "chat-proc",
+        "instance_id": INSTANCE_ID,
+    }
+    if draining:
+        return JSONResponse(status_code=503, content=payload)
+    return payload
+
+
+@app.get("/monitoring/applications")
+async def monitoring_applications():
+    settings = get_settings()
+    snapshots = application_readiness_registry.scope_snapshots(
+        tenant=settings.TENANT,
+        project=settings.PROJECT,
+    )
+    return {
+        "tenant": settings.TENANT,
+        "project": settings.PROJECT,
+        "applications": {
+            application_id: {
+                "readiness": snapshot.readiness.value,
+                "state": snapshot.state.value,
+                "ready": snapshot.ready,
+            }
+            for application_id, snapshot in snapshots.items()
+        },
+    }
 
 
 @app.get("/monitoring/processor")

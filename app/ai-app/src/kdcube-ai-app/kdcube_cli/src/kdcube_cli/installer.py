@@ -5047,7 +5047,6 @@ def gather_configuration(
         update_env_value(env_proc, "BUNDLES_ROOT", "/bundles")
     if is_placeholder(env_proc.entries.get("MANAGED_BUNDLES_ROOT", (None, None))[1]):
         update_env_value(env_proc, "MANAGED_BUNDLES_ROOT", "/managed-bundles")
-    update_if_placeholder(env_proc, "BUNDLES_PRELOAD_ON_START", "1")
     if is_placeholder(env_proc.entries.get("HOST_BUNDLE_STORAGE_PATH", (None, None))[1]):
         update_env_value(env_proc, "HOST_BUNDLE_STORAGE_PATH", host_bundle_storage)
     if is_placeholder(env_proc.entries.get("HOST_MANAGED_BUNDLES_PATH", (None, None))[1]):

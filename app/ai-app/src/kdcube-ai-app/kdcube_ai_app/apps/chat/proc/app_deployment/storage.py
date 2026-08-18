@@ -14,6 +14,7 @@ from kdcube_ai_app.infra.plugin.bundle_storage import storage_for_spec
 DEPLOYMENT_DIRNAME = ".kdcube.app-deployment"
 MANIFEST_FILENAME = "static-widget-surfaces.v1.json"
 SIGNATURE_FILENAME = "static-widget-surfaces.v1.signature"
+APP_RESOURCES_SIGNATURE_FILENAME = "app-resources.v1.signature"
 
 
 def deployment_directory(storage_root: pathlib.Path) -> pathlib.Path:
@@ -26,6 +27,10 @@ def deployment_manifest_path(storage_root: pathlib.Path) -> pathlib.Path:
 
 def deployment_signature_path(storage_root: pathlib.Path) -> pathlib.Path:
     return deployment_directory(storage_root) / SIGNATURE_FILENAME
+
+
+def app_resources_signature_path(storage_root: pathlib.Path) -> pathlib.Path:
+    return deployment_directory(storage_root) / APP_RESOURCES_SIGNATURE_FILENAME
 
 
 def _load_deployment_manifest_sync(storage_root: pathlib.Path) -> AppStaticSurfaceManifest | None:
