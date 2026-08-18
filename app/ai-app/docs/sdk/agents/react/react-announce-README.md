@@ -4,7 +4,9 @@ title: "React Announce"
 summary: "Announce block semantics and lifecycle in React v2/v3."
 tags: ["sdk", "agents", "react", "announce", "timeline"]
 keywords: ["announce banner", "system signals", "plan status", "feedback"]
+updated_at: 2026-08-18
 see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/context-layout.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/feedback-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/flow-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/plan-README.md
@@ -102,7 +104,22 @@ the agent to use `react.read(path)` to restore truncated context.
 ## Workspace state in ANNOUNCE
 ANNOUNCE may include a compact `[WORKSPACE]` section.
 
-Its purpose is operational guidance, not full git/debug observability.
+Its purpose is current-turn operational guidance. Turns can execute on
+different workers and receive fresh local artifact workspaces, so
+`[WORKSPACE] LOCAL` is the locality ledger for artifact bytes materialized on
+the current worker. Artifacts may be represented anywhere in the rendered
+context; each artifact's URI namespace and the React tool contracts provide
+its access path.
+
+This gives the model two complementary signals:
+
+```text
+rendered context, anywhere
+  artifact + its URI -> visible representation + durable access handle
+
+ANNOUNCE [WORKSPACE] LOCAL
+  current-turn path -> bytes already materialized on this worker
+```
 
 It can include:
 - `implementation: custom|git`

@@ -45,11 +45,11 @@ TOOL_SPEC = {
     "purpose": (
         "Materialize artifact refs locally under OUT_DIR and return the paths that other tools should use next. "
         "conv:fi: refs already belong to the ReAct artifact model and have the normal logical/physical path rules. "
-        "Externally owned refs such as cnv:, mem:, or task: may appear in timeline events, snapshots, or tool results. "
-        "They are opaque owner handles resolved only when a registered namespace rehoster is available. "
+        "Artifacts have URIs, and those URIs may appear anywhere in the rendered context. "
+        "Externally owned artifact URIs, such as cnv:, mem:, or task:, are opaque owner handles resolved only when a registered namespace rehoster is available. "
         "conv:ev: refs identify event objects on the timeline; they are not artifact refs and are not accepted by react.pull. "
-        "When an event/object shows object_ref, pass that object_ref. "
-        "When an event points to bytes or a snapshot body through another field, pass that referenced artifact ref. "
+        "If an event/object contains object_ref, use its value as an item in react.pull.paths. "
+        "If another event field contains an artifact URI for a separately stored bytes or snapshot body, use that artifact URI as an item in react.pull.paths. "
         "Unsupported namespaces are reported by the pull result. "
         "For an externally owned ref, react.pull calls the registered namespace rehoster, copies the artifact into a ReAct artifact surface, "
         "and returns the materialized conv:fi: logical_path plus physical_path. "
@@ -62,7 +62,7 @@ TOOL_SPEC = {
         "Produced files, user attachments, external-event attachments, and hosted binaries require exact refs. "
         "The conv_<conversation_id> segment names the conversation the ref lives in; use refs exactly as supplied. "
         "Choose share by where the pulled file goes next. "
-        "You read/analyze/edit the content yourself -> share=false (default); the pull is local reference material and the user sees no file from it. "
+        "You need the artifact locally for inspection, search, processing as reference material, or a subsequent project checkout -> share=false (default); the user receives no file from the pull. "
         "The USER should receive the file itself as a download (they asked for the file, or the deliverable IS this binary) -> share=true; the file is hosted and delivered to the user (Files tab). "
         "The file goes to ANOTHER SERVICE (mail/slack attachment, host_file into a namespace) -> share=false; pass the returned logical_path/physical_path in that action's file field (e.g. attachment_paths, file_ref) — the service reads the bytes itself. "
         "share delivers exactly ONE file: pull a single exact file ref with share=true. A folder/subtree pull, or a pull of several "
@@ -85,7 +85,9 @@ TOOL_SPEC = {
             "and conv:fi:conv_<conversation_id>.turn_<id>.external.<event_kind>.attachments/<event_id>/<file> (exact file only). "
             "The conv_<conversation_id> segment names the conversation the ref lives in; pass refs exactly as supplied. "
             "External namespaces such as cnv:, mem:, or task: are accepted only when a namespace rehoster is registered. "
-            "conv:ev: timeline event refs are not artifact refs."
+            "A conv:ev: URI identifies an event; it is not an artifact ref and is not a valid paths item. "
+            "If an event/object contains object_ref, put its value in paths. "
+            "If another event field contains an artifact URI for a separately stored bytes or snapshot body, put that artifact URI in paths."
         ),
     },
     "returns": (

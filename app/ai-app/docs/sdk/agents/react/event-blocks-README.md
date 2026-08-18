@@ -4,7 +4,9 @@ title: "Event Blocks"
 summary: "Block schema and event types emitted in the React timeline."
 tags: ["sdk", "agents", "react", "events", "blocks"]
 keywords: ["block types", "mime", "path", "tool results", "timeline events"]
+updated_at: 2026-08-18
 see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/context-layout.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/tool-call-blocks-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/event-source/event-source-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/event-source/events-blocks-and-rendering-README.md
@@ -24,6 +26,12 @@ Blocks are dicts with:
 - `text` (for text content)
 - `base64` (for binary content)
 - `meta` (optional)
+
+Everything rendered to the agent is an artifact and every artifact has a URI.
+For timeline blocks, `path` carries that URI. An event artifact may also carry
+the URI of another artifact in `object_ref` or another ref field. The common
+model and namespace-based access routes are defined in
+[Context Layout](./context-layout.md#artifacts-and-uris).
 
 ## Core Block Types
 - `turn.header` (historical)

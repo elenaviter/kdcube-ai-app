@@ -44,10 +44,10 @@ def test_hard_signals_survive_distillation():
         "top-level `await` enabled",
         "agent_io_tools.tool_call",
         "FLIP YOUR DEFAULT",
-        # workspace hard rule
-        "EACH TURN STARTS BLANK",
-        "CRITICAL DISTRIBUTED-WORKSPACE FACT — LOCAL THIS TURN",
-        "only files listed under ANNOUNCE `[WORKSPACE] LOCAL`",
+        # distributed artifact workspace
+        "Every turn starts with a fresh local workspace",
+        "Artifact URIs remain durable across turns",
+        "call `react.pull` in THIS turn",
         # fetch_ctx namespace limits
         "`conv:ar:`/`conv:tc:`/`conv:so:`",
         # canvas extensions
@@ -141,7 +141,7 @@ def test_extra_lite_body_is_dramatically_smaller_than_default_body():
     assert len(xlite_body) < len(default_body) / 3
 
 
-def test_every_profile_exposes_only_the_bounded_large_text_strategy():
+def test_every_profile_exposes_bounded_large_text_strategy_without_cap_mechanics():
     from kdcube_ai_app.apps.chat.sdk.skills.instructions.shared_instructions_lite import (
         default_lite_system_instruction,
     )
@@ -160,10 +160,10 @@ def test_every_profile_exposes_only_the_bounded_large_text_strategy():
     for text in texts:
         lowered = text.lower()
         assert "max_text_symbols >= text_symbols" not in text
-        assert "max_text_symbols" in text
-        assert "never raises" in lowered or "cannot raise" in lowered
-        assert "repeat" in lowered
-        assert "whole-path read" in lowered or "whole path" in lowered
+        assert "never raises" not in lowered
+        assert "cannot raise" not in lowered
+        assert "whole-path read" in lowered
         assert "stats_only" in text
         assert "react.rg" in text
-        assert "symbol ranges" in text
+        assert "line/symbol" in lowered
+        assert "programmatic" in lowered

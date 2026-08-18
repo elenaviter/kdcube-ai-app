@@ -4,6 +4,7 @@ title: "Context Layout"
 summary: "Rendered block stream format that agents receive each turn."
 tags: ["sdk", "agents", "react", "context", "layout"]
 keywords: ["block stream", "rendered context", "agent view", "blocks order"]
+updated_at: 2026-08-18
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/context-browser-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/context-caching-README.md
@@ -51,6 +52,54 @@ tool catalog, or skill catalog means a different downstream prompt prefix. For
 Anthropic/Claude, React maps that prefix structure to explicit cache controls.
 For other providers, React keeps the same layout but does not currently claim
 equivalent provider cache-control behavior.
+
+## Artifacts And URIs
+
+Everything in the rendered context stream is an artifact, and every artifact
+has a URI. Artifact kinds include user messages, attachments, assistant
+responses, events, tool calls, tool results, files, sources, summaries, skills,
+tasks, memories, canvas content, and records from other connected systems.
+
+An artifact can be represented anywhere in the rendered context: an old-turn
+summary, the current user message, attachment metadata, an external event, a
+tool result, a source row, or ANNOUNCE. The rendered text, media, metadata, or
+preview is what is currently visible to the model. The artifact's URI keeps it
+addressable when the task needs more of it.
+
+| Artifact kind | URI examples | Access path |
+| --- | --- | --- |
+| User message or assistant response | `conv:ar:...user.prompt`, `conv:ar:...assistant.completion` | `react.read` |
+| Tool call or result | `conv:tc:...call`, `conv:tc:...result` | `react.read` |
+| Event | `conv:ev:...events/<event_path>` | `react.read` |
+| Source rows, summaries, skills | `conv:so:...`, `conv:ws:...`, `conv:su:...`, `sk:...` | `react.read` |
+| File or attachment | `conv:fi:...` | When absent from current-turn `[WORKSPACE] LOCAL`, `react.pull`; then `react.read` or a file-processing tool |
+| Connected-system artifact | `cnv:...`, `mem:...`, `task:...`, another registered namespace | `react.pull`, then continue from the returned paths |
+
+An event can identify both itself and another artifact. For example:
+
+```text
+event URI
+  conv:ev:...events/canvas.selected
+
+artifact URI carried by the event
+  object_ref: cnv:canvas/.../objects/user-text/.../v000004.md
+```
+
+The `conv:ev:` URI reads the event fields. If `object_ref` is already visible,
+the agent can pull that URI directly to materialize the selected canvas card.
+
+Turns may execute on different workers. Each turn receives a fresh local
+artifact workspace. ANNOUNCE `[WORKSPACE] LOCAL` is the current-turn locality
+ledger for bytes already materialized on that worker. An artifact URI rendered
+in any context layer remains an access handle; pruning and compaction determine
+which artifacts and summaries are present in the current model view. When more
+artifact content or file processing is needed, the URI namespace and tool
+contract determine the access path. Current-turn materialization returns MIME,
+size, fit, line-shape, and path metadata that guide whole reading, bounded
+search/ranges, or programmatic inspection.
+
+The exact tool contracts and large-artifact inspection flow are owned by
+[React Tools](./react-tools-README.md).
 
 ## Block Stream (per agent call)
 1) **History blocks**

@@ -64,8 +64,8 @@ TOOL_SPEC = {
         "External namespace refs such as mem:, cnv:, or task: are not read directly. "
         "When exact content from an external ref is needed, first use react.pull on that ref; "
         "then use the returned conv:fi: logical_path with react.read or react.rg (tools that take physical paths use the returned physical_path). "
-        "For an event/object that shows object_ref, use react.pull on that object_ref when exact external content is needed; then read the returned path. "
-        "For event payload bytes or snapshot bodies carried through another field, read a visible conv:fi: path or first use react.pull on that referenced artifact ref. "
+        "When a rendered event carries object_ref, its conv:ev: URI identifies the event; if exact referenced-artifact content is needed, pass the object_ref value in react.pull.paths, then read the returned path. "
+        "If another event field contains an artifact URI for separately stored bytes or a snapshot body, pass that artifact URI in react.pull.paths. "
         "For old-turn recovery, conv:ar:conv_<conversation_id>.turn_<id>.react.turn.index reconstructs a compact semantic inventory; "
         "use it with react.memsearch hits when the summary does not name enough refs. "
         "Batch multiple known paths in one read call. "
@@ -84,10 +84,11 @@ TOOL_SPEC = {
         "Oversized regular text results are rematerialized as bounded visible previews using configured text/token/byte caps. "
         "Caps apply independently per requested path. "
         "For a materialized text file whose fit is unknown, use stats_only to get text-symbol, token, byte, and line metadata before reading content. "
-        "Do not infer text fit from size_bytes alone. When stats_only reports fits_visible_context=true, read the whole path once. "
+        "Text fit is determined from text-symbol, token, byte, and line-shape metadata; size_bytes alone does not establish fit. "
+        "When stats_only reports fits_visible_context=true and the task needs the whole content, use one whole-path read. "
         "When false, use react.rg, bounded params.items line_start/line_count or offset_text_symbols/max_text_symbols ranges, "
         "or a file-processing tool over the physical path that writes smaller derived artifacts. "
-        "After a truncated whole-path read, do not repeat it and do not increase max_text_symbols. "
+        "If a whole-path read is truncated, use one of the bounded routes above to continue reading. "
         "Output caps apply to every tool's output; no tool output is an uncapped read channel."
     ),
     "args": {
@@ -114,8 +115,8 @@ TOOL_SPEC = {
         "max_text_symbols": (
             "optional int; for text payloads, materialize at most this many visible characters/symbols per path. "
             "Use when a large file/result needs a smaller explicit in-context preview than the configured default. "
-            "It can only lower the preview size; it cannot raise any runtime text, token, byte, or context cap. "
-            "Never use it to retry a whole path after truncation. "
+            "When supplied, its effective value is min(requested max_text_symbols, active runtime cap), so providing it cannot raise the cap; it can only reduce the preview. "
+            "If a whole-path read is truncated, continue with search, bounded ranges, or programmatic inspection. "
             "For conv:so:conv_<conversation_id>.sources_pool[...] this is an explicit structured cap for large text fields only; without it, source rows are read in full."
         ),
         "stats_only": (
@@ -133,8 +134,8 @@ TOOL_SPEC = {
         "Ranged item reads return exact labeled chunks when they fit configured visible caps. "
         "Oversized non-source text payloads return status=truncated_for_visible_context with a bounded preview. "
         "Oversized PDFs and images that cannot be downscaled return status=too_large_for_visible_context_bytes. "
-        "For large text, recover only the needed content through react.rg, bounded react.read range items, or smaller derived artifacts. "
-        "A truncated whole-path read must not be repeated, and max_text_symbols cannot raise the cap. "
+        "For large text, recover the needed content through react.rg, bounded react.read range items, or smaller derived artifacts. "
+        "If a whole-path read is truncated, continue through one of these bounded routes. "
         "Tools that compute over files can create smaller derived artifacts, but no tool output is an uncapped way to put full content into model context."
     ),
 }
@@ -514,8 +515,7 @@ def _truncated_read_text(
         f"bytes: {source_bytes}",
         f"visible_read_limit_bytes: {byte_cap if byte_cap is not None else 'none'}",
         "exact_content: recoverable by logical path",
-        "do_not_retry: do not repeat react.read(paths=[path]) and do not increase max_text_symbols; runtime caps cannot be raised by a request",
-        "recovery: if shape metadata is missing use react.read stats_only; then use objective-guided react.rg, bounded params.items line or symbol ranges, or programmatic inspection of the materialized physical file",
+        "continuation: if shape metadata is missing use react.read stats_only; then use objective-guided react.rg, bounded params.items line or symbol ranges, or programmatic inspection of the materialized physical file",
     ]).strip()
 
 
@@ -1489,8 +1489,7 @@ async def handle_react_read(*, ctx_browser: Any, state: Dict[str, Any], tool_cal
         if emitted.get("visible_text_symbols"):
             entry["visible_text_symbols"] = int(emitted.get("visible_text_symbols") or 0)
         entry["recovery"] = {
-            "repeat_whole_path_read": False,
-            "max_text_symbols_can_raise_cap": False,
+            "strategy": "bounded_inspection",
             "use": [
                 "react.rg then its bounded read_items",
                 "react.read bounded line or symbol items",

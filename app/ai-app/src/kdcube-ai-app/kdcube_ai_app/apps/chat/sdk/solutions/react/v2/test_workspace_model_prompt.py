@@ -49,8 +49,10 @@ def test_build_decision_system_text_uses_selected_workspace_implementation():
     assert "hosted binaries require exact file refs" in text
     assert "local git repo" in text
     assert "Workspace activation is explicit" in text
-    assert "EACH TURN STARTS BLANK" in text
-    assert "CRITICAL DISTRIBUTED-WORKSPACE FACT — LOCAL THIS TURN" in text
+    assert "[TOOL AVAILABILITY]" in text
+    assert "[REACT HARNESS CONTEXT AND ARTIFACT ACCESS]" in text
+    assert "Every artifact has a URI" in text
+    assert "every turn starts with a fresh local artifact workspace" in text
     assert 'react.checkout(mode="replace", paths=[...])' in text or 'react.checkout(mode="replace", paths=["conv:fi:' in text
     assert "git/projects" in text
     assert "mode=\"overlay\"" in text

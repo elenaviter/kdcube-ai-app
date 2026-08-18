@@ -980,11 +980,9 @@ def build_announce_workspace_lines(
     # ---------- LOCAL ----------
     lines.append("")
     lines.append("  LOCAL — materialized on disk THIS turn.")
-    lines.append("  CRITICAL DISTRIBUTED-WORKSPACE FACT — LOCAL THIS TURN means only files listed below. A visible ref, provider-rendered preview, or prior-turn pull is not local; react.pull it in THIS turn before any local-bytes tool uses it. Apply this before every local file operation.")
-    lines.append("  This tree lists actual files already present under the artifact workdir.")
-    lines.append("  Timeline conv:fi: refs that are not listed here are hosted/unhydrated; use react.pull to hydrate them before local-byte tools.")
-    lines.append("  react.read may inspect provider-rendered text for a hosted ref; that preview does not establish local-byte availability. Trust only this LOCAL list.")
-    lines.append("  File-touching tools (react.rg, react.patch, code) can touch only paths listed here or paths you create in this turn.")
+    lines.append("  This tree is the current-turn locality ledger: only paths listed below, or created during this turn, have bytes on this worker.")
+    lines.append("  A visible artifact URI or an earlier turn's pull does not make its bytes local now. Before local inspection, search, or processing needs an external or historical artifact, explicitly call react.pull in THIS turn.")
+    lines.append("  react.read exposes model-visible content through logical artifact URIs. File-processing tools use paths listed here or paths created in this turn.")
     local_entries = _workdir_entries()
     local_lines: List[str] = []
     for entry in local_entries:
@@ -1297,7 +1295,7 @@ def build_announce_context_cap_lines(*, runtime_ctx: Optional[RuntimeCtx]) -> Li
             f"  read text={read_text} tok={read_tokens} bytes={_bytes_label(read_bytes)} ctx_frac={read_fraction:g}; "
             f"tool_result_preview={tool_preview}; exec_file_preview={exec_preview}; line_numbers={line_numbers_mode}"
         ),
-        "  use stats_only.fits_visible_context before a whole text read; max_text_symbols only lowers a preview; after truncation do not retry the whole path; use search/ranged items or process the local file; skills are uncapped; tool outputs are capped",
+        "  stats_only.fits_visible_context selects whole versus bounded text inspection; truncation continues through search/ranged items or local-file processing; skills are uncapped; tool outputs are capped",
     ]
 
 

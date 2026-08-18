@@ -1,10 +1,10 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/sdk/skills/instruction-blocks-and-signals-README.md
 title: "Instruction Blocks And Signals"
-summary: "The agent-neutral instruction-block system: the blocks vocabulary, the signal table for every default block, the completeness checklist and audit method for lite/custom instruction bodies, and how to choose between the extended and lite bodies."
+summary: "The agent-neutral instruction-block system: the blocks vocabulary, always-on harness signals, the signal table for every default block, and the completeness audit for selectable instruction bodies."
 tags: ["sdk", "instructions", "blocks", "signals", "agents", "configuration"]
 keywords: ["instruction blocks", "instruction signals", "blocks vocabulary", "lite instructions", "extra-lite instructions", "signal coverage", "completeness checklist"]
-updated_at: 2026-07-26
+updated_at: 2026-08-18
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/system-instruction-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/tools/tool-catalog-README.md
@@ -53,10 +53,13 @@ The store, the governed `instr` namespace, and the constructor widget
 Profiles (for `lite:` and `xlite:`): `core`, `workspace`, `workspace_exec`,
 `document`, `web`, `all_capabilities`.
 
-The runtime protocol is always prepended and the tool/skill catalogs appended by
-the decision agent; `blocks` composes only the body between them. Full is not
-name-addressable block-by-block; it is the default, the `full` token, or a
-literal `body`.
+The runtime protocol, stable tool-availability signal, and stable harness
+context/artifact-access signal are always prepended, and the tool/skill
+catalogs are appended by the decision agent; `blocks` composes only the
+selected body between them. Full is not name-addressable block-by-block; it is
+the default, the `full` token, or a literal `body`. Agent-admin customization
+is a separate `additional_instructions` suffix appended after this standard
+composition.
 
 Named Lite and Extra Lite capability blocks are intersected with the effective
 per-turn tool selection. For example, exec, web, and rendering guidance is
@@ -184,6 +187,8 @@ signals and tools exposed to the agent.
 | Signal | Meaning | Extended/default source | Lite source |
 | --- | --- | --- | --- |
 | Strict channel protocol | The exact output/action protocol parsed by the runtime. | v2/v3 decision protocol in `agents/decision.py`. | Not a lite block. Always prepended by the decision agent. |
+| Tool availability | The current tool catalogs are the authority for capabilities configured in this conversation; tool-dependent strategies apply when their required tool ids are present. | `REACT_HARNESS_TOOL_AVAILABILITY`, inserted by `compose_decision_system_text(...)` after the strict protocol. | Not a selectable Lite/Extra Lite block. Always present for Full, Lite, Extra Lite, and explicit complete bodies. |
+| Harness context and artifact access | Everything in rendered context is an artifact and every artifact has a URI; artifacts can be represented anywhere in context; turns have fresh worker-local artifact workspaces; each artifact's URI namespace selects its access path; exact/full or file-dependent work uses current-turn retrieval/materialization; reported shape selects whole or bounded/programmatic inspection. | `REACT_HARNESS_CONTEXT_AND_ARTIFACT_ACCESS`, inserted by `compose_decision_system_text(...)` after the strict protocol. | Not a selectable Lite/Extra Lite block. Always present for Full, Lite, Extra Lite, and explicit complete bodies. |
 | Tool catalog | Current callable platform, bundle, MCP, and `react.*` tools. | `build_instruction_catalog_block(...)`. | Same catalog path. Controlled by `include_tool_catalog`. |
 | Skill catalog | Current visible platform and bundle skills. | `build_instruction_catalog_block(...)`. | Same catalog path. Controlled by `include_skill_gallery`. |
 | Admin customization | Bundle/admin override appended after the body. | `append_agent_admin_customization(...)`. | Same path for default, lite, and custom bodies. |
@@ -232,6 +237,8 @@ extended/default body.
 Minimum baseline for most React agents:
 
 - strict v2/v3 protocol is still prepended by the decision agent
+- `REACT_HARNESS_TOOL_AVAILABILITY` is still inserted by the decision agent
+- `REACT_HARNESS_CONTEXT_AND_ARTIFACT_ACCESS` is still inserted by the decision agent
 - `REACT_LITE_IDENTITY`
 - `REACT_LITE_SECURITY_GUARD`
 - `REACT_LITE_TIMELINE_CONTEXT`
@@ -283,9 +290,12 @@ default body when the agent surface is narrower.
 6. Add bundle-specific rules as a short literal block after the generic blocks.
 7. Render or log the final system text in a non-production test and check that:
    - the strict protocol is present
-   - the instruction body is the expected lite/custom body
+   - `[TOOL AVAILABILITY]` is present immediately after the protocol
+   - `[REACT HARNESS CONTEXT AND ARTIFACT ACCESS]` follows the tool-availability signal
+   - the instruction body is the expected Lite or explicit complete body
    - the tool catalog matches the tools actually enabled
    - the body does not mention unavailable tools
+   - appended agent-admin customization remains after the standard body and catalogs
    - no LLM-facing block says "include this block" or otherwise speaks to the
      bundle author instead of the model
 
@@ -313,6 +323,8 @@ Use lite profiles for demo agents, cost-sensitive agents, narrowly-scoped
 bundle agents, or agents where the author wants an explicit capability-by-capability
 instruction surface.
 
-Use a fully custom body only when the bundle author owns the complete behavior
-contract. A custom body still receives the strict protocol and may still receive
-the tool/skill catalogs, but it replaces the default React onboarding text.
+Use an explicit complete body only when the bundle author owns that complete
+body contract. It still receives the strict protocol and the always-present
+tool-availability and harness context/artifact-access signals, and may still
+receive the tool/skill catalogs. Appended agent-admin customization remains a
+separate suffix.

@@ -1,10 +1,10 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/system-instruction-README.md
 title: "React System Instruction"
-summary: "How React decision system instructions are composed and cached, and how a React build selects the extended default or a lite instruction body."
+summary: "How React decision system instructions are composed and cached, including the always-present harness context, selectable instruction bodies, and appended admin customization."
 tags: ["sdk", "agents", "react", "instructions", "system-prompt", "lite", "configuration"]
 keywords: ["React system instruction", "React lite instructions", "instruction_body", "instruction_blocks", "default_lite_system_instruction", "React prompt composition"]
-updated_at: 2026-07-25
+updated_at: 2026-08-18
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/tools/tool-catalog-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/skills/instruction-blocks-and-signals-README.md
@@ -22,7 +22,7 @@ see_also:
 # React System Instruction
 
 This page explains the system instruction seen by the React decision agent.
-It is also the checklist for deciding whether a lite/custom instruction body is
+It is also the checklist for deciding whether a Lite or explicit complete instruction body is
 complete for the tools and runtime surfaces exposed by a bundle.
 
 ## Composition
@@ -33,17 +33,32 @@ The full decision system text is assembled in
 ```text
 v2/v3 decision agent
   -> version-specific strict channel protocol
-  -> instruction body
+  -> always-present tool-availability signal
+  -> always-present React harness context and artifact-access model
+  -> selected instruction body
        1. instruction_body, if supplied
        2. composed instruction_blocks, if supplied
        3. extended/default body, otherwise
   -> optional tool catalog
   -> optional skill catalog
-  -> optional agent-admin customization block
+  -> optional appended agent-admin customization block
 ```
 
-The strict channel protocol is not customizable. The runtime parser depends on
-it. Bundle authors customize the instruction body below that protocol.
+The strict channel protocol, tool-availability signal, and harness
+context/artifact-access block are always present. The runtime parser depends on
+the protocol. `REACT_HARNESS_TOOL_AVAILABILITY` tells the agent that the
+current catalogs are the authority for configured capabilities, including
+optional tool families. `REACT_HARNESS_CONTEXT_AND_ARTIFACT_ACCESS` explains
+the model input shape, the universal artifact-URI model, distributed turn
+locality, namespace-based access, and shape-driven inspection. Both blocks are
+inserted by `compose_decision_system_text(...)` before the selected body, so
+Full, Lite, Extra Lite, and an explicit complete body receive the same harness
+facts.
+
+`instruction_body` is the explicit complete-body selector shown in the diagram;
+it does not mean the appended agent-admin customization. Admin customization is
+passed as `additional_instructions` and wrapped by
+`append_agent_admin_customization(...)` after the standard body and catalogs.
 
 The protocol teaches the BASE channels (`thinking`, `action`, optional
 `summary`) and states that a connected tool may extend the protocol with a
@@ -71,9 +86,11 @@ before the rendered timeline.
 
 ```
 [strict protocol]
-[instruction body]
+[tool availability]
+[always-present harness context and artifact access]
+[selected instruction body]
 [tool/skill catalog]
-[admin or runtime customization]
+[appended admin or runtime customization]
 [rendered timeline prefix]
 [ANNOUNCE / current tail]
 ```
@@ -96,6 +113,8 @@ The important boundary is the first changed segment:
 
 ```
 [strict protocol]                         stable for all compatible agents
+[tool availability]                       stable for all compatible agents
+[harness context and artifact access]     stable for all compatible agents
 [default React instruction]               stable for all compatible agents
 [shared bundle/domain instruction]        stable for this bundle/config
 
@@ -135,7 +154,7 @@ Be explicit about the reuse scope:
 
 ## Use The Extended Default
 
-If a bundle does not pass custom instruction fields, React uses the extended
+If a bundle does not pass body-selection fields, React uses the extended
 default body from `shared_instructions.py`.
 
 ```python
@@ -226,7 +245,7 @@ subsection of the paths guide) the same way. Generic surfaces — the react
 tool docs, the protocol, paths/workspace guidance — speak in class rules
 (file-processing tools, computation tools, capped tool outputs) and never
 name the exec tool; everything exec-specific renders only with the tool
-present. A fully custom body that hides the tool catalog must carry its own
+present. An explicit complete body that hides the tool catalog must carry its own
 complete exec contract.
 
 Exec code itself is preserved as a Python module body and evaluated with
@@ -237,7 +256,7 @@ top-level `await` enabled. Do not generate an event-loop runner or a separate
 ## The Blocks Vocabulary, Signals, And Completeness
 
 The `blocks` vocabulary, the signal table for every default block, the
-completeness checklist, and the audit method for lite/custom bodies live in
+completeness checklist, and the audit method for Lite/explicit complete bodies live in
 [the instruction-blocks-and-signals doc](../../skills/instruction-blocks-and-signals-README.md)
 — they are agent-neutral and serve every harness that composes an
 instruction body from blocks. This page keeps what is React-specific: the

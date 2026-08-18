@@ -223,13 +223,13 @@ This is the only React workspace paradigm switch:
 
 Exact attachment/binary pulls remain point-wise and hosting-backed in both modes.
 
-The per-turn locality contract is absolute: only files listed under ANNOUNCE
-`[WORKSPACE] LOCAL` are present on the worker handling the current turn. A
-logical ref, provider-rendered preview, or prior-turn pull is not a local file.
-Call `react.pull` in the current turn before `react.rg`, code, or another
-local-bytes tool uses it. A direct `react.read` of a hosted ref can render
-bounded context, but that preview does not establish local-byte availability;
-only the next round's `[WORKSPACE] LOCAL` list does.
+Artifact URIs persist across turns while each worker receives a fresh local
+artifact workspace for the current turn. ANNOUNCE `[WORKSPACE] LOCAL` reports
+the bytes already materialized on that worker. When local search, code, or
+another file-processing capability needs a referenced artifact, a current-turn
+`react.pull` places it in that workspace and returns the paths to use. A direct
+`react.read` can render bounded content from a hosted URI; the LOCAL ledger and
+pull results describe current-turn byte locality.
 
 `react.rg` searches only files already materialized in the local artifact workspace on the worker handling the turn. It does not search unpulled lineage snapshots, hidden/pruned timeline blocks, or owner namespaces. If a task needs local search over older state, first identify the `conv:fi:` ref from visible context or `react.memsearch`, then materialize it with `react.pull`; use `react.checkout` only when the pulled `git/projects/...` ref must become an editable current-turn copy. Preferred `react.rg` roots are visible path forms: `git/projects/...`, `files/...`, `git/snapshots/...`, `attachments/...`, `turn_<id>/git/projects/...`, `turn_<id>/files/...`, `turn_<id>/git/snapshots/...`, `turn_<id>/attachments/...`, or matching `conv:fi:` artifact paths.
 

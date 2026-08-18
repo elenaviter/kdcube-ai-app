@@ -322,8 +322,7 @@ async def test_read_large_tc_result_returns_configured_preview_not_full_payload(
     preview = next(b for b in read_blocks if b.get("path") == source_path)
     assert "READ PREVIEW TRUNCATED" in preview["text"]
     assert "react.read stats_only" in preview["text"]
-    assert "do not repeat react.read(paths=[path])" in preview["text"]
-    assert "do not increase max_text_symbols" in preview["text"]
+    assert "continuation: if shape metadata is missing use react.read stats_only" in preview["text"]
 
     status = next(
         json.loads(b["text"])
@@ -331,8 +330,12 @@ async def test_read_large_tc_result_returns_configured_preview_not_full_payload(
         if b.get("path") == "conv:tc:turn_read.r_large.result" and b.get("mime") == "application/json"
     )
     assert status["paths"][0]["status"] == "truncated_for_visible_context"
-    assert status["paths"][0]["recovery"]["repeat_whole_path_read"] is False
-    assert status["paths"][0]["recovery"]["max_text_symbols_can_raise_cap"] is False
+    assert status["paths"][0]["recovery"]["strategy"] == "bounded_inspection"
+    assert status["paths"][0]["recovery"]["use"] == [
+        "react.rg then its bounded read_items",
+        "react.read bounded line or symbol items",
+        "programmatic inspection of the materialized physical file into small derived artifacts",
+    ]
     assert status["truncated_paths"][0]["path"] == source_path
 
 

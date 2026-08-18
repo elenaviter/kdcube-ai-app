@@ -4,6 +4,7 @@ title: "Session View"
 summary: "Session view derived from timeline under TTL pruning."
 tags: ["sdk", "agents", "react", "session", "ttl"]
 keywords: ["cache TTL", "session view", "pruning", "visible context"]
+updated_at: 2026-08-18
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/context-browser-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/context-layout.md
@@ -17,6 +18,11 @@ This document describes how the session view is derived from the timeline when c
 ## Overview
 
 - The session view is the list of timeline blocks rendered for the React agent.
+- Every rendered item is an artifact with a URI. A hot view may carry the full
+  representation; pruned and compacted views carry the summaries and artifact
+  URIs retained by those rendered blocks. Each rendered URI remains an access
+  handle. See
+  [Artifacts And URIs](./context-layout.md#artifacts-and-uris).
 - When `RuntimeCtx.session.cache_ttl_seconds` is set, the timeline render path applies TTL-based pruning before the final render.
 - The last touch timestamp is stored on the timeline payload as `cache_last_touch_at` and updated on each render.
 - The last TTL used is stored as `cache_last_ttl_seconds`.

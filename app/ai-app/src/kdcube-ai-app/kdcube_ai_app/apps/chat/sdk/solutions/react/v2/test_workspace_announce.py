@@ -69,8 +69,8 @@ def test_build_announce_text_includes_git_workspace_summary(tmp_path):
     assert "[WORKSPACE]" in announce_text
     assert "current_turn_root: turn_123/" in announce_text
     assert "materialized on disk THIS turn." in announce_text
-    assert "CRITICAL DISTRIBUTED-WORKSPACE FACT — LOCAL THIS TURN means only files listed below" in announce_text
-    assert "prior-turn pull is not local" in announce_text
+    assert "This tree is the current-turn locality ledger" in announce_text
+    assert "A visible artifact URI or an earlier turn's pull does not make its bytes local now" in announce_text
     assert "turn_123/" in announce_text and "writable" in announce_text
     assert "turn_122/" in announce_text and "read-only" in announce_text
     assert "checked out from conv:fi:turn_122.git/projects/projectA" in announce_text
@@ -151,10 +151,9 @@ def test_build_announce_text_renders_empty_current_turn_namespaces(tmp_path):
         mode="full",
     )
 
-    assert "Timeline conv:fi: refs that are not listed here are hosted/unhydrated" in announce_text
-    assert "use react.pull to hydrate them before local-byte tools" in announce_text
-    assert "react.read may inspect provider-rendered text" in announce_text
-    assert "Trust only this LOCAL list" in announce_text
+    assert "This tree is the current-turn locality ledger" in announce_text
+    assert "explicitly call react.pull in THIS turn" in announce_text
+    assert "react.read exposes model-visible content through logical artifact URIs" in announce_text
     assert "turn_123/   (current turn · writable)" in announce_text
     assert "    git/projects/ (empty)" in announce_text
     assert "    files/ (empty)" in announce_text
@@ -189,8 +188,7 @@ def test_build_announce_text_includes_context_caps(tmp_path):
     assert "tool_result_preview=12000" in announce_text
     assert "exec_file_preview=8000" in announce_text
     assert "stats_only.fits_visible_context" in announce_text
-    assert "max_text_symbols only lowers a preview" in announce_text
-    assert "after truncation do not retry the whole path" in announce_text
+    assert "truncation continues through search/ranged items or local-file processing" in announce_text
     assert "skills are uncapped" in announce_text
     assert "tool outputs are capped" in announce_text
 

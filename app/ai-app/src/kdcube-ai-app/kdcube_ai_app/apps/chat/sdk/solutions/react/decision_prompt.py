@@ -46,6 +46,10 @@ from kdcube_ai_app.apps.chat.sdk.solutions.react.layout import (
     build_instruction_catalog_block,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.react.call import get_react_tools_catalog
+from kdcube_ai_app.apps.chat.sdk.solutions.react.harness_instruction import (
+    REACT_HARNESS_CONTEXT_AND_ARTIFACT_ACCESS,
+    REACT_HARNESS_TOOL_AVAILABILITY,
+)
 
 
 AGENT_ADMIN_CUSTOMIZATION_HEADER = """
@@ -282,7 +286,12 @@ def compose_decision_system_text(
         instruction_blocks=instruction_blocks,
         exclude_blocks=capability_instruction_exclusions(available_tool_ids),
     )
-    parts = [str(protocol or "").strip(), body.strip()]
+    parts = [
+        str(protocol or "").strip(),
+        REACT_HARNESS_TOOL_AVAILABILITY,
+        REACT_HARNESS_CONTEXT_AND_ARTIFACT_ACCESS,
+        body.strip(),
+    ]
 
     if include_tool_catalog or include_skill_gallery:
         tool_catalog = availability_tool_catalog if include_tool_catalog else []

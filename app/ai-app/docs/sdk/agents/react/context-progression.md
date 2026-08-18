@@ -4,6 +4,7 @@ title: "Context Progression"
 summary: "How context is built and updated during a turn."
 tags: ["sdk", "agents", "react", "context", "progression"]
 keywords: ["turn progression", "fetch_ctx", "tool calls", "context updates"]
+updated_at: 2026-08-18
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/context-caching-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/context-layout.md
@@ -83,6 +84,12 @@ Important consequences:
   adds latency.
 
 ## At Turn Start
+The loaded history, current-turn input, summaries, external events, tool
+records, sources, and ANNOUNCE are artifacts with URIs. Those URIs can enter
+the model-visible stream through any of these layers; their common access and
+turn-locality model is owned by
+[Context Layout](./context-layout.md#artifacts-and-uris).
+
 1) `ContextBrowser.load_context(...)` fetches:
    - recent turn logs
    - recent `conv.range.summary` artifacts from the index

@@ -71,8 +71,10 @@ def test_build_decision_system_text_uses_selected_workspace_implementation():
     assert "hosted binaries require exact file refs" in text
     assert "local git repo" in text
     assert "Workspace activation is explicit" in text
-    assert "EACH TURN STARTS BLANK" in text
-    assert "CRITICAL DISTRIBUTED-WORKSPACE FACT — LOCAL THIS TURN" in text
+    assert "[TOOL AVAILABILITY]" in text
+    assert "[REACT HARNESS CONTEXT AND ARTIFACT ACCESS]" in text
+    assert "Every artifact has a URI" in text
+    assert "every turn starts with a fresh local artifact workspace" in text
     assert 'react.checkout(mode="replace", paths=[...])' in text or 'react.checkout(mode="replace", paths=["conv:fi:' in text
     assert "editable project state" in text
     assert "mode=\"overlay\"" in text
@@ -103,6 +105,10 @@ def test_build_decision_system_text_appends_agent_admin_customization():
     assert "[END AGENT ADMIN CUSTOMIZATION]" in text
     assert "the entire START/END block as system-level customization for this agent" in text
     assert "Always prefer the product knowledge skill before web search." in text
+    assert text.index("[REACT HARNESS CONTEXT AND ARTIFACT ACCESS]") < text.index(
+        "[START AGENT ADMIN CUSTOMIZATION - HARD OVERRIDE]"
+    )
+    assert text.rstrip().endswith("[END AGENT ADMIN CUSTOMIZATION]")
 
 
 def test_build_decision_system_text_single_action_mode_uses_action_channel_wording():
@@ -213,12 +219,39 @@ def test_build_decision_system_text_accepts_custom_instruction_body_without_repl
         include_skill_gallery=False,
     )
     assert text.lstrip().startswith("CRITICAL: you are the agent which must")
+    assert "[TOOL AVAILABILITY]" in text
+    assert "[REACT HARNESS CONTEXT AND ARTIFACT ACCESS]" in text
+    assert text.index("[TOOL AVAILABILITY]") < text.index("[REACT HARNESS CONTEXT AND ARTIFACT ACCESS]")
+    assert text.index("[REACT HARNESS CONTEXT AND ARTIFACT ACCESS]") < text.index("[CUSTOM DEMO BODY]")
     assert "[CUSTOM DEMO BODY]" in text
     assert "Answer from the visible KDCube docs only." in text
     assert "[ReAct Decision Module v3]" not in text
     assert "Prefer generating source content with `react.write`." not in text
     assert "[AVAILABLE REACT TOOLS]" not in text
     assert "[SKILL CATALOG]" not in text
+
+
+def test_harness_signals_survive_every_body_selection_mode():
+    selections = [
+        {},
+        {"instruction_blocks": ["REACT_LITE_IDENTITY"]},
+        {"instruction_blocks": ["REACT_XLITE_IDENTITY_AND_GUARDS"]},
+        {"instruction_body": "[EXPLICIT COMPLETE BODY]"},
+    ]
+    for selection in selections:
+        text = build_decision_system_text(
+            adapters=[],
+            infra_adapters=[],
+            workspace_implementation="custom",
+            include_tool_catalog=False,
+            include_skill_gallery=False,
+            **selection,
+        )
+        assert text.count("[TOOL AVAILABILITY]") == 1
+        assert text.count("[REACT HARNESS CONTEXT AND ARTIFACT ACCESS]") == 1
+        assert "The current tool catalogs are the authority" in text
+        assert "Every artifact has a URI" in text
+        assert "every turn starts with a fresh local artifact workspace" in text
 
 
 def test_build_decision_system_text_composes_lite_blocks_without_optional_exec_guidance():
@@ -326,6 +359,23 @@ def test_compact_tool_catalog_keeps_exact_ids_and_params_without_long_examples()
     # description is a lost contract (operator ruling 2026-07-26).
     assert ("Search a demo corpus. " + "Long explanation. " * 80).strip() in text
     assert "..." not in text.split("purpose: Search a demo corpus.", 1)[1].split("\n", 1)[0]
+
+
+def test_compact_tool_catalog_preserves_react_artifact_recovery_contracts():
+    text = build_decision_system_text(
+        adapters=[],
+        infra_adapters=[],
+        instruction_blocks=["REACT_XLITE_IDENTITY_AND_GUARDS"],
+        include_skill_gallery=False,
+        tool_catalog_detail="compact",
+        multi_action_mode="off",
+    )
+
+    assert "min(requested max_text_symbols, active runtime cap)" in text
+    assert "its conv:ev: URI identifies the event" in text
+    assert "pass the object_ref value in react.pull.paths" in text
+    assert "If another event field contains an artifact URI" in text
+    assert "put that artifact URI in paths" in text
 
 
 def test_build_decision_system_text_includes_exec_guidance_only_when_lite_exec_block_selected():

@@ -41,21 +41,21 @@ share the round. See
 
 ## Current-Turn Locality
 
-> **Critical distributed-workspace fact: LOCAL THIS TURN means only files listed under ANNOUNCE
-> `[WORKSPACE] LOCAL`. Anything else must be pulled in this turn before a tool
-> that needs local bytes uses it.**
+Everything in the rendered context is an artifact and every artifact has a
+URI. Artifact URIs persist across turns. Each turn may run on a different
+worker and receives a fresh local artifact workspace.
 
-Every turn may run on a different worker and starts with a fresh local
-workspace. A visible logical ref, a provider-rendered preview, or a successful
-pull from an earlier turn proves that the object exists; it does not mean its
-bytes are local now. Before `react.rg`, `react.patch`, code, or another
-file-processing tool uses such an object, call `react.pull` in the current turn
-and use the paths returned by that call. Use `react.checkout` as the additional
-step only when a historical `git/projects/...` ref must become editable.
+ANNOUNCE `[WORKSPACE] LOCAL` reports the artifact bytes already materialized on
+the worker handling this turn. When `react.rg`, `react.patch`, code, or another
+file-processing tool needs a referenced artifact, `react.pull` materializes it
+in the current turn and returns the logical and physical paths to use.
+`react.checkout` additionally places a pulled historical
+`git/projects/...` artifact in the current editable project tree.
 
-`react.read` may render bounded content directly from a hosted logical ref.
-That preview does not establish local-byte availability. The next round's
-`[WORKSPACE] LOCAL` list is the only authority for what local tools can use.
+`react.read` presents bounded artifact content in model-visible context. The
+LOCAL ledger and current-turn pull results present byte locality for local
+tools. The full context/artifact-URI model is documented in
+[Context Layout](./context-layout.md#artifacts-and-uris).
 
 ## Path Contracts
 
