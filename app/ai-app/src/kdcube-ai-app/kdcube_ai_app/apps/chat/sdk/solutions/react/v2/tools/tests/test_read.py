@@ -228,9 +228,9 @@ async def test_read_stats_only_includes_original_object_stats_from_owner_policy(
     assert stats["logical_path"] == path
     assert stats["physical_path"] == "turn_read/files/memory.json"
     assert status["paths"][0]["line_count"] == 1
-    assert status["paths"][0]["read_items"] == [
-        {"path": path, "line_start": 1, "line_count": 1}
-    ]
+    assert status["paths"][0]["fits_visible_context"] is True
+    assert status["paths"][0]["recommended_inspection"] == "whole_path_read"
+    assert "read_items" not in status["paths"][0]
 
 
 @pytest.mark.asyncio

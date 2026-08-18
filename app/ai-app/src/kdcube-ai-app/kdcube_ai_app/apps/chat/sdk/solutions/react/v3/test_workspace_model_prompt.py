@@ -13,6 +13,8 @@ EXEC_ADAPTERS = [{"id": "exec_tools.execute_code_python", "doc": {"purpose": "ru
 
 def test_get_workspace_implementation_guide_custom_mentions_hosting_backed_mode():
     guide = get_workspace_implementation_guide("custom")
+    assert "CRITICAL DISTRIBUTED-WORKSPACE FACT — LOCAL THIS TURN" in guide
+    assert "only files listed under ANNOUNCE `[WORKSPACE] LOCAL`" in guide
     assert "react.pull(paths=[...])" in guide
     assert 'react.checkout(mode="replace", paths=[...])' in guide or 'react.checkout(mode="replace", paths=["conv:fi:' in guide
     assert "mode=\"overlay\"" in guide
@@ -39,6 +41,8 @@ def test_lite_story_snapshots_block_is_explicit_opt_in():
 
 def test_get_workspace_implementation_guide_git_mentions_git_backed_mode():
     guide = get_workspace_implementation_guide("git")
+    assert "CRITICAL DISTRIBUTED-WORKSPACE FACT — LOCAL THIS TURN" in guide
+    assert "prior-turn pull is not a local file" in guide
     assert "react.pull(paths=[...])" in guide
     assert "exact file refs" in guide
     assert "hosted binaries require exact file refs" in guide
@@ -68,6 +72,7 @@ def test_build_decision_system_text_uses_selected_workspace_implementation():
     assert "local git repo" in text
     assert "Workspace activation is explicit" in text
     assert "EACH TURN STARTS BLANK" in text
+    assert "CRITICAL DISTRIBUTED-WORKSPACE FACT — LOCAL THIS TURN" in text
     assert 'react.checkout(mode="replace", paths=[...])' in text or 'react.checkout(mode="replace", paths=["conv:fi:' in text
     assert "editable project state" in text
     assert "mode=\"overlay\"" in text

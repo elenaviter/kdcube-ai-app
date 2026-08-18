@@ -759,6 +759,7 @@ async def react_decision_stream_v2(
     res_summary = results.get("summary")
     full_raw = (meta or {}).get("raw") if isinstance(meta, dict) else None
     thinking_raw = res_thinking.raw if res_thinking else ""
+    thinking_instances = list(res_thinking.instances or []) if res_thinking else []
     json_raw = res_json.raw if res_json else ""
     code_raw = res_code.raw if res_code else ""
     summary_raw = res_summary.raw if res_summary else ""
@@ -823,6 +824,7 @@ async def react_decision_stream_v2(
             "bundle_errors": list(bundle_parse.get("errors") or []),
             "bundle_error_items": list(bundle_parse.get("error_items") or []),
             "bundle_candidate_count": int(bundle_parse.get("candidate_count") or 0),
+            "thinking_instance_count": len(thinking_instances),
         },
         "raw": full_raw,
         "internal_thinking": thinking_raw,
@@ -830,6 +832,7 @@ async def react_decision_stream_v2(
         "channels": {
             "thinking": {
                 "text": thinking_raw,
+                "instances": thinking_instances,
                 "started_at": res_thinking.started_at if res_thinking else None,
                 "finished_at": res_thinking.finished_at if res_thinking else None,
             },

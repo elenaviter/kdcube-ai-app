@@ -322,6 +322,8 @@ async def test_read_large_tc_result_returns_configured_preview_not_full_payload(
     preview = next(b for b in read_blocks if b.get("path") == source_path)
     assert "READ PREVIEW TRUNCATED" in preview["text"]
     assert "react.read stats_only" in preview["text"]
+    assert "do not repeat react.read(paths=[path])" in preview["text"]
+    assert "do not increase max_text_symbols" in preview["text"]
 
     status = next(
         json.loads(b["text"])
@@ -329,6 +331,8 @@ async def test_read_large_tc_result_returns_configured_preview_not_full_payload(
         if b.get("path") == "conv:tc:turn_read.r_large.result" and b.get("mime") == "application/json"
     )
     assert status["paths"][0]["status"] == "truncated_for_visible_context"
+    assert status["paths"][0]["recovery"]["repeat_whole_path_read"] is False
+    assert status["paths"][0]["recovery"]["max_text_symbols_can_raise_cap"] is False
     assert status["truncated_paths"][0]["path"] == source_path
 
 
@@ -556,6 +560,50 @@ async def test_read_stats_only_returns_metadata_without_materializing_tc_text(tm
     assert status["paths"][0]["tokens"] > 0
     assert status["paths"][0]["text_symbols"] == len(raw_text)
     assert status["paths"][0]["bytes"] == len(raw_text.encode("utf-8"))
+
+
+@pytest.mark.asyncio
+async def test_read_stats_only_marks_surfaced_ten_line_large_object_for_bounded_inspection(tmp_path):
+    runtime = RuntimeCtx(
+        turn_id="turn_read",
+        outdir=str(tmp_path),
+        workdir=str(tmp_path),
+        max_tokens=80_000,
+        read_visible_max_text_symbols=48_000,
+        read_visible_max_tokens=12_000,
+    )
+    ctx = FakeBrowser(runtime)
+    logs_dir = artifact_outdir_for(tmp_path) / "turn_read" / "files" / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    # Same decisive shape as the surfaced canvas object: very few lines, but
+    # almost all content in one line. ASCII keeps byte and symbol counts equal.
+    raw_text = ("meta\n" * 8) + ("B" * 270) + "\n" + ("A" * 131_835)
+    assert len(raw_text) == 132_146
+    (logs_dir / "long-line.txt").write_text(raw_text, encoding="utf-8")
+    source_path = "conv:fi:turn_read.files/logs/long-line.txt"
+
+    state = {"last_decision": {"tool_call": {"params": {"paths": [source_path], "stats_only": True}}}}
+    await handle_react_read(ctx_browser=ctx, state=state, tool_call_id="r_long_line_stats")
+
+    status = json.loads(next(
+        block["text"]
+        for block in ctx.timeline.blocks
+        if block.get("path") == "conv:tc:turn_read.r_long_line_stats.result"
+        and block.get("mime") == "application/json"
+    ))
+    stats = status["paths"][0]
+    assert stats["fits_visible_context"] is False
+    assert "text_symbols" in stats["over_limit_dimensions"]
+    assert stats["text_symbols"] == 132_146
+    assert stats["bytes"] == 132_146
+    assert stats["tokens"] > 0
+    assert stats["token_count_kind"] == "chunk_sum_estimate"
+    assert stats["line_count"] == 10
+    assert stats["max_line_text_symbols"] == 131_835
+    assert stats["recommended_inspection"] == (
+        "react.rg_or_bounded_line_or_symbol_items_or_programmatic_file_inspection"
+    )
+    assert "read_items" not in stats
 
 
 @pytest.mark.asyncio

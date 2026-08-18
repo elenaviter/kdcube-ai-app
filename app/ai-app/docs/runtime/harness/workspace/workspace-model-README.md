@@ -176,6 +176,19 @@ REMOTE git branch
   but not local until pulled or checked out
 ```
 
+Critical distributed-runtime invariant:
+
+> **For the current round, only paths listed under ANNOUNCE `[WORKSPACE] LOCAL`
+> are known to exist on the worker.**
+
+A logical ref, content preview, or pull completed in a prior turn is durable
+evidence that an object exists, not evidence that its bytes are local now.
+Before `react.rg`, code, patching, rendering, or another local-bytes operation
+uses anything absent from the current `LOCAL` list, call `react.pull` in this
+turn. Add `react.checkout` only when historical `git/projects/...` state must
+become editable. A direct `react.read` preview does not establish locality;
+trust the next round's `LOCAL` list.
+
 That presentation is ReAct-specific. The underlying sparse workspace and
 logical refs are shared.
 

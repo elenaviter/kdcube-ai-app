@@ -39,6 +39,24 @@ share the round. See
 - Built-in React tools do not accept exec-only `physical_path` values returned from other tool results unless explicitly documented.
 - Each tool section below defines its accepted inputs, timeline effects, and normal use case.
 
+## Current-Turn Locality
+
+> **Critical distributed-workspace fact: LOCAL THIS TURN means only files listed under ANNOUNCE
+> `[WORKSPACE] LOCAL`. Anything else must be pulled in this turn before a tool
+> that needs local bytes uses it.**
+
+Every turn may run on a different worker and starts with a fresh local
+workspace. A visible logical ref, a provider-rendered preview, or a successful
+pull from an earlier turn proves that the object exists; it does not mean its
+bytes are local now. Before `react.rg`, `react.patch`, code, or another
+file-processing tool uses such an object, call `react.pull` in the current turn
+and use the paths returned by that call. Use `react.checkout` as the additional
+step only when a historical `git/projects/...` ref must become editable.
+
+`react.read` may render bounded content directly from a hosted logical ref.
+That preview does not establish local-byte availability. The next round's
+`[WORKSPACE] LOCAL` list is the only authority for what local tools can use.
+
 ## Path Contracts
 
 ### Logical paths
@@ -85,14 +103,19 @@ Reads existing logical artifacts back into the visible timeline.
   logical paths such as `conv:fi:`, `conv:tc:`, and `conv:ar:` can also be read directly by
   line or symbol ranges through this field.
 - optional input: `max_text_symbols` — maximum visible text characters per text
-  path. This requests a smaller explicit preview than the configured default.
+  path. This can only request a smaller preview than the effective configured
+  cap; it cannot increase or disable that cap.
 - optional input: `line_numbers: true|false` — include line numbers for ranged
   line reads. Defaults to true for ranged items.
 - line range previews are labeled as `lines: [start-end]/total`; if a text
   preview is cut mid-line, that partial line is called out separately and is not
   counted as fully visible.
-- optional input: `stats_only: true` — return size/mime/token metadata in the
-  status block without emitting content blocks.
+- optional input: `stats_only: true` — return size, MIME, text-symbol, token,
+  line-count, and longest-line metadata when available, without emitting
+  content blocks. Text rows also report `fits_visible_context`,
+  `over_limit_dimensions`, unknown cap and shape dimensions, and a
+  `recommended_inspection` strategy. Shape metadata helps choose search or
+  ranges but does not itself decide whether the configured visible caps fit.
 - byte cap: `read_visible_max_bytes` is a raw-payload guard for every path.
   For PDF/image multimodal reads there is no partial read: the payload is
   attached only when it is under the byte cap; otherwise `react.read` returns a
@@ -119,8 +142,10 @@ Reads existing logical artifacts back into the visible timeline.
   visible previews. The status row uses
   `status=truncated_for_visible_context`, the preview names the exact path, and
   the full payload remains recoverable by logical path and bounded range reads.
-  If the caller supplies `max_text_symbols`, the preview is further clamped to
-  that text-only limit.
+  If the caller supplies `max_text_symbols`, the preview is further reduced to
+  that text-only limit. After truncation, do not repeat the same whole-path read
+  and do not increase `max_text_symbols`; neither action can reveal the omitted
+  content.
 - cap distribution: caps are applied independently per requested path, not
   divided across the `paths` list. For broad batches, use `stats_only: true` or
   a smaller `max_text_symbols` before deciding what to materialize.
@@ -148,16 +173,43 @@ Then inspect the `conv:fi:`/physical path returned by `react.pull`. The model-vi
 write path is `named_services.upsert_object(namespace="cnv", object_ref="cnv:<board>", ...)`
 with a typed canvas object from `named_services.object_schema(namespace="cnv", object_kind=...)`.
 
-Skills are not read-capped. If a regular text-backed logical path (`conv:fi:`,
-`conv:tc:`, `conv:ar:`) is too large, call `react.read` with `stats_only:true` to get
-line/count metadata, then recover the needed content through bounded `items`
-ranges:
+Skills are not read-capped. For every other arbitrary object, use this one
+inspection path:
+
+```text
+need object content
+  -> if it is not under [WORKSPACE] LOCAL and local processing is needed:
+       react.pull in this turn
+  -> if full-text fit is unknown:
+       react.read(stats_only=true)
+  -> fits_visible_context=true:
+       read the whole path once
+  -> fits_visible_context=false or unknown:
+       inspect for the task, without another whole-path read
+         |-> react.rg, then consume its bounded read_item results
+         |-> react.read(items=[bounded line or symbol ranges])
+         `-> process the pulled physical_path programmatically and write small
+             derived artifacts for visible inspection
+```
+
+Choose the branch from the object's reported shape and the user's objective.
+Line count alone is not a size bound: a file can contain one enormous line. Use
+symbol ranges, search, or programmatic processing when
+`max_line_text_symbols` is large. Read ranges adaptively; do not mechanically
+copy an entire oversized object through successive tool-result blocks when a
+search, parser, decoder, or summary artifact can answer the question directly.
+
+Example metadata probe followed by task-relevant search. Pass the bounded
+`read_item` returned by `react.rg` to `react.read.items`; for an unusually long
+matched line, narrow that item with a symbol range:
 
 ```json
 {"paths":["conv:fi:turn_<id>.files/example.md"],"stats_only":true}
-{"items":[{"path":"conv:fi:turn_<id>.files/example.md","line_start":1,"line_count":120}]}
-{"items":[{"path":"conv:fi:turn_<id>.files/example.md","line_start":121,"line_count":120}]}
+{"root":"turn_<id>/files/example.md","pattern":"<task-relevant pattern>","context_lines":3}
 ```
+
+Then call `react.read(items=[read_item])` with the object returned by
+`react.rg`.
 
 Do not use exec stdout as an uncapped read channel; exec output is capped too.
 Use exec for computation or to create smaller derived artifacts, then inspect

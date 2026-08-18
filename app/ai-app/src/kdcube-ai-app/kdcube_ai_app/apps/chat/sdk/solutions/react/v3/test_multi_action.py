@@ -580,6 +580,11 @@ async def test_decision_stream_recovers_repeated_action_channels_as_bundle():
         "files/a.md",
         "files/b.md",
     ]
+    assert packet["channels"]["thinking"]["instances"] == [
+        "writing two files",
+        "second accidental thinking block",
+    ]
+    assert packet["log"]["thinking_instance_count"] == 2
 
 
 @pytest.mark.asyncio

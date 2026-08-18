@@ -83,8 +83,11 @@ TOOL_SPEC = {
         "from that generating step; do not expect react.read on the binary conv:fi: file itself to reveal its content. "
         "Oversized regular text results are rematerialized as bounded visible previews using configured text/token/byte caps. "
         "Caps apply independently per requested path. "
-        "To recover large text into model-visible context, use stats_only to get size/line metadata, then read bounded ranges "
-        "with params.items line_start/line_count or offset_text_symbols/max_text_symbols. "
+        "For a materialized text file whose fit is unknown, use stats_only to get text-symbol, token, byte, and line metadata before reading content. "
+        "Do not infer text fit from size_bytes alone. When stats_only reports fits_visible_context=true, read the whole path once. "
+        "When false, use react.rg, bounded params.items line_start/line_count or offset_text_symbols/max_text_symbols ranges, "
+        "or a file-processing tool over the physical path that writes smaller derived artifacts. "
+        "After a truncated whole-path read, do not repeat it and do not increase max_text_symbols. "
         "Output caps apply to every tool's output; no tool output is an uncapped read channel."
     ),
     "args": {
@@ -111,12 +114,14 @@ TOOL_SPEC = {
         "max_text_symbols": (
             "optional int; for text payloads, materialize at most this many visible characters/symbols per path. "
             "Use when a large file/result needs a smaller explicit in-context preview than the configured default. "
-            "This is a request, not a guarantee: the runtime clamps it to the configured ai.react.read_visible_max_text_symbols, token budget, and context caps. "
+            "It can only lower the preview size; it cannot raise any runtime text, token, byte, or context cap. "
+            "Never use it to retry a whole path after truncation. "
             "For conv:so:conv_<conversation_id>.sources_pool[...] this is an explicit structured cap for large text fields only; without it, source rows are read in full."
         ),
         "stats_only": (
             "optional bool, default false. When true, resolve each path and return size/mime/token metadata in "
-            "the status block without adding text/base64 content blocks to the visible timeline."
+            "the status block without adding text/base64 content blocks to the visible timeline. Text stats include "
+            "fits_visible_context, over_limit_dimensions, max_line_text_symbols, and recommended_inspection."
         ),
     },
     "returns": (
@@ -128,7 +133,8 @@ TOOL_SPEC = {
         "Ranged item reads return exact labeled chunks when they fit configured visible caps. "
         "Oversized non-source text payloads return status=truncated_for_visible_context with a bounded preview. "
         "Oversized PDFs and images that cannot be downscaled return status=too_large_for_visible_context_bytes. "
-        "For large text, recover the needed content through repeated react.read range items. "
+        "For large text, recover only the needed content through react.rg, bounded react.read range items, or smaller derived artifacts. "
+        "A truncated whole-path read must not be repeated, and max_text_symbols cannot raise the cap. "
         "Tools that compute over files can create smaller derived artifacts, but no tool output is an uncapped way to put full content into model context."
     ),
 }
@@ -508,8 +514,8 @@ def _truncated_read_text(
         f"bytes: {source_bytes}",
         f"visible_read_limit_bytes: {byte_cap if byte_cap is not None else 'none'}",
         "exact_content: recoverable by logical path",
-        "recovery: use react.read stats_only for line metadata, then read bounded ranges with params.items",
-        "example: {\"items\":[{\"path\":\"%s\",\"line_start\":1,\"line_count\":120}]}" % path,
+        "do_not_retry: do not repeat react.read(paths=[path]) and do not increase max_text_symbols; runtime caps cannot be raised by a request",
+        "recovery: if shape metadata is missing use react.read stats_only; then use objective-guided react.rg, bounded params.items line or symbol ranges, or programmatic inspection of the materialized physical file",
     ]).strip()
 
 
@@ -1368,21 +1374,79 @@ async def handle_react_read(*, ctx_browser: Any, state: Dict[str, Any], tool_cal
         if path_key:
             item_requests_by_path.setdefault(path_key, []).append(req)
 
+    def _text_fit_fields(
+        *,
+        tokens: Optional[int],
+        text_symbols: Optional[int],
+        bytes_value: Optional[int],
+        line_count: Optional[int],
+        max_line_text_symbols: Optional[int],
+    ) -> Dict[str, Any]:
+        over_limit_dimensions: List[str] = []
+        unknown_dimensions: List[str] = []
+        shape_unknown_dimensions = [
+            name
+            for name, value in (
+                ("line_count", line_count),
+                ("max_line_text_symbols", max_line_text_symbols),
+            )
+            if value is None
+        ]
+        for name, limit, value in (
+            ("tokens", visible_read_token_cap, tokens),
+            ("text_symbols", visible_read_text_symbol_cap, text_symbols),
+            ("bytes", visible_read_byte_cap, bytes_value),
+        ):
+            if limit is not None and value is None:
+                unknown_dimensions.append(name)
+        if visible_read_text_symbol_cap is not None and text_symbols is not None and text_symbols > visible_read_text_symbol_cap:
+            over_limit_dimensions.append("text_symbols")
+        if visible_read_token_cap is not None and tokens is not None and tokens > visible_read_token_cap:
+            over_limit_dimensions.append("tokens")
+        if visible_read_byte_cap is not None and bytes_value is not None and bytes_value > visible_read_byte_cap:
+            over_limit_dimensions.append("bytes")
+        fits_visible_context: Optional[bool]
+        if over_limit_dimensions:
+            fits_visible_context = False
+        elif unknown_dimensions:
+            fits_visible_context = None
+        else:
+            fits_visible_context = True
+        entry: Dict[str, Any] = {
+            "fits_visible_context": fits_visible_context,
+            "over_limit_dimensions": over_limit_dimensions,
+            "unknown_dimensions": unknown_dimensions,
+            "shape_unknown_dimensions": shape_unknown_dimensions,
+            "recommended_inspection": (
+                "whole_path_read"
+                if fits_visible_context is True
+                else "react.rg_or_bounded_line_or_symbol_items_or_programmatic_file_inspection"
+            ),
+        }
+        for name, value in (
+            ("tokens", tokens),
+            ("text_symbols", text_symbols),
+            ("line_count", line_count),
+            ("max_line_text_symbols", max_line_text_symbols),
+            ("bytes", bytes_value),
+        ):
+            if value is not None:
+                entry[name] = int(value)
+        return entry
+
     def _stats_entry_for_text(*, path: str, text: str, mime: str = "", bytes_override: Optional[int] = None) -> Dict[str, Any]:
-        line_count = len(text.splitlines())
+        lines = text.splitlines()
         entry: Dict[str, Any] = {
             "path": path,
             "status": "stats_only",
             "kind": "text",
-            "tokens": _count_tokens(text),
-            "text_symbols": len(text),
-            "line_count": line_count,
-            "bytes": int(bytes_override if bytes_override is not None else len(text.encode("utf-8", errors="ignore"))),
-            "read_items": [{
-                "path": path,
-                "line_start": 1,
-                "line_count": min(120, max(1, line_count)),
-            }],
+            **_text_fit_fields(
+                tokens=_count_tokens(text),
+                text_symbols=len(text),
+                bytes_value=int(bytes_override if bytes_override is not None else len(text.encode("utf-8", errors="ignore"))),
+                line_count=len(lines),
+                max_line_text_symbols=max((len(line) for line in lines), default=0),
+            ),
         }
         if mime:
             entry["mime"] = mime
@@ -1422,6 +1486,17 @@ async def handle_react_read(*, ctx_browser: Any, state: Dict[str, Any], tool_cal
             entry["text_symbols"] = int(emitted.get("text_symbols") or 0)
         if emitted.get("bytes"):
             entry["bytes"] = int(emitted.get("bytes") or 0)
+        if emitted.get("visible_text_symbols"):
+            entry["visible_text_symbols"] = int(emitted.get("visible_text_symbols") or 0)
+        entry["recovery"] = {
+            "repeat_whole_path_read": False,
+            "max_text_symbols_can_raise_cap": False,
+            "use": [
+                "react.rg then its bounded read_items",
+                "react.read bounded line or symbol items",
+                "programmatic inspection of the materialized physical file into small derived artifacts",
+            ],
+        }
         return entry
 
     async def _materialize_text_block(
@@ -1551,6 +1626,7 @@ async def handle_react_read(*, ctx_browser: Any, state: Dict[str, Any], tool_cal
                 "tokens": total,
                 "text_symbols": source_text_symbols,
                 "bytes": source_bytes,
+                "visible_text_symbols": len(clipped),
                 "status": "truncated_for_visible_context",
                 "truncated": True,
                 "visible_read_limit_tokens": limit_tokens,
@@ -1692,13 +1768,20 @@ async def handle_react_read(*, ctx_browser: Any, state: Dict[str, Any], tool_cal
                 if isinstance(res.get("line_count"), int)
                 else None
             )
-            if is_text and source_line_count is not None:
-                entry["line_count"] = source_line_count
-                entry["read_items"] = [{
-                    "path": ctx_path,
-                    "line_start": 1,
-                    "line_count": min(120, max(1, source_line_count)),
-                }]
+            if is_text:
+                entry.update(_text_fit_fields(
+                    tokens=int(res["tokens"]) if res.get("tokens") is not None else None,
+                    text_symbols=int(res["text_symbols"]) if res.get("text_symbols") is not None else None,
+                    bytes_value=int(size_bytes) if size_bytes is not None else None,
+                    line_count=source_line_count,
+                    max_line_text_symbols=(
+                        int(res["max_line_text_symbols"])
+                        if res.get("max_line_text_symbols") is not None
+                        else None
+                    ),
+                ))
+                if res.get("token_count_kind"):
+                    entry["token_count_kind"] = res.get("token_count_kind")
             if source_object_ref:
                 entry["object_ref"] = source_object_ref
                 original_object_stats = await _original_object_stats_for_block(

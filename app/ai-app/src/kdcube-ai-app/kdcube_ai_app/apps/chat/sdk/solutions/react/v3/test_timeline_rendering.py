@@ -1694,6 +1694,57 @@ def test_react_round_thinking_is_visible_when_rendering_enabled():
     assert not any((blk.get("meta") or {}).get("hidden") for blk in tl.blocks if blk.get("type") == "react.thinking")
 
 
+def test_react_round_thinking_persists_each_streamed_channel_instance():
+    ctx = RuntimeCtx(
+        turn_id="turn_round_thinking_instances",
+        started_at="2026-08-18T14:12:08Z",
+        render_thinking=True,
+    )
+    tl = Timeline(runtime=ctx)
+
+    class _Browser:
+        runtime_ctx = ctx
+
+        def contribute(self, *, blocks):
+            tl.contribute(list(blocks or []))
+
+    ReactRound.thinking(
+        ctx_browser=_Browser(),
+        decision={
+            "channels": {
+                "thinking": {
+                    "text": "same thoughtsame thought",
+                    "instances": ["same thought", "same thought"],
+                    "started_at": "2026-08-18T14:12:09Z",
+                    "finished_at": "2026-08-18T14:12:10Z",
+                },
+            },
+        },
+        title="solver.react.v2.decision (4)",
+        iteration=4,
+        tool_call_id="tc_instances",
+    )
+
+    thinking_blocks = [block for block in tl.blocks if block.get("type") == "react.thinking"]
+    assert [block.get("text") for block in thinking_blocks] == ["same thought", "same thought"]
+    assert [block.get("path") for block in thinking_blocks] == [
+        "conv:ar:turn_round_thinking_instances.react.thinking.4.i0",
+        "conv:ar:turn_round_thinking_instances.react.thinking.4.i1",
+    ]
+    assert [(block.get("meta") or {}).get("title") for block in thinking_blocks] == [
+        "solver.react.v2.decision (4).i0",
+        "solver.react.v2.decision (4).i1",
+    ]
+    assert [(block.get("meta") or {}).get("channel_instance") for block in thinking_blocks] == [0, 1]
+    assert [(block.get("meta") or {}).get("instance_count") for block in thinking_blocks] == [2, 2]
+
+    thinking_items = tl.build_turn_view().get("thinking") or []
+    assert [(item.get("agent"), item.get("text")) for item in thinking_items] == [
+        ("solver.react.v2.decision (4).i0", "same thought"),
+        ("solver.react.v2.decision (4).i1", "same thought"),
+    ]
+
+
 def test_assistant_completion_attempt_renders_until_committed_completion_exists():
     ctx = RuntimeCtx(
         turn_id="turn_answer_attempt",

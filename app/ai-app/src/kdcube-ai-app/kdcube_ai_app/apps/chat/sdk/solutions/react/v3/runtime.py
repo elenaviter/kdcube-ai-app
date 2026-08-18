@@ -128,6 +128,7 @@ def _known_react_tool_validation_sets() -> tuple[frozenset, Dict[str, set]]:
 class ReactSolverV2:
     MODULE_AGENT_NAME = "solver.react.v2"
     MAX_ACTIONS_PER_ROUND = 2
+    THINKING_INSTANCE_WARNING_THRESHOLD = 32
 
     @property
     def external_event_source(self):
@@ -3991,10 +3992,29 @@ class ReactSolverV2:
             pass
 
         try:
+            thinking_channel = (
+                decision.get("channels", {}).get("thinking", {})
+                if isinstance(decision, dict)
+                else {}
+            )
+            thinking_instances = (
+                thinking_channel.get("instances")
+                if isinstance(thinking_channel, dict)
+                else None
+            )
+            if (
+                isinstance(thinking_instances, list)
+                and len(thinking_instances) > self.THINKING_INSTANCE_WARNING_THRESHOLD
+            ):
+                self.log.log(
+                    "[react.v3] model emitted an unusually high number of thinking "
+                    f"blocks: iteration={iteration} count={len(thinking_instances)} role={role}",
+                    level="WARNING",
+                )
             ReactRound.thinking(
                 ctx_browser=self.ctx_browser,
                 decision=decision,
-                title=f"solver.react.v3.decision ({iteration})",
+                title=f"{self.MODULE_AGENT_NAME}.decision ({iteration})",
                 iteration=iteration,
                 tool_call_id=pending_tool_call_id,
             )

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
+import asyncio
 import tempfile
 
 import os
@@ -15,6 +16,7 @@ from kdcube_ai_app.apps.chat.sdk.util import (
     count_text_lines,
     line_number_text,
     normalize_line_numbers_mode,
+    token_count,
 )
 from kdcube_ai_app.apps.chat.emitters import ChatCommunicator
 from kdcube_ai_app.apps.chat.sdk.storage.conversation_store import ConversationStore
@@ -56,6 +58,49 @@ logger = logging.getLogger(__name__)
 
 _ALLOWED_READ_BASE64_MIMES = {"application/pdf"}
 _ALLOWED_READ_BASE64_PREFIXES = ("image/",)
+_TEXT_STATS_CHUNK_SYMBOLS = 64 * 1024
+
+
+def _text_file_stats(path: pathlib.Path) -> Dict[str, int | str]:
+    """Return bounded-memory text metrics used to select a read strategy."""
+    text_symbols = 0
+    line_count = 0
+    max_line_text_symbols = 0
+    current_line_text_symbols = 0
+    tokens = 0
+    saw_text = False
+    ended_with_newline = False
+    with path.open("r", encoding="utf-8", errors="ignore") as fh:
+        while True:
+            chunk = fh.read(_TEXT_STATS_CHUNK_SYMBOLS)
+            if not chunk:
+                break
+            saw_text = True
+            ended_with_newline = chunk.endswith("\n")
+            text_symbols += len(chunk)
+            tokens += token_count(chunk)
+            segments = chunk.split("\n")
+            if len(segments) == 1:
+                current_line_text_symbols += len(chunk)
+                continue
+            current_line_text_symbols += len(segments[0])
+            max_line_text_symbols = max(
+                max_line_text_symbols,
+                current_line_text_symbols,
+                *(len(segment) for segment in segments[1:-1]),
+            )
+            line_count += len(segments) - 1
+            current_line_text_symbols = len(segments[-1])
+    if saw_text and not ended_with_newline:
+        line_count += 1
+        max_line_text_symbols = max(max_line_text_symbols, current_line_text_symbols)
+    return {
+        "text_symbols": text_symbols,
+        "line_count": line_count,
+        "max_line_text_symbols": max_line_text_symbols,
+        "tokens": tokens,
+        "token_count_kind": "chunk_sum_estimate",
+    }
 
 
 def _is_base64_allowed_mime(mime: str) -> bool:
@@ -309,13 +354,20 @@ async def read_artifact_for_react(
                 size_bytes = abs_path.stat().st_size
             except Exception:
                 size_bytes = None
-            line_count = count_text_lines(abs_path) if _is_text_mime(mime or "") else None
+            text_stats: Dict[str, Any] = {}
+            if _is_text_mime(mime or ""):
+                try:
+                    text_stats = await asyncio.to_thread(_text_file_stats, abs_path)
+                except Exception:
+                    text_stats = {
+                        "line_count": await asyncio.to_thread(count_text_lines, abs_path)
+                    }
             return {
                 "artifact": artifact,
                 "mime": mime,
                 "physical_path": physical_path,
                 "size_bytes": size_bytes,
-                "line_count": line_count,
+                **text_stats,
                 "stats_only": True,
                 "missing": False,
             }

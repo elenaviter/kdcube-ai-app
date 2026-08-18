@@ -434,13 +434,24 @@ class ReactRound:
         if not ctx_browser:
             return
         thinking_info: Dict[str, Any] = {}
+        instance_entries: Optional[list[tuple[int, str]]] = None
         if isinstance(decision, dict):
             channels = decision.get("channels") if isinstance(decision.get("channels"), dict) else {}
             thinking_info = channels.get("thinking") if isinstance(channels.get("thinking"), dict) else {}
             if text is None:
+                raw_instances = thinking_info.get("instances")
+                if isinstance(raw_instances, list):
+                    normalized_instances = [
+                        (index, item.strip())
+                        for index, item in enumerate(raw_instances)
+                        if isinstance(item, str)
+                    ]
+                    if normalized_instances:
+                        instance_entries = normalized_instances
                 text = thinking_info.get("text") or decision.get("internal_thinking")
-        if not isinstance(text, str) or not text.strip():
+        if not instance_entries and (not isinstance(text, str) or not text.strip()):
             return
+
         def _to_iso(val: Any) -> str:
             if isinstance(val, (int, float)):
                 ts_sec = val / 1000.0 if val > 1e12 else float(val)
@@ -452,29 +463,43 @@ class ReactRound:
         finished_at = _to_iso(thinking_info.get("finished_at"))
         turn_id = (ctx_browser.runtime_ctx.turn_id or "")
         ts = started_at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        meta: Dict[str, Any] = {
-            "channel": "thinking",
-            "title": title,
-            "iteration": iteration,
-        }
         call_id = str(tool_call_id or "").strip()
-        if call_id:
-            meta["tool_call_id"] = call_id
-        if started_at:
-            meta["started_at"] = started_at
-        if finished_at:
-            meta["finished_at"] = finished_at
-        add_block(ctx_browser, {
-            "type": "react.thinking",
-            "author": "react",
-            "turn_id": turn_id,
-            "ts": ts,
-            "mime": "text/markdown",
-            "path": f"conv:ar:{turn_id}.react.thinking.{iteration}" if turn_id else "",
-            "text": text.strip(),
-            "meta": meta,
-            "call_id": call_id,
-        })
+        entries: list[tuple[Optional[int], str]] = (
+            instance_entries
+            if instance_entries
+            else [(None, text.strip())]
+        )
+        for channel_instance, entry_text in entries:
+            entry_title = title
+            path_suffix = str(iteration)
+            if channel_instance is not None:
+                entry_title = f"{title}.i{channel_instance}"
+                path_suffix = f"{iteration}.i{channel_instance}"
+            meta: Dict[str, Any] = {
+                "channel": "thinking",
+                "title": entry_title,
+                "iteration": iteration,
+                "instance_count": len(entries),
+            }
+            if channel_instance is not None:
+                meta["channel_instance"] = channel_instance
+            if call_id:
+                meta["tool_call_id"] = call_id
+            if started_at:
+                meta["started_at"] = started_at
+            if finished_at:
+                meta["finished_at"] = finished_at
+            add_block(ctx_browser, {
+                "type": "react.thinking",
+                "author": "react",
+                "turn_id": turn_id,
+                "ts": ts,
+                "mime": "text/markdown",
+                "path": f"conv:ar:{turn_id}.react.thinking.{path_suffix}" if turn_id else "",
+                "text": entry_text,
+                "meta": meta,
+                "call_id": call_id,
+            })
 
     @classmethod
     def note(

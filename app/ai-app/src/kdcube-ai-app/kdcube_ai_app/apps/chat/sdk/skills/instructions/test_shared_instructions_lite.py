@@ -19,6 +19,15 @@ def test_profiles_mirror_the_ladder_profile_names():
     }
 
 
+def test_workspace_profiles_state_current_turn_locality_as_a_critical_fact():
+    for profile in ("workspace", "workspace_exec", "all_capabilities"):
+        text = default_lite_system_instruction(profile)
+        assert "CRITICAL DISTRIBUTED-WORKSPACE FACT — LOCAL THIS TURN" in text
+        assert "only files listed under ANNOUNCE `[WORKSPACE] LOCAL`" in text
+        assert "prior-turn pull is not a local file" in text
+        assert "Apply this before every local file operation" in text
+
+
 def test_hard_signals_survive_moderate_distillation():
     text = default_lite_system_instruction("all_capabilities")
     signals = [
@@ -44,6 +53,8 @@ def test_hard_signals_survive_moderate_distillation():
         "Write every contracted artifact to `Path(OUTPUT_DIR) / filepath`",
         # workspace hard rule
         "EACH TURN STARTS BLANK",
+        "CRITICAL DISTRIBUTED-WORKSPACE FACT — LOCAL THIS TURN",
+        "only files listed under ANNOUNCE `[WORKSPACE] LOCAL`",
         # fetch_ctx namespace limits
         "`conv:ar:`, `conv:tc:`, and `conv:so:`",
         # canvas extensions

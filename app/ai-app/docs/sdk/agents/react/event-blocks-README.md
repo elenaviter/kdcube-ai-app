@@ -205,17 +205,30 @@ Example:
 ```
 
 ### Thinking blocks (react.thinking)
-Decision streaming captures the internal thinking section and stores it as a hidden block:
+Decision streaming preserves every emitted `<channel:thinking>` instance and
+stores one hidden block for each instance. One model-emitted thinking block is
+therefore one durable timeline entry, including repeated text; the runtime does
+not merge or deduplicate model output.
+
 - `type`: `react.thinking`
 - `mime`: `text/markdown`
-- `path`: `conv:ar:<turn_id>.react.thinking.<iteration>`
+- `path`: `conv:ar:<turn_id>.react.thinking.<iteration>.i<instance>` when the
+  decision emitted instance data; the unsuffixed iteration path remains the
+  compatibility form for a decision carrying only aggregate thinking text
 - `text`: thinking content
 - `meta.channel="thinking"`
-- `meta.title`: human‑readable label for UI (e.g., `solver.react.v2.decision (2)`)
+- `meta.title`: human-readable decision label, suffixed with `.i<instance>` for
+  an emitted instance
+- `meta.iteration`: decision-round number
+- `meta.channel_instance`: zero-based position within the decision stream
+- `meta.instance_count`: number of thinking instances emitted by that decision
 - `meta.hidden=true` (kept out of model render)
 
 These are **not** persisted as `conv.thinking.stream` artifacts anymore; UI artifacts are
-reconstructed from the turn log during fetch.
+reconstructed one-for-one, in recorded order, from the `react.thinking` blocks
+in the turn log during fetch. Consequently, the reloaded UI count matches the
+number of thinking blocks the model emitted, not merely the number of ReAct
+rounds.
 
 ### Decision raw (react.decision.raw)
 On **schema error** retries, we store the raw JSON the model produced so it can see what went wrong:

@@ -223,6 +223,14 @@ This is the only React workspace paradigm switch:
 
 Exact attachment/binary pulls remain point-wise and hosting-backed in both modes.
 
+The per-turn locality contract is absolute: only files listed under ANNOUNCE
+`[WORKSPACE] LOCAL` are present on the worker handling the current turn. A
+logical ref, provider-rendered preview, or prior-turn pull is not a local file.
+Call `react.pull` in the current turn before `react.rg`, code, or another
+local-bytes tool uses it. A direct `react.read` of a hosted ref can render
+bounded context, but that preview does not establish local-byte availability;
+only the next round's `[WORKSPACE] LOCAL` list does.
+
 `react.rg` searches only files already materialized in the local artifact workspace on the worker handling the turn. It does not search unpulled lineage snapshots, hidden/pruned timeline blocks, or owner namespaces. If a task needs local search over older state, first identify the `conv:fi:` ref from visible context or `react.memsearch`, then materialize it with `react.pull`; use `react.checkout` only when the pulled `git/projects/...` ref must become an editable current-turn copy. Preferred `react.rg` roots are visible path forms: `git/projects/...`, `files/...`, `git/snapshots/...`, `attachments/...`, `turn_<id>/git/projects/...`, `turn_<id>/files/...`, `turn_<id>/git/snapshots/...`, `turn_<id>/attachments/...`, or matching `conv:fi:` artifact paths.
 
 ## Visible read limits
@@ -242,11 +250,25 @@ units:
 Text reads return a configured bounded preview when the payload is larger than
 the visible caps. Per-call
 `react.read({"paths":[...],"max_text_symbols":N})` is a text-only request for a
-smaller explicit preview. It is clamped by
+smaller explicit preview. It cannot raise or disable a runtime cap. It is
+clamped by
 `read_visible_max_text_symbols`, `read_visible_max_tokens`, and
 `read_visible_context_fraction`. These caps apply per requested path, not across
 the whole `paths` list. `stats_only: true` bypasses content materialization and
-returns metadata in the `react.read` status block.
+returns metadata in the `react.read` status block. Text rows report
+`fits_visible_context` against all effective visible limits, the dimensions
+that exceed those limits, cap dimensions that could not be measured, and
+separate line-count/longest-line shape metadata when available. Missing shape
+metadata does not make an otherwise measured cap result unknown.
+
+When `fits_visible_context` is true, a whole-path read fits and should be done
+once. When it is false or unknown, inspect the object through task-relevant
+search, bounded line or symbol ranges, or programmatic processing of a file
+pulled in the current turn. After `status=truncated_for_visible_context`, the
+same whole-path read must not be retried and increasing `max_text_symbols` must
+not be used as recovery. A long single line requires symbol ranges, search, or
+programmatic processing; line count by itself does not establish that a read
+will fit.
 
 Large initial tool results use `tool_result_preview_max_text_symbols` before
 the next decision prompt is built. The timeline keeps the full `conv:tc:` result,

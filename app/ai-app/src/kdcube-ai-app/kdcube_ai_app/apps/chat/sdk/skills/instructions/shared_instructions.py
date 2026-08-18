@@ -235,6 +235,8 @@ SUGGESTED_FOLLOWUPS_GUIDE = """
 
 WORKSPACE_IMPLEMENTATION_GUIDE_CUSTOM = """
 [WORKSPACE MODEL — EXPLICIT PULL / HOSTED ARTIFACT-HISTORY MODE]
+CRITICAL DISTRIBUTED-WORKSPACE FACT — LOCAL THIS TURN means only files listed under ANNOUNCE `[WORKSPACE] LOCAL`. A visible ref, a provider-rendered preview, or a prior-turn pull is not a local file. Before `react.rg`, `react.patch`, code, or any other local-bytes tool uses anything else, `react.pull` it in THIS turn (and `react.checkout` it when editing historical `git/projects/...`). Apply this before every local file operation.
+
 Generated code and ISO/runtime tools work with real files under `OUTPUT_DIR`.
 Use `OUTPUT_DIR`-relative physical paths only when the documented argument is a
 physical path, for example `react.patch` and other file-processing tool writes:
@@ -333,6 +335,8 @@ or file inspection needs artifact bytes, materialize the visible ref with
 
 WORKSPACE_IMPLEMENTATION_GUIDE_GIT = """
 [WORKSPACE MODEL — EXPLICIT PULL / GIT-BACKED ARTIFACT-HISTORY MODE]
+CRITICAL DISTRIBUTED-WORKSPACE FACT — LOCAL THIS TURN means only files listed under ANNOUNCE `[WORKSPACE] LOCAL`. A visible ref, a provider-rendered preview, or a prior-turn pull is not a local file. Before `react.rg`, `react.patch`, code, or any other local-bytes tool uses anything else, `react.pull` it in THIS turn (and `react.checkout` it when editing historical `git/projects/...`). Apply this before every local file operation.
+
 Generated code and ISO/runtime tools work with real files under `OUTPUT_DIR`.
 Use `OUTPUT_DIR`-relative physical paths only when the documented argument is a
 physical path, for example `react.patch` and other file-processing tool writes:
@@ -455,6 +459,7 @@ def get_workspace_implementation_guide(implementation: str | None = None) -> str
 DISTRIBUTED_TURN_WORKSPACE_MINIMAL_GUIDE = """
 [DISTRIBUTED TURN WORKSPACE — {tool_list}]
 You have a per-turn file workspace and file tools over CONVERSATION LINKS.
+- CRITICAL DISTRIBUTED-WORKSPACE FACT — LOCAL THIS TURN means only files listed under ANNOUNCE `[WORKSPACE] LOCAL`. A visible ref, a provider-rendered preview, or a prior-turn pull is not a local file. Before code or any other local-bytes tool uses anything else, materialize it with {pull_tool} in THIS turn. Apply this before every local file operation.
 - TURN LIFECYCLE: each new user message begins a NEW TURN, and the working
   directory starts EMPTY every turn. Nothing carries over in the directory itself —
   not the user's files, not files you produced or pulled in earlier turns. The
@@ -586,7 +591,7 @@ HARD:
 - `react.read` expects LOGICAL paths.
 - If you need several exact objects, pass all known paths in one react.read call instead of spending one round per path.
 - Large/capped data handling is defined in the extended guide. Treat rendered previews as inspection aids, not proof of full content.
-- `react.read` caps apply per path, not across the whole path list. For cheap discovery without content, use `stats_only:true`; it returns size/mime/token metadata in the status block and does not add content blocks.
+- `react.read` caps apply per path, not across the whole path list. For cheap discovery without content, use `stats_only:true`; it returns size/MIME/effective-fit/text/token/line-shape metadata in the status block and does not add content blocks.
 - For `conv:so:conv_<conversation_id>.sources_pool[...]`, `react.read` returns a list of source rows, not an artifact dict. `react.read` reads the persisted source pool of the conversation named by the ref; `ctx_tools.fetch_ctx` is current-timeline only.
   Web source rows use `text` for preview/snippet and `content` for full fetched page text when available; use `content` first when you need source evidence.
 - Tools that take paths (`react.patch`, `rendering_tools.write_*`) expect PHYSICAL paths.
@@ -679,16 +684,17 @@ Using physical relative paths with react.read will result in protocol violation 
 #### Large/capped data operating procedure
 - Work from the rendered timeline surface: paths, metadata, previews, source rows, and explicit truncation/cap markers. Do not reason from internal artifact fields.
 - First identify the object and path namespace: `conv:tc:` tool call/result, `conv:fi:` file/artifact, `conv:so:` source rows, `conv:ar:` generated context, `sk:` skill, `conv:su:` summary, or a runtime-declared owner namespace. For files, note `mime`, `size_bytes`, `text_symbols`, `line_count`, and any physical path shown.
+- An external or historical object must be materialized with `react.pull` in THIS turn before any local-bytes tool uses it. Start from the pull result's MIME, size, logical path, and physical path. For text, do not compare `size_bytes` only with the binary byte cap and infer that the text fits; obtain `text_symbols`, token estimate, and line shape with `stats_only` when they are not already reported.
 - Model-visible text artifact previews are rendered with line numbers when shown on the timeline. These line numbers are viewing prefixes, not file content. Use them to choose `react.read` ranges and patch locations; do not copy the prefixes into full-file replacements or patch content.
 - Use a preview directly only when it is sufficient for the current decision and it does not show truncation/omission/cap markers. If you see `[TOOL RESULT PREVIEW TRUNCATED]`, `[TEXT FILE PREVIEW TRUNCATED]`, `[READ PREVIEW TRUNCATED]`, `omitted`, `capped`, or line windows like `[1-40]/180`, treat the visible text as incomplete.
 - Skills are not read-capped. Owner-defined namespace content is not a built-in readable path; use the configured namespace/service retrieval path and follow its returned refs.
-- For large text artifacts, do not edit or judge the whole file from the initial preview. Use this loop: `react.read(paths=[path],stats_only=true)` for size/line metadata -> `react.rg` when the file is searchable -> `react.read(items=[{"path":path,"line_start":...,"line_count":...}, ...])` to inspect exact line ranges -> repeat for every affected region -> edit/process only after the needed regions are visible.
+- Run `stats_only` when text fit is unknown. If it reports `fits_visible_context=true`, read the whole path once. If it reports false or unknown, do not issue a whole-path read. Choose the shortest objective-driven route: `react.rg` to locate searchable regions; bounded `react.read` items for exact line or symbol ranges; or a file-processing tool over the physical path to inspect structure and write small derived artifacts. Use symbol ranges when a few very long lines make line ranges unbounded. Edit, judge, or answer only after the needed regions or derived evidence are visible.
 - For source rows, use `react.read(paths=["conv:so:conv_<conversation_id>.sources_pool[...]"])`. Web rows use `content` for fetched page body and `text` for search preview/snippet; use `content` first when you need evidence.
-- If your answer or edit depends on a file/article as evidence, read the needed evidence into visible context. Skills must be read in full. For capped text files/articles, use `react.read` range items to recover content by parts. For searchable `conv:fi:` files, `react.rg` can supply ready-made `read_item` ranges.
+- If your answer or edit depends on a file/article as evidence, make the needed evidence visible through the fit decision and objective-driven route above. Skills must be read in full. For searchable `conv:fi:` files, `react.rg` can supply ready-made bounded `read_item` ranges.
 - Ranged reads always materialize the requested range even if the same logical path is already visible as a full file or preview block.
-- If the whole text must be visible and `text_symbols` is within visible caps, request `max_text_symbols >= text_symbols` and verify the returned status is not truncated. If it is over caps, read consecutive line or symbol ranges until the needed content is visible.
-- For large `conv:tc:` tool results, use the rendered shape/sample to plan and `react.read` for another bounded visible preview. Do not assume any tool output is an uncapped route back into model context.
-- For `conv:fi:` files that exceed visible caps or require exact full-file visibility, use `react.read` range items against the logical `conv:fi:` path. Use a computation tool only for producing smaller derived artifacts, then inspect those artifacts with `react.read`.
+- `max_text_symbols` only requests a preview smaller than the active runtime cap; it cannot raise that cap. After `truncated_for_visible_context`, never repeat `react.read(paths=[path])` for the same object and never retry with a larger `max_text_symbols`. Search, read bounded line/symbol items, or process the materialized file programmatically instead. Read sequential ranges only when the task genuinely requires sequential coverage of the entire text.
+- For large `conv:tc:` tool results, use the rendered shape/sample to plan. If it is insufficient, inspect task-relevant bounded ranges supported by that logical result; do not repeat a capped whole-result read. No tool output is an uncapped route back into model context.
+- For `conv:fi:` files that exceed visible caps, choose among search, bounded line/symbol items, and programmatic processing into smaller derived artifacts according to the task. Use sequential ranges only when complete sequential coverage is genuinely required, then inspect every derived artifact or range on which the result depends.
 - For binary/PDF/image files or large attachments, inspect them directly only if the rendered timeline attaches them under caps. If an image is too large, call `react.read` on its `conv:fi:` path; it will downscale a bounded multimodal preview when possible and report `image_view`. For PDFs and unsupported binaries over caps, use a file-processing tool to extract text, split pages, crop/downsample, or create smaller derived artifacts, then inspect those with `react.read`.
 - For tool-produced text files, the rendered file preview is bounded. The full content is the `conv:fi:` file/physical path shown in the timeline.
 - For interactive HTML/browser-facing artifacts, verify behavior with `browser_tools.open_page` and follow-up `browser_tools.click`/`fill`/`scroll`/`status`; check returned `page_errors`, `console_errors`, `request_failures`, `controls`, `scroll`, and `viewport_text_preview` before claiming the app works. Keep `screenshot:false` unless visual state, layout, canvas/SVG, or responsive rendering must be inspected; screenshots are internal image artifacts and add multimodal tokens.
@@ -1520,7 +1526,7 @@ still valid when needed; do not mix inline content and `ref:` in the same
   files or create smaller derived artifacts, but it is not a substitute for
   visible evidence; inspect the derived result or the needed source ranges
   before relying on them.
-- Before editing or building from an artifact/source/attachment, inspect enough of it for the task. If the rendered preview is capped or incomplete, follow the Large/capped data operating procedure in the shared path guide: use `stats_only` + ranged `react.read` for text files, `react.rg` when searchable, and source-row reads for sources. Every tool output is capped; none is an uncapped read channel.
+- Before editing or building from an artifact/source/attachment, inspect enough of it for the task. If the rendered preview is capped or incomplete, follow the Large/capped data operating procedure in the shared path guide: check effective fit with `stats_only`, then use objective-driven `react.rg`, bounded line/symbol items, or programmatic processing into small derived artifacts when the whole object does not fit. Use source-row reads for sources. Every tool output is capped; none is an uncapped read channel.
 - If your work depends on skills, load them first with react.read and read them before acting.
 - Keep the visible artifacts/skills space sane: load what you need, unload what you no longer need (unload works only for recent blocks).
 - You may only refer to artifacts/skills that are visible in context. Binding or reading a non-existent artifact/skill is an error.
@@ -1572,8 +1578,8 @@ still valid when needed; do not mix inline content and `ref:` in the same
   If the artifacts are already visible in the timeline, you do not need to read them again. This is for artifacts which content is not visible.
 - External owner refs are imported with `react.pull` when exact content is needed. If a rendered event/object shows `object_ref`, pull that ref. After pull, use the returned `conv:fi:` logical path with `react.read` or `react.rg` (file-processing tools use the physical path).
 - Skills are never read-capped. Owner-defined namespace content is retrieved through its configured service or rehoster, then inspected through returned refs.
-- For large/capped data, follow the Large/capped data operating procedure in the shared path guide. In short: `react.read` is visible-context retrieval, `react.rg` locates searchable text ranges, `conv:so:conv_<conversation_id>.sources_pool[...]` returns source rows, and capped text files/articles are recovered into context by bounded `react.read` ranges. A computation tool can create smaller derived artifacts, but no tool output is an uncapped way to show full content to the model.
-- For large text artifacts, do not edit from a capped preview. Use `stats_only:true` to get line metadata, use `react.rg` to find anchors when searchable, pass returned or manual `read_item` ranges to `react.read(items=[...])`, repeat until every affected region is visible, then edit/process.
+- For large/capped data, follow the Large/capped data operating procedure in the shared path guide. In short: `react.read` is visible-context retrieval, `react.rg` locates searchable text ranges, and `conv:so:conv_<conversation_id>.sources_pool[...]` returns source rows. When a whole text read does not fit, recover only the task-relevant evidence through search, bounded line/symbol items, or programmatic processing into small derived artifacts. No tool output is an uncapped way to show full content to the model.
+- For large text artifacts, do not edit from a capped preview. Use `stats_only:true` to decide whether the whole path fits. If it does, read it once. If it does not, use `react.rg` to find anchors when searchable, pass returned or manual bounded `read_item` ranges to `react.read(items=[...])`, or process the pulled physical file into small derived evidence. Inspect every affected region before editing.
 - Example tool_call (load sources + artifact + skill):
   {{"tool_id":"react.read","params":["conv:so:conv_<conversation_id>.sources_pool[2,3]","conv:fi:conv_<conversation_id>.turn_<id>.files/some_art.md","sk:<skill id or num>"]}}
 - Example bounded preview:

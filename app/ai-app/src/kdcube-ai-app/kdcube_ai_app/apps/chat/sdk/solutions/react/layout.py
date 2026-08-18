@@ -980,9 +980,10 @@ def build_announce_workspace_lines(
     # ---------- LOCAL ----------
     lines.append("")
     lines.append("  LOCAL — materialized on disk THIS turn.")
+    lines.append("  CRITICAL DISTRIBUTED-WORKSPACE FACT — LOCAL THIS TURN means only files listed below. A visible ref, provider-rendered preview, or prior-turn pull is not local; react.pull it in THIS turn before any local-bytes tool uses it. Apply this before every local file operation.")
     lines.append("  This tree lists actual files already present under the artifact workdir.")
     lines.append("  Timeline conv:fi: refs that are not listed here are hosted/unhydrated; use react.pull to hydrate them before local-byte tools.")
-    lines.append("  react.read may inspect provider-rendered text for a hosted ref, but it does not make local bytes appear here.")
+    lines.append("  react.read may inspect provider-rendered text for a hosted ref; that preview does not establish local-byte availability. Trust only this LOCAL list.")
     lines.append("  File-touching tools (react.rg, react.patch, code) can touch only paths listed here or paths you create in this turn.")
     local_entries = _workdir_entries()
     local_lines: List[str] = []
@@ -1296,7 +1297,7 @@ def build_announce_context_cap_lines(*, runtime_ctx: Optional[RuntimeCtx]) -> Li
             f"  read text={read_text} tok={read_tokens} bytes={_bytes_label(read_bytes)} ctx_frac={read_fraction:g}; "
             f"tool_result_preview={tool_preview}; exec_file_preview={exec_preview}; line_numbers={line_numbers_mode}"
         ),
-        "  regular text is capped; skills are always uncapped; use stats_only plus ranged react.read items for capped text; tool outputs are capped",
+        "  use stats_only.fits_visible_context before a whole text read; max_text_symbols only lowers a preview; after truncation do not retry the whole path; use search/ranged items or process the local file; skills are uncapped; tool outputs are capped",
     ]
 
 
