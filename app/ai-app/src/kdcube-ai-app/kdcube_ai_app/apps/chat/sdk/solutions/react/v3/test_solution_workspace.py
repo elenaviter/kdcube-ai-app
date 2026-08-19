@@ -4,6 +4,58 @@ import pytest
 
 
 @pytest.mark.asyncio
+async def test_host_files_rejects_non_image_bytes_declared_as_png(tmp_path):
+    from kdcube_ai_app.apps.chat.sdk.solutions.react.solution_workspace import ApplicationHostingService
+
+    class _FakeStore:
+        def __init__(self):
+            self.calls = []
+
+        async def put_artifact_file(self, **kwargs):
+            self.calls.append(kwargs)
+            return "file:///unexpected", "unexpected", "rn:unexpected"
+
+    class _FakeLogger:
+        def __init__(self):
+            self.messages = []
+
+        def log(self, message, *, level):
+            self.messages.append((level, message))
+
+    invalid_path = tmp_path / "extracted_image.png"
+    invalid_path.write_bytes(b"x" * 32)
+    store = _FakeStore()
+    logger = _FakeLogger()
+    hosting = ApplicationHostingService(store=store, logger=logger)
+
+    hosted = await hosting.host_files_to_conversation(
+        rid="rid_1",
+        files=[{
+            "type": "file",
+            "output": {
+                "path": str(invalid_path),
+                "mime": "image/png",
+            },
+            "resource_id": "artifact:extracted_image",
+        }],
+        outdir=tmp_path,
+        tenant="tenant",
+        project="project",
+        user="user",
+        conversation_id="conv_1",
+        user_type="user",
+        turn_id="turn_1",
+    )
+
+    assert hosted == []
+    assert store.calls == []
+    assert logger.messages == [(
+        "ERROR",
+        f"[host_files] Rejected invalid image {invalid_path}: invalid_image_data",
+    )]
+
+
+@pytest.mark.asyncio
 async def test_emit_solver_artifacts_preserves_transport_fields():
     from kdcube_ai_app.apps.chat.sdk.solutions.react.solution_workspace import ApplicationHostingService
 

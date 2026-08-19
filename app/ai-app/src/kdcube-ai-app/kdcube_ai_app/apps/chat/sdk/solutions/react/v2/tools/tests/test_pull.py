@@ -242,6 +242,143 @@ async def test_pull_materializes_canvas_owned_attachment_ref(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_pull_historical_owner_mirror_uses_original_bytes_not_read_projection(tmp_path):
+    outdir = tmp_path / "out"
+    conversation_id = "conversation_test"
+    object_ref = (
+        "cnv:canvas/users/user-1/canvases/cnv_user-1_main/"
+        "objects/user-text/ut_mixed/v000001.md"
+    )
+    relpath = "cnv/" + object_ref.split(":", 1)[1]
+    historical_physical = f"turn_prev/attachments/{relpath}"
+    historical_logical = (
+        f"conv:fi:conv_{conversation_id}.turn_prev.user.attachments/{relpath}"
+    )
+
+    png_prefix = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+    image_payload = base64.b64encode(png_prefix + (b"\x00" * 430_000)).decode("ascii")
+    text_lines = [f"procedure-line-{line_number}" for line_number in range(1, 75)]
+    image_line = f"![pasted image](data:image/png;base64,{image_payload})"
+    fixed = "\n".join(text_lines) + "\n\n" + image_line
+    filler_size = 577_821 - len(fixed.encode("utf-8"))
+    assert filler_size > 0
+    original_text = "\n".join(text_lines) + "\n" + ("x" * filler_size) + "\n" + image_line
+    original_bytes = original_text.encode("utf-8")
+    assert len(original_bytes) == 577_821
+    assert len(original_text.splitlines()) == 76
+
+    owner_calls = []
+
+    @artifact_namespace_rehoster(namespace="cnv")
+    async def rehost_cnv_ref(*, ref, ctx_browser, outdir, **_):
+        owner_calls.append(ref)
+        physical_path = build_physical_artifact_path(
+            turn_id=ctx_browser.runtime_ctx.turn_id,
+            namespace="attachments",
+            relpath=relpath,
+        )
+        target = resolve_artifact_path(outdir, physical_path, prefer_existing=False)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(original_bytes)
+        return {
+            "materialized": [{
+                "object_ref": ref,
+                "logical_path": physical_path_to_logical_path(physical_path),
+                "physical_path": physical_path,
+                "scope": "attachments",
+                "mime": "text/markdown",
+                "size_bytes": len(original_bytes),
+                "file_count": 1,
+            }]
+        }
+
+    mod = ModuleType("cnv_rehosters")
+    mod.rehost_cnv_ref = rehost_cnv_ref
+    runtime = RuntimeCtx(
+        turn_id="turn_pull",
+        outdir=str(outdir),
+        workdir=str(tmp_path / "work"),
+        conversation_id=conversation_id,
+    )
+    runtime.event_sources = EventSourceSubsystem(modules=[{"mod": mod}])
+    ctx = FakeBrowser(runtime)
+    ctx._turn_logs["turn_prev"] = {
+        "blocks": [
+            {
+                "type": "react.tool.result",
+                "mime": "application/json",
+                "path": "conv:tc:turn_prev.pull_owner.result",
+                "text": json.dumps({
+                    "requested": [object_ref],
+                    "pulled": [{
+                        "object_ref": object_ref,
+                        "logical_path": historical_logical,
+                        "physical_path": historical_physical,
+                        "scope": "attachments",
+                        "mime": "text/markdown",
+                        "size_bytes": len(original_bytes),
+                        "file_count": 1,
+                    }],
+                }),
+                "turn_id": "turn_prev",
+            },
+            {
+                "type": "react.tool.result",
+                "mime": "text/markdown",
+                "path": historical_logical,
+                "text": (
+                    "[READ PREVIEW]\n"
+                    "lines: [1-75]/76\n"
+                    "76\t![pasted image](data:image/png;base64,"
+                    "[ENCODED FILE CONTENT ELIDED: 573424 base64 chars])\n"
+                    "[READ PREVIEW TRUNCATED]\n"
+                ),
+                "turn_id": "turn_prev",
+                "meta": {
+                    "tool_id": "react.read",
+                    "tool_call_id": "read_owner",
+                    "physical_path": historical_physical,
+                    "read_preview_truncated": True,
+                    "source_bytes": len(original_bytes),
+                },
+            },
+        ]
+    }
+
+    class _Settings:
+        STORAGE_PATH = str(tmp_path)
+
+    import kdcube_ai_app.apps.chat.sdk.config as cfg
+    cfg.get_settings = lambda: _Settings()
+
+    state = {
+        "last_decision": {
+            "tool_call": {
+                "params": {
+                    "paths": [historical_logical],
+                }
+            }
+        },
+        "outdir": str(outdir),
+    }
+
+    await handle_react_pull(ctx_browser=ctx, state=state, tool_call_id="pull_historical_owner")
+
+    payload = _latest_payload(ctx)
+    assert "missing" not in payload
+    assert "errors" not in payload
+    assert owner_calls == [object_ref]
+    target = outdir / "workdir" / historical_physical
+    assert target.stat().st_size == 577_821
+    assert target.read_bytes() == original_bytes
+    assert b"[READ PREVIEW]" not in target.read_bytes()
+    encoded = target.read_text(encoding="utf-8").split("base64,", 1)[1].rsplit(")", 1)[0]
+    assert base64.b64decode(encoded).startswith(b"\x89PNG\r\n\x1a\n")
+
+
+@pytest.mark.asyncio
 async def test_pull_materializes_exact_attachment_ref(tmp_path):
     outdir = tmp_path / "out"
     runtime = RuntimeCtx(turn_id="turn_pull", outdir=str(outdir), workdir=str(tmp_path / "work"))

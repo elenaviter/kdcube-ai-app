@@ -422,6 +422,34 @@ def test_generated_pdf_tool_result_is_not_attached_as_model_document():
     assert "provider_tokens_estimate_if_attached:" in text
 
 
+def test_invalid_image_tool_result_is_omitted_from_model_input():
+    ctx = RuntimeCtx(turn_id="turn_bad_image", started_at="2026-02-09T00:00:00Z")
+    tl = Timeline(runtime=ctx)
+    invalid_b64 = base64.b64encode(b"x" * 32).decode("ascii")
+    artifact_path = "conv:fi:turn_bad_image.files/extracted_image.png"
+
+    tl.blocks.extend([
+        tl._block(type="turn.header", author="system", turn_id=ctx.turn_id, ts=ctx.started_at, text=""),
+        tl._block(
+            type="react.tool.result",
+            author="agent",
+            turn_id=ctx.turn_id,
+            ts=ctx.started_at,
+            mime="image/png",
+            path=artifact_path,
+            base64=invalid_b64,
+        ),
+    ])
+
+    rendered = _run(tl.render(cache_last=True))
+    text = "\n".join(b.get("text", "") for b in rendered if b.get("type") == "text")
+
+    assert not any(b.get("type") == "image" for b in rendered)
+    assert "[IMAGE OMITTED FROM MODEL INPUT]" in text
+    assert f"path: {artifact_path}" in text
+    assert "reason: invalid_image_data" in text
+
+
 def test_tool_result_summary_accepts_string_error_payload():
     ctx = RuntimeCtx(turn_id="turn_tool_error", started_at="2026-02-09T00:00:00Z")
     tl = Timeline(runtime=ctx)

@@ -27,7 +27,8 @@ from kdcube_ai_app.infra.service_hub.openai import normalize_message_for_openai
 
 # A real 1x1 PNG so the image normalizer (which decodes+inspects) keeps it intact.
 _PNG_B64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/"
+    "AAX+Av4N70a4AAAAAElFTkSuQmCC"
 )
 
 

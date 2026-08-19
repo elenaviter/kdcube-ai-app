@@ -3,7 +3,11 @@ import logging
 from typing import Any, Callable, Dict, List, Optional, Awaitable
 
 from kdcube_ai_app.apps.chat.sdk.solutions.react.browser import ContextBrowser
-from kdcube_ai_app.infra.service_hub.errors import ServiceException, is_context_limit_error
+from kdcube_ai_app.infra.service_hub.errors import (
+    ServiceException,
+    is_context_limit_error,
+    is_image_processing_error,
+)
 
 _LOG = logging.getLogger("kdcube.react.cache")
 
@@ -62,6 +66,33 @@ def _debug_cache_points(ctx_browser: ContextBrowser, blocks: List[dict], label: 
     except Exception:
         pass
 
+
+def _omit_provider_rejected_images(blocks: List[dict]) -> tuple[List[dict], int]:
+    sanitized: List[dict] = []
+    omitted = 0
+    for block in blocks or []:
+        if not isinstance(block, dict) or block.get("type") != "image":
+            sanitized.append(block)
+            continue
+        source = block.get("source") if isinstance(block.get("source"), dict) else {}
+        media_type = str(source.get("media_type") or block.get("media_type") or "image/unknown")
+        path = str(block.get("path") or source.get("path") or "").strip()
+        lines = [
+            "[IMAGE OMITTED FROM MODEL INPUT]",
+            f"media_type: {media_type}",
+        ]
+        if path:
+            lines.append(f"path: {path}")
+        lines.append("reason: provider_rejected_image")
+        replacement = {"type": "text", "text": "\n".join(lines)}
+        if "cache" in block:
+            replacement["cache"] = block["cache"]
+        if "cache_control" in block:
+            replacement["cache_control"] = block["cache_control"]
+        sanitized.append(replacement)
+        omitted += 1
+    return sanitized, omitted
+
 async def retry_with_compaction(
         *,
         ctx_browser: ContextBrowser,
@@ -95,6 +126,18 @@ async def retry_with_compaction(
     try:
         return await agent_fn(blocks=blocks, **kwargs)
     except ServiceException as exc:
+        if is_image_processing_error(exc.err):
+            retry_blocks, omitted_images = _omit_provider_rejected_images(blocks)
+            if omitted_images:
+                _LOG.warning(
+                    "[model_input_recovery] provider rejected image input; "
+                    "retrying once with %s image block(s) omitted provider=%s model=%s",
+                    omitted_images,
+                    exc.err.provider,
+                    exc.err.model_name,
+                )
+                _debug_cache_points(ctx_browser, retry_blocks, "image_recovery_retry")
+                return await agent_fn(blocks=retry_blocks, **kwargs)
         if not sanitize_on_fail or not is_context_limit_error(exc.err):
             raise
         try:

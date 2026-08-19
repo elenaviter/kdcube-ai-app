@@ -523,6 +523,82 @@ def _truncated_read_text(
     ]).strip()
 
 
+def _truncated_range_text(
+    *,
+    path: str,
+    text: str,
+    source_tokens: int,
+    source_text_symbols: int,
+    source_bytes: int,
+    source_line_count: Optional[int],
+    byte_cap: Optional[int],
+    view: Dict[str, Any],
+) -> str:
+    omitted_text_symbols = max(0, source_text_symbols - len(text))
+    range_kind = str(view.get("range_kind") or "").strip()
+    lines = ["[READ RANGE]", f"path: {path}"]
+
+    if range_kind == "lines":
+        line_start = max(1, int(view.get("line_start") or 1))
+        available_line_end = int(view.get("line_end") or (line_start - 1))
+        requested_line_count = max(
+            1,
+            int(view.get("requested_line_count") or max(1, available_line_end - line_start + 1)),
+        )
+        requested_line_end = line_start + requested_line_count - 1
+        total_line_count = (
+            int(view.get("total_line_count"))
+            if view.get("total_line_count") is not None
+            else source_line_count
+        )
+        available_window = {
+            "line_start": line_start if available_line_end >= line_start else None,
+            "line_end": available_line_end if available_line_end >= line_start else None,
+            "total_line_count": total_line_count,
+        }
+        visible_window = visible_line_window(
+            text,
+            line_start=line_start,
+            source_truncated=True,
+            total_line_count=total_line_count,
+        )
+        lines.extend([
+            f"requested_lines: {line_start}-{requested_line_end}",
+            f"available_lines: {format_visible_line_window(available_window)}",
+            f"visible_lines: {format_visible_line_window(visible_window)}",
+            (
+                f"partial_line: {visible_window.get('partial_line')}"
+                if visible_window.get("partial_line") is not None
+                else "partial_line: none"
+            ),
+            f"visible_line_count: {int(visible_window.get('visible_lines') or 0)}",
+            f"line_numbers: {_line_numbers_param(view.get('line_numbers'), default=LINE_NUMBERS_DISABLED)}",
+        ])
+    elif range_kind == "text_symbols":
+        offset = max(0, int(view.get("offset_text_symbols") or 0))
+        requested = max(0, int(view.get("requested_text_symbols") or source_text_symbols))
+        lines.extend([
+            f"requested_text_symbols: {offset}-{offset + requested}",
+            f"visible_text_symbols: {offset}-{offset + len(text)}",
+        ])
+
+    lines.extend([
+        "",
+        text,
+        "",
+        "[READ RANGE TRUNCATED]",
+        f"path: {path}",
+        f"visible_text_symbols: {len(text)}",
+        f"omitted_range_text_symbols: {omitted_text_symbols}",
+        f"range_tokens_estimate: {source_tokens}",
+        f"range_bytes: {source_bytes}",
+        f"visible_read_limit_bytes: {byte_cap if byte_cap is not None else 'none'}",
+        "exact_content: recoverable by logical path",
+        "continuation: request a smaller line or symbol range, search for the relevant content, or inspect the materialized file programmatically when code execution is available",
+    ])
+    return "\n".join(lines).strip()
+
+
 async def handle_react_read(*, ctx_browser: Any, state: Dict[str, Any], tool_call_id: str, react: Any = None) -> Dict[str, Any]:
     last_decision = state.get("last_decision") or {}
     tool_call = last_decision.get("tool_call") or {}
@@ -1512,6 +1588,7 @@ async def handle_react_read(*, ctx_browser: Any, state: Dict[str, Any], tool_cal
         source_bytes_override: Optional[int] = None,
         source_line_count_override: Optional[int] = None,
         limits: Optional[Dict[str, Optional[int]]] = None,
+        read_range: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         source_tokens = _count_tokens(text)
         source_text_symbols = len(text)
@@ -1569,20 +1646,33 @@ async def handle_react_read(*, ctx_browser: Any, state: Dict[str, Any], tool_cal
             source_text_symbols_for_footer = source_text_symbols
             if force_truncated and source_text_symbols_for_footer <= len(clipped):
                 source_text_symbols_for_footer = len(clipped) + 1
-            preview_text = _truncated_read_text(
-                path=ctx_path,
-                text=clipped,
-                source_tokens=source_tokens,
-                source_text_symbols=source_text_symbols_for_footer,
-                source_bytes=source_bytes,
-                source_line_count=source_line_count,
-                limit_text_symbols=len(clipped),
-                byte_cap=limit_bytes,
-                line_numbers=default_line_numbers,
-            )
+            if read_range:
+                preview_text = _truncated_range_text(
+                    path=ctx_path,
+                    text=clipped,
+                    source_tokens=source_tokens,
+                    source_text_symbols=source_text_symbols_for_footer,
+                    source_bytes=source_bytes,
+                    source_line_count=source_line_count,
+                    byte_cap=limit_bytes,
+                    view=read_range,
+                )
+            else:
+                preview_text = _truncated_read_text(
+                    path=ctx_path,
+                    text=clipped,
+                    source_tokens=source_tokens,
+                    source_text_symbols=source_text_symbols_for_footer,
+                    source_bytes=source_bytes,
+                    source_line_count=source_line_count,
+                    limit_text_symbols=len(clipped),
+                    byte_cap=limit_bytes,
+                    line_numbers=default_line_numbers,
+                )
             marker_meta = dict(meta_extra or {})
             marker_meta.update({
                 "read_preview_truncated": True,
+                **({"read_range_truncated": True} if read_range else {}),
                 "source_tokens": source_tokens,
                 "source_text_symbols": source_text_symbols,
                 "source_bytes": source_bytes,
@@ -1637,13 +1727,14 @@ async def handle_react_read(*, ctx_browser: Any, state: Dict[str, Any], tool_cal
                 "visible_read_limit_bytes": limit_bytes,
             }
 
+        visible_text = _range_header(path=ctx_path, view=read_range) + text if read_range else text
         block = {
             "turn": turn_id,
             "type": "react.tool.result",
             "call_id": tool_call_id,
             "mime": mime or "text/markdown",
             "path": ctx_path or tc_result_path(turn_id=turn_id, call_id=tool_call_id),
-            "text": text,
+            "text": visible_text,
             "meta": meta_extra,
         }
         added = await _maybe_add_owner_projected_block(
@@ -1878,8 +1969,6 @@ async def handle_react_read(*, ctx_browser: Any, state: Dict[str, Any], tool_cal
 
         added_any = False
         if isinstance(art_text, str) and (art_text.strip() or text_view_meta):
-            if text_view_meta:
-                art_text = _range_header(path=ctx_path, view=text_view_meta) + art_text
             emitted = await _materialize_text_block(
                 ctx_path=ctx_path,
                 text=art_text,
@@ -1888,6 +1977,7 @@ async def handle_react_read(*, ctx_browser: Any, state: Dict[str, Any], tool_cal
                 force_truncated=bool(res.get("source_truncated")),
                 source_bytes_override=None if text_view_meta else (int(res.get("size_bytes") or 0) or None),
                 source_line_count_override=res.get("line_count") if res.get("line_count") is not None else None,
+                read_range=text_view_meta,
             )
             tokens = int(emitted.get("tokens") or 0)
             total_tokens += tokens

@@ -6,6 +6,7 @@ import random
 
 from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace import artifact_outdir_for
 from kdcube_ai_app.apps.chat.sdk.solutions.react.proto import RuntimeCtx
+from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.tools import read as v2_read
 from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.tools.read import handle_react_read
 from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.tools.tests.helpers import FakeBrowser
 
@@ -841,3 +842,143 @@ async def test_read_items_materializes_multiple_line_ranges(tmp_path):
     assert len(status["paths"]) == 2
     assert status["paths"][0]["read_range"]["line_start"] == 3
     assert status["paths"][1]["read_range"]["line_start"] == 5
+
+
+@pytest.mark.asyncio
+async def test_read_truncated_line_range_preserves_source_coordinates_after_full_preview(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(v2_read, "_count_tokens", lambda text: max(1, len(text) // 4))
+    runtime = RuntimeCtx(
+        turn_id="turn_read",
+        outdir=str(tmp_path),
+        workdir=str(tmp_path),
+        max_tokens=80_000,
+        read_visible_max_text_symbols=1_200,
+        read_visible_max_tokens=800,
+        tool_result_preview_max_text_symbols=8_000,
+    )
+    ctx = FakeBrowser(runtime)
+    out_file = artifact_outdir_for(tmp_path) / "turn_read" / "files" / "mixed-card.md"
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    source_lines = [f"source-line-{line_number}" for line_number in range(1, 76)]
+    source_lines[74] = ""
+    image_prefix = "![pasted image](data:image/png;base64,"
+    image_suffix = ")"
+    source_lines.append(
+        image_prefix + ("A" * (574_907 - len(image_prefix) - len(image_suffix))) + image_suffix
+    )
+    assert len(source_lines[-1]) == 574_907
+    out_file.write_text("\n".join(source_lines), encoding="utf-8")
+    source_path = "conv:fi:turn_read.files/mixed-card.md"
+
+    await handle_react_read(
+        ctx_browser=ctx,
+        state={"last_decision": {"tool_call": {"params": {"paths": [source_path]}}}},
+        tool_call_id="r_full_preview",
+    )
+    await handle_react_read(
+        ctx_browser=ctx,
+        state={
+            "last_decision": {
+                "tool_call": {
+                    "params": {
+                        "items": [{"path": source_path, "line_start": 64, "line_count": 12}]
+                    }
+                }
+            }
+        },
+        tool_call_id="r_safe_range",
+    )
+    await handle_react_read(
+        ctx_browser=ctx,
+        state={
+            "last_decision": {
+                "tool_call": {
+                    "params": {
+                        "items": [{"path": source_path, "line_start": 64, "line_count": 13}]
+                    }
+                }
+            }
+        },
+        tool_call_id="r_truncated_range",
+    )
+    await handle_react_read(
+        ctx_browser=ctx,
+        state={
+            "last_decision": {
+                "tool_call": {
+                    "params": {
+                        "items": [{"path": source_path, "line_start": 72, "line_count": 10}]
+                    }
+                }
+            }
+        },
+        tool_call_id="r_past_eof_range",
+    )
+
+    safe_range = next(
+        block
+        for block in ctx.timeline.blocks
+        if block.get("type") == "react.tool.result"
+        and block.get("call_id") == "r_safe_range"
+        and block.get("path") == source_path
+    )
+    assert "lines: [64-75]/76" in safe_range["text"]
+    assert "    64\tsource-line-64" in safe_range["text"]
+    assert "    74\tsource-line-74" in safe_range["text"]
+    assert "source-line-57" not in safe_range["text"]
+    assert "[READ PREVIEW" not in safe_range["text"]
+
+    truncated_range = next(
+        block
+        for block in ctx.timeline.blocks
+        if block.get("type") == "react.tool.result"
+        and block.get("call_id") == "r_truncated_range"
+        and block.get("path") == source_path
+    )
+    assert "requested_lines: 64-76" in truncated_range["text"]
+    assert "available_lines: [64-76]/76" in truncated_range["text"]
+    assert "visible_lines: [64-75]/76" in truncated_range["text"]
+    assert "partial_line: 76" in truncated_range["text"]
+    assert "    64\tsource-line-64" in truncated_range["text"]
+    assert "    75\t\n" in truncated_range["text"]
+    assert "    76\t![pasted image](data:image/png;base64," in truncated_range["text"]
+    assert "source-line-57" not in truncated_range["text"]
+    assert "[READ RANGE TRUNCATED]" in truncated_range["text"]
+    assert "[READ PREVIEW" not in truncated_range["text"]
+
+    past_eof_range = next(
+        block
+        for block in ctx.timeline.blocks
+        if block.get("type") == "react.tool.result"
+        and block.get("call_id") == "r_past_eof_range"
+        and block.get("path") == source_path
+    )
+    assert "requested_lines: 72-81" in past_eof_range["text"]
+    assert "available_lines: [72-76]/76" in past_eof_range["text"]
+    assert "visible_lines: [72-75]/76" in past_eof_range["text"]
+    assert "partial_line: 76" in past_eof_range["text"]
+    assert "/81" not in past_eof_range["text"]
+
+    status = next(
+        json.loads(block["text"])
+        for block in ctx.timeline.blocks
+        if block.get("path") == "conv:tc:turn_read.r_truncated_range.result"
+        and block.get("mime") == "application/json"
+    )
+    assert status["paths"][0]["status"] == "truncated_for_visible_context"
+    assert status["paths"][0]["read_range"]["line_start"] == 64
+    assert status["paths"][0]["read_range"]["line_end"] == 76
+    assert status["paths"][0]["read_range"]["total_line_count"] == 76
+
+    rendered = await ctx.timeline.render(cache_last=False)
+    rendered_text = "\n".join(
+        block.get("text") or ""
+        for block in rendered
+        if block.get("type") == "text"
+    )
+    assert "requested_lines: 64-76" in rendered_text
+    assert "visible_lines: [64-75]/76" in rendered_text
+    assert rendered_text.rfind("requested_lines: 64-76") > rendered_text.find("[READ PREVIEW]")

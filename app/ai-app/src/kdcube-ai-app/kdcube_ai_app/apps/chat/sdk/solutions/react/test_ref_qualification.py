@@ -16,6 +16,7 @@ tests pin:
 
 from __future__ import annotations
 
+import json
 import pathlib
 import re
 
@@ -200,6 +201,84 @@ def test_resolve_qualified_working_summary_alias():
         tl, f"conv:ws:conv_{CID}.turn_1.conv.working.summary", current_conversation_id=CID
     )
     assert art and art.get("alias") is True and art.get("text") == "Goal: final"
+
+
+def test_resolve_file_uses_pull_owner_metadata_not_read_projection_text():
+    object_ref = "cnv:canvas/users/user-1/objects/user-text/card/v000001.md"
+    logical_path = f"conv:fi:conv_{CID}.turn_1.user.attachments/cnv/card.md"
+    physical_path = "turn_1/attachments/cnv/card.md"
+    tl = {
+        "blocks": [
+            {
+                "type": "react.tool.result",
+                "turn_id": "turn_1",
+                "path": "conv:tc:turn_1.pull_1.result",
+                "mime": "application/json",
+                "text": json.dumps({
+                    "pulled": [{
+                        "object_ref": object_ref,
+                        "logical_path": logical_path,
+                        "physical_path": physical_path,
+                        "mime": "text/markdown",
+                        "size_bytes": 577_821,
+                        "file_count": 1,
+                    }]
+                }),
+            },
+            {
+                "type": "react.tool.result",
+                "turn_id": "turn_1",
+                "call_id": "read_1",
+                "path": logical_path,
+                "mime": "text/markdown",
+                "text": "[READ PREVIEW]\n[ENCODED FILE CONTENT ELIDED]\n",
+                "meta": {
+                    "tool_id": "react.read",
+                    "tool_call_id": "read_1",
+                    "read_preview_truncated": True,
+                    "physical_path": physical_path,
+                },
+            },
+        ],
+        "sources_pool": [],
+    }
+
+    artifact = resolve_artifact_from_timeline(
+        tl,
+        logical_path,
+        current_conversation_id=CID,
+    )
+
+    assert artifact is not None
+    assert artifact.get("object_ref") == object_ref
+    assert artifact.get("physical_path") == physical_path
+    assert artifact.get("size_bytes") == 577_821
+    assert "text" not in artifact
+
+
+def test_resolve_read_calls_own_tool_result_as_canonical_result():
+    result_path = "conv:tc:turn_1.read_1.result"
+    payload = '{"paths": [{"path": "conv:fi:turn_1.files/card.md"}]}'
+    tl = {
+        "blocks": [{
+            "type": "react.tool.result",
+            "turn_id": "turn_1",
+            "call_id": "read_1",
+            "path": result_path,
+            "mime": "application/json",
+            "text": payload,
+            "meta": {
+                "tool_id": "react.read",
+                "tool_call_id": "read_1",
+            },
+        }],
+        "sources_pool": [],
+    }
+
+    artifact = resolve_artifact_from_timeline(tl, result_path)
+
+    assert artifact is not None
+    assert artifact.get("text") == payload
 
 
 # ---------------------------------------------------------------- render funnel

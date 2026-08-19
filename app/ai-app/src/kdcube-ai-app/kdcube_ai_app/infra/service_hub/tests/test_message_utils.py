@@ -67,3 +67,30 @@ def test_normalize_blocks_leaves_safe_image_untouched():
 
     assert len(blocks) == 1
     assert blocks[0]["source"]["data"] == original
+
+
+def test_normalize_blocks_omits_declared_png_with_non_image_bytes():
+    invalid = base64.b64encode(b"x" * 32).decode("ascii")
+
+    blocks = normalize_blocks(
+        [
+            {
+                "type": "image",
+                "data": invalid,
+                "media_type": "image/png",
+                "path": "conv:fi:conv_1.turn_1.files/extracted_image.png",
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+    )
+
+    assert blocks == [{
+        "type": "text",
+        "text": (
+            "[IMAGE OMITTED FROM MODEL INPUT]\n"
+            "media_type: image/png\n"
+            "path: conv:fi:conv_1.turn_1.files/extracted_image.png\n"
+            "reason: invalid_image_data"
+        ),
+        "cache_control": {"type": "ephemeral"},
+    }]

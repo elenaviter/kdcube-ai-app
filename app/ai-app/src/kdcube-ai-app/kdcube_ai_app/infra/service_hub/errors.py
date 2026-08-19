@@ -105,6 +105,23 @@ def is_context_limit_error(err: ServiceError) -> bool:
     )
 
 
+def is_image_processing_error(err: ServiceError) -> bool:
+    """Return whether a provider rejected image input before inference."""
+    code = (err.code or err.error_type or "").lower()
+    msg = (err.message or "").lower()
+    hay = " ".join([code, msg])
+    return any(
+        token in hay
+        for token in (
+            "could not process image",
+            "unable to process image",
+            "invalid image",
+            "unsupported image",
+            "image format is not supported",
+        )
+    )
+
+
 def exception_chain(exc: BaseException | None, *, max_depth: int = 6) -> list[dict[str, str]]:
     chain: list[dict[str, str]] = []
     seen: set[int] = set()

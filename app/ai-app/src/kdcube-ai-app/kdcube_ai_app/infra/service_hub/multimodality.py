@@ -24,16 +24,67 @@ MESSAGE_MAX_BYTES = 25 * 1024 * 1024  # total message size cap (text + attachmen
 logger = logging.getLogger(__name__)
 _LANCZOS = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
 
+_IMAGE_FORMAT_BY_MIME = {
+    "image/jpeg": "JPEG",
+    "image/png": "PNG",
+    "image/gif": "GIF",
+    "image/webp": "WEBP",
+}
+
 
 def _image_format_for_mime(media_type: str) -> str:
     mime = (media_type or "").strip().lower()
-    if mime == "image/jpeg":
-        return "JPEG"
-    if mime == "image/webp":
-        return "WEBP"
-    if mime == "image/gif":
-        return "GIF"
-    return "PNG"
+    return _IMAGE_FORMAT_BY_MIME.get(mime, "PNG")
+
+
+def validate_image_bytes(raw: bytes, *, media_type: str = "") -> Dict[str, Any]:
+    """Verify that bytes decode as the declared provider-supported image type."""
+    result: Dict[str, Any] = {
+        "valid": False,
+        "error": "invalid_image_data",
+        "media_type": (media_type or "").strip().lower(),
+        "format": None,
+        "width": None,
+        "height": None,
+        "size_bytes": len(raw or b""),
+    }
+    if not raw:
+        result["error"] = "empty_image_data"
+        return result
+    if result["media_type"] and result["media_type"] not in _IMAGE_FORMAT_BY_MIME:
+        result["error"] = "unsupported_image_media_type"
+        return result
+
+    try:
+        with Image.open(io.BytesIO(raw)) as image:
+            detected_format = str(image.format or "").strip().upper()
+            width, height = image.size
+            image.verify()
+        # ``verify`` checks the container without decoding pixels. Reopen and
+        # load so provider-bound validation proves the payload is decodable.
+        with Image.open(io.BytesIO(raw)) as image:
+            image.load()
+    except Exception as exc:
+        result["detail"] = type(exc).__name__
+        return result
+
+    result.update({
+        "format": detected_format,
+        "width": width,
+        "height": height,
+    })
+    expected_format = _IMAGE_FORMAT_BY_MIME.get(result["media_type"])
+    if expected_format and detected_format != expected_format:
+        result["error"] = "image_mime_mismatch"
+        result["expected_format"] = expected_format
+        return result
+    if width <= 0 or height <= 0:
+        result["error"] = "invalid_image_dimensions"
+        return result
+
+    result["valid"] = True
+    result["error"] = None
+    return result
 
 
 def _prepare_image_for_save(image: Image.Image, fmt: str) -> Image.Image:
@@ -86,6 +137,8 @@ def normalize_image_base64_for_model(
     """
     result: Dict[str, Any] = {
         "base64": base64_data,
+        "valid": False,
+        "error": "empty_image_data",
         "changed": False,
         "original_width": None,
         "original_height": None,
@@ -103,11 +156,35 @@ def normalize_image_base64_for_model(
         raw = base64.b64decode(base64_data, validate=True)
         result["original_size_bytes"] = len(raw)
         result["size_bytes"] = len(raw)
-    except Exception:
+    except Exception as exc:
+        result["error"] = "invalid_image_base64"
+        result["detail"] = type(exc).__name__
+        return result
+
+    validation = validate_image_bytes(raw, media_type=media_type)
+    result.update({
+        "valid": bool(validation.get("valid")),
+        "error": validation.get("error"),
+        "detail": validation.get("detail"),
+        "format": validation.get("format"),
+        "original_width": validation.get("width"),
+        "original_height": validation.get("height"),
+        "width": validation.get("width"),
+        "height": validation.get("height"),
+    })
+    if not result["valid"]:
+        logger.warning(
+            "Rejected invalid multimodal image before model input: media_type=%s error=%s detail=%s size_bytes=%s",
+            media_type,
+            result.get("error"),
+            result.get("detail"),
+            result.get("size_bytes"),
+        )
         return result
 
     try:
         with Image.open(io.BytesIO(raw)) as image:
+            image.load()
             orig_width, orig_height = image.size
             result["original_width"] = orig_width
             result["original_height"] = orig_height
@@ -150,12 +227,17 @@ def normalize_image_base64_for_model(
                         break
 
                 if len(new_raw) > byte_cap:
+                    result["valid"] = False
+                    result["error"] = "image_exceeds_model_byte_limit"
                     return result
     except Exception as exc:
         logger.warning(
-            "Failed to inspect/normalize multimodal image; leaving original payload untouched: %s",
+            "Failed to normalize multimodal image; omitting it from model input: %s",
             exc,
         )
+        result["valid"] = False
+        result["error"] = "image_normalization_failed"
+        result["detail"] = type(exc).__name__
         return result
 
     result.update(
@@ -176,6 +258,7 @@ def normalize_image_base64_for_model(
         media_type,
     )
     return result
+
 
 def estimate_image_tokens_from_base64(base64_data: str) -> int:
     """

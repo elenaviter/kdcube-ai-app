@@ -984,6 +984,60 @@ async def test_run_exec_tool_uses_configured_text_preview_symbols(tmp_path, monk
 
 
 @pytest.mark.asyncio
+async def test_run_exec_tool_rejects_non_image_bytes_declared_as_png(tmp_path, monkeypatch):
+    class _FakeRuntime:
+        def __init__(self, logger):
+            self.logger = logger
+
+        async def execute_py_code(self, **kwargs):
+            artifact_root = exec_tools_module.artifact_outdir_for(kwargs["output_dir"])
+            target = artifact_root / "turn_1" / "files" / "extracted_image.png"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"x" * 32)
+            return {"ok": True, "returncode": 0}
+
+    monkeypatch.setattr(exec_tools_module, "_InProcessRuntime", _FakeRuntime)
+    tool_manager = SimpleNamespace(
+        svc=object(),
+        comm=SimpleNamespace(_export_comm_spec_for_runtime=lambda: {}),
+        export_runtime_globals=lambda: {},
+        tool_modules_tuple_list=lambda: [],
+        bundle_root=None,
+        build_portable_spec=lambda **_k: SimpleNamespace(to_json=lambda: "{}"),
+    )
+
+    result = await run_exec_tool(
+        tool_manager=tool_manager,
+        output_contract={},
+        code="print('ok')",
+        contract=[{
+            "name": "extracted_image",
+            "filepath": "turn_1/files/extracted_image.png",
+            "mime": "image/png",
+            "description": "PNG image extracted from markdown",
+            "visibility": "external",
+        }],
+        timeout_s=30,
+        workdir=tmp_path / "work",
+        outdir=tmp_path / "out",
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "artifact_validation_failed"
+    assert result["error"]["details"]["errors"] == [{
+        "artifact_id": "extracted_image",
+        "filepath": "turn_1/files/extracted_image.png",
+        "code": "artifact_invalid",
+        "message": "invalid_image: invalid_image_data",
+    }]
+    assert not any(
+        item.get("resource_id") == "artifact:extracted_image"
+        for item in result["artifacts"]
+    )
+    assert "invalid_image: invalid_image_data" in result["report_text"]
+
+
+@pytest.mark.asyncio
 async def test_run_exec_tool_auto_hosts_uncontracted_files_as_internal(tmp_path, monkeypatch):
     # Backstop: a file produced under files/ but NOT listed in the contract must not
     # be silently lost — it is auto-kept as INTERNAL (never delivered to the user) and a

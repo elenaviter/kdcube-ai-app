@@ -85,6 +85,7 @@ from kdcube_ai_app.infra.service_hub.multimodality import (
     MODALITY_IMAGE_MIME,
     estimate_image_tokens_from_base64,
     estimate_pdf_tokens_from_base64,
+    normalize_image_base64_for_model,
 )
 
 TIMELINE_FILENAME = "timeline.json"
@@ -452,6 +453,30 @@ def _parse_meta_json(text: str) -> Dict[str, Any]:
         return obj if isinstance(obj, dict) else {}
     except Exception:
         return {}
+
+
+def _is_read_projection_block(block: Dict[str, Any]) -> bool:
+    """Return whether a block is a model-visible view emitted by react.read."""
+    if not isinstance(block, dict) or (block.get("type") or "") != "react.tool.result":
+        return False
+    meta = block.get("meta") if isinstance(block.get("meta"), dict) else {}
+    if any(
+        meta.get(key)
+        for key in (
+            "read_preview_truncated",
+            "read_range",
+            "read_range_truncated",
+            "large_read_guard",
+        )
+    ):
+        return True
+    if str(meta.get("tool_id") or "").strip() != "react.read":
+        return False
+    path = str(block.get("path") or "").strip()
+    call_id = str(block.get("call_id") or meta.get("tool_call_id") or "").strip()
+    # The read call's own conv:tc result is canonical. A block emitted by that
+    # call under some other URI is a view of the referenced artifact.
+    return not (call_id and path.endswith(f".{call_id}.result"))
 
 
 def parse_sources_pool_ref(path: str) -> tuple[Optional[str], str]:
@@ -1056,29 +1081,52 @@ def resolve_artifact_from_timeline(
         if not isinstance(txt, str):
             continue
         meta_obj = _parse_meta_json(txt)
+        candidate_meta: Dict[str, Any] = {}
         if _in_lookup(meta_obj.get("artifact_path")) or _in_lookup(meta_obj.get("physical_path")):
-            meta = meta_obj
+            candidate_meta = meta_obj
+        else:
+            # react.pull persists the owner relationship in its result. That
+            # relationship is the recovery route for an owner-backed conv:fi:
+            # mirror after a distributed turn starts with an empty workspace.
+            for row in reversed(meta_obj.get("pulled") or []):
+                if not isinstance(row, dict):
+                    continue
+                logical_path = str(row.get("logical_path") or "").strip()
+                physical_path = str(row.get("physical_path") or "").strip()
+                if not (_in_lookup(logical_path) or _in_lookup(physical_path)):
+                    continue
+                candidate_meta = dict(row)
+                if logical_path:
+                    candidate_meta.setdefault("artifact_path", logical_path)
+                if physical_path:
+                    candidate_meta.setdefault("physical_path", physical_path)
+                candidate_meta.setdefault("kind", "file")
+                break
+        if candidate_meta:
+            meta = candidate_meta
             bmeta = b.get("meta")
             if isinstance(bmeta, dict) and bmeta:
                 meta_block_meta = dict(bmeta)
             break
 
     matching = [b for b in blocks if _in_lookup(b.get("path") or "")]
-    if not matching and not meta:
+    canonical_matching = [b for b in matching if not _is_read_projection_block(b)]
+    if not canonical_matching and not meta:
         return None
 
     # fall back to block-level meta (e.g. user attachments)
     if not meta:
-        for b in matching:
+        for b in canonical_matching:
             bmeta = b.get("meta")
             if isinstance(bmeta, dict) and bmeta:
                 meta = dict(bmeta)
                 break
 
-    # choose latest content block
-    latest_block = next((b for b in reversed(matching)), None)
-    text_block = next((b for b in reversed(matching) if isinstance(b.get("text"), str)), None)
-    bin_block = next((b for b in reversed(matching) if b.get("base64")), None)
+    # A read result is a representation of another artifact for model context;
+    # it is never a version of that artifact's canonical bytes.
+    latest_block = next((b for b in reversed(canonical_matching)), None)
+    text_block = next((b for b in reversed(canonical_matching) if isinstance(b.get("text"), str)), None)
+    bin_block = next((b for b in reversed(canonical_matching) if b.get("base64")), None)
 
     mime = (meta.get("mime") or "").strip()
     if not mime:
@@ -1111,7 +1159,7 @@ def resolve_artifact_from_timeline(
                 continue
             art[key] = val
     # Merge any block-level meta (e.g., hosting info on content blocks)
-    for b in matching:
+    for b in canonical_matching:
         bmeta = b.get("meta")
         if not isinstance(bmeta, dict):
             continue
@@ -5887,6 +5935,25 @@ class Timeline:
             if not base64_data:
                 return
             mime_norm = (mime or "").strip().lower()
+            if include_provider_payload and mime_norm in MODALITY_IMAGE_MIME:
+                normalized = normalize_image_base64_for_model(
+                    base64_data,
+                    media_type=mime_norm,
+                )
+                if not normalized.get("valid"):
+                    lines = [
+                        "[IMAGE OMITTED FROM MODEL INPUT]",
+                        f"media_type: {mime_norm}",
+                    ]
+                    if path:
+                        lines.append(f"path: {path}")
+                    lines.append(
+                        "reason: "
+                        + str(normalized.get("error") or "invalid_image_data")
+                    )
+                    emitted.append({"type": "text", "text": "\n".join(lines)})
+                    return
+                base64_data = normalized.get("base64") or base64_data
             estimated_tokens = self._estimate_base64_model_tokens(base64_data, mime_norm)
             if not include_provider_payload:
                 lines = [

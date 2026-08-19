@@ -792,6 +792,12 @@ function ChatTurnViewImpl({
     () => mergeOverviewEvents(turn.artifacts, turn.additionalUserMessages),
     [turn.artifacts, turn.additionalUserMessages],
   )
+  const hasInlineServiceError = useMemo(
+    () => overviewEvents.some(
+      (event) => event.kind === 'artifact' && event.artifact.kind === 'service_error',
+    ),
+    [overviewEvents],
+  )
   /* The answer(s) render inline in the feed above (as `final_answer:*` timeline
    * blocks), so the turn no longer pins a separate answer bubble at the bottom.
    * Only the error notice and the pre-answer streaming hint remain. */
@@ -805,7 +811,7 @@ function ChatTurnViewImpl({
       ) : null}
       <ChatThinkingTimeline entries={thinkingEntries} streaming={isStreaming} />
       <ChatMergedFeed events={overviewEvents} onDownloadError={onDownloadError} namespaceStyles={namespaceStyles} />
-      {turn.state === 'error' ? (
+      {turn.state === 'error' && !hasInlineServiceError ? (
         <div className="k-notice k-error">
           <span>{turn.error || 'Request failed.'}</span>
         </div>

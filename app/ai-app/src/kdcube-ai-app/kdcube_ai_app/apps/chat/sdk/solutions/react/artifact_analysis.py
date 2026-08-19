@@ -13,8 +13,13 @@ import pathlib
 from typing import Any, Dict, Optional
 
 import kdcube_ai_app.apps.chat.sdk.tools.tools_insights as tools_insights
-from kdcube_ai_app.infra.service_hub.multimodality import MODALITY_DOC_MIME, MODALITY_IMAGE_MIME, \
-    MODALITY_MAX_IMAGE_BYTES, MODALITY_MAX_DOC_BYTES
+from kdcube_ai_app.infra.service_hub.multimodality import (
+    MODALITY_DOC_MIME,
+    MODALITY_IMAGE_MIME,
+    MODALITY_MAX_DOC_BYTES,
+    MODALITY_MAX_IMAGE_BYTES,
+    validate_image_bytes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +116,18 @@ def prepare_summary_artifact(
             if mime in MODALITY_IMAGE_MIME or mime in MODALITY_DOC_MIME:
                 limit = MODALITY_MAX_IMAGE_BYTES if mime in MODALITY_IMAGE_MIME else MODALITY_MAX_DOC_BYTES
                 if size_bytes <= limit:
-                    base64_data = base64.b64encode(file_path.read_bytes()).decode("ascii")
+                    file_bytes = file_path.read_bytes()
+                    if mime in MODALITY_IMAGE_MIME:
+                        validation = validate_image_bytes(file_bytes, media_type=mime)
+                        if validation.get("valid"):
+                            base64_data = base64.b64encode(file_bytes).decode("ascii")
+                        else:
+                            read_error = (
+                                "invalid image: "
+                                + str(validation.get("error") or "invalid_image_data")
+                            )
+                    else:
+                        base64_data = base64.b64encode(file_bytes).decode("ascii")
                 else:
                     read_error = f"file too large to attach ({size_bytes} bytes > {limit})"
         except Exception as exc:
@@ -192,6 +208,20 @@ def analyze_write_tool_output(
             stats["write_error"] = "empty_file"
             return stats
         mime_check = (mime or "").strip().lower()
+        if mime_check in MODALITY_IMAGE_MIME:
+            image_stats = validate_image_bytes(p.read_bytes(), media_type=mime_check)
+            stats.update({
+                "image_format": image_stats.get("format"),
+                "image_width": image_stats.get("width"),
+                "image_height": image_stats.get("height"),
+            })
+            if not image_stats.get("valid"):
+                stats["write_error"] = (
+                    "invalid_image: "
+                    + str(image_stats.get("error") or "invalid_image_data")
+                )
+                stats["image_validation_detail"] = image_stats.get("detail")
+                return stats
         min_sizes = {
             "application/pdf": 500,
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document": 1000,

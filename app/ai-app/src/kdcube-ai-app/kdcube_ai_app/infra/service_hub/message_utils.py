@@ -10,6 +10,17 @@ from langchain_core.messages import BaseMessage
 from kdcube_ai_app.infra.service_hub.multimodality import normalize_image_base64_for_model
 
 
+def _image_omission_block(*, media_type: str, reason: str, path: str = "") -> dict:
+    lines = [
+        "[IMAGE OMITTED FROM MODEL INPUT]",
+        f"media_type: {media_type}",
+    ]
+    if path:
+        lines.append(f"path: {path}")
+    lines.append(f"reason: {reason}")
+    return {"type": "text", "text": "\n".join(lines)}
+
+
 def extract_message_blocks(msg: BaseMessage) -> Optional[list]:
     addkw = getattr(msg, "additional_kwargs", {}) or {}
     blocks = addkw.get("message_blocks")
@@ -40,20 +51,44 @@ def normalize_blocks(blocks: list, default_cache_ctrl: dict | None = None) -> li
             media_type = src.get("media_type") or b.get("media_type")
             data = src.get("data") or b.get("data")
             default_media = "image/png" if btype == "image" else "application/pdf"
-            if btype == "image" and data:
-                normalized = normalize_image_base64_for_model(
-                    data,
-                    media_type=media_type or default_media,
-                )
-                data = normalized.get("base64") or data
-            blk = {
-                "type": btype,
-                "source": {
-                    "type": "base64",
-                    "media_type": media_type or default_media,
-                    "data": data,
-                },
-            }
+            resolved_media_type = media_type or default_media
+            if btype == "image":
+                if data:
+                    normalized = normalize_image_base64_for_model(
+                        data,
+                        media_type=resolved_media_type,
+                    )
+                    if normalized.get("valid"):
+                        data = normalized.get("base64") or data
+                        blk = {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": resolved_media_type,
+                                "data": data,
+                            },
+                        }
+                    else:
+                        blk = _image_omission_block(
+                            media_type=resolved_media_type,
+                            reason=str(normalized.get("error") or "invalid_image_data"),
+                            path=str(b.get("path") or src.get("path") or ""),
+                        )
+                else:
+                    blk = _image_omission_block(
+                        media_type=resolved_media_type,
+                        reason="missing_image_data",
+                        path=str(b.get("path") or src.get("path") or ""),
+                    )
+            else:
+                blk = {
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": resolved_media_type,
+                        "data": data,
+                    },
+                }
         else:
             content = b.get("content")
             if isinstance(content, list):

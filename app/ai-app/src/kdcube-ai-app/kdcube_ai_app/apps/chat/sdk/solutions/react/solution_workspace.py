@@ -52,7 +52,11 @@ from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace import (
     resolve_artifact_path,
     runtime_outdir_for_artifact_outdir,
 )
-from kdcube_ai_app.infra.service_hub.multimodality import normalize_image_base64_for_model
+from kdcube_ai_app.infra.service_hub.multimodality import (
+    MODALITY_IMAGE_MIME,
+    normalize_image_base64_for_model,
+    validate_image_bytes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -763,6 +767,78 @@ async def rehost_files_from_timeline(
         except Exception:
             return False
 
+    async def _materialize_owner_bytes(
+        *,
+        artifact: Dict[str, Any],
+        target: pathlib.Path,
+        expected_size: Optional[int],
+    ) -> bool:
+        object_ref = str(artifact.get("object_ref") or "").strip()
+        if not object_ref or object_ref.startswith(CONVERSATION_FILE_REF_PREFIX):
+            return False
+        event_sources = getattr(getattr(ctx_browser, "runtime_ctx", None), "event_sources", None)
+        namespace = object_ref.partition(":")[0].strip() if ":" in object_ref else ""
+        rehoster = (
+            getattr(event_sources, "namespace_rehoster", lambda _namespace: None)(namespace)
+            if event_sources is not None and namespace
+            else None
+        )
+        if rehoster is None:
+            raise ValueError(f"owner_rehoster_missing:{object_ref}")
+        result = await event_sources.rehost_namespace_ref(
+            object_ref,
+            ctx_browser=ctx_browser,
+            outdir=outdir,
+        )
+        materialized = [row for row in (result.get("materialized") or []) if isinstance(row, dict)]
+        source_row = next(
+            (row for row in materialized if str(row.get("object_ref") or "").strip() == object_ref),
+            materialized[0] if materialized else None,
+        )
+        if not isinstance(source_row, dict):
+            detail = result.get("errors") or result.get("missing") or result.get("invalid") or "no_materialized_file"
+            raise ValueError(f"owner_rehost_failed:{object_ref}:{detail}")
+        source_physical = str(source_row.get("physical_path") or "").strip()
+        if not source_physical:
+            raise ValueError(f"owner_rehost_missing_physical_path:{object_ref}")
+        source = resolve_artifact_path(outdir, source_physical, prefer_existing=False)
+        if not source.exists() or not source.is_file():
+            raise ValueError(f"owner_rehost_missing_file:{object_ref}:{source_physical}")
+        source_size = source.stat().st_size
+        if expected_size is not None and source_size != expected_size:
+            raise ValueError(
+                f"owner_size_mismatch:{object_ref}:expected={expected_size}:actual={source_size}"
+            )
+        if source.resolve() != target.resolve():
+            target.write_bytes(source.read_bytes())
+        return True
+
+    async def _write_recoverable_content(
+        *,
+        artifact: Dict[str, Any],
+        target: pathlib.Path,
+        mime: str,
+        expected_size: Optional[int],
+    ) -> bool:
+        if artifact.get("base64"):
+            import base64 as _b64
+            target.write_bytes(_b64.b64decode(artifact.get("base64")))
+            return True
+        if await _materialize_owner_bytes(
+            artifact=artifact,
+            target=target,
+            expected_size=expected_size,
+        ):
+            return True
+        if (
+            isinstance(artifact.get("text"), str)
+            and _is_text_mime(mime)
+            and not _is_preview_text(artifact.get("text") or "")
+        ):
+            target.write_text(artifact.get("text"), encoding="utf-8")
+            return True
+        return False
+
     async def _rehost_kind(*, by_turn_paths: Dict[str, List[str]], kind: str) -> None:
         target_ns = (
             ARTIFACT_NAMESPACE_ATTACHMENTS if kind == "attachments" else
@@ -817,6 +893,7 @@ async def rehost_files_from_timeline(
                         missing.append(target_key)
                         continue
                     src = _hosted_blob_ref(target_artifact)
+                    object_ref = str(target_artifact.get("object_ref") or "").strip()
                     mime = (target_artifact.get("mime") or "").strip().lower()
                     expected_size = target_artifact.get("size_bytes")
                     if not isinstance(expected_size, int):
@@ -839,33 +916,27 @@ async def rehost_files_from_timeline(
                                 needs_rehost = True
                             elif src and _target_looks_like_preview(target):
                                 needs_rehost = True
+                            elif object_ref and expected_size is None:
+                                needs_rehost = True
                         if needs_rehost:
                             if src:
                                 try:
                                     data = await store.get_blob_bytes(src)
                                     target.write_bytes(data)
                                 except Exception:
-                                    if target_artifact.get("base64"):
-                                        import base64 as _b64
-                                        target.write_bytes(_b64.b64decode(target_artifact.get("base64")))
-                                    elif (
-                                        isinstance(target_artifact.get("text"), str)
-                                        and _is_text_mime(mime)
-                                        and not _is_preview_text(target_artifact.get("text") or "")
+                                    if not await _write_recoverable_content(
+                                        artifact=target_artifact,
+                                        target=target,
+                                        mime=mime,
+                                        expected_size=expected_size,
                                     ):
-                                        target.write_text(target_artifact.get("text"), encoding="utf-8")
-                                    else:
                                         raise
-                            elif target_artifact.get("base64"):
-                                import base64 as _b64
-                                target.write_bytes(_b64.b64decode(target_artifact.get("base64")))
-                            elif (
-                                isinstance(target_artifact.get("text"), str)
-                                and _is_text_mime(mime)
-                                and not _is_preview_text(target_artifact.get("text") or "")
+                            elif not await _write_recoverable_content(
+                                artifact=target_artifact,
+                                target=target,
+                                mime=mime,
+                                expected_size=expected_size,
                             ):
-                                target.write_text(target_artifact.get("text"), encoding="utf-8")
-                            else:
                                 missing.append(target_key)
                                 continue
                         rehosted.append(target_key)
@@ -1362,6 +1433,13 @@ class ApplicationHostingService:
         self.comm = comm
         self.log = logger or logging.getLogger(__name__)
 
+    def _log_error(self, message: str) -> None:
+        error = getattr(self.log, "error", None)
+        if callable(error):
+            error(message)
+            return
+        self.log.log(message, level="ERROR")
+
     def _extract_file_fields(self, a: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if not isinstance(a, dict):
             return None
@@ -1445,8 +1523,17 @@ class ApplicationHostingService:
             try:
                 data = p.read_bytes()
             except Exception as ex:
-                self.log.log(f"[host_files] Failed to read file {p}: {ex}", level="ERROR")
+                self._log_error(f"[host_files] Failed to read file {p}: {ex}")
                 continue
+            declared_mime = str(info.get("mime") or "application/octet-stream").strip().lower()
+            if declared_mime in MODALITY_IMAGE_MIME:
+                image_validation = validate_image_bytes(data, media_type=declared_mime)
+                if not image_validation.get("valid"):
+                    self._log_error(
+                        "[host_files] Rejected invalid image "
+                        f"{p}: {image_validation.get('error') or 'invalid_image_data'}"
+                    )
+                    continue
             # Content fingerprint over the bytes already read (no extra I/O).
             content_sha256 = _hashlib.sha256(data).hexdigest()
 

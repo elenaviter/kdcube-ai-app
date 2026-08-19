@@ -24,6 +24,10 @@ from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace.references import (
     normalize_physical_path,
     split_physical_artifact_path,
 )
+from kdcube_ai_app.infra.service_hub.multimodality import (
+    MODALITY_IMAGE_MIME,
+    validate_image_bytes,
+)
 
 
 def detect_edit(*, timeline: Any, artifact_path: str, tool_call_id: str) -> bool:
@@ -142,6 +146,10 @@ def build_artifact_binary_block(
         if not abs_path.exists() or not abs_path.is_file():
             return None
         data = abs_path.read_bytes()
+        if mime.strip().lower() in MODALITY_IMAGE_MIME:
+            validation = validate_image_bytes(data, media_type=mime)
+            if not validation.get("valid"):
+                return None
         b64 = base64.b64encode(data).decode("utf-8")
     except Exception:
         return None
