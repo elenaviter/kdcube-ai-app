@@ -60,6 +60,8 @@ Pillow
 lxml
 tiktoken
 
+numpy==2.2.6
+scipy==1.16.1
 pandas
 matplotlib
 
