@@ -198,7 +198,13 @@ On release, the same file is truncated back to empty and unlocked.
 caller
   |
   v
-observed_file_lock(lock_path, resource_id, operation, wait_seconds=...)
+observed_file_lock(
+    lock_path,
+    resource_id,
+    operation,
+    wait_seconds=...,
+    wait_notification_interval_seconds=30,
+)
   |
   |-- acquire in-process lock for this lock_path
   |
@@ -219,7 +225,7 @@ observed_file_lock(lock_path, resource_id, operation, wait_seconds=...)
   |   read same lock file metadata
   |     |
   |     v
-  |   log/wait callback:
+  |   log/wait callback (immediate, then rate-limited):
   |     age, owner instance, host, pid, operation
   |     |
   |     v
@@ -245,6 +251,13 @@ Callers can pass a wait budget. If the owner process dies, the OS releases the
 `fcntl` lock and the next caller proceeds. If the owner process is still alive
 but stuck, the waiter fails after the configured budget instead of blocking an
 MCP request or route handler forever.
+
+Lock acquisition continues polling at `poll_interval_seconds`, independently
+of diagnostics. The first wait callback is immediate; repeated callbacks are
+limited by `wait_notification_interval_seconds` (30 seconds by default). This
+keeps owner and lock-age evidence visible without emitting one warning per
+250-millisecond acquisition poll. Callers may set the notification interval to
+zero when every poll is intentionally observable.
 
 ## Runtime Lifecycle Usage
 

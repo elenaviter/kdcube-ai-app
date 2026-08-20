@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 from kdcube_ai_app.storage.observed_file_locks import (
     ObservedFileLockTimeout,
     observed_file_lock,
+    observed_file_lock_async,
 )
 
 
@@ -47,3 +49,57 @@ def test_observed_file_lock_times_out_when_process_lock_is_held(tmp_path):
                 poll_interval_seconds=0.001,
             ):
                 raise AssertionError("inner lock should not be acquired")
+
+
+def test_observed_file_lock_rate_limits_wait_notifications(tmp_path):
+    lock_path = tmp_path / "resource.lock"
+    notifications = []
+
+    with observed_file_lock(
+        lock_path=lock_path,
+        resource_id="resource",
+        operation="outer",
+    ):
+        with pytest.raises(ObservedFileLockTimeout):
+            with observed_file_lock(
+                lock_path=lock_path,
+                resource_id="resource",
+                operation="inner",
+                wait_seconds=0.03,
+                poll_interval_seconds=0.001,
+                wait_notification_interval_seconds=1.0,
+                on_wait=lambda path, metadata, age: notifications.append(
+                    (path, metadata, age)
+                ),
+            ):
+                raise AssertionError("inner lock should not be acquired")
+
+    assert len(notifications) == 1
+
+
+def test_observed_file_lock_async_rate_limits_wait_notifications(tmp_path):
+    lock_path = tmp_path / "resource.lock"
+    notifications = []
+
+    async def _run() -> None:
+        async with observed_file_lock_async(
+            lock_path=lock_path,
+            resource_id="resource",
+            operation="outer",
+        ):
+            with pytest.raises(ObservedFileLockTimeout):
+                async with observed_file_lock_async(
+                    lock_path=lock_path,
+                    resource_id="resource",
+                    operation="inner",
+                    wait_seconds=0.03,
+                    poll_interval_seconds=0.001,
+                    wait_notification_interval_seconds=1.0,
+                    on_wait=lambda path, metadata, age: notifications.append(
+                        (path, metadata, age)
+                    ),
+                ):
+                    raise AssertionError("inner lock should not be acquired")
+
+    asyncio.run(_run())
+    assert len(notifications) == 1

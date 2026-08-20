@@ -125,11 +125,18 @@ def _notify_wait(
     *,
     lock_path: pathlib.Path,
     on_wait: Optional[LockWaitCallback],
-) -> None:
+    last_notification_at: Optional[float],
+    notification_interval_seconds: float,
+) -> Optional[float]:
     if on_wait is None:
-        return
+        return last_notification_at
+    now = time.monotonic()
+    interval = max(0.0, float(notification_interval_seconds))
+    if last_notification_at is not None and now - last_notification_at < interval:
+        return last_notification_at
     metadata = read_lock_metadata(lock_path)
     on_wait(lock_path, metadata, lock_metadata_age_seconds(metadata))
+    return now
 
 
 def _deadline(wait_seconds: Optional[float]) -> Optional[float]:
@@ -171,6 +178,7 @@ def observed_file_lock(
     on_wait: Optional[LockWaitCallback] = None,
     wait_seconds: Optional[float] = None,
     poll_interval_seconds: float = 0.25,
+    wait_notification_interval_seconds: float = 30.0,
 ) -> Iterator[LockMetadata]:
     """
     Acquire an observable local/EFS filesystem lock.
@@ -182,8 +190,14 @@ def observed_file_lock(
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     deadline = _deadline(wait_seconds)
     process_lock = _process_lock(str(lock_path.resolve()))
+    last_notification_at: Optional[float] = None
     while not process_lock.acquire(blocking=False):
-        _notify_wait(lock_path=lock_path, on_wait=on_wait)
+        last_notification_at = _notify_wait(
+            lock_path=lock_path,
+            on_wait=on_wait,
+            last_notification_at=last_notification_at,
+            notification_interval_seconds=wait_notification_interval_seconds,
+        )
         _timeout_if_expired(deadline, lock_path=lock_path, operation=operation)
         time.sleep(_sleep_interval(deadline, poll_interval_seconds))
     owner_token = os.urandom(16).hex()
@@ -200,7 +214,12 @@ def observed_file_lock(
                     fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     break
                 except BlockingIOError:
-                    _notify_wait(lock_path=lock_path, on_wait=on_wait)
+                    last_notification_at = _notify_wait(
+                        lock_path=lock_path,
+                        on_wait=on_wait,
+                        last_notification_at=last_notification_at,
+                        notification_interval_seconds=wait_notification_interval_seconds,
+                    )
                     _timeout_if_expired(deadline, lock_path=lock_path, operation=operation)
                     time.sleep(_sleep_interval(deadline, poll_interval_seconds))
             _write_lock_metadata(fh, metadata)
@@ -223,12 +242,19 @@ async def observed_file_lock_async(
     on_wait: Optional[LockWaitCallback] = None,
     wait_seconds: Optional[float] = None,
     poll_interval_seconds: float = 0.25,
+    wait_notification_interval_seconds: float = 30.0,
 ) -> AsyncIterator[LockMetadata]:
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     deadline = _deadline(wait_seconds)
     process_lock = _process_lock(str(lock_path.resolve()))
+    last_notification_at: Optional[float] = None
     while not process_lock.acquire(blocking=False):
-        _notify_wait(lock_path=lock_path, on_wait=on_wait)
+        last_notification_at = _notify_wait(
+            lock_path=lock_path,
+            on_wait=on_wait,
+            last_notification_at=last_notification_at,
+            notification_interval_seconds=wait_notification_interval_seconds,
+        )
         _timeout_if_expired(deadline, lock_path=lock_path, operation=operation)
         await asyncio.sleep(_sleep_interval(deadline, poll_interval_seconds))
     owner_token = os.urandom(16).hex()
@@ -245,7 +271,12 @@ async def observed_file_lock_async(
                     fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     break
                 except BlockingIOError:
-                    _notify_wait(lock_path=lock_path, on_wait=on_wait)
+                    last_notification_at = _notify_wait(
+                        lock_path=lock_path,
+                        on_wait=on_wait,
+                        last_notification_at=last_notification_at,
+                        notification_interval_seconds=wait_notification_interval_seconds,
+                    )
                     _timeout_if_expired(deadline, lock_path=lock_path, operation=operation)
                     await asyncio.sleep(_sleep_interval(deadline, poll_interval_seconds))
             _write_lock_metadata(fh, metadata)
