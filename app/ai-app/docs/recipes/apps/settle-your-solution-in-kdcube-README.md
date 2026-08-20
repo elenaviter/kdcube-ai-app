@@ -4,7 +4,8 @@ title: "Settle Your Solution In A KDCube App"
 summary: "Executable procedure a coding agent (or engineer) follows to host an existing Python agent — in its own framework — as a KDCube app: preserve the solution as an independently maintainable package, add a thin async wrap (turn, stream, state scope, accounted services, prompt composition, per-turn rebuild), then satisfy the canonical app-package contract. Worked instance: ported-langgraph-agents@2026-07-13."
 status: draft
 tags: ["recipes", "kdcube-for-agents", "settle", "wrap", "langgraph", "streaming", "bundle", "app", "scaled-serving", "turn-workspace", "attachments"]
-updated_at: 2026-08-18
+updated_at: 2026-08-20
+keywords: ["host existing agent", "foreign runtime", "minimal TurnLog", "searchable transcript", "framework-native checkpointer", "conversation record"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-write-bundle-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/chat/chat-stream-events-README.md
@@ -344,9 +345,11 @@ owned by the solution boundary. KDCube separately owns the **conversation record
 chat component's list / fetch / reload work with **no** record-writing code in your
 app. What "reload works" means for a run-to-completion turn:
 
-- The platform records a **minimal turn log** carrying the **user message, its
-  attachments, and any hosted files** plus your `state["final_answer"]` — so the
-  reloaded turn shows the user bubble + files, not just the answer.
+- The platform records a **minimal TurnLog** carrying every folded user
+  submission, its context objects and attachments, any hosted files, and your
+  `state["final_answer"]`. The same payload projects separate user/assistant
+  rows for semantic, lexical, and trigram conversation search. The TurnLog
+  remains the reload source and stays unembedded.
 - The dynamic objects your turn **emits through comm** — citations, progress steps,
   follow-ups — are captured full-payload and materialized on reload. Stored stream
   rows return as synthetic completed deltas, so the client reconstructs the same

@@ -156,6 +156,11 @@ def test_record_foreign_runtime_turn_log_records_ordered_user_and_assistant_bloc
                     }
                 },
             },
+            {
+                "type": "event.user.followup",
+                "batch_id": "batch-2",
+                "payload": {"event": {"text": "use the cropped version"}},
+            },
         ],
         "hosted_files": [
             {
@@ -188,15 +193,21 @@ def test_record_foreign_runtime_turn_log_records_ordered_user_and_assistant_bloc
     blocks = saved["payload"]["blocks"]
     assert [b["type"] for b in blocks] == [
         "user.prompt",
+        "user.prompt",
         "user.attachment.meta",
         "react.tool.result",
         "assistant.completion",
     ]
     assert blocks[0]["text"] == "send this image"
     assert blocks[0]["meta"]["batch_id"] == "batch-1"
-    assert blocks[1]["meta"]["filename"] == "image.png"
-    assert json.loads(blocks[2]["text"])["filename"] == "test.png"
-    assert blocks[3]["text"] == "uploaded"
+    assert blocks[1]["text"] == "use the cropped version"
+    assert blocks[1]["meta"]["event_type"] == "event.user.followup"
+    assert blocks[1]["meta"]["batch_id"] == "batch-2"
+    assert blocks[2]["meta"]["filename"] == "image.png"
+    assert json.loads(blocks[3]["text"])["filename"] == "test.png"
+    assert blocks[4]["text"] == "uploaded"
+    assert saved["recording_kind"] == "minimal"
+    assert saved["index_transcript"] is True
     assert client.timeline_artifacts
 
 

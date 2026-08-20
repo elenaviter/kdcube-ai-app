@@ -75,7 +75,7 @@ turn-starting event (prompt / queued followup)
 The wakeup is the only thing that starts a new agent turn. It points at one
 accepted lane occurrence, not at the complete input. `run()` is the shared
 `@on_reactive_event` door on the app base (`BaseEntrypoint.run` /
-`BaseEntrypointWithEconomics.run`). Native ReAct opens the live handler there; a
+`BaseEntrypointWithEconomics.run`). The native ReAct agent opens the live handler there; a
 foreign-runtime adapter reads the whole still-pending lane once, sequence orders
 it, and maps that snapshot into its framework input before `execute_core` runs.
 
@@ -177,7 +177,7 @@ existing lane primitives (the same exactly-once `mark_consumed_up_to` a
 `BaseWorkflow` uses for the wake occurrence, exact `mark_consumed_event` for
 the folded snapshot, owner-fenced `mark_consumer_none`, and the wake re-publish);
 it does not infer an agent type and touches nothing on the ReAct path. The folded event-id
-input is absent for native ReAct, so the shared finalizer remains inert there by
+input is absent for the native ReAct agent, so the shared finalizer remains inert there by
 state.
 
 Consuming only the wake occurrence is not enough. If the snapshot contains a

@@ -518,7 +518,7 @@ lane hands a turn a consumer reservation, and that reservation is kept by
 ACKNOWLEDGEMENT, not by the task still being alive: `scheduled` counts as fresh
 only within `scheduled_ttl_ms` (30 000 ms).
 
-Native ReAct re-marks it while it works. Run-to-completion hosted turns did not,
+The native ReAct agent re-marks it while it works. Run-to-completion hosted turns did not,
 and they can run for minutes — the press lane's are bounded at 900 seconds — so
 for most of a long turn the lane believed nobody was consuming it and a message
 typed by the person was admitted as a new turn instead of queueing behind the

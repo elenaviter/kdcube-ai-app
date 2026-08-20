@@ -13,6 +13,7 @@ import asyncio
 from types import SimpleNamespace
 
 from kdcube_ai_app.apps.chat.sdk.solutions.conversation.record import (
+    TURN_LOG_RECORDING_MINIMAL,
     build_error_turn_log_payload,
     build_stream_artifact_payload,
     persist_stream_artifacts,
@@ -222,6 +223,72 @@ def test_fallback_is_inert_when_a_rich_turn_log_was_recorded():
 
     assert ctx.saved == []
     assert comm.cleared is None
+
+
+def test_fallback_persists_after_a_minimal_turn_log_was_recorded():
+    """A minimal foreign log owns bubbles/files, not subsystem streams."""
+    reset_turn_log_recorded()
+    mark_turn_log_recorded(TURN_LOG_RECORDING_MINIMAL)
+    comm = _FakeComm([_exec_aggregate()])
+    ctx = _FakeCtxClient()
+    state = {"conversation_id": "conv-1", "turn_id": "turn-1", "user": "u"}
+
+    _run_fallback(_entrypoint_stub(comm, ctx), state)
+
+    assert len(ctx.saved) == 1
+    assert ctx.saved[0]["kind"] == "conv.artifacts.stream"
+
+
+def test_recorded_chat_events_persist_after_a_minimal_turn_log() -> None:
+    from kdcube_ai_app.apps.chat.sdk.solutions.chatbot.entrypoint import BaseEntrypoint
+
+    class _RecordedEventsComm:
+        def __init__(self) -> None:
+            self.export_types: list[str] = []
+            self.items = [
+                {"type": "accounting.usage", "route_key": "chat_step"},
+                {"type": "chat.step", "route_key": "chat_step", "title": "Working"},
+            ]
+
+        def export_recorded_events(self, selector):
+            self.export_types = list(selector["include"]["types"])
+            return [item for item in self.items if item["type"] in self.export_types]
+
+    reset_turn_log_recorded()
+    mark_turn_log_recorded(TURN_LOG_RECORDING_MINIMAL)
+    ctx = _FakeCtxClient()
+    comm = _RecordedEventsComm()
+
+    async def get_ctx_client():
+        return ctx
+
+    stub = SimpleNamespace(
+        comm=comm,
+        get_ctx_client=get_ctx_client,
+        _persist_events_enabled=lambda: True,
+        _persist_event_types=lambda: ["accounting.usage"],
+        _conversation_event_types=lambda: ["chat.step"],
+        config=SimpleNamespace(ai_bundle_spec=SimpleNamespace(id="b@1")),
+        settings=SimpleNamespace(TENANT="t", PROJECT="p"),
+        runtime_ctx=SimpleNamespace(agent_id="lg-react"),
+        logger=SimpleNamespace(log=lambda *a, **k: None),
+    )
+    state = {
+        "tenant": "t",
+        "project": "p",
+        "user": "u",
+        "conversation_id": "conv-1",
+        "turn_id": "turn-1",
+    }
+
+    asyncio.run(BaseEntrypoint._save_events_artifact(stub, state=state))
+
+    assert comm.export_types == ["accounting.usage", "chat.step"]
+    assert len(ctx.saved) == 1
+    assert [item["type"] for item in ctx.saved[0]["content"]["items"]] == [
+        "accounting.usage",
+        "chat.step",
+    ]
 
 
 def test_failed_turn_log_fallback_recovers_user_input_from_external_events():

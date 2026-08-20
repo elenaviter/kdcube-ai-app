@@ -3597,7 +3597,7 @@ class BaseEntrypoint:
         artifact's rows as synthetic completed deltas).
 
         State-conditional, inert on the React path twice over: a rich-log turn
-        is skipped by `turn_log_was_recorded()`, and React's own
+        is skipped by `rich_turn_log_was_recorded()`, and React's own
         `BaseWorkflow._persist_stream_artifacts` has already saved AND CLEARED
         the aggregates inside `execute_core` — there is nothing left to export.
         Same builder as React (`build_stream_artifact_payload`), so the stored
@@ -3605,9 +3605,9 @@ class BaseEntrypoint:
         try:
             from kdcube_ai_app.apps.chat.sdk.solutions.conversation.record import (
                 persist_stream_artifacts,
-                turn_log_was_recorded,
+                rich_turn_log_was_recorded,
             )
-            if turn_log_was_recorded():
+            if rich_turn_log_was_recorded():
                 return
             conversation_id = str(state.get("conversation_id") or state.get("session_id") or "").strip()
             turn_id = str(state.get("turn_id") or getattr(self, "_turn_id", None) or "").strip()
@@ -3662,9 +3662,9 @@ class BaseEntrypoint:
             # avoid double-rendering them on reload. A framework-neutral turn wrote no
             # such log, so ALSO persist the recorded conversation objects; the reload
             # replays them and the client renders them exactly as it did live.
-            from kdcube_ai_app.apps.chat.sdk.solutions.conversation.record import turn_log_was_recorded
+            from kdcube_ai_app.apps.chat.sdk.solutions.conversation.record import rich_turn_log_was_recorded
             export_types = list(step_types)
-            if not turn_log_was_recorded():
+            if not rich_turn_log_was_recorded():
                 export_types = export_types + [
                     t for t in self._conversation_event_types() if t not in export_types
                 ]

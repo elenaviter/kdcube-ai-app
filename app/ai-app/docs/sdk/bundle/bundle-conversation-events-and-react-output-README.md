@@ -296,8 +296,9 @@ with the provider name, required claim, and a link from `action_url` or
 
 ## Indexing Boundary
 
-`conv_messages` indexing is a finalization projection from timeline/turn-log
-blocks:
+`conv_messages` indexing is a content projection from accepted timeline/TurnLog
+blocks. ReAct writes it during rich finalization; the framework-neutral minimal
+recorder derives the user and final-assistant rows from the same TurnLog payload:
 
 | Row type | Source |
 | --- | --- |

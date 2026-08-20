@@ -3,7 +3,7 @@ id: repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/conversation/search-README.
 title: "Conversation Search"
 summary: "One search engine over the conversation memory realm, three doors into it: the in-app agent (react.memsearch and the `conv` named service), external agents (the managed MCP surface served by the kdcube-services app), and people (a REST endpoint plus the chat-widget search UI). Covers the search model (user boundary ∩ scope ∩ time window ∩ targets), hybrid ranking with user-held rank weights, honest summary/notes labeling, snippet materialization with its retrieval-row fallback, and the explicit identity contract."
 tags: ["sdk", "solutions", "conversation", "search", "conv", "memory-realm", "named-service-provider", "rank-weights", "rrf"]
-updated_at: 2026-07-11
+updated_at: 2026-08-20
 keywords:
   [
     "conversation search",
@@ -120,6 +120,18 @@ final_score = rrf_score × (1 + w_rec · L · recency)   L = 1.0, half-life 7 da
 - Every weight defaults to **1.0**, and all-1.0 (or omitting the knob entirely)
   reproduces the unweighted fusion **byte-identically** — the knob is only
   forwarded to the backend when set, so backends without it keep working.
+
+### Which hosted turns contribute content rows
+
+Every framework-neutral minimal TurnLog projects one index-only row per folded
+user submission and one for the final assistant completion. These rows share
+the saved turn identity and carry `projection:minimal.turn.log`; embedding is
+best effort, while their stored text always remains eligible for lexical and
+trigram retrieval. KDCube ReAct writes the same prompt/completion roles through
+its rich finalization and additionally contributes supported attachment text,
+working summaries, retrieval anchors, and selected notes. Agent-native
+checkpoints and session stores remain separate continuation mechanisms and are
+not searched as platform conversation content.
 
 ### Honest summary and notes labeling
 

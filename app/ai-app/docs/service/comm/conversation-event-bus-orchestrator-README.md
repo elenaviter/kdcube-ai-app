@@ -237,7 +237,7 @@ state and event timestamps to decide what can be accepted.
 
 ## Run-To-Completion Hosted Runtime Boundary
 
-The flow above is the native ReAct handler flow. A run-to-completion hosted
+The flow above is the native ReAct agent handler flow. A run-to-completion hosted
 runtime, such as a foreign-runtime adapter, uses the same wake scheduling step
 but does not open `T.handler` and does not start the live Reader/Consumer.
 
@@ -254,8 +254,8 @@ shared door finalizer:
   publishes ONE wake, and only for reactive events after the last steer
 ```
 
-This is not a replacement for ReAct's live folding into a running timeline.
-Native ReAct accepts later batches into the current turn while the handler is
+This is not a replacement for the ReAct agent's live folding into a running timeline.
+The native ReAct agent accepts later batches into the current turn while the handler is
 open; a hosted runtime folds at turn start and, while it runs, is reached (or
 stopped) by whatever its own runtime supports — a cancelled stream, a tool-call
 hook decision — never by folding into a loop it does not own.

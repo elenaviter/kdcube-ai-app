@@ -1,7 +1,7 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/arch/proc/events-orchestration-README.md
 title: "Proc Events Orchestration"
-summary: "Processor-side orchestration for external events: ready-queue wakeups, lane payload resolution, owner-fenced scheduling, native ReAct folding, and foreign-runtime pending snapshots."
+summary: "Processor-side orchestration for external events: ready-queue wakeups, lane payload resolution, owner-fenced scheduling, native ReAct agent folding, and foreign-runtime pending snapshots."
 status: active
 tags: ["arch", "proc", "events", "external-events", "redis", "processor", "react"]
 keywords:
@@ -60,7 +60,7 @@ Processor
   |
   v
   Bundle runtime
-    native ReAct:
+    native ReAct agent:
       ContextBrowser performs the initial fold, then its live listener folds
       later lane events into the same turn before subsequent model renders
     run-to-completion hosted runtime:
@@ -154,9 +154,9 @@ The resolved payload is still a full `ExternalEventPayload`, so communicator,
 economics, runtime context, and non-ReAct workflows can use the same processor
 execution machinery.
 
-## Native ReAct Versus Run-To-Completion Hosted Runtimes
+## Native ReAct Agent Versus Run-To-Completion Hosted Runtimes
 
-Native ReAct opens a `ContextBrowser` handler and owns the lane while the turn is
+The native ReAct agent opens a `ContextBrowser` handler and owns the lane while the turn is
 alive. A later reactive batch that arrives before the close gate can be accepted
 by that live handler, folded into the current timeline, and rendered by the same
 turn. If it is not accepted before close, post-save handoff wakes a later turn.

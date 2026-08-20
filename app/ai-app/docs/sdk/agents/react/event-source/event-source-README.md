@@ -285,7 +285,7 @@ wrap/line-number the preview again.
 | Source family | Declarations | Policy pack |
 |---|---|---|
 | ReAct conversation events | `react.message`, `react.user_attachment`, `react.followup`, `react.steer`, `react.external_event` | Built-in default block producers for prompt, attachment, followup, steer, and generic/domain events; snapshot/canvas defaults are selected by accepted event `type`; some built-in user-event compaction preservation remains partly hardcoded. |
-| Native ReAct tools | `react.write`, `react.memsearch` | Native handlers produce blocks directly; timeline/compaction policies make them addressable. |
+| Native ReAct agent tools | `react.write`, `react.memsearch` | Native agent handlers produce blocks directly; timeline/compaction policies make them addressable. |
 | Web tools | `web_tools.web_search`, `web_tools.web_fetch` | `exploration_source_policies()` merges source rows into `sources_pool` and creates the ordinary result item. |
 | Browser tools | `browser_tools.open_page`, `click`, `fill`, `scroll`, `status`, `close` | `structured_result_source_policies()` creates JSON/text result items and declared-file rows. |
 | Rendering tools | `rendering_tools.write_pptx`, `write_png`, `write_pdf`, `write_docx` | `write_tool_source_policies()` prepares inputs and maps `params.path` to the produced artifact row. |

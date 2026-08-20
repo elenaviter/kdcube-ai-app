@@ -4,6 +4,11 @@ title: "Ported LangGraph Agents Storage Map"
 summary: "The non-hosted → hosted storage transition for ported-langgraph-agents@2026-07-13: each preserved agent's own Postgres store (memory/KB/checkpointer) is routed onto KDCube's SHARED Postgres (pg_pool) into ONE per-tenant/project schema with bundle-prefixed tables and explicit agent_id scope."
 status: active
 tags: ["ported-langgraph-agents", "storage", "postgres", "pgvector", "langgraph", "checkpointer", "pg_pool", "stateless", "multi-agent", "platform"]
+updated_at: 2026-08-20
+keywords: ["LangGraph storage", "minimal TurnLog", "searchable transcript", "hosted files", "conv:fi", "private checkpointer"]
+see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/conversation/hosted-agent-conversation-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/langgraph/langgraph-agent-README.md
 ---
 
 # Ported LangGraph Agents Storage Map
@@ -106,12 +111,16 @@ lg-solution and lg-react resolves to different keys. Anonymous callers fall back
 
 KDCube separately owns the reloadable conversation record — framework-neutral, the
 app writes no React timeline. After the turn the platform records a **minimal turn
-log** (user prompt + attachments + hosted files + `final_answer`) and an **events
-artifact** materializing the dynamic objects the turn emitted through comm (citations,
-steps, follow-ups). The app only sets `state["final_answer"]` (+ `state["hosted_files"]`
-for code-exec output). Reload content comes from **comm + the turn log**, not runtime
-`state`. Hosted files download through the `scene_object_action` operation the bundle
-serves.
+log** (every folded prompt/follow-up/steer + context objects + attachments + hosted
+files + `final_answer`) and separate index-only user/assistant rows for semantic,
+lexical, and trigram search. An **events artifact** materializes the dynamic objects
+the turn emitted through comm (citations, steps, follow-ups), while a stream artifact
+preserves canvas/tool/subsystem projections such as code execution. The app sets
+`state["final_answer"]` (+ `state["hosted_files"]` for code-exec output) and calls the
+shared foreign-runtime recorder; reload content comes from **comm + the TurnLog**, not
+runtime `state`. Hosted files download through the `scene_object_action` operation
+the bundle serves. The graph's checkpointer remains the graph's private continuation
+store.
 
 ## The map-by-data-kind rule
 
@@ -131,7 +140,7 @@ serves.
 | lg-solution knowledge base | the agent | `pg_pool`, `ported_langgraph_agents_kb` | `(…,agent_id,title)` unique | Seeded corpus; shared across users. |
 | lg-solution / lg-react checkpoints | the agent (framework) | `pg_pool`, `kdcube_{tenant}_{project}` | `thread_id` (user + agent) | Unreachable DB → an in-memory `MemorySaver`. |
 | Checkpointer connection | this app (process-local) | process memory | per process, per agent | A CONNECTION, opened once and reused across turn-bound graph builds. |
-| Conversation record (turn log + events) | the platform | platform conversation store | platform conversation id | Framework-neutral; the app sets `state["final_answer"]` / `hosted_files`. |
+| Conversation record (TurnLog + searchable role rows + events/streams) | the platform | platform conversation store/index | platform user + conversation + turn + agent | Framework-neutral; the app supplies `state["final_answer"]` / `hosted_files` and the shared recorder projects every folded input. |
 | User agent selection (model pick) | the platform | KDCube control-plane Postgres (`UserAgentSelectionStore`) | `(user_id, bundle_id, agent_id, conversation_id)` | Read-through; resolved per turn for the ACTIVE agent. |
 | Economics / budget state | the platform | KDCube control-plane Postgres + Redis | tenant/project/user subject | Read-through; seeded at deploy from `economics.yaml`. |
 

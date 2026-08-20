@@ -190,7 +190,17 @@ def external_event_attachment_payloads(events: Any) -> List[Dict[str, Any]]:
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
         body = payload.get("event") if isinstance(payload.get("event"), dict) else {}
         if body:
-            out.append(dict(body))
+            item = dict(body)
+            # Keep submission attribution when returning the compact body. The
+            # foreign-lane fold stamps these fields on the event wrapper, while
+            # direct dispatches commonly carry public batch_id/ts fields.
+            for key in ("batch_id", "ts"):
+                if item.get(key) in (None, "") and event.get(key) not in (None, ""):
+                    item[key] = event.get(key)
+            for key, value in event.items():
+                if key.startswith("_kdcube_lane_") and value not in (None, ""):
+                    item[key] = value
+            out.append(item)
     return out
 
 

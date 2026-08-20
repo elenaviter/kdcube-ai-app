@@ -68,7 +68,7 @@ two ways (the [runtimes map](runtimes-map-README.md), §3): an app's direct surf
 `@api`, `@mcp`, widgets — answer in place, request/response, and supported
 entries can *submit* conversational work; work **for the agent** lands on the
 **conversation event lane**: the ordered work lane for one conversation. The
-lane reserves one turn at a time. Native ReAct may fold through an open handler;
+lane reserves one turn at a time. The native ReAct agent may fold through an open handler;
 a foreign runtime takes the whole pending lane as one read-only start snapshot.
 Same-conversation turns serialize across workers while different conversations run in parallel
 ([Reactive Turn Delivery](../sdk/events/reactive-turn-delivery-README.md)).
@@ -79,10 +79,10 @@ events — `followup`, `steer`, and other supported external events — into one
 shared, Redis-backed conversation event source. What happens next belongs to
 the adapter's declared consumption model:
 
-- native ReAct holds a fenced live handler; a **follow-up** folds into the current turn, lands on the turn's own
+- the native ReAct agent holds a fenced live handler; a **follow-up** folds into the current turn, lands on the turn's own
   timeline as a real block, can trigger another decision round before
   completion, and mints extra iteration credit for the turn;
-- native ReAct folds a **steer** as a control interrupt: it cancels the active generation
+- the native ReAct agent folds a **steer** as a control interrupt: it cancels the active generation
   or cancellable tool phase where possible (in isolated execution that
   becomes a container/subprocess kill), then the agent re-enters with the
   steer already on its timeline for a bounded finalize;
@@ -292,7 +292,7 @@ the per-agent inventory narrows it, and the user narrows it further
 
 The two worked apps make the difference concrete:
 
-| Dimension | `workspace` (native ReAct) | `ported-langgraph-agents` (integrated) |
+| Dimension | `workspace` (native ReAct agent) | `ported-langgraph-agents` (integrated) |
 | --- | --- | --- |
 | Reasoning core | KDCube ReAct rounds, protocol, action governance | framework/domain-owned LangGraph graphs under `solution/`; deliberate integration changes stay small and documented |
 | Construction | agent built fresh per turn from `config.react` ⊕ `surfaces.as_consumer` (inventory, instructions, traits, event sources) | dispatcher resolves the agent id, builds a fresh graph per turn bound to the turn's identity |

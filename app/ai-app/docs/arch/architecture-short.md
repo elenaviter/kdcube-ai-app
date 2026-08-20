@@ -127,7 +127,7 @@ tenant + project + user + conversation + agent
 Reactive ingress atomically writes one prepared batch to the lane and admits one
 bodyless wake to the processor queue. Non-reactive events enter only the lane.
 The lane sequence defines order; the queue schedules one serialized app turn.
-Native ReAct can fold eligible later events through owner-fenced lane handling.
+The native ReAct agent can fold eligible later events through owner-fenced lane handling.
 The current run-to-completion adapter folds the whole pending lane once at
 start, keeps only its own scheduled reservation fresh, and watches control
 read-only while later content remains pending. At handoff a bare steer expires;

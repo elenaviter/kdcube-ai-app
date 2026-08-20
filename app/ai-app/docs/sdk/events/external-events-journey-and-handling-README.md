@@ -540,7 +540,7 @@ one ordered accepted batch to the lane. If the batch contains reactive user work
 the ready queue carries a wake for one selected occurrence from that batch. The
 processor resolves the wake back to the lane before invoking the app.
 
-For native ReAct, the live `ContextBrowser` opens the handler and drains the lane
+For the native ReAct agent, the live `ContextBrowser` opens the handler and drains the lane
 itself. For a run-to-completion hosted runtime, the rehydrated
 `state["external_events"]` may contain only the wake occurrence, so the runtime
 folds at turn start — and it folds **everything still pending on the lane**, in

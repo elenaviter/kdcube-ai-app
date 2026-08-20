@@ -90,7 +90,7 @@ event that arrives while that turn is alive. The running `ContextBrowser` owns
 those later lane reads and sends accepted events through the ReAct
 external-event hook under the Redis handler-owner fence.
 
-That live folding statement is specific to native ReAct-style runtimes that open
+That live folding statement is specific to native ReAct agent runtimes that open
 a `ContextBrowser` handler. A run-to-completion hosted runtime uses the same
 conversation event bus and processor wake, but folds the whole still-pending lane
 once before execution. It keeps its own `scheduled` reservation fresh and may

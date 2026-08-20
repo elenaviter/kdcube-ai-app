@@ -116,6 +116,8 @@ def test_fold_delivers_the_hosted_attachment_beside_the_prompt(monkeypatch):
     assert len(hosted) == 1
     assert hosted[0]["hosted_uri"] == "conv/turn_1/files/photo.png"
     assert hosted[0]["mime"] == "image/png"
+    assert hosted[0][mod.LANE_BATCH_ID_KEY] == "batch-1"
+    assert hosted[0][mod.LANE_TS_KEY] == "1970-01-01T00:16:43Z"
 
 
 def test_fold_skips_what_a_previous_turn_consumed(monkeypatch):

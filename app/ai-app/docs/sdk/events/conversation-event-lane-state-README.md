@@ -200,7 +200,7 @@ primitive, terminalizes every event in the start snapshot by exact message id,
 and calls `mark_consumer_none(turn_id=...)`. Events arriving after the snapshot
 remain pending. After release it emits at most one liveness wake for eligible
 reactive intent after the last steer. A bare steer is terminalized; textual steer
-stays pending but does not itself start a turn. Native ReAct is unaffected:
+stays pending but does not itself start a turn. The native ReAct agent is unaffected:
 `BaseWorkflow` already leaves the reservation released and the event accounted,
 so the shared finalizer is a state-based no-op.
 
@@ -230,7 +230,7 @@ diagnose long-running work, but it does not replace this lane-local
 acknowledgement.
 
 **A long turn must keep writing it through the primitive for its ownership
-model.** Native ReAct calls `mark_consumer_active` while its handler is open. A
+model.** The native ReAct agent calls `mark_consumer_active` while its handler is open. A
 foreign runtime calls `heartbeat_scheduled_consumer(turn_id=...)`; the update is
 ignored unless that same turn still owns a `scheduled` reservation, and the
 status remains `scheduled`. Before this heartbeat existed, a hosted turn's

@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-import datetime, traceback, logging
+import datetime, hashlib, traceback, logging
 import pathlib, json, asyncio
 from typing import Optional, Sequence, List, Dict, Any, Union, Callable
 
@@ -77,6 +77,8 @@ SOURCES_POOL_ARTIFACT_TAG = f"artifact:{SOURCES_POOL_KIND}"
 FINGERPRINT_KIND = "artifact:turn.fingerprint.v1"
 CONV_START_FPS_TAG = "conv.start"
 TURNS_SUMMARY_TAG = "conv.range.summary"
+CONVERSATION_TRANSCRIPT_INDEX_LABEL = "conversation"
+MINIMAL_TURN_TRANSCRIPT_TAG = "projection:minimal.turn.log"
 
 # Block types a subagent completion folds into the continuation turn's timeline
 # (converged / failed). Such a turn's triggering input was authored by the
@@ -638,6 +640,135 @@ class ContextRAGClient:
         doc = await self.store.get_message(artifact_uri)
         return doc.get("payload") or {}
 
+    async def save_minimal_turn_transcript_rows(
+            self,
+            *,
+            user: str,
+            conversation_id: str,
+            turn_id: str,
+            bundle_id: str,
+            agent_id: Optional[str],
+            payload: Dict[str, Any],
+    ) -> int:
+        """Index the user-visible transcript carried by a minimal TurnLog.
+
+        The TurnLog remains the reload source and keeps its compact accounting
+        index row unembedded. These separate role rows make the same prompts
+        and completion available to semantic, lexical, and trigram discovery,
+        matching the content-row contract used by the rich ReAct producer.
+        """
+        blocks = payload.get("blocks") if isinstance(payload, dict) else None
+        if not isinstance(blocks, list):
+            return 0
+
+        rows: List[Dict[str, Any]] = []
+        for entry in iter_turn_user_input_entries(blocks, turn_id=turn_id):
+            text = str(entry.get("index_text") or entry.get("text") or "").strip()
+            if not text:
+                continue
+            tags = ["chat:user", f"turn:{turn_id}", MINIMAL_TURN_TRANSCRIPT_TAG]
+            event_type = str(entry.get("user_event_type") or "").strip()
+            batch_id = str(entry.get("batch_id") or "").strip()
+            if event_type:
+                tags.append(f"event_type:{event_type}")
+            if batch_id:
+                tags.append(f"batch_id:{batch_id}")
+            rows.append({
+                "role": "user",
+                "text": text,
+                "ts": str(entry.get("ts") or payload.get("ts") or "").strip(),
+                "path": str(entry.get("path") or "").strip(),
+                "tags": tags,
+            })
+
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            if str(block.get("type") or "").strip() != "assistant.completion":
+                continue
+            block_turn_id = str(block.get("turn_id") or block.get("turn") or "").strip()
+            if block_turn_id and block_turn_id != turn_id:
+                continue
+            text = str(block.get("text") or "").strip()
+            if not text:
+                continue
+            meta = block.get("meta") if isinstance(block.get("meta"), dict) else {}
+            tags = ["chat:assistant", f"turn:{turn_id}", MINIMAL_TURN_TRANSCRIPT_TAG]
+            if meta.get("error"):
+                tags.append("chat:error")
+            rows.append({
+                "role": "assistant",
+                "text": text,
+                "ts": str(block.get("ts") or payload.get("end_ts") or payload.get("ts") or "").strip(),
+                "path": str(block.get("path") or f"conv:ar:{turn_id}.assistant.completion").strip(),
+                "tags": tags,
+            })
+
+        if not rows:
+            return 0
+
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+        embeddings: List[Optional[List[float]]] = [None] * len(rows)
+        if self.model_service is not None:
+            try:
+                from kdcube_ai_app.apps.chat.sdk.util import truncate_text_by_tokens
+
+                embedding_texts = [truncate_text_by_tokens(row["text"]) for row in rows]
+                generated = list(await self.model_service.embed_texts(embedding_texts))
+                if len(generated) != len(rows):
+                    raise ValueError(
+                        f"embedding count mismatch: expected {len(rows)}, got {len(generated)}"
+                    )
+                embeddings = generated
+            except Exception:
+                logger.warning(
+                    "minimal turn transcript embedding failed; lexical rows remain "
+                    "conversation_id=%s turn_id=%s",
+                    conversation_id,
+                    turn_id,
+                    exc_info=True,
+                )
+
+        persisted = 0
+        for ordinal, (row, embedding) in enumerate(zip(rows, embeddings)):
+            identity = "\x00".join((
+                conversation_id,
+                turn_id,
+                row["role"],
+                str(row.get("path") or ""),
+                str(ordinal),
+            ))
+            message_id = "turn-transcript-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
+            try:
+                await self.idx.add_message(
+                    user_id=user,
+                    conversation_id=conversation_id,
+                    turn_id=turn_id,
+                    bundle_id=bundle_id,
+                    agent_id=agent_id,
+                    role=row["role"],
+                    text=row["text"],
+                    hosted_uri="index_only",
+                    ts=row.get("ts") or now,
+                    tags=row["tags"],
+                    ttl_days=365,
+                    user_type=CONVERSATION_TRANSCRIPT_INDEX_LABEL,
+                    embedding=embedding,
+                    message_id=message_id,
+                )
+                persisted += 1
+            except Exception:
+                logger.warning(
+                    "minimal turn transcript row persistence failed "
+                    "conversation_id=%s turn_id=%s role=%s ordinal=%d",
+                    conversation_id,
+                    turn_id,
+                    row["role"],
+                    ordinal,
+                    exc_info=True,
+                )
+        return persisted
+
     async def save_turn_log_as_artifact(
             self,
             *,
@@ -647,7 +778,9 @@ class ContextRAGClient:
             bundle_id: str,
             agent_id: Optional[str] = None,
             payload: Optional[Dict[str, Any]] = None,
-            extra_tags: Optional[List[str]] = None
+            extra_tags: Optional[List[str]] = None,
+            recording_kind: str = "rich",
+            index_transcript: bool = False,
     ) -> Dict[str, Any]:
         """Writes artifact to store and/or index (see index_only/store_only flags)."""
         from kdcube_ai_app.apps.chat.sdk.runtime.harness.timeline.turn_log import TurnLog
@@ -678,14 +811,34 @@ class ContextRAGClient:
             tags=tags,
             ttl_days=365, user_type=user_type, embedding=None, message_id=message_id
         )
-        # Any turn-log write (React's rich log, or the minimal fallback) marks
-        # the turn recorded, so the framework-neutral fallback stays a no-op
-        # when a log already exists this turn.
+        # Existence prevents a second TurnLog. Recording kind separately tells
+        # replay exporters whether this log already owns dynamic events/streams.
+        # Mark immediately after the durable log/index write: the searchable
+        # transcript is an independent best-effort projection and must not make
+        # a successfully persisted TurnLog appear absent to another fallback.
         try:
             from kdcube_ai_app.apps.chat.sdk.solutions.conversation.record import mark_turn_log_recorded
-            mark_turn_log_recorded()
+            mark_turn_log_recorded(recording_kind)
         except Exception:
             pass
+        if index_transcript:
+            try:
+                await self.save_minimal_turn_transcript_rows(
+                    user=user,
+                    conversation_id=conversation_id,
+                    turn_id=turn_id,
+                    bundle_id=bundle_id,
+                    agent_id=agent_id,
+                    payload=payload,
+                )
+            except Exception:
+                logger.warning(
+                    "minimal turn transcript projection failed after TurnLog persistence "
+                    "conversation_id=%s turn_id=%s",
+                    conversation_id,
+                    turn_id,
+                    exc_info=True,
+                )
         return {"hosted_uri": hosted_uri, "message_id": message_id, "rn": rn}
 
     async def materialize_turn(

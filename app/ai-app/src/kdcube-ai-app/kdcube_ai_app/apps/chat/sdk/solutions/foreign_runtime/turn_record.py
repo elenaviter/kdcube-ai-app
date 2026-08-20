@@ -144,6 +144,7 @@ async def record_foreign_runtime_turn_log(
         from kdcube_ai_app.apps.chat.sdk.solutions.conversation.record import (
             record_minimal_turn_log_if_absent,
             turn_log_was_recorded,
+            user_messages_from_folded_events,
         )
     except Exception:
         LOGGER.warning("[foreign-runtime] turn-log record imports failed", exc_info=True)
@@ -213,6 +214,10 @@ async def record_foreign_runtime_turn_log(
 
     events = [e for e in (state.get("external_events") or []) if isinstance(e, dict)]
     user_prompt_text = external_events_text(events) or ""
+    user_messages = user_messages_from_folded_events(
+        events,
+        fallback_text=user_prompt_text,
+    )
     user_event_type = "event.user.prompt"
     for event in events:
         event_type = str(event.get("type") or "").strip()
@@ -252,14 +257,15 @@ async def record_foreign_runtime_turn_log(
         user_event_type=user_event_type,
         user_attachments=user_attachments,
         user_events=events,
+        user_messages=user_messages,
         batch_id=batch_id,
         assistant_files=assistant_files,
     )
     LOGGER.info(
         "[foreign-runtime] turn-log record conversation=%s turn=%s wrote=%s "
-        "events=%d user_event_type=%s prompt_len=%d attachments=%d "
+        "events=%d messages=%d user_event_type=%s prompt_len=%d attachments=%d "
         "assistant_files=%d final_answer_len=%d title=%r",
-        conversation_id, turn_id, wrote_turn_log, len(events), user_event_type,
+        conversation_id, turn_id, wrote_turn_log, len(events), len(user_messages), user_event_type,
         len(user_prompt_text), len(user_attachments), len(assistant_files),
         len(final_answer), conversation_title,
     )

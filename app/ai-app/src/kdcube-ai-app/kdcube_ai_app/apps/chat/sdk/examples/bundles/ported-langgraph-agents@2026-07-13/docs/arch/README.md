@@ -4,6 +4,11 @@ title: "Ported LangGraph Agents — Architecture"
 summary: "ASCII architecture of the ported-langgraph-agents app: ONE execute_core dispatching on agent_id to TWO preserved LangGraph agents through per-agent build/input/role/stream specs and shared platform integration."
 status: active
 tags: [arch, ported-langgraph-agents, langgraph, multi-agent, diagram]
+updated_at: 2026-08-20
+keywords: ["ported LangGraph architecture", "foreign runtime", "minimal TurnLog", "conversation search", "event replay", "stream replay"]
+see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/langgraph/langgraph-agent-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/conversation/hosted-agent-conversation-README.md
 ---
 # Ported LangGraph Agents — Architecture
 
@@ -101,7 +106,8 @@ under `x-kdcube-surfaces`.
    │     additionally route through the economics-guarded search facade per embed.
    │
    ├─▶ KDCube conversation record                           [now]  PLATFORM-OWNED
-   │     run() records a minimal turn log (framework-neutral, same for either agent)
+   │     minimal TurnLog + searchable user/assistant rows + event/stream replay
+   │     (framework-neutral, same for either agent; native checkpoints stay private)
    │
    ├─▶ Capabilities model picker (PER AGENT)                [now]  PLATFORM-OWNED
    │     each agent declares simple_model_pick on its own role; the app applies the
@@ -191,7 +197,10 @@ two agents' state from ever mixing — one shared schema, never one per agent.
    ▼
  state["final_answer"] = answer
    ▼
- run() records a minimal turn log -> conversation list/reload work (either agent)
+ shared recorder projects all folded inputs + final answer
+   -> minimal TurnLog and conversation registration -> list/reload
+   -> user/assistant index rows -> semantic + lexical + trigram search
+   -> recorded events/streams -> Steps and code-exec replay
 ```
 
 A Telegram-originated turn is the same flow with a different front door: the webhook

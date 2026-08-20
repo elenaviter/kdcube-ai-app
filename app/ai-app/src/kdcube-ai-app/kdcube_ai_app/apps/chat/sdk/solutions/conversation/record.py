@@ -14,9 +14,9 @@ reload). ``runtime/turn_recording.py`` remains as a compatibility re-export.
 The chat component's conversation list / fetch / reload reads the per-turn
 ``artifact:turn.log`` — materialized into ``chat:user`` / ``chat:assistant``
 records from user-input and ``assistant.completion`` blocks. The React workflow
-writes a rich turn log at ``finish_turn``; an app that serves turns with **any
-other framework** (LangGraph, LangChain, raw calls) via ``execute_core`` writes
-none, so its turns stream live but leave no fetchable record.
+writes a rich turn log at ``finish_turn``; an app that serves turns with another
+framework (LangGraph, LangChain, raw calls) via ``execute_core`` gets the shared
+minimal turn-log projection unless its adapter writes one explicitly.
 
 This module makes conversation persistence framework-agnostic: after any turn,
 if no turn log was written, record a **minimal** one carrying the user input
@@ -24,14 +24,14 @@ events that reached the app, the assistant's final answer, and optionally its
 progress steps. Ingress hosts the files and accepts the event batch; this module
 persists the user-facing turn-log shape for non-React runtimes.
 
-Idempotency uses a per-turn signal carried in a mutable dict on a ContextVar
-(``_TURN_STATE``): whoever writes a turn log (React, or this module) mutates
-``turn_log_recorded=True``; the platform fallback records the minimal log only
-when that signal is unset. The dict is MUTATED, never the ContextVar reassigned,
-so the signal crosses the asyncio task boundary React persists across — a child
-task's copy of the context shares the same dict object (see the note on
-``_TURN_STATE``). Reset at turn start, in run()'s task, before the framework
-spawns its work tasks.
+Idempotency and projection ownership use per-turn state carried in a mutable
+dict on a ContextVar (``_TURN_STATE``). Recording kind is ``none``, ``minimal``,
+or ``rich``: any recorded log prevents a duplicate TurnLog, while only a rich
+log suppresses the separate dynamic-event and stream replay projections. The
+dict is MUTATED, never the ContextVar reassigned, so the signal crosses the
+asyncio task boundary React persists across — a child task's copy of the
+context shares the same dict object (see the note on ``_TURN_STATE``). Reset at
+turn start, in run()'s task, before the framework spawns its work tasks.
 """
 
 from __future__ import annotations
@@ -44,6 +44,14 @@ from typing import Any, Dict, List, Optional, Sequence
 # The block type the turn-log materializer turns into a ``chat:assistant`` row
 # (see ctx_rag ``materialize_turn``). Kept as the single source of truth here.
 ASSISTANT_COMPLETION_BLOCK_TYPE = "assistant.completion"
+TURN_LOG_RECORDING_NONE = "none"
+TURN_LOG_RECORDING_MINIMAL = "minimal"
+TURN_LOG_RECORDING_RICH = "rich"
+_TURN_LOG_RECORDING_RANK = {
+    TURN_LOG_RECORDING_NONE: 0,
+    TURN_LOG_RECORDING_MINIMAL: 1,
+    TURN_LOG_RECORDING_RICH: 2,
+}
 
 # Per-turn signals ("a turn log was written", "the failure was surfaced") live as
 # keys in ONE mutable dict bound to this ContextVar at turn start. We MUTATE the
@@ -53,10 +61,10 @@ ASSISTANT_COMPLETION_BLOCK_TYPE = "assistant.completion"
 # to run()'s fallback check in the parent task. Reassigning a ContextVar *value*
 # would not cross that boundary — that was the overwrite bug. `reset_*` at turn
 # start binds the fresh dict in run()'s task, before the framework spawns its work.
-_TURN_STATE: ContextVar[Optional[Dict[str, bool]]] = ContextVar("kdcube_turn_state", default=None)
+_TURN_STATE: ContextVar[Optional[Dict[str, Any]]] = ContextVar("kdcube_turn_state", default=None)
 
 
-def _turn_state(create: bool = False) -> Optional[Dict[str, bool]]:
+def _turn_state(create: bool = False) -> Optional[Dict[str, Any]]:
     st = _TURN_STATE.get()
     if st is None and create:
         st = {}
@@ -67,20 +75,49 @@ def _turn_state(create: bool = False) -> Optional[Dict[str, bool]]:
 def reset_turn_log_recorded() -> None:
     """Call at turn start, in run()'s task, BEFORE the framework spawns work tasks.
     Binds a fresh shared per-turn state dict they all inherit and mutate."""
-    _TURN_STATE.set({"turn_log_recorded": False, "turn_error_surfaced": False})
+    _TURN_STATE.set({
+        "turn_log_recorded": False,
+        "turn_log_recording_kind": TURN_LOG_RECORDING_NONE,
+        "turn_error_surfaced": False,
+    })
 
 
-def mark_turn_log_recorded() -> None:
+def mark_turn_log_recorded(kind: str = TURN_LOG_RECORDING_RICH) -> None:
     """Call from any code path that persists a turn log for the current turn.
     Mutates the shared per-turn dict, so run()'s fallback sees it even when this
-    runs in a different async task than run()."""
+    runs in a different async task than run(). A richer mark cannot be
+    downgraded by a later minimal writer in a sibling task."""
+    normalized = str(kind or "").strip().lower()
+    if normalized not in _TURN_LOG_RECORDING_RANK:
+        raise ValueError(f"Unsupported turn-log recording kind: {kind!r}")
     st = _turn_state(create=True)
+    current = str(st.get("turn_log_recording_kind") or TURN_LOG_RECORDING_NONE)
+    if _TURN_LOG_RECORDING_RANK[normalized] < _TURN_LOG_RECORDING_RANK.get(current, 0):
+        return
     st["turn_log_recorded"] = True
+    st["turn_log_recording_kind"] = normalized
+
+
+def turn_log_recording_kind() -> str:
+    st = _turn_state()
+    if not st or not st.get("turn_log_recorded"):
+        return TURN_LOG_RECORDING_NONE
+    kind = str(st.get("turn_log_recording_kind") or TURN_LOG_RECORDING_RICH)
+    return kind if kind in _TURN_LOG_RECORDING_RANK else TURN_LOG_RECORDING_RICH
+
+
+def rich_turn_log_was_recorded() -> bool:
+    """Whether the recorded log owns the rich replay projection.
+
+    Minimal logs own reloadable user/assistant/file blocks, while dynamic chat
+    events and stream aggregates remain separate artifacts. Rich harness logs
+    already own those projections and suppress the framework-neutral fallback.
+    """
+    return turn_log_recording_kind() == TURN_LOG_RECORDING_RICH
 
 
 def turn_log_was_recorded() -> bool:
-    st = _turn_state()
-    return bool(st and st.get("turn_log_recorded"))
+    return turn_log_recording_kind() != TURN_LOG_RECORDING_NONE
 
 
 def reset_turn_error_surfaced() -> None:
@@ -173,14 +210,20 @@ def user_messages_from_folded_events(
         text = external_event_text(event)
         if not text:
             continue
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
         out.append({
             "text": text,
             "event_type": str(event.get("type") or "event.user.prompt"),
-            "batch_id": str(event.get(LANE_BATCH_ID_KEY) or ""),
+            "batch_id": str(
+                event.get(LANE_BATCH_ID_KEY)
+                or event.get("batch_id")
+                or payload.get("batch_id")
+                or ""
+            ),
             # WHEN it was sent, not when the turn ended. A timeline sorted by
             # time puts a message where it was typed only if the record says
             # so, and a turn that folds several records them all at once.
-            "ts": str(event.get(LANE_TS_KEY) or ""),
+            "ts": str(event.get(LANE_TS_KEY) or event.get("ts") or payload.get("ts") or ""),
         })
     if out:
         return out
@@ -244,9 +287,19 @@ def _user_input_blocks(
     # like the original.
     for event in user_events or []:
         batch = default_batch_id
-        if isinstance(event, dict) and str(event.get(LANE_BATCH_ID_KEY) or ""):
-            batch = str(event[LANE_BATCH_ID_KEY])
-        event_ts = str(event.get(LANE_TS_KEY) or "") if isinstance(event, dict) else ""
+        if isinstance(event, dict):
+            payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+            batch = str(
+                event.get(LANE_BATCH_ID_KEY)
+                or event.get("batch_id")
+                or payload.get("batch_id")
+                or default_batch_id
+            )
+            event_ts = str(
+                event.get(LANE_TS_KEY) or event.get("ts") or payload.get("ts") or ""
+            )
+        else:
+            event_ts = ""
         ctx_block = _user_context_event_block(
             event, turn_id=turn_id, batch_id=batch, ts=event_ts or ts,
         )
@@ -255,9 +308,15 @@ def _user_input_blocks(
     # The user's uploaded attachments (reload + pullable conv:fi: refs).
     for att in user_attachments or []:
         batch = default_batch_id
-        if isinstance(att, dict) and str(att.get(LANE_BATCH_ID_KEY) or ""):
-            batch = str(att[LANE_BATCH_ID_KEY])
-        att_ts = str(att.get(LANE_TS_KEY) or "") if isinstance(att, dict) else ""
+        if isinstance(att, dict):
+            batch = str(
+                att.get(LANE_BATCH_ID_KEY)
+                or att.get("batch_id")
+                or default_batch_id
+            )
+            att_ts = str(att.get(LANE_TS_KEY) or att.get("ts") or "")
+        else:
+            att_ts = ""
         att_block = _user_attachment_meta_block(
             att, turn_id=turn_id, batch_id=batch, ts=att_ts or ts,
         )
@@ -818,8 +877,10 @@ async def record_error_turn_log_if_absent(
         conversation_id=conversation_id, user_type=user_type,
         turn_id=turn_id, bundle_id=bundle_id, agent_id=agent_id,
         payload=payload,
+        recording_kind=TURN_LOG_RECORDING_MINIMAL,
+        index_transcript=True,
     )
-    mark_turn_log_recorded()
+    mark_turn_log_recorded(TURN_LOG_RECORDING_MINIMAL)
     return True
 
 
@@ -1031,8 +1092,10 @@ async def record_minimal_turn_log_if_absent(
         conversation_id=conversation_id, user_type=user_type,
         turn_id=turn_id, bundle_id=bundle_id, agent_id=agent_id,
         payload=payload,
+        recording_kind=TURN_LOG_RECORDING_MINIMAL,
+        index_transcript=True,
     )
-    mark_turn_log_recorded()
+    mark_turn_log_recorded(TURN_LOG_RECORDING_MINIMAL)
     try:
         await record_conversation_timeline(
             conversation_client=conversation_client,

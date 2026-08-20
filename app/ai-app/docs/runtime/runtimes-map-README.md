@@ -212,7 +212,7 @@ scheduling machinery:
 
 | Work kind | Entry | Ordering and exclusivity |
 | --- | --- | --- |
-| **Chat turns** | `@on_reactive_event` → the shared `run()` entry | The conversation lane reserves one serialized turn. Native ReAct may fold live; a foreign runtime folds the whole pending lane once and watches control read-only. Same-conversation turns serialize across workers while different conversations run in parallel. |
+| **Chat turns** | `@on_reactive_event` → the shared `run()` entry | The conversation lane reserves one serialized turn. The native ReAct agent may fold live; a foreign runtime folds the whole pending lane once and watches control read-only. Same-conversation turns serialize across workers while different conversations run in parallel. |
 | **Automations** | saved automation records; due-scanner + run-now | Scheduled and manual runs converge on one execution path; each execution is its own agent turn with its own conversation/turn identity |
 | **Scheduled jobs** | `@cron(...)` methods, auto-discovered | Redis leases coordinate an active owner by declared span — `system`, `instance`, or `process`; competing ticks are skipped while the lease is valid, and failures are isolated |
 | **Background jobs** | `@on_job` handlers | Claimed fairly off a Redis Stream across processors, deduplicated by key — a burst of webhook-triggered work spreads across the fleet instead of hammering one worker |

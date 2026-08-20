@@ -12,6 +12,9 @@ from kdcube_ai_app.apps.chat.sdk.infra.economics.policy import EconomicsLimitExc
 from kdcube_ai_app.apps.chat.sdk.solutions.chatbot.entrypoint import BaseEntrypoint
 from kdcube_ai_app.apps.chat.sdk.runtime.turn_recording import (
     ASSISTANT_COMPLETION_BLOCK_TYPE,
+    TURN_LOG_RECORDING_MINIMAL,
+    TURN_LOG_RECORDING_NONE,
+    TURN_LOG_RECORDING_RICH,
     build_error_turn_log_payload,
     build_minimal_turn_log_payload,
     mark_turn_error_surfaced,
@@ -21,7 +24,9 @@ from kdcube_ai_app.apps.chat.sdk.runtime.turn_recording import (
     record_minimal_turn_log_if_absent,
     reset_turn_error_surfaced,
     reset_turn_log_recorded,
+    rich_turn_log_was_recorded,
     turn_error_was_surfaced,
+    turn_log_recording_kind,
     turn_log_was_recorded,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.harness.timeline.payload import (
@@ -42,7 +47,7 @@ class _FakeConversationClient:
 
     async def save_turn_log_as_artifact(self, **kwargs):
         self.calls.append(kwargs)
-        mark_turn_log_recorded()
+        mark_turn_log_recorded(kwargs.get("recording_kind", TURN_LOG_RECORDING_RICH))
         return {"hosted_uri": "u", "message_id": "m", "rn": "r"}
 
     async def save_artifact(self, **kwargs):
@@ -101,6 +106,10 @@ async def test_records_minimal_log_for_non_react_turn():
     completions = [b for b in blocks if b["type"] == ASSISTANT_COMPLETION_BLOCK_TYPE]
     assert len(completions) == 1
     assert completions[0]["text"] == "Hello there."
+    assert call["recording_kind"] == TURN_LOG_RECORDING_MINIMAL
+    assert call["index_transcript"] is True
+    assert turn_log_recording_kind() == TURN_LOG_RECORDING_MINIMAL
+    assert rich_turn_log_was_recorded() is False
 
 
 @pytest.mark.asyncio
@@ -667,10 +676,22 @@ def test_reset_clears_prior_turn_mark():
     # scoping the fallback depends on is reset/mark/reset as expected.
     reset_turn_log_recorded()
     assert turn_log_was_recorded() is False
+    assert turn_log_recording_kind() == TURN_LOG_RECORDING_NONE
     mark_turn_log_recorded()
     assert turn_log_was_recorded() is True
+    assert turn_log_recording_kind() == TURN_LOG_RECORDING_RICH
+    assert rich_turn_log_was_recorded() is True
     reset_turn_log_recorded()
     assert turn_log_was_recorded() is False
+
+
+def test_rich_recording_mark_cannot_be_downgraded_by_minimal_writer():
+    reset_turn_log_recorded()
+    mark_turn_log_recorded(TURN_LOG_RECORDING_RICH)
+    mark_turn_log_recorded(TURN_LOG_RECORDING_MINIMAL)
+
+    assert turn_log_recording_kind() == TURN_LOG_RECORDING_RICH
+    assert rich_turn_log_was_recorded() is True
 
 
 # ------------------------------------------------------- failed-turn recording

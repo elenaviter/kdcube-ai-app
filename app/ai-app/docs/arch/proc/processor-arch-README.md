@@ -321,7 +321,7 @@ On terminal completion:
   - ack the inflight claim
   - persist turn artifacts
   - release the lane consumer after the runtime-specific lane handoff:
-    native ReAct uses ContextBrowser post-save handoff, while
+    the native ReAct agent uses ContextBrowser post-save handoff, while
     run-to-completion hosted runtimes use the shared door finalizer to consume
     the wake occurrence plus exact folded same-`batch_id` siblings before
     waking remaining reactive lane work
@@ -387,7 +387,7 @@ sequenceDiagram
     I-->>C: HTTP status=followup_accepted or steer_accepted
     I-->>C: chat_service type=queue.continuation.accepted
 
-    alt native ReAct owns live timeline and consumes event
+    alt native ReAct agent owns live timeline and consumes event
         R->>M: read pending external event
         R->>R: Apply followup during active turn or stop on steer at safe checkpoint
     else hosted run-to-completion or event remains unconsumed after artifacts persist
@@ -1285,7 +1285,7 @@ That architecture is now much safer for long-running workers:
 - it lets React consume those events during execution
 - it lets live followup stay on the same turn
 - it lets live steer stop the current turn at a safe checkpoint
-- native ReAct uses ContextBrowser post-save handoff to wake remaining
+- the native ReAct agent uses ContextBrowser post-save handoff to wake remaining
   unconsumed reactive lane work
 - it lets run-to-completion hosted runtimes fold the whole pending lane once,
   heartbeat only their owned scheduled reservation, watch control read-only,

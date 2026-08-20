@@ -12,6 +12,9 @@ and adds nothing."""
 from kdcube_ai_app.apps.chat.sdk.solutions.conversation.record import (  # noqa: F401
     ASSISTANT_COMPLETION_BLOCK_TYPE,
     STREAM_ARTIFACT_MARKERS,
+    TURN_LOG_RECORDING_MINIMAL,
+    TURN_LOG_RECORDING_NONE,
+    TURN_LOG_RECORDING_RICH,
     build_error_turn_log_payload,
     build_minimal_turn_log_payload,
     build_stream_artifact_payload,
@@ -23,6 +26,8 @@ from kdcube_ai_app.apps.chat.sdk.solutions.conversation.record import (  # noqa:
     record_minimal_turn_log_if_absent,
     reset_turn_error_surfaced,
     reset_turn_log_recorded,
+    rich_turn_log_was_recorded,
     turn_error_was_surfaced,
+    turn_log_recording_kind,
     turn_log_was_recorded,
 )
