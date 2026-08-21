@@ -1,24 +1,25 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/app-with-agents-README.md
 title: "Build An App With Several Agents"
-summary: "Builder recipe for declaring an arbitrary number of agents in app config with stable ids, configuring each one separately, wiring tools per runtime for React and Claude Code, exposing the model picker, and letting per-agent grants and the chat consent card follow from the agent id."
+summary: "Builder recipe for declaring multiple agents with stable ids, configuring ReAct Agent and foreign runtimes independently, choosing a direct or harness-bound Claude Code profile, and preserving per-agent model, capability, consent, and trust boundaries."
 status: active
 tags: ["recipes", "app", "agents", "react", "claude-code", "consent", "model-pick"]
-updated_at: 2026-08-14
-keywords: ["surfaces.as_consumer.agents", "agent id", "default_agent", "delegated client id", "per-agent grant", "consent card", "model picker", "ClaudeCodeWorkspaceConfig"]
+updated_at: 2026-08-21
+keywords: ["surfaces.as_consumer.agents", "agent id", "default_agent", "delegated client id", "per-agent grant", "consent card", "model picker", "ClaudeCodeWorkspaceConfig", "direct bundle-owned Claude execution", "harness-bound conversational Claude execution", "Claude Code trust boundary"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/bundles-descriptor-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-agent-integration-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/consume-mcp-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/agent-acting-for-user/agent-acting-for-user-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/what-i-should-know-about-app-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
 ---
 
 # Build An App With Several Agents
 
 Use this recipe when one app serves more than one agent — a general assistant
-plus a research agent, a chat agent plus a scheduled automation agent, a React
-agent plus a Claude Code subprocess — and each one needs its own capabilities,
+plus a research agent, a chat agent plus a scheduled automation agent, a ReAct
+Agent plus a Claude Code subprocess — and each one needs its own capabilities,
 its own model options, and its own consent boundary.
 
 The outcome is one declaration with three readers:
@@ -118,16 +119,16 @@ read/write under another. That pattern, and the allow-list grammar behind it,
 is
 [Connect An MCP Service To A KDCube Agent](consume-mcp-service-README.md).
 
-Non-tool runtime behavior for an agent lives in the react block for the same
+Non-tool ReAct Agent behavior lives in the `react` block for the same
 id (`config.react.<agent_id>`), so an agent's tools and its model policy are
 declared under the same name.
 
-## 3. Wire Tools Per Runtime — React And Claude Code Do Not Share
+## 3. Wire Tools Per Runtime — ReAct Agent And Claude Code Do Not Share
 
 The two agent runtimes read different configuration, and neither inherits the
 other's wiring. Decide per capability, per runtime.
 
-**React** takes its catalog from the declaration in section 1. The workflow
+**The ReAct Agent** takes its catalog from the declaration in section 1. The workflow
 resolves that inventory and passes it to the builder:
 
 ```python
@@ -148,7 +149,7 @@ react = self.build_react(
 
 **Claude Code** takes Claude's built-in tools plus whatever MCP configuration
 is written into its workspace. It does not read `surfaces.as_consumer`, and it
-does not see React tools or React skills. Build its workspace explicitly:
+does not see ReAct Agent tools or ReAct Agent skills. Build its workspace explicitly:
 
 ```python
 from kdcube_ai_app.apps.chat.sdk.solutions.claude_code import (
@@ -185,10 +186,38 @@ A capability needed by both runtimes is two pieces of work. The per-capability
 table is
 [Wire Each Capability Per Runtime](../../sdk/bundle/bundle-agent-integration-README.md#1a-wire-each-capability-per-runtime).
 
+### Choose the Claude Code profile per lane
+
+| Product lane | Profile | What the app adds |
+| --- | --- | --- |
+| off-turn generation, validation, or repository maintenance | direct app-owned execution | stable service binding, app workspace, validators, and app-domain persistence |
+| chat agent that must use conversation refs and return files | harness-bound conversational execution | per-conversation Claude continuity plus `bind_claude_code_turn_workspace(...)` for governed pull, checkout, and publication |
+
+The direct profile is the News reference. The harness-bound profile is the
+Press reference. The binding is optional: it standardizes the conversation
+workspace seam without replacing Claude's private session history or an app's
+domain workflow.
+
 ### If the hosted runtime is a coding agent, host it as one
 
 An agent that already knows how to work a filesystem should be given one, and
-told the truth about it. Four rules that came out of running one in production:
+told the truth about it. First choose its trust boundary:
+
+| Caller population | Required execution boundary |
+| --- | --- |
+| trusted app-owned pipeline | the app controls prompts, inputs, workset, validation, and publication |
+| operator-approved admin/insider users | a shared processor lane is acceptable only when those users are trusted not to inspect or exfiltrate sibling runtime data |
+| mutually hostile/general users | a dedicated per-user process/container or OS identity, minimized environment, constrained network, and no sibling-user mounts |
+
+`workspace_path`, per-user directory naming, `--add-dir`, Claude tool
+permissions, Agent Harness pull/publish, and Connection Hub grants are useful
+product controls. They do not constrain a direct `Bash` command to the
+workspace or remove processor environment/network authority. The generic
+Claude runner currently starts in the processor boundary and does not create
+the third profile automatically. Read the canonical
+[Claude subprocess trust boundary](../../sdk/agents/claude/claude-code-README.md#subprocess-trust-boundary).
+
+Four operating rules came out of running one in production:
 
 - **One rulebook.** If the app ships a package with its own `AGENTS.md` /
   runbook, the resident agent follows **that** — the same document an engineer
@@ -227,7 +256,7 @@ The pickable list, the saved pick, and the wire operations that serve them are
 platform-owned. The app declares the allowed list for each agent that should
 offer the choice; declaring nothing keeps the picker hidden for that agent.
 
-For a ReAct agent:
+For a ReAct Agent:
 
 ```yaml
 config:
@@ -257,7 +286,7 @@ config:
                 - { model: claude-haiku-4-5, provider: anthropic, label: Haiku 4.5 }
 ```
 
-React applies the user's pick on its own. A framework that calls through the
+The ReAct Agent applies the user's pick on its own. A framework that calls through the
 model router binds a role overlay for the turn. Claude Code takes a model
 *name*, so the app resolves the pick and passes it into the agent config with
 its own fallback:
@@ -342,6 +371,14 @@ record, and the demand chain:
    the conversation's name in the list, and any object the message carried must
    all still be there. Live and reloaded are different code paths, and only the
    second one proves the turn was recorded.
+10. For a harness-bound Claude lane, pull a conversation ref, checkout an
+    editable copy, reset it with a repeated checkout, and publish one selected
+    current-turn file. Confirm the original ref remains immutable and the
+    published result has a new `conv:fi:` ref.
+11. If the lane serves users outside the trusted admin/insider population,
+    verify from inside Claude's Bash that sibling-user roots, unrelated
+    environment secrets, and unapproved network destinations are physically
+    unavailable. A different path name is not this test.
 
 For local source changes, remember that the runtime executes its staged copy of
 the platform and app. Refresh or reload the staged source before judging the
@@ -383,7 +420,7 @@ answers `403 ambiguous operation catalog`. Both are in
 | an agent sees another agent's tools | the requested id is absent from the map and resolution fell through to a fallback key | declare the id explicitly |
 | consent card says "Open Connection Hub" and leads nowhere | the demand carried no agent client identity | pass the real agent id and app id into the resolution seam |
 | users must re-approve everything after a release | an agent id was renamed, producing a new client identity | keep ids stable; treat a rename as a migration |
-| Claude Code cannot call a tool the React agent uses | the capability was wired for React only | wire it into the Claude workspace as MCP plus allowed tools |
+| Claude Code cannot call a tool the ReAct Agent uses | the capability was wired for the ReAct Agent only | wire it into the Claude workspace as MCP plus allowed tools |
 | the model picker is invisible | the agent declares no allowed model list | declare it on the agent's own block |
 | a stale model pick silently reverts | the pick fell outside the current allowed list and resolved to none | expected; the deployment default routes the turn |
 | cost and elapsed time show live, then vanish on reload | a lifecycle hook overrode the base without `super()`; the turn recording never started | call `super()` first, forwarding `econ_ctx` |
@@ -392,6 +429,7 @@ answers `403 ambiguous operation catalog`. Both are in
 | a hosted CLI agent reports no MCP tools and the servers look correct on disk | the config was not named on the command line, the workspace is untrusted (all `permissions.allow` ignored), or a server uses the reserved name `workspace` | read the CLI's `system` init event; [what it takes for the CLI to have its MCP tools](../../sdk/agents/claude/claude-code-README.md#what-it-takes-for-the-cli-to-actually-have-its-mcp-tools) |
 | a file the agent read appears in chat as the agent's answer | tool results arrive as `user` events and a generic extractor took them as text | render tool calls/results as activity rows, never as answer text |
 | several seconds pass before the first token, every turn | the workspace path changes per turn, so the runtime's system prompt (and prompt cache) is rebuilt each time | make the workspace per conversation |
+| per-user Claude workspaces exist, but Bash can read a sibling workspace | path naming was treated as an isolation boundary | restrict the lane to trusted admins/insiders or run Claude in an OS-enforced per-user boundary |
 | two identical chat tiles in one scene | `default_chat: true` already serves the inherited `chat` alias | configure that alias instead of declaring a second chat widget |
 
 ## Done Means
@@ -404,6 +442,9 @@ answers `403 ambiguous operation catalog`. Both are in
 - The model picker shows a list the administrator chose, per agent.
 - Consent, grants, and revocation are per agent, and a missing grant produces a
   card the user can actually act on.
+- Claude Code uses either an explicit direct app-owned profile or an explicit
+  harness-bound conversational profile, and its caller population matches the
+  physical subprocess isolation actually deployed.
 
 ## Read Next
 

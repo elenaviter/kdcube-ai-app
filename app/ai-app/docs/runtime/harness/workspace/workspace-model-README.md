@@ -168,7 +168,7 @@ path.
 | Read-only bytes | `react.pull` | `pull_files` | local MCP `pull` plus native Read/Grep/Bash |
 | Editable copy/reset | `react.checkout` | `checkout` | local MCP `checkout` plus native Edit/Write/Bash |
 | Produce files | write/render/exec tools | `run_python` | native file/code tools |
-| Conversation publication | tool/output hosting contract | `run_python` hosts declared outputs | local MCP `publish` when the wrapper binds a trusted host |
+| Conversation publication | tool/output hosting contract | `run_python` hosts declared outputs | reusable Claude turn-workspace binding exposes local MCP `publish` through the shared host policy |
 
 A ported agent is not required to expose native ReAct Agent tool names. It can:
 

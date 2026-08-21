@@ -1,7 +1,7 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/claude/claude-code-workspace-bootstrap-README.md
 title: "Claude Code Workspace Management"
-summary: "How KDCube manages Claude Code session continuity through a bundle-controlled local root and an optional git-backed per-conversation session store."
+summary: "How KDCube manages Claude Code session continuity and binds the shared Agent Harness Workspace to a hosted Claude turn."
 tags: ["sdk", "agents", "claude", "claude-code", "workspace", "git", "bootstrap"]
 updated_at: 2026-08-21
 keywords:
@@ -12,6 +12,8 @@ keywords:
     "git-backed Claude session",
     "bundle-controlled workspace root",
     "run_claude_code_turn",
+    "bind_claude_code_turn_workspace",
+    "workspace publication policy",
   ]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/claude/claude-code-README.md
@@ -20,6 +22,8 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/assembly-descriptor-README.md
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/claude_code/runtime.py
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/claude_code/agent.py
+  - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/claude_code/harness_workspace.py
+  - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/foreign_runtime/publication.py
 ---
 # Claude Code Workspace Management
 
@@ -37,6 +41,37 @@ The current runtime support for that lives in:
 - [src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/claude_code/agent.py](../../../../src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/claude_code/agent.py)
 - [src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/claude_code/runtime.py](../../../../src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/claude_code/runtime.py)
 - [src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/claude_code/types.py](../../../../src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/claude_code/types.py)
+
+## Integration profiles
+
+App authors choose the Claude Code integration that matches the product lane.
+Both profiles use the same policy-neutral `ClaudeCodeAgent` and
+`run_claude_code_turn(...)` SDK contract:
+
+- **Direct bundle-owned execution.** The app supplies its own workspace,
+  session lineage, allowed tools, inputs, validation, and product persistence.
+  This fits off-turn pipelines and jobs whose output becomes app-domain state
+  rather than a chat file. No Agent Harness turn-workspace binding is required.
+  The News app is the reference: its issue-date workspace, read-only source
+  repositories, resumed Claude session, accounting scope, validators, and news
+  archive are all owned by the app.
+- **Harness-bound conversational execution.** The app additionally calls
+  `bind_claude_code_turn_workspace(...)` when Claude must resolve conversation
+  or owner refs, create/reset editable turn files, or explicitly deliver files
+  into a conversation. The Press app is the reference.
+
+The harness binding is additive and opt-in. The generic runner does not create
+a broker, expose conversation refs, or acquire file-hosting authority by
+default.
+
+Neither profile turns the Claude CLI into a per-user sandbox. A
+per-conversation path separates continuity and prevents accidental collisions;
+it does not stop `Bash` from reaching other paths, environment values, or
+network destinations available to the processor. Use direct execution for
+trusted app-owned pipelines or trusted admin/insider lanes. A hostile
+multi-user lane requires a separate OS-enforced per-user process/filesystem
+profile. The full boundary is owned by
+[Claude Code Agent: Subprocess trust boundary](claude-code-README.md#subprocess-trust-boundary).
 
 ## Core model
 
@@ -69,8 +104,10 @@ continuity. The harness workspace gives an adapter explicit access to durable
 conversation files and owner objects, editable current-turn copies, and
 conversation publication.
 
-`ClaudeCodeAgent` does not bind that harness workspace automatically. A hosted
-wrapper can add the SDK's local stdio MCP server and a trusted parent broker:
+`ClaudeCodeAgent` remains a policy-neutral runner. A hosted wrapper opts into
+the harness workspace once with `bind_claude_code_turn_workspace(...)`; the
+binding owns the local stdio MCP server, trusted parent broker, permission rule,
+server enablement, and common instruction block:
 
 ```text
 accepted event
@@ -85,6 +122,31 @@ Claude Code local MCP: pull | checkout | publish | pulled
 trusted parent: request identity + ContextBrowser + hosting service
 ```
 
+```python
+turn_workspace = await bind_claude_code_turn_workspace(
+    workspace=workspace,
+    tenant=tenant,
+    project=project,
+    user_id=user_id,
+    conversation_id=conversation_id,
+    turn_id=turn_id,
+    entrypoint=entrypoint,
+    state=state,
+    publication_policy=product_policy,
+)
+servers = turn_workspace.merge_mcp_servers(product_servers)
+workspace_config = turn_workspace.apply_workspace_config(
+    ClaudeCodeWorkspaceConfig(
+        mcp_servers=servers,
+        instructions_markdown=product_instructions,
+    )
+)
+try:
+    result = await run_claude_code_turn(...)
+finally:
+    await turn_workspace.close()
+```
+
 - `pull` materializes a `conv:fi:` ref or an authorized owner `object_ref` into
   a collision-safe readonly path; Claude uses native Read, Grep, or Bash on the
   returned workspace-relative path.
@@ -93,14 +155,22 @@ trusted parent: request identity + ContextBrowser + hosting service
   resets the target from the durable source; `overlay` is directory-only.
 - Claude edits the checked-out path with its native file tools.
 - `publish(paths=[...])` explicitly hosts selected current-turn `files/...`
-  outputs into the conversation and returns durable `conv:fi:` refs.
+  outputs into the conversation and returns durable `conv:fi:` refs. Claude may
+  pass the same current-turn workspace-relative path it read/wrote or the stable
+  `files/...` form, so publication adds no path-translation step. Before
+  hosting, the shared gate enforces count, per-file size, aggregate size, and
+  supported MIME families. A product callback may narrow or deny the concrete
+  request under trusted runtime identity, but cannot widen the shared ceiling.
 
 The MCP child receives operation arguments and bound non-secret identity, not
 provider credentials or a hosting service. Owner resolution and publication
 cross the authenticated local broker to the trusted parent. The Press Claude
-Code wrapper is the worked binding; another bundle must opt in and supply the
-same parent-side services. This mechanism does not by itself make a generic
-Claude Code process safe for mutually hostile users sharing one filesystem.
+Code wrapper is the worked consumer of the reusable binding. A new wrapper
+chooses its workspace, session lineage, product instructions, and publication
+approval policy; it does not reimplement resolver, broker, hosting, or Claude
+configuration glue. This mechanism does not by itself change the process and
+filesystem isolation profile chosen for Claude Code, and it does not govern
+direct filesystem or network actions performed through `Bash`.
 
 ## Local vs git session store
 
@@ -332,7 +402,7 @@ not:
 
 ## Isolation requirements
 
-The Claude session git store follows the same security principle as React's
+The Claude session git store follows the same security principle as the ReAct Agent's
 git-backed workspace storage:
 
 - local runtime should only see the assigned conversation branch
@@ -363,7 +433,7 @@ It maps those values into `.env.proc`:
 - `CLAUDE_CODE_SESSION_STORE_IMPLEMENTATION`
 - `CLAUDE_CODE_SESSION_GIT_REPO`
 
-This makes Claude session-store policy deployable at the same layer as React's
+This makes Claude session-store policy deployable at the same layer as the ReAct Agent's
 git-backed workspace settings.
 
 ## Relationship to the core Claude runner

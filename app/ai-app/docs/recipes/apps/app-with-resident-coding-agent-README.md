@@ -1,11 +1,11 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/app-with-resident-coding-agent-README.md
 title: "Build An App With A Resident Coding Agent"
-summary: "Builder recipe for hosting a CLI coding agent (Claude Code) inside a KDCube app so it works a git-backed content store the same way an engineer does on a laptop: per-conversation workspace, session store on a git branch, the app's own MCP surface reached through Connection Hub grants and dialed locally, a local stdio workspace server for pull-by-ref, tool activity as chat steps, and the machine-local toolchain the agent maintains itself."
+summary: "Concrete recipe for an admin/insider or physically isolated Claude Code lane: one app-owned store, durable CLI continuity, governed MCP access, shared Agent Harness pull/checkout/publish, visible activity, and an explicit subprocess trust boundary."
 status: active
 tags: ["recipes", "app", "claude-code", "coding-agent", "mcp", "git", "workspace"]
-updated_at: 2026-08-14
-keywords: ["resident coding agent", "claude code in an app", "per-conversation workspace", "turn_workspace pull", "self_hosted mcp", "delegable catalog", "activity rows", "git session store", "AGENTS.md one rulebook", "toolchain cache"]
+updated_at: 2026-08-21
+keywords: ["resident coding agent", "claude code in an app", "per-conversation workspace", "turn_workspace pull", "turn_workspace checkout", "turn_workspace publish", "self_hosted mcp", "delegable catalog", "activity rows", "git session store", "AGENTS.md one rulebook", "toolchain cache", "admin insider coding agent", "Claude Code trust boundary"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/app-with-agents-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/claude/claude-code-README.md
@@ -14,6 +14,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/conversation/hosted-agent-conversation-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/create-delegated-automation-access-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-avoid-common-bundle-integration-failures-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
 ---
 
 # Build An App With A Resident Coding Agent
@@ -27,13 +28,22 @@ reads, greps, edits, runs commands, and commits. The app makes it a citizen of
 the platform: identity, consent, accounting, a conversation that survives a
 reload, and a desk beside the chat.
 
+This recipe's shared-processor form is for operator-approved admin/insider
+users. Claude Code runs as a subprocess of the processor; `workspace_path`,
+per-user directory names, Claude tool permissions, MCP grants, and the Agent
+Harness Workspace do not prevent Bash from reaching sibling paths, inherited
+environment values, or network destinations available to that processor. To
+serve mutually hostile/general users, place each user's Claude process in a
+dedicated OS-enforced process/container or identity with only that user's
+workset mounted, a minimized environment, and constrained network access.
+
 The outcome is one store with two doors:
 
 ```text
                     ONE GIT-BACKED STORE (the files that matter)
                     /                                        \
         laptop door                                        app door
-   an engineer + their own CLI agent            a colleague in the browser
+   an engineer + their own CLI agent            a trusted operator in the browser
    working the checkout directly                talking to the RESIDENT agent
         \                                        /
          `----------- same files, same runbook, same git ----------'
@@ -46,11 +56,17 @@ KDCube still uses **bundle** in literal identifiers (`bundles.yaml`,
 `bundle_id`, `@bundle_entrypoint`). In prose, app and bundle mean the same
 deployable unit.
 
+This is the harness-bound conversational profile. An off-turn app-owned Claude
+pipeline may instead use `run_claude_code_turn(...)` directly and keep outputs
+in app-domain storage; the News app is that reference. Profile selection is
+documented in
+[Claude Code Workspace Management](../../sdk/agents/claude/claude-code-workspace-bootstrap-README.md#integration-profiles).
+
 ## What you will wire
 
 ```text
-   BROWSER                          RUNTIME (proc)                     OUTSIDE
-   ───────                          ──────────────                     ───────
+   BROWSER                     TRUSTED ADMIN LANE OR                 OUTSIDE
+   ───────                     DEDICATED USER WORKER                 ───────
   chat  ──prompt+refs──►  turn lane ──► execute_core
    ▲                                      │
    │  activity rows                       ├─► workspace prepared (per CONVERSATION)
@@ -61,13 +77,14 @@ deployable unit.
    │                       ▼              │      │
    │                  GIT STORE ◄─────────┘      ├── Read/Edit/Bash on the store
    │                  (working tree)             ├── mcp__<app>__*  (app's own surface)
-   │                                             └── mcp__turn_workspace__pull
+   │                                             └── mcp__turn_workspace__*
+   │                                                   pull · checkout · publish
    │                                                      │
    └───────── conversation record ◄── recording ──────────┘
                                                     session transcript ──► git branch
 ```
 
-Six seams, in the order they bite:
+Seven seams, in the order they bite:
 
 | # | Seam | Gets wrong as |
 | --- | --- | --- |
@@ -77,6 +94,7 @@ Six seams, in the order they bite:
 | 4 | the app's own MCP surface | 401/403/404 nobody can read; response lost in transit |
 | 5 | the turn's objects | pre-materialized bytes nobody opens, or refs nothing can fetch |
 | 6 | the chat surface | tool output published as the agent's answer |
+| 7 | the subprocess boundary | a per-user path mistaken for protection from Bash, inherited environment, or processor network access |
 
 ## OP 10 · Decide where the files live, and who may write them
 
@@ -97,7 +115,11 @@ decide the layout:
       .claude/                  ← CLI config dir + session transcript
       .mcp.json                 ← generated per turn
       CLAUDE.md                 ← generated per turn
-      _pulled/                  ← objects the agent pulled this turn
+      turn_<current>/
+        files/<scope>/…         ← editable derivatives and publishable outputs
+        git/projects/<scope>/…  ← editable project state
+      conv_<source>/
+        turn_<source>/…         ← collision-safe read-only pulled sources
 
 <machine-local cache, NOT bundle storage>/
   <toolchain>-<sha256(requirements.txt)[:16]>/    ← the operator venv (OP 60)
@@ -113,6 +135,9 @@ Rules that come out of that:
   The desk calls guarded `@api` operations; the agent uses its own file tools
   inside the tree it was given. Both land in the same working tree, so the same
   commit lane publishes them.
+- **path separation is continuity, not hostile-user isolation.** A dedicated
+  per-user OS/container profile must make other users' stores and workspaces
+  physically unreadable when callers are not mutually trusted.
 
 ## OP 20 · One workspace per conversation, and a session store in git
 
@@ -273,53 +298,89 @@ the session's servers, their connection status, and any
 `Ignoring N permissions.allow entries` warning. It names the cause; the app side
 cannot see it.
 
-## OP 50 · Give the turn's objects a pull, not a copy
+## OP 50 · Bind pull, checkout, and publication once
 
 A message carries more than text: uploaded files, pinned objects, refs from
-other apps. None of it should be written into the workspace before the agent
-asks — most turns never open it, and a binary copied per turn is paid for per
-turn.
-
-The platform's pull-by-ref primitive reaches a CLI runtime as a **local stdio
-MCP server** — the same contract an in-process runtime binds as a function:
+other apps. Keep those objects lazy and immutable until the agent chooses how
+to use them. The reusable Claude binding exposes the same Agent Harness
+Workspace lifecycle used by the ReAct Agent and ported LangGraph adapters:
 
 ```text
-   message ──► turn events ──► the prompt says:  "attached: conv:fi:…/brief.pdf"
-                                          │
-                        agent decides it needs it
-                                          │
-                                          ▼
-        mcp__turn_workspace__pull(refs=["conv:fi:…/brief.pdf"])
-                                          │
-             ┌────────────────────────────┴─────────────────────────┐
-             │  resolves through the platform's own resolver         │
-             │  writes bytes into <workspace>/_pulled/               │
-             │  answers: local path  +  time-limited download link   │
-             └───────────────────────────────────────────────────────┘
-                                          │
-                    agent opens it with its ordinary file tools
+ model-visible event
+   event_ref = conv:ev:…                 occurrence; readable record, not bytes
+   object_ref = cnv:main@52              materializable owner locator
+                │
+                ▼
+ pull([object_ref])                      lazy, authorized, read-only
+                │
+                └──► conv_<source>/turn_<source>/…/brief.pdf
+                                   │
+                    Claude Read/Grep/Bash may inspect it
+                                   │
+                                   ▼
+ checkout([{                         create/reset an editable derivative
+   "from": object_ref,
+   "to": "files/review/brief.pdf",
+   "strategy": "replace"
+ }])
+                │
+                └──► turn_<current>/files/review/brief.pdf
+                                   │
+                    Claude Edit/Write/Bash may modify it
+                                   │
+                                   ▼
+ publish(["files/review/brief.pdf"]) shared limits + product approval
+                │
+                └──► new durable conv:fi:… + conversation Files card
 ```
+
+`replace` is also reset: repeat the same checkout to discard local edits and
+restore the selected durable source. `overlay` is available only for directory
+imports. Pulled sources preserve source conversation, turn, namespace, and
+relative path, so two different `source.pdf` objects do not collide.
+
+Bind the complete lifecycle instead of assembling a pull-only server:
 
 ```python
-from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime import (
-    WORKSPACE_MCP_SERVER_ID, workspace_mcp_server,
+from kdcube_ai_app.apps.chat.sdk.solutions.claude_code import (
+    ClaudeCodeWorkspaceConfig,
+    bind_claude_code_turn_workspace,
 )
 
-servers = claude_code_mcp_servers(server_map)          # the app's own + others
-servers[WORKSPACE_MCP_SERVER_ID] = workspace_mcp_server(
-    workspace=workspace_path, tenant=tenant, project=project,
-    user_id=user_id, conversation_id=conversation_id,
+turn_workspace = await bind_claude_code_turn_workspace(
+    workspace=workspace_path,
+    tenant=tenant,
+    project=project,
+    user_id=user_id,
+    conversation_id=conversation_id,
+    turn_id=turn_id,
+    entrypoint=self,
+    state=state,
+    publication_policy=product_policy,
 )
+workspace_config = turn_workspace.apply_workspace_config(
+    ClaudeCodeWorkspaceConfig(
+        mcp_servers=claude_code_mcp_servers(server_map),
+        instructions_markdown=CLAUDE_MD,
+    )
+)
+try:
+    result = await run_claude_code_turn(...)
+finally:
+    await turn_workspace.close()
 ```
 
-Two boundaries worth stating out loud:
+Four boundaries are intentional:
 
-- **identity travels in the child's environment**, never in a tool argument, so
-  an agent cannot pull as somebody else by naming them;
-- **it is not a service capability.** Namespaces come and go with an
-  administrator's inventory, a user's pick, or a lapsed grant. None of that may
-  take away an agent's ability to open a file its own conversation carries — an
-  agent with every capability switched off still reads, edits, and answers.
+- runtime context binds identity in the trusted parent; the model supplies refs
+  and paths, never a user id or hosting credential;
+- `event_ref` identifies what happened, while a separately supplied
+  `object_ref` or `conv:fi:` identifies materializable bytes;
+- the workspace server is not a service capability, so disabling provider
+  namespaces cannot remove access to an object already in the conversation;
+- a file existing in Claude's workspace is not user delivery. Only explicit
+  `publish` hosts selected current-turn `files/...` outputs, after shared
+  size/type limits and the app's narrower policy approve them.
 
 ## OP 60 · The toolchain: the app names the path, the agent keeps it
 
@@ -450,23 +511,29 @@ Design notes that came out of live use:
 
 Run these in order; each one has failed for real:
 
-1. Ask the agent to list its tools. Expect the app's MCP tools, the workspace
-   pull, and the CLI built-ins your deployment allows.
+1. Ask the agent to list its tools. Expect the app's MCP tools, workspace
+   `pull`/`checkout`/`publish`, and the CLI built-ins your deployment allows.
 2. Ask for something that needs the app's surface (a search). Watch the row
    complete — not just start.
 3. Revoke the grant in Connection Hub, ask again: expect a consent card naming
    the claims, and the same turn's retry to work after approving.
-4. Attach a file to a message and ask about it. The agent should pull it, not
-   receive it.
-5. Ask it to change a file, then look at the desk: the change is there, marked
-   uncommitted.
-6. Commit from the desk, then `git log` in the store from a shell.
-7. **Reopen the conversation**: answer, activity rows, cost, elapsed time,
+4. Attach a file to a message and ask about it. The agent should pull it lazily
+   and inspect the returned read-only path.
+5. Ask it to annotate that attachment for you. It should checkout a current-turn
+   derivative, edit that path, publish it, and return a new `conv:fi:` file
+   without changing the original. Repeat checkout and confirm it resets edits.
+6. Ask it to change a file in the app-owned git store, then look at the desk:
+   the change is there, marked uncommitted.
+7. Commit from the desk, then `git log` in the store from a shell.
+8. **Reopen the conversation**: answer, activity rows, cost, elapsed time,
    title, and any attached object must all still be there.
-8. Run two turns and compare time-to-first-token. The second should be faster
+9. Run two turns and compare time-to-first-token. The second should be faster
    (the prompt cache held).
-9. From a shell in the runtime, call the MCP surface with the agent's own
+10. From a shell in the runtime, call the MCP surface with the agent's own
    bearer. Confirm 200 *and* a clean connection close.
+11. For callers outside the trusted admin/insider population, enter Claude's
+    Bash and verify sibling-user roots, unrelated processor environment
+    secrets, and unapproved network destinations are physically unavailable.
 
 ## Common failures
 
@@ -481,15 +548,21 @@ Run these in order; each one has failed for real:
 | every conversation is "Untitled" | the title role resolves to no model | declare it in `role_models` |
 | the agent asks permission for a command its runbook demands | the tool is not in the allow list | permit it; a lane cannot answer a prompt |
 | a `.venv` appears in the store's `git status` | the toolchain was built inside the package | machine-local cache keyed by the requirements hash |
+| two pulled files with the same basename overwrite each other | a legacy flat `_pulled/<basename>` layout is still in use | use the shared collision-safe Agent Harness binding |
+| a file exists in Claude's workspace but no Files card appears | workspace creation was mistaken for conversation delivery | call governed `publish` for selected current-turn `files/...` paths |
+| Bash can read another user's workspace | path naming or MCP grants were treated as OS isolation | restrict the lane to trusted admins/insiders or add a dedicated per-user OS/container boundary |
 
 ## Done means
 
-- A colleague with a browser and no checkout can ask the resident agent to
+- A trusted operator with a browser and no checkout can ask the resident agent to
   change a file, see the change on the desk, and commit it.
 - An engineer with a checkout and their own CLI agent works the same files, the
   same runbook, and the same git history.
-- Every capability the agent has is one the signed-in user granted, per agent,
-  revocable, and named after its consequence.
+- Every delegated MCP capability is one the signed-in user granted, per agent,
+  revocable, and named after its consequence. Claude built-ins and Bash operate
+  only inside the separately reviewed process/filesystem/network boundary.
+- Conversation refs are pulled read-only, editable derivatives are checked out
+  explicitly, and only policy-admitted current-turn files are published.
 - The workings are visible in the chat, the answer is clean, and a reopened
   conversation shows all of it.
 

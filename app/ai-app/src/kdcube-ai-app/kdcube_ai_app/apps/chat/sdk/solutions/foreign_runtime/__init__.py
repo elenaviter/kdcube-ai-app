@@ -78,6 +78,15 @@ from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.workspace_tools impor
     workspace_mcp_server,
     workspace_pull_dir,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.publication import (
+    WorkspacePublicationApprover,
+    WorkspacePublicationDecision,
+    WorkspacePublicationFile,
+    WorkspacePublicationPolicy,
+    WorkspacePublicationRequest,
+    validate_workspace_publication,
+    workspace_publication_mime,
+)
 from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.workspace_broker import (
     WorkspaceBroker,
     WorkspaceBrokerError,
@@ -102,6 +111,11 @@ __all__ = [
     "WorkspaceBroker",
     "WorkspaceBrokerError",
     "WorkspacePublishError",
+    "WorkspacePublicationApprover",
+    "WorkspacePublicationDecision",
+    "WorkspacePublicationFile",
+    "WorkspacePublicationPolicy",
+    "WorkspacePublicationRequest",
     "agent_grant_bearer_provider",
     "claude_code_mcp_servers",
     "claude_code_tool_rules",
@@ -144,7 +158,9 @@ __all__ = [
     "start_workspace_broker",
     "tool_call_views",
     "turn_identity",
+    "validate_workspace_publication",
     "workspace_artifact_root",
     "workspace_mcp_server",
     "workspace_pull_dir",
+    "workspace_publication_mime",
 ]

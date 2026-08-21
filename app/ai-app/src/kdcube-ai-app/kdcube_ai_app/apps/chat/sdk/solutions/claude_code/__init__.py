@@ -22,6 +22,11 @@ from kdcube_ai_app.apps.chat.sdk.solutions.claude_code.workspace import (
     materialize_kdcube_skills_for_claude,
     prepare_claude_code_workspace,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.claude_code.harness_workspace import (
+    CLAUDE_CODE_TURN_WORKSPACE_PERMISSION,
+    ClaudeCodeTurnWorkspaceBinding,
+    bind_claude_code_turn_workspace,
+)
 
 __all__ = [
     "ClaudeCodeAgent",
@@ -33,6 +38,9 @@ __all__ = [
     "ClaudeCodeTurnKind",
     "ClaudeCodeWorkspaceConfig",
     "ClaudeCodeSessionStoreConfig",
+    "ClaudeCodeTurnWorkspaceBinding",
+    "CLAUDE_CODE_TURN_WORKSPACE_PERMISSION",
+    "bind_claude_code_turn_workspace",
     "bootstrap_claude_code_session_store",
     "claude_code_session_branch_ref",
     "publish_claude_code_session_store",

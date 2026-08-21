@@ -153,10 +153,11 @@ def build_app() -> Any:
     async def publish(paths: List[str]) -> str:
         """Publish selected current-turn files to the conversation.
 
-        Pass stable paths below `files/...`, not arbitrary workspace files. The
-        trusted parent binds the user, conversation, and hosting service. The
-        result returns durable `conv:fi:` refs; credentials never enter this
-        process or the model context.
+        Pass a stable `files/...` path or the current-turn workspace-relative
+        path returned by checkout/used by your native file tools. The trusted
+        parent binds the user, conversation, and hosting service. The result
+        returns durable `conv:fi:` refs; credentials never enter this process or
+        the model context.
         """
         if not ident["broker_socket"] or not ident["broker_token"]:
             return "Publish failed (publisher_unavailable): this hosted runtime has no trusted publisher."

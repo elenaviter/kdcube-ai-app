@@ -3,6 +3,7 @@ id: repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/claude/claude-code-accounting-
 title: "Claude Code Accounting"
 summary: "How Claude Code runs are emitted into KDCube accounting as accountable LLM usage, including model resolution, usage extraction, cost fallback, and calculator compatibility."
 tags: ["sdk", "agents", "claude", "claude-code", "accounting", "economics"]
+updated_at: 2026-08-21
 keywords: ["track_llm", "cost_usd", "stream-json", "claude-sonnet-4-6", "claude-opus-4-6", "runtime=claude_code"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/claude/claude-code-README.md
@@ -11,6 +12,12 @@ see_also:
 # Claude Code Accounting
 
 Claude Code invocations executed through the KDCube SDK are accounted as standard LLM service usage.
+
+This contract is the same for direct app-owned runs and harness-bound
+conversational runs. Accounting records provider usage and operational
+metadata; it does not turn the Claude subprocess, its workspace, or its Bash
+access into a security boundary. See
+[Claude Code Agent: Subprocess trust boundary](claude-code-README.md#subprocess-trust-boundary).
 
 This means:
 

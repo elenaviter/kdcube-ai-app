@@ -227,12 +227,20 @@ async def request_workspace_broker(
 def broker_source_resolver(*, socket_path: str, token: str) -> WorkspaceSourceResolver:
     async def _resolve(*, ref: str, staging_dir: Path) -> Any:
         del staging_dir
-        return await request_workspace_broker(
-            socket_path=socket_path,
-            token=token,
-            operation="materialize",
-            payload={"ref": ref},
-        )
+        try:
+            return await request_workspace_broker(
+                socket_path=socket_path,
+                token=token,
+                operation="materialize",
+                payload={"ref": ref},
+            )
+        except WorkspaceBrokerError as error:
+            if error.code == "source_resolver_unavailable":
+                # A publisher-only binding still lets the child use the
+                # built-in conv:fi reader. Owner namespaces remain denied by
+                # resolve_workspace_source when no trusted resolver exists.
+                return None
+            raise
 
     return _resolve
 

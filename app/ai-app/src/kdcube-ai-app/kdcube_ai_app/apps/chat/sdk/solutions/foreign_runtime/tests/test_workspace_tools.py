@@ -16,6 +16,10 @@ from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.workspace_broker impo
     request_workspace_broker,
     start_workspace_broker,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.publication import (
+    WorkspacePublicationDecision,
+    WorkspacePublicationPolicy,
+)
 from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.workspace_tools import (
     WorkspacePublishError,
     _bound_communicator,
@@ -219,3 +223,147 @@ def test_workspace_mcp_server_carries_broker_only_in_trusted_env(tmp_path):
     assert spec["env"]["KDCUBE_WS_BROKER_SOCKET"] == "/tmp/broker.sock"
     assert spec["env"]["KDCUBE_WS_BROKER_TOKEN"] == "secret-token"
     assert "broker" not in spec["args"]
+
+
+def _publish_test_file(tmp_path: Path, *, turn_id: str, name: str, data: bytes) -> str:
+    source = tmp_path / ".kdcube" / "turn-workspace" / turn_id / "files" / name
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(data)
+    return f"files/{name}"
+
+
+async def _publish_for_test(
+    tmp_path: Path,
+    paths: list[str],
+    *,
+    policy: WorkspacePublicationPolicy | None = None,
+    hosting: _Hosting | None = None,
+):
+    target = hosting or _Hosting()
+    rows = await publish_workspace_files(
+        paths,
+        workspace=tmp_path,
+        turn_id="turn_policy",
+        hosting_service=target,
+        tenant="tenant",
+        project="project",
+        user_id="user",
+        user_type="registered",
+        conversation_id="c1",
+        request_id="request-1",
+        policy=policy,
+    )
+    return target, rows
+
+
+def test_publish_rejects_unsupported_output_before_hosting(tmp_path):
+    async def scenario():
+        path = _publish_test_file(
+            tmp_path,
+            turn_id="turn_policy",
+            name="opaque.bin",
+            data=b"opaque",
+        )
+        hosting = _Hosting()
+        with pytest.raises(WorkspacePublishError) as caught:
+            await _publish_for_test(
+                tmp_path,
+                [path],
+                hosting=hosting,
+                # Product admission can only narrow the shared supported-type
+                # ceiling; it cannot turn opaque output into a supported type.
+                policy=WorkspacePublicationPolicy(
+                    allowed_mime_types=("application/octet-stream",),
+                ),
+            )
+        assert caught.value.code == "publish_file_type_unsupported"
+        assert hosting.hosted == []
+        assert hosting.emitted == []
+
+    asyncio.run(scenario())
+
+
+def test_publish_rejects_file_and_aggregate_size_overflow_before_hosting(tmp_path):
+    async def scenario():
+        first = _publish_test_file(
+            tmp_path,
+            turn_id="turn_policy",
+            name="first.txt",
+            data=b"12345",
+        )
+        second = _publish_test_file(
+            tmp_path,
+            turn_id="turn_policy",
+            name="second.txt",
+            data=b"6789",
+        )
+        hosting = _Hosting()
+        with pytest.raises(WorkspacePublishError) as file_error:
+            await _publish_for_test(
+                tmp_path,
+                [first],
+                hosting=hosting,
+                policy=WorkspacePublicationPolicy(max_file_bytes=4),
+            )
+        assert file_error.value.code == "publish_file_too_large"
+
+        with pytest.raises(WorkspacePublishError) as total_error:
+            await _publish_for_test(
+                tmp_path,
+                [first, second],
+                hosting=hosting,
+                policy=WorkspacePublicationPolicy(max_total_bytes=8),
+            )
+        assert total_error.value.code == "publish_total_too_large"
+        assert hosting.hosted == []
+
+    asyncio.run(scenario())
+
+
+def test_publish_rejects_file_count_and_product_denial_before_hosting(tmp_path):
+    async def scenario():
+        first = _publish_test_file(
+            tmp_path,
+            turn_id="turn_policy",
+            name="first.md",
+            data=b"first",
+        )
+        second = _publish_test_file(
+            tmp_path,
+            turn_id="turn_policy",
+            name="second.md",
+            data=b"second",
+        )
+        hosting = _Hosting()
+        with pytest.raises(WorkspacePublishError) as count_error:
+            await _publish_for_test(
+                tmp_path,
+                [first, second],
+                hosting=hosting,
+                policy=WorkspacePublicationPolicy(max_files=1),
+            )
+        assert count_error.value.code == "publish_file_count_exceeded"
+
+        observed = []
+
+        async def deny(request):
+            observed.append(request)
+            return WorkspacePublicationDecision.denied(
+                "product review is required",
+                code="product_review_required",
+            )
+
+        with pytest.raises(WorkspacePublishError) as denied:
+            await _publish_for_test(
+                tmp_path,
+                [first],
+                hosting=hosting,
+                policy=WorkspacePublicationPolicy(approver=deny),
+            )
+        assert denied.value.code == "product_review_required"
+        assert observed[0].user_id == "user"
+        assert observed[0].conversation_id == "c1"
+        assert observed[0].files[0].relative_path == "first.md"
+        assert hosting.hosted == []
+
+    asyncio.run(scenario())

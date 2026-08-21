@@ -1,9 +1,10 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/claude/claude-code-README.md
 title: "Claude Code Agent"
-summary: "Native Python SDK runner for Claude Code with deterministic user and conversation binding, workspace-scoped execution, communicator-backed streaming, framed structured-output parsing, timeout control, and correct session resume semantics."
-tags: ["sdk", "agents", "claude", "claude-code", "streaming", "communicator", "workspace"]
-keywords: ["ClaudeCodeAgent", "run_followup", "run_steer", "allowedTools", "session-id", "resume", "add-dir", "permission-mode", "stream-json", "ChatCommunicator", "timeout_seconds", "structured_output_prefixes", "mcp-config", "strict-mcp-config", "workspace trust", "turn_workspace", "activity rows", "per-conversation workspace", "prompt cache"]
+summary: "Native Python SDK runner for direct app-owned and harness-bound Claude Code integrations, including deterministic continuity, streaming, accounting, workspace tools, and the subprocess trust boundary."
+tags: ["sdk", "agents", "claude", "claude-code", "streaming", "communicator", "workspace", "security"]
+updated_at: 2026-08-21
+keywords: ["ClaudeCodeAgent", "run_followup", "run_steer", "allowedTools", "session-id", "resume", "add-dir", "permission-mode", "stream-json", "ChatCommunicator", "timeout_seconds", "structured_output_prefixes", "mcp-config", "strict-mcp-config", "workspace trust", "turn_workspace", "activity rows", "per-conversation workspace", "prompt cache", "direct bundle-owned Claude execution", "harness-bound conversational Claude execution", "Claude Code trust boundary", "ambient subprocess authority"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/app-with-resident-coding-agent-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-agent-integration-README.md
@@ -12,6 +13,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/tools/tool-subsystem-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/claude/claude-code-accounting-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/claude/claude-code-workspace-bootstrap-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
 ---
 # Claude Code Agent
 
@@ -24,7 +26,7 @@ This page documents the native Python Claude Code runner added under:
 
 Use this when a bundle or SDK component wants to run `claude` directly from Python without introducing a Node bridge or bundle-local subprocess glue.
 
-For bundle-level wiring with React, bundle-served MCP endpoints, generated
+For bundle-level wiring with the ReAct Agent, bundle-served MCP endpoints, generated
 `.mcp.json`, and deployment reachability requirements, read
 [Bundle Agent Integration](../../bundle/bundle-agent-integration-README.md).
 
@@ -58,6 +60,21 @@ Main features:
 - bounded failure diagnostics with stdout/stderr tails
 - optional bounded stdout stream logging for debugging
 - support for `regular`, `followup`, and `steer` turns
+
+## Choose the integration profile
+
+The runner is policy-neutral. An app chooses one of two supported profiles for
+each lane; one app may use both in different lanes.
+
+| Profile | Runtime shape | State and output owner | Reference |
+| --- | --- | --- | --- |
+| Direct app-owned execution | job, cron, or API -> app workspace -> Claude CLI -> app validator | the app owns inputs, session lineage, validation, and app-domain persistence; no conversation workspace is required | News generation pipeline |
+| Harness-bound conversational execution | chat turn -> app wrapper -> Claude CLI + local `turn_workspace` MCP | the Agent Harness Workspace resolves refs, checks out editable copies, and explicitly publishes selected files into the conversation | Press assistant |
+
+The second profile is additive. `bind_claude_code_turn_workspace(...)` does not
+replace Claude's private session store or require every Claude Code integration
+to become a chat agent. The detailed workspace contract is in
+[Claude Code Workspace Management](claude-code-workspace-bootstrap-README.md).
 
 ## Mental model
 
@@ -151,7 +168,9 @@ agent = ClaudeCodeAgent(
         model="claude-sonnet-4-6",
         allowed_tools=("Read", "Grep", "Bash", "WebFetch", "WebSearch"),
         additional_directories=(Path("/srv/work/news-pipeline"),),
-        env={"ANTHROPIC_API_KEY": "..."},
+        # Resolve descriptor-owned secrets in trusted app code; do not put
+        # literal credentials in source or descriptors.
+        env=resolved_claude_env,
         permission_mode="acceptEdits",
         timeout_seconds=900,
         structured_output_prefixes=("NEWS_PIPELINE_RESULT",),
@@ -416,19 +435,51 @@ warning. It names the cause; guessing from the app side does not.
 
 ### The turn's own workspace server
 
-A CLI runtime has exactly one door for tools — MCP — so the platform's
-pull-by-ref primitive reaches it as a **local stdio server** rather than an
-in-process binding:
-`sdk/solutions/foreign_runtime/workspace_mcp.py`, configured by
-`workspace_tools.workspace_mcp_server(...)`. It offers `pull(refs)` and
-`pulled()` over the same `pull_refs_into_dir` the native agent uses, takes its
-identity from the child's environment (never from a tool argument), and returns
-each pulled file as a local path plus a time-limited download link.
+A CLI runtime receives the shared Agent Harness Workspace through a **local
+stdio MCP server** rather than an in-process binding. A conversational wrapper
+opts in once with `bind_claude_code_turn_workspace(...)`:
 
-It is deliberately **not** a named service: namespaces come and go with an
-administrator's inventory, a user's pick, or a lapsed grant, and none of that
-may take away an agent's ability to open a file its own conversation carries.
-Nothing is materialized until the agent asks.
+```python
+turn_workspace = await bind_claude_code_turn_workspace(
+    workspace=workspace_path,
+    tenant=tenant,
+    project=project,
+    user_id=user_id,
+    conversation_id=conversation_id,
+    turn_id=turn_id,
+    entrypoint=self,
+    state=state,
+    publication_policy=product_policy,
+)
+workspace_config = turn_workspace.apply_workspace_config(
+    ClaudeCodeWorkspaceConfig(
+        mcp_servers=product_servers,
+        instructions_markdown=product_instructions,
+    )
+)
+try:
+    result = await run_claude_code_turn(...)
+finally:
+    await turn_workspace.close()
+```
+
+The binding exposes the common `pull`, `checkout`, `publish`, and `pulled`
+operations. `pull` lazily materializes a durable `conv:fi:` file locator or an
+authorized owner `object_ref` into a collision-safe read-only path. `checkout`
+creates or resets an editable copy below current-turn `files/...` or
+`git/projects/...`. `publish` admits only selected current-turn files through
+the shared size/type ceiling and any narrower product approval policy, then the
+trusted parent hosts them and returns durable `conv:fi:` refs.
+
+An `event_ref` identifies the event record and is not itself a byte locator. If
+an event carries an object, the adapter preserves its `object_ref` in the
+model-visible input; that is the locator the agent passes to `pull`.
+
+The workspace server is deliberately **not** a named service: a capability
+pick or lapsed provider grant cannot remove the agent's ability to open an
+object already present in its own conversation. Identity, resolvers, and the
+hosting service stay in the trusted parent. The child supplies operation
+arguments, never another user's identity or a hosting credential.
 
 ## Streaming behavior
 
@@ -615,23 +666,55 @@ Important distinction:
   `--add-dir`
 - neither one is a security sandbox
 
+### Subprocess trust boundary
+
+The current runner starts Claude Code directly in the processor's operating
+system/container boundary. It sets `cwd=workspace_path`, and its environment is
+built from the processor's `os.environ` before caller-supplied values override
+individual keys. If `Bash` is available, the subprocess can attempt any
+filesystem or network action the processor OS user can perform; a model
+instruction, a per-user directory name, `--add-dir`, and Claude's allow/deny
+configuration do not create an OS boundary.
+
+Use the current direct runner for either of these trust shapes:
+
+- an app-owned service pipeline whose prompts, inputs, workset, validation, and
+  publication are controlled by trusted app code;
+- a conversational coding lane restricted to operator-approved admin/insider
+  users who are trusted not to inspect or exfiltrate sibling runtime data.
+
+Before exposing a generic Claude Code lane to mutually hostile users, run each
+user's CLI under a dedicated process/container or OS identity with only that
+user's workset mounted, a deliberately minimized environment, constrained
+network access, and no readable sibling-user roots. The generic runner does not
+create that physical per-user profile automatically.
+
+The harness-bound profile governs ref resolution, checkout destinations, and
+conversation-file publication. Connection Hub governs the MCP operations
+Claude calls. Neither contract limits a direct `Bash` filesystem or socket
+operation that the surrounding processor itself is allowed to perform.
+Likewise, KDCube's split generated-code executor isolates code run through the
+isolated execution subsystem; it does not automatically move the Claude CLI
+process into that executor.
+
 Plain-language boundary summary:
 
 - `workspace_path` means "run Claude from this directory."
 - `additional_directories` means "also pass these paths via `--add-dir`."
-- That is workspace scoping, but not security isolation. Claude is still a
-  subprocess in the same OS/container security boundary. It is not a sandbox,
-  chroot, container, or per-user filesystem jail.
+- That is workspace organization and CLI permission configuration, not a
+  sandbox, chroot, container, or per-user filesystem jail.
 - Repo bootstrap/publish means hydrating/persisting Claude's own
   session/workspace files, for example via git-backed session store. That
   remains handled by the higher-level runtime, not the low-level subprocess
   runner.
-- Secret injection policy means the runner should not decide which secrets are
-  safe to resolve/write. The caller must pass resolved short-lived tokens or env
-  values deliberately.
+- Secret resolution remains trusted app code. Because the subprocess inherits
+  the processor environment, deployment authors must also ensure unrelated
+  secrets are absent from that process boundary rather than relying on the
+  workspace path to hide them.
 
-The caller must choose a per-user/per-conversation/per-agent workspace path when
-concurrent or cross-user isolation is required.
+Use a per-user/per-conversation/per-agent workspace path to prevent accidental
+path and session collisions. Use an OS-enforced profile for adversarial
+cross-user isolation.
 
 ### Make it per conversation, never per turn
 
@@ -725,7 +808,7 @@ imports, writes each resolved skill as a native Claude Code project Skill under
 files next to the source KDCube `SKILL.md`.
 
 The SDK does not infer Claude tool permissions from KDCube skill `tools.yaml`.
-React tool ids and Claude MCP tool names are different surfaces. Configure MCP
+ReAct Agent tool ids and Claude MCP tool names are different surfaces. Configure MCP
 servers and `allowed_tools` explicitly; use `skill_allowed_tools` only when the
 generated Claude Skill should also declare skill-local Claude tool hints.
 

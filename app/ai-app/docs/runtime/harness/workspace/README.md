@@ -15,6 +15,8 @@ keywords:
     "OUTPUT_DIR",
     "pull",
     "checkout",
+    "conversation file publication",
+    "publication policy",
     "event_ref",
     "object_ref",
   ]
@@ -25,6 +27,8 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/workspace/artifact-storage-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/workspace/workspace-lifecycle-and-distribution-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/events/artifact-resolution-and-materialization-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/claude/claude-code-workspace-bootstrap-README.md
+  - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/foreign_runtime/publication.py
 ---
 # Agent Harness Workspace
 
@@ -69,6 +73,13 @@ agent framework.
 Publication is a separate transition. A file in `files/...` is editable
 workspace state until an adapter's trusted host stores it as a conversation
 file, returns a durable `conv:fi:` ref, and emits or records the file result.
+The shared publication gate accepts only current-turn `files/...` paths and
+applies an immutable platform ceiling before hosting: at most 50 files, 100 MiB
+per file, 250 MiB in aggregate, and supported document/data/media MIME families.
+An application may narrow those limits and must make any product-specific
+approval decision in the trusted parent. The approver receives runtime-bound
+identity and validated file metadata; the agent supplies only paths. Unsupported,
+oversized, or unapproved requests do not reach conversation hosting.
 
 ## Area Semantics
 

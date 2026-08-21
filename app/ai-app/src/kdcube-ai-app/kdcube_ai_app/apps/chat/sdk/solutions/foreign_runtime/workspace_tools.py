@@ -28,12 +28,17 @@
 
 from __future__ import annotations
 
-import mimetypes
 import shutil
 import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
+
+from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.publication import (
+    WorkspacePublicationPolicy,
+    WorkspacePublishError,
+    validate_workspace_publication,
+)
 
 __all__ = [
     "WORKSPACE_MCP_SERVER_ID",
@@ -212,12 +217,6 @@ async def checkout_into_workspace(
     )
 
 
-class WorkspacePublishError(ValueError):
-    def __init__(self, code: str, message: str):
-        super().__init__(message)
-        self.code = code
-
-
 def _publish_source_path(*, workspace: Path, turn_id: str, value: str) -> tuple[Path, str]:
     raw = str(value or "").strip().replace("\\", "/").strip("/")
     if not raw:
@@ -270,6 +269,7 @@ async def publish_workspace_files(
     conversation_id: str,
     request_id: str = "",
     state: Optional[Dict[str, Any]] = None,
+    policy: Optional[WorkspacePublicationPolicy] = None,
 ) -> List[Dict[str, Any]]:
     """Host selected current-turn derivatives and surface them to the user.
 
@@ -292,22 +292,37 @@ async def publish_workspace_files(
     if not selected:
         raise WorkspacePublishError("publish_paths_missing", "publish requires at least one files/... path")
 
+    request = await validate_workspace_publication(
+        selected,
+        tenant=tenant,
+        project=project,
+        user_id=user_id,
+        user_type=user_type,
+        conversation_id=conversation_id,
+        turn_id=turn,
+        request_id=request_id,
+        policy=policy,
+    )
+
     runtime_root = Path(tempfile.mkdtemp(prefix="kdcube-workspace-publish-"))
     artifact_root = runtime_root / "workdir"
     artifacts: List[Dict[str, Any]] = []
     try:
-        for source, relative in selected:
-            physical = Path(turn) / "files" / relative
+        for item in request.files:
+            physical = Path(turn) / "files" / item.relative_path
             staged = artifact_root / physical
             staged.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, staged)
-            mime = mimetypes.guess_type(source.name)[0] or "application/octet-stream"
+            shutil.copy2(item.source_path, staged)
             artifacts.append({
                 "type": "file",
-                "output": {"type": "file", "path": physical.as_posix(), "mime": mime},
-                "mime": mime,
-                "resource_id": relative,
-                "slot": relative,
+                "output": {
+                    "type": "file",
+                    "path": physical.as_posix(),
+                    "mime": item.mime,
+                },
+                "mime": item.mime,
+                "resource_id": item.relative_path,
+                "slot": item.relative_path,
                 "tool_id": "workspace.publish",
                 "description": "Published by the hosted agent",
             })
