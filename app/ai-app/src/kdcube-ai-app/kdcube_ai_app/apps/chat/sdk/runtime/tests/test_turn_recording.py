@@ -868,6 +868,7 @@ def test_a_pinned_object_reloads_as_a_live_chip():
     payload = build_minimal_turn_log_payload(
         final_answer="…",
         turn_id="t1",
+        conversation_id="conv-1",
         user_prompt_text="whats this ?",
         user_events=[event],
         batch_id="b1",
@@ -882,6 +883,52 @@ def test_a_pinned_object_reloads_as_a_live_chip():
     # the event survives verbatim, so anything the resolver needs is still there
     recorded = [b for b in payload["blocks"] if b["type"] == "event.user.context.object"][0]
     assert recorded["meta"]["event"] == event
+    assert recorded["path"] == "conv:ev:conv_conv-1.t1.events/e1"
+    assert recorded["meta"]["event_ref"] == recorded["path"]
+    assert recorded["meta"]["object_ref"] == ref
+    assert recorded["meta"]["event_ref"] != recorded["meta"]["object_ref"]
+
+
+def test_nested_object_ref_is_not_shadowed_by_outer_event_ref():
+    event = {
+        "type": "event.user.context.object",
+        "logical_path": "conv:ev:turn_t1.events/canvas/evt_1",
+        "payload": {
+            "event": {
+                "id": "evt_1",
+                "object_ref": "cnv:main@52",
+                "label": "Planning board",
+            },
+        },
+    }
+    payload = build_minimal_turn_log_payload(
+        final_answer="ready",
+        turn_id="turn_t1",
+        conversation_id="c1",
+        user_prompt_text="inspect this",
+        user_events=[event],
+    )
+
+    recorded = [block for block in payload["blocks"] if block["type"] == event["type"]][0]
+    assert recorded["path"] == "conv:ev:conv_c1.turn_t1.events/canvas/evt_1"
+    assert recorded["meta"]["object_ref"] == "cnv:main@52"
+
+
+def test_legacy_payload_event_ref_is_an_object_locator_not_occurrence_identity():
+    from kdcube_ai_app.apps.chat.sdk.runtime.harness.timeline.projection import (
+        object_ref_from_event,
+    )
+
+    event = {
+        "event_ref": "conv:ev:conv_c1.turn_t1.events/canvas/evt_1",
+        "payload": {
+            "event_ref": "cnv:users/u7/canvases/main/objects/card_17/v000004.md",
+        },
+    }
+
+    assert object_ref_from_event(event) == (
+        "cnv:users/u7/canvases/main/objects/card_17/v000004.md"
+    )
 
 
 def test_the_prompt_and_its_objects_share_one_batch():

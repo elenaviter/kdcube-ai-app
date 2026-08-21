@@ -234,6 +234,7 @@ def user_messages_from_folded_events(
 def _user_input_blocks(
     *,
     turn_id: str,
+    conversation_id: str = "",
     ts: str,
     default_batch_id: str,
     user_prompt_text: str = "",
@@ -285,7 +286,7 @@ def _user_input_blocks(
     # The context objects the user sent WITH a message (pins, canvas objects):
     # recorded as their own events so the reloaded chip is live and resolves
     # like the original.
-    for event in user_events or []:
+    for event_index, event in enumerate(user_events or []):
         batch = default_batch_id
         if isinstance(event, dict):
             payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
@@ -301,7 +302,12 @@ def _user_input_blocks(
         else:
             event_ts = ""
         ctx_block = _user_context_event_block(
-            event, turn_id=turn_id, batch_id=batch, ts=event_ts or ts,
+            event,
+            turn_id=turn_id,
+            conversation_id=conversation_id,
+            occurrence_index=event_index,
+            batch_id=batch,
+            ts=event_ts or ts,
         )
         if ctx_block:
             blocks.append(ctx_block)
@@ -325,7 +331,15 @@ def _user_input_blocks(
     return blocks
 
 
-def _user_context_event_block(event: Any, *, turn_id: str, batch_id: str, ts: str) -> Optional[Dict[str, Any]]:
+def _user_context_event_block(
+    event: Any,
+    *,
+    turn_id: str,
+    conversation_id: str = "",
+    occurrence_index: int = 0,
+    batch_id: str,
+    ts: str,
+) -> Optional[Dict[str, Any]]:
     """One recorded EVENT block for a context object the user sent with the turn
     — a pinned post, a canvas object, anything a surface put on the message.
 
@@ -347,21 +361,50 @@ def _user_context_event_block(event: Any, *, turn_id: str, batch_id: str, ts: st
     if event_type.startswith("event.user.attachment"):
         return None
     payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
-    ref = str(
-        payload.get("object_ref") or payload.get("ref") or payload.get("hosted_uri")
-        or event.get("object_ref") or event.get("ref") or event.get("hosted_uri") or ""
+    event_id = str(
+        event.get("event_id")
+        or event.get("id")
+        or payload.get("event_id")
+        or payload.get("id")
+        or f"event_{occurrence_index + 1}"
     ).strip()
+    from kdcube_ai_app.apps.chat.sdk.runtime.harness.timeline import (
+        event_record_ref,
+        object_ref_from_event,
+    )
+
+    ref = object_ref_from_event(event)
+
+    runtime_conversation_id = str(
+        conversation_id
+        or event.get("conversation_id")
+        or payload.get("conversation_id")
+        or ""
+    ).strip()
+    occurrence_ref = event_record_ref(
+        turn_id=turn_id,
+        event_id=event_id,
+        conversation_id=runtime_conversation_id,
+        logical_path=str(
+            event.get("logical_path")
+            or event.get("logicalPath")
+            or payload.get("logical_path")
+            or ""
+        ),
+    )
     return {
         "type": event_type,
         "author": "user",
         "turn_id": turn_id,
         "turn": turn_id,
         "ts": str(event.get("ts") or ts),
-        "path": f"conv:ar:{turn_id}.user.context.{str(event.get('id') or len(event_type))}",
+        "path": occurrence_ref,
         "text": "",
         "meta": {
             "event": dict(event),
             "event_type": event_type,
+            "event_ref": occurrence_ref,
+            "event_id": event_id,
             "batch_id": batch_id,
             "turn_id": turn_id,
             "message_id": "m0",
@@ -526,6 +569,7 @@ def build_minimal_turn_log_payload(
     *,
     final_answer: str,
     turn_id: str,
+    conversation_id: str = "",
     steps: Optional[Sequence[Dict[str, Any]]] = None,
     ts: Optional[str] = None,
     conversation_title: Optional[str] = None,
@@ -554,6 +598,7 @@ def build_minimal_turn_log_payload(
     batch = str(batch_id or "").strip() or f"{turn_id}.batch"
     blocks.extend(_user_input_blocks(
         turn_id=turn_id,
+        conversation_id=conversation_id,
         ts=now,
         default_batch_id=batch,
         user_prompt_text=user_prompt_text,
@@ -766,6 +811,7 @@ def build_error_turn_log_payload(
     *,
     error_message: str,
     turn_id: str,
+    conversation_id: str = "",
     error_type: Optional[str] = None,
     steps: Optional[Sequence[Dict[str, Any]]] = None,
     ts: Optional[str] = None,
@@ -787,6 +833,7 @@ def build_error_turn_log_payload(
     batch = str(batch_id or "").strip() or f"{turn_id}.batch"
     blocks.extend(_user_input_blocks(
         turn_id=turn_id,
+        conversation_id=conversation_id,
         ts=now,
         default_batch_id=batch,
         user_prompt_text=user_prompt_text,
@@ -854,6 +901,7 @@ async def record_error_turn_log_if_absent(
     payload = build_error_turn_log_payload(
         error_message=error_message,
         turn_id=turn_id,
+        conversation_id=conversation_id,
         error_type=error_type,
         steps=steps,
         user_prompt_text=user_prompt_text,
@@ -1068,7 +1116,7 @@ async def record_minimal_turn_log_if_absent(
     if not callable(save):
         return False
     payload = build_minimal_turn_log_payload(
-        final_answer=answer, turn_id=turn_id, steps=steps,
+        final_answer=answer, turn_id=turn_id, conversation_id=conversation_id, steps=steps,
         conversation_title=conversation_title,
         user_prompt_text=user_prompt_text,
         user_event_type=user_event_type,

@@ -12,7 +12,10 @@ from types import ModuleType
 from typing import Any
 
 from kdcube_ai_app.apps.chat.sdk.util import normalize_artifact_visibility
-from kdcube_ai_app.apps.chat.sdk.runtime.harness.timeline import block_matches_event_source
+from kdcube_ai_app.apps.chat.sdk.runtime.harness.timeline import (
+    block_matches_event_source,
+    object_ref_from_event,
+)
 
 
 REACT_POLICY_PHASES = {
@@ -318,7 +321,12 @@ def _external_event_target_lines(target: Mapping[str, Any], *, snapshot: bool = 
     accepted_event = target.get("event") if isinstance(target.get("event"), Mapping) else {}
     event_payload = accepted_event.get("payload") if isinstance(accepted_event.get("payload"), Mapping) else {}
     data = event_payload.get("event") if isinstance(event_payload.get("event"), Mapping) else {}
-    event_ref = str(event_payload.get("event_ref") or "").strip()
+    event_ref = str(
+        target.get("logical_path") or accepted_event.get("logical_path") or ""
+    ).strip()
+    if not event_ref.startswith("conv:ev:"):
+        event_ref = ""
+    object_ref = object_ref_from_event(accepted_event)
     event_source_id = str(target.get("event_source_id") or accepted_event.get("event_source_id") or "").strip()
     logical_path = str(target.get("logical_path") or accepted_event.get("logical_path") or "").strip()
     hosted_uri = str(target.get("hosted_uri") or accepted_event.get("hosted_uri") or "").strip()
@@ -340,6 +348,8 @@ def _external_event_target_lines(target: Mapping[str, Any], *, snapshot: bool = 
     lines.append(f"reactive: {'true' if reactive else 'false'}")
     if event_ref:
         lines.append(f"event_ref: {event_ref}")
+    if object_ref:
+        lines.append(f"object_ref: {object_ref}")
     if text:
         lines.append("")
         lines.append(text)
@@ -355,6 +365,12 @@ def _external_event_target_lines(target: Mapping[str, Any], *, snapshot: bool = 
 
 def _event_block_meta(target: Mapping[str, Any]) -> dict[str, Any]:
     accepted_event = target.get("event") if isinstance(target.get("event"), Mapping) else {}
+    occurrence_ref = str(
+        target.get("logical_path") or accepted_event.get("logical_path") or ""
+    ).strip()
+    if not occurrence_ref.startswith("conv:ev:"):
+        occurrence_ref = ""
+    object_ref = object_ref_from_event(accepted_event)
     meta = dict(target.get("meta") or {})
     for key, value in {
         "event_id": target.get("event_id") or accepted_event.get("event_id"),
@@ -364,6 +380,8 @@ def _event_block_meta(target: Mapping[str, Any]) -> dict[str, Any]:
         "hosted_uri": target.get("hosted_uri") or accepted_event.get("hosted_uri"),
         "story_id": target.get("story_id") or accepted_event.get("story_id"),
         "reactive": target.get("reactive") if "reactive" in target else accepted_event.get("reactive"),
+        "event_ref": occurrence_ref,
+        "object_ref": object_ref,
     }.items():
         if value is not None and (not isinstance(value, str) or value.strip()):
             meta[key] = value
@@ -384,7 +402,12 @@ def _event_block_payload(target: Mapping[str, Any]) -> dict[str, Any]:
             ret = {"event_ref": event_payload.get("event_ref")}
         else:
             ret = None
-    event_ref = event_payload.get("event_ref")
+    event_ref = str(
+        target.get("logical_path") or accepted_event.get("logical_path") or ""
+    ).strip()
+    if not event_ref.startswith("conv:ev:"):
+        event_ref = ""
+    object_ref = object_ref_from_event(accepted_event)
     error = target.get("error")
     if error is None:
         error = accepted_event.get("error")
@@ -414,6 +437,8 @@ def _event_block_payload(target: Mapping[str, Any]) -> dict[str, Any]:
         payload["ret"] = ret
     if event_ref:
         payload["event_ref"] = event_ref
+    if object_ref:
+        payload["object_ref"] = object_ref
     if error is not None:
         payload["error"] = error
     surfaces = _event_block_surfaces(target)

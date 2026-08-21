@@ -85,7 +85,7 @@ In `custom` mode the agent does not see one mutable directory. It reasons across
   │   conv:ar:turn_<id>.* / conv:tc:turn_<id>.* / conv:so:... / conv:su:...                      │
   │                                                                          │
   │   Materialized locally only via:  react.pull(paths=[conv:fi:...])             │
-  │   Activated into current turn via: react.checkout(mode=…, paths=[…])     │
+  │   Made editable via: react.checkout(items=[{from,to,strategy}, ...])      │
   └─────────────────────────────────────────────────────────────────────────┘
                                   │
                                   ▼
@@ -218,7 +218,10 @@ In custom mode there is **no delete operation**:
 
 - `react.write` creates or replaces.
 - `react.patch` modifies an existing local current-turn text file.
-- `react.checkout(mode="replace")` rebuilds `turn_<current>/git/projects/` from the supplied refs, which effectively removes anything not requested in that checkout. This is the closest thing to a delete signal in custom mode today.
+- `react.checkout` with `strategy="replace"` resets its explicit current-turn
+  `git/projects/...` or `files/...` target exactly from the source. This can
+  remove destination-only entries inside that target, but it is not a
+  standalone delete operation.
 - Nothing else *records intent to delete*.
 
 What the agent must therefore avoid:
@@ -232,8 +235,8 @@ What the agent must therefore avoid:
    ↳ DOES NOT mean: "the user/agent deleted that file"
    ↳ Means:        "this turn did not carry that file forward"
 
-   Reason: hydration in custom mode is explicit (pull + checkout).
-   Absence is "not pulled into this turn", not "removed from the project".
+   Reason: hydration in custom mode is explicit (readonly pull or editable checkout).
+   Absence is "not materialized into this turn", not "removed from the project".
 ```
 
 If a previous turn's `files/projectA/old.md` is not present locally, the only safe interpretation is "I have not materialized it; if I need it, I can `react.pull(conv:fi:turn_<older>.files/projectA/old.md)`". Treating the absence as a delete would be incorrect.
@@ -259,7 +262,7 @@ This is the single biggest semantic difference from git mode, where deletion *is
    │                                                          │
    │   ▸ If "current editable workspace" already shows the   │
    │     scope I need ─ work directly under turn_<current>/  │
-   │     files/<scope>/...                                    │
+   │     git/projects/<scope>/...                             │
    │                                                          │
    │   ▸ If I need an earlier version, find its conv:fi: ref by:  │
    │     - looking at earlier tool result blocks in timeline │
@@ -270,14 +273,14 @@ This is the single biggest semantic difference from git mode, where deletion *is
    ┌─────────────────────────────────────────────────────────┐
    │ (3) Materialize the slice I need.                        │
    │                                                          │
-   │   ▸ react.pull(paths=[conv:fi:turn_<older>.files/<scope>])   │
+   │   ▸ react.pull(paths=[conv:fi:turn_<older>.git/projects/<scope>])│
    │     to hydrate historical content as read-only side      │
-   │     material under turn_<older>/files/...                │
+   │     material under turn_<older>/git/projects/...         │
    │                                                          │
-   │   ▸ react.checkout(mode="replace"|"overlay",             │
-   │                    paths=[conv:fi:turn_<older>.files/<scope>])│
-   │     to make it the active editable workspace under       │
-   │     turn_<current>/files/<scope>/...                     │
+   │   ▸ react.checkout(items=[{                            │
+   │       from: conv:fi:turn_<older>.git/projects/<scope>,    │
+   │       to: git/projects/<scope>, strategy: replace         │
+   │     }]) to resolve directly into editable current state   │
    └─────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -342,10 +345,10 @@ discovery rules, see
    │ Rolling-map source     │ ANNOUNCE +             │ ANNOUNCE +             │
    │                        │ live-reconstructed     │ lineage branch         │
    │                        │ from disk + timeline   │ inspection             │
-   │ conv:fi:turn_<id>.files     │ same syntax            │ same syntax            │
+   │ conv:fi:turn_<id>...        │ same syntax            │ same syntax            │
    │ react.pull             │ same contract          │ same contract          │
    │ react.checkout         │ same contract          │ same contract          │
-   │ files/ vs files/     │ same contract          │ same contract          │
+   │ git/projects vs files      │ same contract          │ same contract          │
    └────────────────────────┴────────────────────────┴────────────────────────┘
 ```
 

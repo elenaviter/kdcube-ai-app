@@ -81,7 +81,7 @@ def test_build_announce_text_includes_git_workspace_summary(tmp_path):
     assert "conv:fi:turn_122.git/projects/<project>" in announce_text
     assert "git/projects/projectA" in announce_text
     assert "[writable in current turn]" in announce_text
-    assert 'react.checkout(mode="replace", paths=["conv:fi:turn_122.git/projects/projectA"])' in announce_text
+    assert 'react.checkout(items=[{"from":"conv:fi:turn_122.git/projects/projectA","to":"git/projects/projectA","strategy":"replace"}])' in announce_text
 
 
 def test_build_announce_text_lists_actual_workdir_paths_except_files_tree(tmp_path):

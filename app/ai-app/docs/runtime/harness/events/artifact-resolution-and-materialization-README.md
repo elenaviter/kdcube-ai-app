@@ -172,9 +172,10 @@ model selects ref
   -> model continues from returned paths
 ```
 
-`react.checkout` is separate. It promotes historical `git/projects` state into
-the current editable project tree. Ordinary pull does not silently make a file
-editable project state.
+`react.checkout` is separate. It resolves an exact `conv:fi:` or authorized
+owner locator directly into an explicit editable target below current-turn
+`git/projects/...` or `files/...`. It does not require a prior pull. Ordinary
+pull remains a read-only reference view and never silently makes bytes editable.
 
 ## Ported-Agent Adapter
 

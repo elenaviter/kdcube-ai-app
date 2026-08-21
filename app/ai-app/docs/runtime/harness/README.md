@@ -3,7 +3,7 @@ id: repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/README.md
 title: "Agent Harness Runtime"
 summary: "Framework-neutral event, timeline, and workspace contracts shared by KDCube agent adapters."
 tags: ["runtime", "harness", "agents", "events", "timeline", "workspace"]
-updated_at: 2026-08-18
+updated_at: 2026-08-21
 keywords:
   [
     "agent harness",
@@ -38,11 +38,11 @@ KDCube runtime services
                  +------------+------------+
                  |                         |
                  v                         v
-             ReAct adapter          ported-agent adapters
+      native ReAct Agent adapter    ported-agent adapters
                                       (for example LangGraph)
 ```
 
-ReAct is a consumer of this layer, not its owner. Conversation APIs, chat and
+The native ReAct Agent is a consumer of this layer, not its owner. Conversation APIs, chat and
 canvas integrations, and ported agents also use parts of the same contracts.
 This prevents every agent framework from inventing a different ref grammar,
 turn-log format, artifact layout, or file-download resolver.
@@ -81,7 +81,7 @@ An adapter decides how to use those contracts:
 | --- | --- |
 | Model protocol | ReAct channels and actions; a ported graph's own state transitions. |
 | Scheduling semantics | ReAct can fold eligible events during a live turn; a foreign runtime folds one read-only whole-pending snapshot at turn start and may watch control afterward. |
-| Model tools | `react.pull`, `react.read`, and `react.checkout` are ReAct-facing tools over shared workspace/resolver primitives. |
+| Model tools | `react.pull`, LangGraph `pull_files`, and foreign-runtime local MCP `pull` are adapter bindings over the same materializer; checkout follows the same pattern. |
 | Prompt projection | ReAct ANNOUNCE, compaction, context cache, and round layout remain ReAct-owned. |
 | Tool/result rendering | The common timeline projection validates provider-owned patches; each adapter decides when to invoke it and how to expose the result. |
 
@@ -92,8 +92,9 @@ implementation imports a harness helper.
 
 | Consumer | Shared harness use |
 | --- | --- |
-| ReAct v2/v3 | All three scopes, plus ReAct-owned rounds, tools, prompts, cache, and online governance. |
-| Ported LangGraph example | Turn workspace materialization, canonical file refs, byte resolution, and the common code-exec artifact layout. |
+| Native ReAct Agent v2/v3 | All three scopes, plus ReAct-owned rounds, tools, prompts, cache, and online governance. |
+| Ported LangGraph example | Current-event framing, shared pull and checkout, canonical file refs, and the common code-exec artifact layout. |
+| Foreign-runtime wrappers | Shared pull/checkout can be exposed through local MCP; a trusted wrapper may also bind explicit conversation-file publication. The Press Claude Code wrapper is the worked implementation. |
 | Conversation solution | Timeline payload parsing, turn-log persistence, turn-view reconstruction, and canonical ref presentation. |
 | Chat/canvas surfaces | Canonical `conv:fi:` refs and generic object download/action resolution. |
 | Namespace providers | Owner refs can be materialized through registered rehosters without teaching the harness each provider's storage layout. |
@@ -112,7 +113,11 @@ kdcube_ai_app/apps/chat/sdk/runtime/harness/
     turn_view.py
   workspace/
     artifacts.py
+    checkout.py
+    context_resolver.py
+    hosting.py
     layout.py
+    materialization.py
     pull.py
     references.py
 ```
@@ -134,7 +139,7 @@ ReAct-specific terms in this inventory are described in
 | Current ReAct location | Shared part to extract | Part that stays ReAct-specific |
 | --- | --- | --- |
 | `solution_workspace.py` | Conversation file hosting, timeline rehosting, and execution-snapshot workspace assembly into `runtime/harness/workspace/`. | ReAct-facing read/pull behavior and ReAct timeline integration. |
-| `workspace.py` | Code-path discovery, logical/physical path hydration, and framework-neutral checkout primitives into `runtime/harness/workspace/`. | ReAct tool semantics and ANNOUNCE, the uncached per-round runtime-state block shown to the model. |
+| `workspace.py` | Remaining generic code-path discovery and logical/physical path hydration into `runtime/harness/workspace/`; shared source resolution and checkout are already extracted. | ReAct tool semantics and ANNOUNCE, the uncached per-round runtime-state block shown to the model. |
 | `artifacts.py` and `artifact_analysis.py` | Generic artifact metadata, error normalization, summary preparation, and file materialization. | `ReactArtifactView`, ReAct's artifact presentation model, and ReAct tool-result block layout. |
 | `timeline.py` | Artifact lookup, source-pool selectors that choose citation/source blocks, and other block-only readers into `runtime/harness/timeline/`. | The live ReAct `Timeline`, plans, context compaction, memory-reminder blocks, and ANNOUNCE layout. |
 | `events/policies/`, `events/exploration.py`, and generic parts of `events/artifact_production.py` | Provider/tool event-source policy, which decides how source output enters the record, and safe block projection into the common event/timeline subsystem. | Native `react.*` event ids, live-listener ownership, bounded extra-round credit for folded events, and ReAct round folding. |

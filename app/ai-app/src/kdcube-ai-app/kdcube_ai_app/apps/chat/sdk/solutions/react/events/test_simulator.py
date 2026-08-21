@@ -47,8 +47,10 @@ async def test_preview_payload_renders_context_event_ref_without_model_run(tmp_p
 
     assert result["ok"] is True
     assert result["event_count"] == 1
-    assert '"event_ref": "mem:mem_1"' in result["timeline_text"]
-    assert "mem:mem_1" in result["rendered_text"]
+    assert '"event_ref": "conv:ev:conv_conv_1.turn_dry_run.events/evt_1"' in result["timeline_text"]
+    assert '"object_ref": "mem:mem_1"' in result["timeline_text"]
+    assert '"event_ref": "conv:ev:conv_conv_1.turn_dry_run.events/evt_1"' in result["rendered_text"]
+    assert '"object_ref": "mem:mem_1"' in result["rendered_text"]
     assert "kdcube.memory.context" not in result["rendered_text"]
     assert result["debug_paths"]
 

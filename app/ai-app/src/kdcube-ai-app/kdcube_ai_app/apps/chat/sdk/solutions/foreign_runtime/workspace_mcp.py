@@ -54,7 +54,10 @@ def _identity() -> dict:
         "project": os.environ.get("KDCUBE_WS_PROJECT") or "",
         "user_id": os.environ.get("KDCUBE_WS_USER") or "",
         "conversation_id": os.environ.get("KDCUBE_WS_CONVERSATION") or "",
+        "turn_id": os.environ.get("KDCUBE_WS_TURN") or "",
         "storage_path": os.environ.get("KDCUBE_WS_STORAGE") or "",
+        "broker_socket": os.environ.get("KDCUBE_WS_BROKER_SOCKET") or "",
+        "broker_token": os.environ.get("KDCUBE_WS_BROKER_TOKEN") or "",
     }
 
 
@@ -62,20 +65,34 @@ def build_app() -> Any:
     from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.workspace_tools import (
         pull_into_workspace,
         pull_report_text,
-        workspace_pull_dir,
+        checkout_into_workspace,
+        workspace_artifact_root,
+    )
+    from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.workspace_broker import (
+        broker_source_resolver,
+        request_workspace_broker,
     )
 
     app = _mcp_server("KDCube turn workspace")
     ident = _identity()
+    source_resolver = (
+        broker_source_resolver(
+            socket_path=ident["broker_socket"],
+            token=ident["broker_token"],
+        )
+        if ident["broker_socket"] and ident["broker_token"]
+        else None
+    )
 
     @app.tool()
     async def pull(refs: List[str]) -> str:
-        """Bring files this conversation carries into your working directory.
+        """Materialize object refs as read-only, source-scoped workspace data.
 
-        A message tells you a file or an object is attached and names its ref
-        (`conv:fi:…`); nothing is on disk until you ask for it here. Pass the
-        refs exactly as they appear, then open what you get back with your
-        ordinary file tools.
+        Pass a `conv:fi:` file ref, or an owner object_ref supported by this
+        adapter, exactly as it appears. `conv:ev:` and other timeline refs are
+        records: read the event first and pull its object_ref. Nothing is on
+        disk until you ask. Open the returned path with your ordinary file
+        tools; use checkout before editing it.
 
         Works whatever else is switched on or off: this is your own workspace,
         not a service. Refs that cannot be resolved are reported and the rest
@@ -88,19 +105,94 @@ def build_app() -> Any:
             user_id=ident["user_id"],
             conversation_id=ident["conversation_id"],
             storage_path=ident["storage_path"] or None,
+            source_resolver=source_resolver,
         )
         return pull_report_text(rows, workspace=ident["workspace"])
 
     @app.tool()
+    async def checkout(items: List[dict]) -> str:
+        """Create or reset editable files from durable object refs.
+
+        Each item has exactly `from`, `to`, and `strategy`. `from` is the
+        durable object locator. `to` is a current-workspace path under
+        `git/projects/...` (versioned project state) or `files/...` (an
+        individual derivative). `strategy` is `replace`, or `overlay` for a
+        directory. Repeating replace is the reset operation. All items are
+        validated before any destination changes.
+        """
+        try:
+            result = await checkout_into_workspace(
+                list(items or []),
+                workspace=ident["workspace"],
+                turn_id=ident["turn_id"],
+                tenant=ident["tenant"],
+                project=ident["project"],
+                user_id=ident["user_id"],
+                conversation_id=ident["conversation_id"],
+                storage_path=ident["storage_path"] or None,
+                source_resolver=source_resolver,
+            )
+        except Exception as error:
+            code = getattr(error, "code", "checkout_failed")
+            details = getattr(error, "details", None)
+            suffix = f" Details: {details}" if details else ""
+            return f"Checkout failed ({code}): {error}.{suffix}"
+        lines = ["Editable checkout complete:"]
+        for row in result.get("items") or []:
+            path = Path(ident["workspace"]) / ".kdcube/turn-workspace" / str(row.get("physical_path") or "")
+            try:
+                shown = path.relative_to(Path(ident["workspace"]))
+            except ValueError:
+                shown = path
+            lines.append(
+                f"- {row.get('from')} -> `{shown}` ({row.get('strategy')}, {row.get('kind')})"
+            )
+        return "\n".join(lines)
+
+    @app.tool()
+    async def publish(paths: List[str]) -> str:
+        """Publish selected current-turn files to the conversation.
+
+        Pass stable paths below `files/...`, not arbitrary workspace files. The
+        trusted parent binds the user, conversation, and hosting service. The
+        result returns durable `conv:fi:` refs; credentials never enter this
+        process or the model context.
+        """
+        if not ident["broker_socket"] or not ident["broker_token"]:
+            return "Publish failed (publisher_unavailable): this hosted runtime has no trusted publisher."
+        try:
+            rows = await request_workspace_broker(
+                socket_path=ident["broker_socket"],
+                token=ident["broker_token"],
+                operation="publish",
+                payload={"paths": list(paths or [])},
+            )
+        except Exception as error:
+            return f"Publish failed ({getattr(error, 'code', 'publish_failed')}): {error}"
+        lines = ["Published to the conversation:"]
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            lines.append(
+                f"- {row.get('filename') or 'file'} -> "
+                f"{row.get('logical_path') or row.get('hosted_uri') or '(hosted)'}"
+            )
+        return "\n".join(lines) if len(lines) > 1 else "No files were published."
+
+    @app.tool()
     async def pulled() -> str:
         """List what you have already pulled this turn."""
-        dest = workspace_pull_dir(ident["workspace"])
-        if not dest.is_dir():
+        root = workspace_artifact_root(ident["workspace"])
+        if not root.is_dir():
             return "Nothing pulled yet."
-        names = sorted(p.name for p in dest.iterdir() if p.is_file())
+        names = sorted(
+            path.relative_to(Path(ident["workspace"])).as_posix()
+            for path in root.rglob("*")
+            if path.is_file()
+        )
         if not names:
             return "Nothing pulled yet."
-        return "\n".join(f"- `{Path(dest).name}/{name}`" for name in names)
+        return "\n".join(f"- `{name}`" for name in names)
 
     return app
 

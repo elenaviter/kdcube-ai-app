@@ -37,6 +37,29 @@ signature:
 - **history recovery** — with a `conv` namespace connected, history beyond the
   visible (compacted) window is searchable, not lost.
 
+## Harness workspace binding
+
+The turn frame preserves an incoming event's two identities separately:
+
+```text
+event_ref   conv:ev:conv_c42.turn_t9.events/canvas/context/evt_17
+object_ref  cnv:users/u7/canvases/main/objects/card_17/v000004.md
+```
+
+`event_ref` identifies the accepted occurrence and is not a file. When the
+event supplies `object_ref`, the agent may use `pull_files` for a readonly,
+collision-safe local copy or call `checkout` directly to create/reset editable
+current-turn state. Checkout items always use one shape:
+
+```json
+{"from":"<materializable ref>","to":"files/review/working.pdf","strategy":"replace"}
+```
+
+Targets are relative paths below `files/...` or `git/projects/...`; trusted
+runtime context supplies user, conversation, and turn identity. `run_python`
+reads those paths from the same workspace and hosts its declared output files
+back into the conversation.
+
 ## The full shape
 
 With every part active — workspace tools bound, pending MCP consents, ≥1
@@ -51,7 +74,7 @@ model call
 │      [CONFIDENTIALITY & PROMPT-STEALING      confidentiality, untrusted content,
 │       DEFENSE] [UNTRUSTED CONTENT]           no background promises, elaboration,
 │       [CRITICAL CLARIFICATION PRINCIPLES] …  gender, tech-evolution
-│   3. [DISTRIBUTED TURN WORKSPACE — read_file / pull_files / run_python]
+│   3. [DISTRIBUTED TURN WORKSPACE — read_file / pull_files / checkout / run_python]
 │                                              SDK guide bound to THIS bundle's tool names
 │   4. [CODE IS YOUR HANDS — run_python]       SDK exec_capability_guide: what exec
 │                                              enables, file-ask ⇒ produce with code,
@@ -90,7 +113,7 @@ model call
 │                                              never revealed to the user
 └── tools parameter (provider-native function-calling declarations)
     calc, unit_convert, …                      kind: python connections
-    run_python, pull_files, read_file          code-exec + workspace companions
+    run_python, pull_files, read_file, checkout code-exec + workspace companions
     web_search, web_fetch                      paid web backends
     named_services_* / other MCP tools         kind: mcp connections (delegated)
     <consent stubs>                            one per pending delegated connection

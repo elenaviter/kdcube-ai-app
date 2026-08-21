@@ -3,87 +3,70 @@
 
 from __future__ import annotations
 
+import json
 import pathlib
 from typing import Any, Dict
 
-import json
-
-from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace.references import (
-    localize_conversation_ref,
+from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace import (
+    WorkspaceCheckoutError,
+    artifact_outdir_for,
+    checkout_workspace_items,
+    resolve_context_workspace_source,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.react.tools.common import (
     add_block,
     notice_block,
-    tool_call_block,
     tc_result_path,
-)
-from kdcube_ai_app.apps.chat.sdk.solutions.react.workspace import (
-    checkout_workspace_paths,
-    latest_workspace_checkout_event,
-    normalize_checkout_mode,
-    normalize_checkout_requests,
+    tool_call_block,
 )
 
 
 TOOL_SPEC = {
     "id": "react.checkout",
     "purpose": (
-        "Define the active current-turn project workspace by copying selected materialized "
-        "conv:fi:conv_<conversation_id>.turn_<id>.git/projects refs into turn_<current>/git/projects in order. "
-        "Use this when the current workspace itself must contain a runnable/searchable project snapshot, "
-        "rather than only materializing historical side views with react.pull. "
-        "For older refs that may not be local on this worker, call react.pull(paths=[...]) first. "
-        "react.checkout accepts only conv:fi:...git/projects... workspace refs; external owner namespaces and event refs are not checkout paths."
+        "Create or reset editable current-turn workspace state from durable object locators. "
+        "Each item maps one materializable source to an exact target under git/projects or files. "
+        "Use git/projects for a versioned working project and files for an individual derivative. "
+        "replace makes the target exactly match the source; repeating it resets the target. "
+        "overlay is available only for directories and retains destination-only entries. "
+        "Sources are resolved and pinned by checkout itself; a separate react.pull call is not required."
     ),
     "args": {
-        "mode": (
-            "optional str: replace|overlay. "
-            "replace clears current-turn git/projects/ before applying refs. "
-            "overlay keeps existing current-turn git/projects/ and overwrites only the selected files."
-        ),
-        "paths": (
-            "ordered list[str] of conv:fi:conv_<conversation_id>.turn_<id>.git/projects refs to apply into the current-turn workspace. "
-            "The conv_<conversation_id> segment names the conversation the ref lives in; use refs exactly as supplied. "
-            "Later entries override earlier ones if they overlap."
+        "items": (
+            "ordered list[object], each with exactly: "
+            "from (durable conv:fi or registered owner object ref), "
+            "to (current-workspace-relative path under git/projects/... or files/...), and "
+            "strategy (replace|overlay; overlay is directory-only). "
+            "Do not include a conversation id or turn id in to."
         ),
     },
     "returns": (
-        "JSON object {mode, checked_out_from, checked_out, materialized, missing, errors}. "
-        "materialized is a compact tree summary under the current-turn git/projects/ root, not a per-file manifest. "
-        "replace clears current-turn git/projects/ before applying refs. "
-        "overlay keeps current-turn git/projects/ and applies refs on top. "
-        "Historical refs remain available separately via react.pull."
+        "JSON object {ok, turn_id, items, checked_out_from, editable_roots}. "
+        "Each result item reports the pinned resolved_from ref and the new current-turn "
+        "logical_path/physical_path. The whole batch is validated and prepared before any "
+        "destination changes."
     ),
 }
 
 
-async def handle_react_checkout(*, ctx_browser: Any, state: Dict[str, Any], tool_call_id: str) -> Dict[str, Any]:
+async def handle_react_checkout(
+    *,
+    ctx_browser: Any,
+    state: Dict[str, Any],
+    tool_call_id: str,
+) -> Dict[str, Any]:
     last_decision = state.get("last_decision") or {}
     tool_call = last_decision.get("tool_call") or {}
     tool_id = "react.checkout"
     raw_params = tool_call.get("params") or {}
     params = raw_params if isinstance(raw_params, dict) else {}
-    raw_paths = params.get("paths")
-    if raw_paths is None and isinstance(raw_params, list):
-        raw_paths = raw_params
-    raw_mode = str(params.get("mode") or "").strip().lower()
-    turn_id = str(getattr(getattr(ctx_browser, "runtime_ctx", None), "turn_id", "") or "").strip()
-    conversation_id = str(getattr(getattr(ctx_browser, "runtime_ctx", None), "conversation_id", "") or "").strip()
-    if isinstance(raw_paths, list):
-        # A ref qualified with the current conversation's scope segment resolves
-        # exactly like its local form; refs scoped to another conversation keep
-        # their segment and cross-conversation resolution.
-        localized_paths = []
-        for raw_path in raw_paths:
-            if isinstance(raw_path, dict):
-                localized = dict(raw_path)
-                localized["path"] = localize_conversation_ref(str(raw_path.get("path") or "").strip(), conversation_id)
-                localized_paths.append(localized)
-            elif isinstance(raw_path, str):
-                localized_paths.append(localize_conversation_ref(raw_path.strip(), conversation_id))
-            else:
-                localized_paths.append(raw_path)
-        raw_paths = localized_paths
+    items = params.get("items")
+
+    runtime_ctx = getattr(ctx_browser, "runtime_ctx", None)
+    turn_id = str(getattr(runtime_ctx, "turn_id", "") or "").strip()
+    conversation_id = str(
+        getattr(runtime_ctx, "conversation_id", "") or ""
+    ).strip()
 
     tool_call_block(
         ctx_browser=ctx_browser,
@@ -96,7 +79,13 @@ async def handle_react_checkout(*, ctx_browser: Any, state: Dict[str, Any], tool
         },
     )
 
-    def _fail(error_code: str, message: str, *, extra: Dict[str, Any] | None = None, retry: bool = True) -> Dict[str, Any]:
+    def _fail(
+        error_code: str,
+        message: str,
+        *,
+        extra: Dict[str, Any] | None = None,
+        retry: bool = True,
+    ) -> Dict[str, Any]:
         payload = {
             "ok": False,
             "error": error_code,
@@ -127,59 +116,55 @@ async def handle_react_checkout(*, ctx_browser: Any, state: Dict[str, Any], tool
             state["retry_decision"] = True
         return state
 
-    if raw_mode and raw_mode not in {"replace", "overlay"}:
+    if not isinstance(items, list):
         return _fail(
-            "protocol_violation.checkout_invalid_mode",
-            'react.checkout params.mode must be "replace" or "overlay".',
-            extra={"mode": raw_mode},
-        )
-    mode = normalize_checkout_mode(raw_mode)
-
-    requests, invalid = normalize_checkout_requests(
-        raw_paths=raw_paths,
-        current_turn_id=turn_id,
-    )
-    if invalid:
-        return _fail(
-            "protocol_violation.checkout_invalid_paths",
-            "react.checkout requires conv:fi:conv_<conversation_id>.turn_<id>.git/projects refs in params.paths.",
-            extra={"invalid": invalid},
+            "protocol_violation.checkout_items_missing",
+            "react.checkout requires params.items with {from, to, strategy} objects.",
         )
 
-    if not requests:
+    outdir_raw = str(
+        state.get("outdir") or getattr(runtime_ctx, "outdir", "") or ""
+    ).strip()
+    if not outdir_raw:
         return _fail(
-            "protocol_violation.checkout_missing_paths",
-            "react.checkout requires params.paths with conv:fi:conv_<conversation_id>.turn_<id>.git/projects refs.",
+            "react.checkout.workspace_unavailable",
+            "The current turn workspace is unavailable because no output directory is bound.",
+        )
+    outdir = pathlib.Path(outdir_raw)
+
+    async def _resolve_source(*, ref: str, staging_dir: pathlib.Path):
+        return await resolve_context_workspace_source(
+            ref=ref,
+            staging_dir=staging_dir,
+            ctx_browser=ctx_browser,
+            outdir=outdir,
+            state=state,
+            tool_id=tool_id,
+            tool_call_id=tool_call_id,
         )
 
-    result = await checkout_workspace_paths(
-        ctx_browser=ctx_browser,
-        requests=requests,
-        outdir=pathlib.Path(str(state["outdir"])),
-        mode=mode,
-    )
-
-    if "workspace_checkout_nonempty" in set(result.get("errors") or []):
-        return _fail(
-            "react.checkout.nonempty",
-            (
-                "Current turn workspace already contains files. "
-                "Use react.checkout(mode=\"replace\") before current-turn edits/writes when you want to make an older ref the active editable workspace, "
-                "or react.checkout(mode=\"overlay\") to import selected historical files into the existing workspace."
-            ),
-            extra={"checked_out_from": result.get("checked_out_from") or [], "mode": mode},
+    try:
+        result = await checkout_workspace_items(
+            items=items,
+            artifact_root=artifact_outdir_for(outdir),
+            current_turn_id=turn_id,
+            tenant=str(getattr(runtime_ctx, "tenant", "") or ""),
+            project=str(getattr(runtime_ctx, "project", "") or ""),
+            user_id=str(getattr(runtime_ctx, "user_id", "") or ""),
+            conversation_id=conversation_id,
+            storage_path=str(getattr(runtime_ctx, "storage_path", "") or "") or None,
+            source_resolver=_resolve_source,
         )
-
-    if result.get("missing") or result.get("errors"):
+    except WorkspaceCheckoutError as error:
+        return _fail(
+            f"react.checkout.{error.code}",
+            str(error),
+            extra={"details": error.details} if error.details else None,
+        )
+    except Exception as error:
         return _fail(
             "react.checkout.failed",
-            "Failed to copy the requested workspace checkout. Historical refs must be materialized locally first with react.pull.",
-            extra={
-                "mode": mode,
-                "checked_out_from": result.get("checked_out_from") or [],
-                "missing": result.get("missing") or [],
-                "errors": result.get("errors") or [],
-            },
+            f"The requested checkout could not be completed: {error}",
         )
 
     add_block(ctx_browser, {
@@ -191,31 +176,19 @@ async def handle_react_checkout(*, ctx_browser: Any, state: Dict[str, Any], tool
         "text": json.dumps(result, ensure_ascii=False, indent=2),
         "meta": {
             "tool_call_id": tool_call_id,
+            "tool_id": tool_id,
         },
     })
-    prev_checkout = latest_workspace_checkout_event(getattr(getattr(ctx_browser, "timeline", None), "blocks", []) or [], turn_id=turn_id)
-    if mode == "overlay":
-        merged_sources = []
-        seen = set()
-        for item in list((prev_checkout or {}).get("checked_out_from") or []) + list(result.get("checked_out_from") or []):
-            raw = str(item or "").strip()
-            if not raw or raw in seen:
-                continue
-            seen.add(raw)
-            merged_sources.append(raw)
-    else:
-        merged_sources = [str(item).strip() for item in (result.get("checked_out_from") or []) if str(item).strip()]
-    checkout_event_payload = dict(result)
-    checkout_event_payload["checked_out_from"] = merged_sources
     add_block(ctx_browser, {
         "turn": turn_id,
         "turn_id": turn_id,
         "type": "react.workspace.checkout",
         "mime": "application/json",
-        "path": f"conv:ar:{turn_id}.react.workspace.checkout",
-        "text": json.dumps(checkout_event_payload, ensure_ascii=False, indent=2),
+        "path": f"conv:ar:{turn_id}.react.workspace.checkout.{tool_call_id}",
+        "text": json.dumps(result, ensure_ascii=False, indent=2),
         "meta": {
             "tool_call_id": tool_call_id,
+            "tool_id": tool_id,
         },
     })
     state["last_tool_result"] = result

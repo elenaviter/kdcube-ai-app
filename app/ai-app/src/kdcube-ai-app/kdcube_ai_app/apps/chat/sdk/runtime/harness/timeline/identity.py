@@ -8,6 +8,36 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, MutableMapping
 from typing import Any
 
+from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace.references import (
+    qualify_conversation_ref,
+)
+
+
+def event_record_ref(
+    *,
+    turn_id: str,
+    event_id: str,
+    conversation_id: str = "",
+    logical_path: str = "",
+) -> str:
+    """Return the canonical record ref for one accepted event occurrence.
+
+    An ingress/provider may already have stamped a ``conv:ev:`` path. Otherwise
+    every adapter uses the same turn + occurrence fallback. The referenced
+    object's own locator remains a separate ``object_ref`` in the event body.
+    """
+    supplied = str(logical_path or "").strip()
+    if supplied.startswith("conv:ev:"):
+        return qualify_conversation_ref(supplied, conversation_id)
+    turn = str(turn_id or "").strip()
+    occurrence = str(event_id or "").strip()
+    if not turn or not occurrence:
+        return ""
+    return qualify_conversation_ref(
+        f"conv:ev:{turn}.events/{occurrence}",
+        conversation_id,
+    )
+
 
 def event_identity_fields(
     *,

@@ -6,7 +6,7 @@
 # Gives BOTH ported agents a way to RUN PYTHON, CREATE FILES, and EXPLORE files in
 # an isolated runtime, with the produced files hosted into KDCube's conversation
 # storage EXACTLY like a user attachment — the same `ApplicationHostingService`
-# path the React agent's `host_files` uses (`host_files_to_conversation` +
+# path the native ReAct Agent's `host_files` uses (`host_files_to_conversation` +
 # `emit_solver_artifacts`).
 #
 # This module owns the WIRING (the seam); it is model-agnostic and framework-thin:
@@ -102,6 +102,10 @@ class CodeExecContext:
     # `state["hosted_files"]` after the run so the turn recorder persists file refs
     # for reload + later pull.
     hosted_files: List[Dict[str, Any]] = field(default_factory=list)
+    # Trusted adapter state. Generated code never receives these objects; it
+    # sees only the paths produced by governed workspace tools.
+    ctx_browser: Any = None
+    state: Dict[str, Any] = field(default_factory=dict)
 
 
 # The per-turn handle a tool running inside `code_exec_scope` resolves through.
@@ -283,6 +287,8 @@ def build_code_exec_context(ep: Any, state: Dict[str, Any], agent_id: str) -> Co
         user_id=str(_svc(service, "user") or getattr(comm, "user_id", None) or "").strip(),
         user_type=str(_svc(service, "user_type") or getattr(comm, "user_type", None) or "").strip(),
         request_id=str(_svc(service, "request_id") or "").strip(),
+        ctx_browser=getattr(ep, "ctx_browser", None),
+        state=state,
         exec_runtime=cfg["exec_runtime"],
         timeout_s=cfg["timeout_s"],
         logger=getattr(ep, "logger", None) or LOGGER,
@@ -295,7 +301,7 @@ def _build_hosting_service(comm: Any) -> Any:
     try:
         from kdcube_ai_app.apps.chat.sdk.config import get_settings
         from kdcube_ai_app.apps.chat.sdk.storage.conversation_store import ConversationStore
-        from kdcube_ai_app.apps.chat.sdk.solutions.react.solution_workspace import (
+        from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace.hosting import (
             ApplicationHostingService,
         )
 

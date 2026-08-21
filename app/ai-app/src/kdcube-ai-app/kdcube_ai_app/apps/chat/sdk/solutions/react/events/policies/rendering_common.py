@@ -82,11 +82,22 @@ def _surface_counts(payload: Mapping[str, Any]) -> list[str]:
 
 def _event_refs(payload: Mapping[str, Any], ret: Mapping[str, Any]) -> dict[str, str]:
     refs: dict[str, str] = {}
-    for out_key, candidates in {
-        "event_ref": (payload.get("event_ref"), ret.get("event_ref")),
+    payload_event_ref = str(payload.get("event_ref") or "").strip()
+    legacy_ret_event_ref = str(ret.get("event_ref") or "").strip()
+    candidates_by_key = {
+        "event_ref": (
+            payload_event_ref if payload_event_ref.startswith("conv:ev:") else "",
+        ),
+        "object_ref": (
+            payload.get("object_ref"),
+            ret.get("object_ref"),
+            legacy_ret_event_ref if not legacy_ret_event_ref.startswith("conv:ev:") else "",
+            payload_event_ref if payload_event_ref and not payload_event_ref.startswith("conv:ev:") else "",
+        ),
         "snapshot_ref": (ret.get("snapshot_ref"), ret.get("artifact_ref")),
         "canvas_ref": (ret.get("canvas_ref"), ret.get("latest_ref")),
-    }.items():
+    }
+    for out_key, candidates in candidates_by_key.items():
         for value in candidates:
             value_str = str(value or "").strip()
             if value_str:

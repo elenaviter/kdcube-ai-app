@@ -787,7 +787,7 @@ def test_stage_current_turn_text_workspace_ignores_empty_sparse_pathspec(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_react_checkout_rejects_nonempty_current_workspace(tmp_path, monkeypatch):
+async def test_react_checkout_replace_resets_nonempty_target(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_HTTP_TOKEN", "test-token")
     monkeypatch.setenv("GIT_HTTP_USER", "x-access-token")
     outdir = tmp_path / "out"
@@ -812,8 +812,11 @@ async def test_react_checkout_rejects_nonempty_current_workspace(tmp_path, monke
         "last_decision": {
             "tool_call": {
                 "params": {
-                    "mode": "replace",
-                    "paths": ["conv:fi:turn_prev.git/projects/projectA"],
+                    "items": [{
+                        "from": "conv:fi:turn_prev.git/projects/projectA",
+                        "to": "git/projects/projectA",
+                        "strategy": "replace",
+                    }],
                 }
             }
         },
@@ -822,43 +825,51 @@ async def test_react_checkout_rejects_nonempty_current_workspace(tmp_path, monke
 
     await handle_react_checkout(ctx_browser=ctx, state=state, tool_call_id="checkout1")
 
-    assert state.get("retry_decision") is True
-    assert any((b.get("text") or "").startswith("react.checkout.nonempty:") for b in ctx.timeline.blocks if b.get("type") == "react.notice")
+    project_root = artifact_outdir_for(outdir) / "turn_ctx/git/projects/projectA"
+    assert not (project_root / "scratch.md").exists()
+    assert (project_root / "src/app.py").read_text(encoding="utf-8") == "print('git')\n"
+    assert state.get("retry_decision") is not True
 
 
 @pytest.mark.asyncio
-async def test_react_checkout_requires_pull_for_unmaterialized_source(tmp_path):
+async def test_react_checkout_resolves_source_without_prior_pull(tmp_path, monkeypatch):
     runtime = RuntimeCtx(turn_id="turn_ctx", outdir=str(tmp_path), workdir=str(tmp_path))
     ctx = FakeBrowser(runtime)
+    ctx._turn_logs["turn_prev"] = {
+        "blocks": [{
+            "type": "react.tool.result",
+            "mime": "text/plain",
+            "path": "conv:fi:turn_prev.git/projects/projectA/readme.md",
+            "text": "# restored\n",
+            "turn_id": "turn_prev",
+        }]
+    }
+    import kdcube_ai_app.apps.chat.sdk.config as cfg
+
+    monkeypatch.setattr(cfg, "get_settings", lambda: type(
+        "Settings", (), {"STORAGE_PATH": str(tmp_path)}
+    )())
     state = {
         "last_decision": {
             "tool_call": {
                 "params": {
-                    "mode": "replace",
-                    "paths": ["conv:fi:turn_prev.git/projects/projectA"],
+                    "items": [{
+                        "from": "conv:fi:turn_prev.git/projects/projectA",
+                        "to": "git/projects/projectA",
+                        "strategy": "replace",
+                    }],
                 }
             }
         },
         "outdir": str(tmp_path),
     }
 
-    await handle_react_checkout(ctx_browser=ctx, state=state, tool_call_id="checkout_requires_pull")
+    await handle_react_checkout(ctx_browser=ctx, state=state, tool_call_id="checkout_direct")
 
-    assert state.get("retry_decision") is True
-    notices = [b for b in ctx.timeline.blocks if b.get("type") == "react.notice"]
-    assert notices
-    assert any("react.checkout.failed" in (b.get("text") or "") for b in notices)
-    assert any("checkout_requires_pull" in str(b.get("meta") or "") for b in notices)
-    json_blocks = [
-        b for b in ctx.timeline.blocks
-        if b.get("type") == "react.tool.result" and b.get("mime") == "application/json"
-    ]
-    assert json_blocks
-    payload = json.loads(json_blocks[-1]["text"])
-    assert payload["ok"] is False
-    assert payload["error"] == "react.checkout.failed"
-    assert payload["errors"] == ["checkout_requires_pull"]
-    assert "react.pull" in payload["missing"][0]["pull_hint"]
+    assert state["last_tool_result"]["ok"] is True, state["last_tool_result"]
+    restored = artifact_outdir_for(tmp_path) / "turn_ctx/git/projects/projectA/readme.md"
+    assert restored.read_text(encoding="utf-8") == "# restored\n"
+    assert state.get("retry_decision") is not True
 
 
 @pytest.mark.asyncio
@@ -913,8 +924,11 @@ async def test_react_checkout_copies_pulled_paths_into_current_turn_custom(tmp_p
         "last_decision": {
             "tool_call": {
                 "params": {
-                    "mode": "replace",
-                    "paths": ["conv:fi:turn_prev.git/projects/projectA"],
+                    "items": [{
+                        "from": "conv:fi:turn_prev.git/projects/projectA",
+                        "to": "git/projects/projectA",
+                        "strategy": "replace",
+                    }],
                 }
             }
         },
@@ -958,8 +972,11 @@ async def test_react_checkout_copies_pulled_paths_into_current_turn_git(tmp_path
         "last_decision": {
             "tool_call": {
                 "params": {
-                    "mode": "replace",
-                    "paths": ["conv:fi:turn_prev.git/projects/projectA"],
+                    "items": [{
+                        "from": "conv:fi:turn_prev.git/projects/projectA",
+                        "to": "git/projects/projectA",
+                        "strategy": "replace",
+                    }],
                 }
             }
         },
@@ -976,7 +993,7 @@ async def test_react_checkout_copies_pulled_paths_into_current_turn_git(tmp_path
         for b in ctx.timeline.blocks
         if b.get("type") == "react.workspace.checkout"
     )
-    assert payload["mode"] == "replace"
+    assert payload["items"][0]["strategy"] == "replace"
     assert payload["checked_out_from"] == ["conv:fi:turn_prev.git/projects/projectA"]
 
 
@@ -1022,8 +1039,11 @@ async def test_react_checkout_overlay_overwrites_selected_file_without_clearing_
         "last_decision": {
             "tool_call": {
                 "params": {
-                    "mode": "overlay",
-                    "paths": ["conv:fi:turn_prev.git/projects/projectA/src/app.py"],
+                    "items": [{
+                        "from": "conv:fi:turn_prev.git/projects/projectA/src",
+                        "to": "git/projects/projectA/src",
+                        "strategy": "overlay",
+                    }],
                 }
             }
         },
@@ -1039,8 +1059,8 @@ async def test_react_checkout_overlay_overwrites_selected_file_without_clearing_
         for b in ctx.timeline.blocks
         if b.get("type") == "react.workspace.checkout"
     )
-    assert payload["mode"] == "overlay"
-    assert payload["checked_out_from"] == ["conv:fi:turn_prev.git/projects/projectA/src/app.py"]
+    assert payload["items"][0]["strategy"] == "overlay"
+    assert payload["checked_out_from"] == ["conv:fi:turn_prev.git/projects/projectA/src"]
 
 
 @pytest.mark.asyncio

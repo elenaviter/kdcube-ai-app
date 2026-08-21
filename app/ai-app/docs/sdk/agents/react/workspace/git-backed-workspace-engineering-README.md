@@ -437,12 +437,12 @@ The agent cannot:
 This must be true mechanically, not only by instruction:
 - git commands running on the local workspace should not have non-lineage refs available to inspect
 
-### 5.2 Explicit workspace hydration via `react.pull`
+### 5.2 Explicit readonly hydration and editable checkout
 
 The primary workspace-hydration tool should be:
 
 ```json
-{"tool_id":"react.pull","params":{"paths":["conv:fi:<turn_id>.files/<scope>/<path-or-prefix>"]}}
+{"tool_id":"react.pull","params":{"paths":["conv:fi:<turn_id>.git/projects/<scope>/<path-or-prefix>"]}}
 ```
 
 This tool explicitly asks engineering/runtime to bring a needed slice of the
@@ -463,13 +463,17 @@ This keeps large projects and long conversations manageable.
 `react.pull(...)` does not replace the active current-turn workspace. It creates
 explicit historical compatibility views under the referenced version path.
 
-`react.checkout(...)` is the tool that defines what gets materialized into the
-active current-turn workspace. The fuller cross-backend rationale is captured in
+`react.checkout(...)` is the tool that resolves durable source data directly
+into explicit editable targets in the active current-turn workspace. The fuller
+cross-backend rationale is captured in
 [Agent Harness Workspace Model](../../../../runtime/harness/workspace/workspace-model-README.md):
 
 - keep `react.pull(...)` strictly historical
-- make checkout define the contents of `turn_<current>/git/projects/`
-- let checkout accept an ordered list of `conv:fi:...git/projects...` refs
+- let each checkout item name `from`, `to`, and `strategy`
+- allow targets below current-turn `git/projects/...` for maintained project
+  state and `files/...` for editable artifact derivatives
+- use `replace` for an exact reset and directory-only `overlay` for a merge
+- resolve all sources before applying the target changes transactionally
 
 ### 5.3 Current-turn writable root stays familiar
 

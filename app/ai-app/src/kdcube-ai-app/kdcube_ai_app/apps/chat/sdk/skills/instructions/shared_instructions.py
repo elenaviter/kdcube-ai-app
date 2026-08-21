@@ -235,7 +235,7 @@ SUGGESTED_FOLLOWUPS_GUIDE = """
 
 WORKSPACE_IMPLEMENTATION_GUIDE_CUSTOM = """
 [WORKSPACE MODEL — EXPLICIT PULL / HOSTED ARTIFACT-HISTORY MODE]
-CRITICAL DISTRIBUTED-WORKSPACE FACT — LOCAL THIS TURN means only files listed under ANNOUNCE `[WORKSPACE] LOCAL`. A visible ref, a provider-rendered preview, or a prior-turn pull is not a local file. Before `react.rg`, `react.patch`, code, or any other local-bytes tool uses anything else, `react.pull` it in THIS turn (and `react.checkout` it when editing historical `git/projects/...`). Apply this before every local file operation.
+CRITICAL DISTRIBUTED-WORKSPACE FACT — LOCAL THIS TURN means only files listed under ANNOUNCE `[WORKSPACE] LOCAL`. A visible ref, a provider-rendered preview, or a prior-turn pull is not a local file. Before a local-bytes tool uses durable source data, use `react.pull` for a readonly reference or `react.checkout` for an editable current-turn copy. Apply this before every local file operation.
 
 Generated code and ISO/runtime tools work with real files under `OUTPUT_DIR`.
 Use `OUTPUT_DIR`-relative physical paths only when the documented argument is a
@@ -278,22 +278,22 @@ or file inspection needs artifact bytes, materialize the visible ref with
 
 ```
 
-- HARD — EACH TURN STARTS BLANK: your local workspace begins empty every turn. The local bytes of anything you materialized in an earlier turn are not on disk now — files you pulled, checked out, or wrote, and files your tools produced, are all gone. Only the `conv:fi:` / owner refs persist across turns; the local files do not. A file you had locally last turn is NOT here this turn. Before any local-bytes tool (`react.rg`, `react.patch`, or another file-processing tool) uses such a file THIS turn, re-materialize it with `react.pull` (and `react.checkout` for editable `git/projects/...`) in an EARLIER round of this turn. If you have not pulled it this turn, it is not local.
+- HARD — EACH TURN STARTS BLANK: your local workspace begins empty every turn. The local bytes of anything you materialized in an earlier turn are not on disk now — files you pulled, checked out, or wrote, and files your tools produced, are all gone. Only the `conv:fi:` / owner refs persist across turns; the local files do not. A file you had locally last turn is NOT here this turn. Before a local-bytes tool uses a durable source THIS turn, use `react.pull` for a readonly reference or `react.checkout` for an editable current-turn copy in an EARLIER round. If neither operation made it local this turn, it is not local.
 - `conv:fi:` is the versioned file/artifact namespace. It is the main way to refer to older project files, produced files, snapshots, and attachments.
 - Exact logical-to-physical conversion is defined once in [PATHS & ARTIFACT IDS].
 - `conv:fi:` refs use the form `conv:fi:conv_<conversation_id>.turn_<id>...`; the `conv_<conversation_id>` segment names the conversation the ref lives in. Use refs exactly as supplied with `react.read`, `react.pull`, `react.checkout`, and `react.rg`.
 - Historical materialization uses conversation artifact metadata and hosting-backed artifact state.
 - Code, rendering, local search, and file inspection operate on artifacts currently materialized under `OUTPUT_DIR`. Use `react.pull(paths=[...])` to materialize historical artifacts before local use.
 - `react.read` loads visible context by logical path. File-processing tools require local bytes from `react.pull`.
-- `react.pull` creates local reference material. `react.checkout` is the step that copies versioned `git/projects/...` refs into the current editable project tree.
+- `react.pull` creates collision-safe readonly reference material. `react.checkout` resolves the source itself and creates or resets an editable target under current-turn `git/projects/...` or `files/...`; a prior pull is not required.
 - `react.pull` accepts normal `conv:fi:` refs and external owner refs shown by the runtime.
 - External owner refs are resolved through registered rehosters. Pass the visible `object_ref` or exact owner ref to `react.pull`; then continue from the returned `logical_path` / `physical_path` rows. A missing rehoster is reported in the pull result.
 - `conv:ev:` identifies an event object on the timeline. It is readable with `react.read` like `conv:tc:`, but it is not artifact storage and is not a `react.pull` or `react.checkout` path. If the event shows `object_ref`, pull that ref. If it instead points to bytes or a snapshot body through another field, pull that artifact ref.
 - Bring files in for a reason:
   - use `react.read(paths=[...])` when visible text/context is enough
   - use `react.pull(paths=[...])` when a specific historical or external owner ref must become local reference material for code, rendering, local search, or inspection
-  - use `react.checkout(mode="replace", paths=[...])` after pull when the active current-turn project tree should be built from selected versioned `git/projects/...`
-  - use `react.checkout(mode="overlay", paths=[...])` after pull when selected historical files should be imported into existing current work
+  - use `react.checkout(items=[{"from": <ref>, "to": "git/projects/<scope>", "strategy": "replace"}])` to create or reset an editable project tree directly from a durable source
+  - use a `files/<scope>/<name>` target when creating an editable derivative of an individual artifact; `overlay` is available only for directory sources
 - Folder/slice pulls are supported for `conv:fi:conv_<conversation_id>.turn_<id>.git/projects/<project_scope-or-subtree>`.
 - In hosted artifact-history mode, folder pulls are reconstructed from conversation artifact metadata and hosting-backed artifact state.
 - `conv:fi:conv_<conversation_id>.turn_<id>.files/...` requires an exact file ref.
@@ -302,13 +302,11 @@ or file inspection needs artifact bytes, materialize the visible ref with
 - If you need a binary file from hosting (xlsx, pptx, docx, pdf, image, zip, etc.), name that exact `conv:fi:` ref in `react.pull`.
 - After `react.pull`, use the `logical_path` / `physical_path` rows returned by the tool. Returned physical paths are real `OUTPUT_DIR`-relative files and follow the forms listed in [PATHS & ARTIFACT IDS].
 - Pulling a historical `git/projects/...` ref creates a version-scoped readonly reference view under `turn_<older>/git/projects/...`. Use checkout when the current project tree should receive an editable copy.
-- Use `react.checkout(mode="replace", paths=[...])` after `react.pull` when the active current-turn project tree itself must contain a runnable/searchable/testable editable copy of historical `git/projects/...`.
-- Use `react.checkout(mode="overlay", paths=[...])` after `react.pull` when you want to import or overwrite selected historical files into already materialized current work.
-- `react.checkout(mode="replace", ...)` replaces the current-turn `git/projects/` tree, then applies the requested `conv:fi:conv_<conversation_id>.turn_<id>.git/projects/...` refs in order.
-- `react.checkout(mode="overlay", ...)` keeps the current-turn `git/projects/` tree and applies the requested refs on top without deleting unspecified files.
-- `react.checkout` is defined for `conv:fi:...git/projects...` refs. It copies selected versioned files into `turn_<current>/git/projects/...` as current editable project state.
+- `react.checkout` takes `items=[{"from": <materializable-ref>, "to": <editable-target>, "strategy": "replace"|"overlay"}]`. The runtime binds `<editable-target>` to this turn; do not put a conversation id or turn id in `to`.
+- `replace` works for files and directories and makes that exact target match the source. Repeating it resets the target. `overlay` is directory-only and keeps destination-only entries.
+- `from` may be a durable `conv:fi:` ref or an external owner `object_ref` with a registered rehoster. `to` must be under `git/projects/...` for versioned project work or `files/...` for an individual derivative/deliverable.
 - File-processing tools (`react.patch`, `react.rg`, and other connected tools that take physical paths) operate on local physical files. Materialize older refs with `react.pull` before those tools use them.
-- To edit historical project files, pull first, checkout after pull, then edit the current copy under `turn_<current>/git/projects/...`.
+- To edit durable source data, checkout it directly, then edit the returned current-turn physical path. Pull separately only when a readonly side-by-side reference is useful.
 - Path namespace determines durable role. Anything under current-turn `turn_<current>/git/projects/<project_scope>/...` is project state. Anything under `turn_<current>/files/<artifact_scope>/...` is a produced artifact or deliverable.
 - In `git/projects/<project_scope>/...`, `project_scope` is a stable project root, for example `workspace_app` or `analytics_dashboard`. Reuse it when continuing the same project.
 - In `files/<artifact_scope>/...`, `artifact_scope` is an artifact grouping bucket for a task/project.
@@ -326,10 +324,10 @@ or file inspection needs artifact bytes, materialize the visible ref with
   - `turn_<current>/files/analytics_dashboard/test_results.txt`
   - reserve `files/tmp/...` only for disposable scratch artifacts
 - Read ANNOUNCE `[WORKSPACE]` first when workspace state matters. It tells what is already materialized locally and which previous saved workspace paths can be pulled or checked out.
-- In ANNOUNCE, `current editable workspace` is the local editable project tree already present in this turn. `previous saved workspace paths` are top-level `git/projects/...` paths saved from earlier successful turns; pull one to bring it local when you need to focus on it, then checkout it when you need to edit it.
-- To continue a previous project path as the active workspace, use its `conv:fi:` form and follow the two-step pattern: first `react.pull(paths=["conv:fi:conv_<conversation_id>.turn_<id>.git/projects/<path_under_projects>"])`, then `react.checkout(mode="replace", paths=["conv:fi:conv_<conversation_id>.turn_<id>.git/projects/<path_under_projects>"])`, then write into current-turn `turn_<current>/git/projects/<path_under_projects>/...`.
+- In ANNOUNCE, `current editable workspace` is the local editable project tree already present in this turn. `previous saved workspace paths` are top-level `git/projects/...` paths saved from earlier successful turns; checkout one directly when you need to continue editing it.
+- To continue a previous project path, call `react.checkout(items=[{"from":"conv:fi:conv_<conversation_id>.turn_<id>.git/projects/<scope>","to":"git/projects/<scope>","strategy":"replace"}])`, then work under `turn_<current>/git/projects/<scope>/...`.
 - `react.rg` searches readable local artifact files already materialized on this worker and returns file metadata plus line-numbered regex matches. Use roots that match visible paths: omit `root`, use canonical physical `turn_<id>/...` roots, or matching `conv:fi:` artifact paths.
-- For conversation history and hidden/pruned blocks, use visible refs, `react.memsearch`, and `react.read`; then `react.pull` the artifact before local search. If you need to edit it, checkout the pulled `git/projects/...` ref into the current turn first.
+- For conversation history and hidden/pruned blocks, use visible refs, `react.memsearch`, and `react.read`; then pull an artifact for readonly local search or checkout it directly for editing.
 - Owner-defined namespaces are not built-in readable paths. If exact content is needed, use the configured namespace/service tool or `react.pull` when the runtime exposes a rehoster, then continue from the returned paths.
 """
 
@@ -379,10 +377,10 @@ or file inspection needs artifact bytes, materialize the visible ref with
 
 ```
 
-- HARD — EACH TURN STARTS BLANK: your local workspace begins empty every turn. The local bytes of anything you materialized in an earlier turn are not on disk now — files you pulled, checked out, or wrote, and files your tools produced, are all gone. Only the `conv:fi:` / owner refs persist across turns; the local files do not. A file you had locally last turn is NOT here this turn. Before any local-bytes tool (`react.rg`, `react.patch`, or another file-processing tool) uses such a file THIS turn, re-materialize it with `react.pull` (and `react.checkout` for editable `git/projects/...`) in an EARLIER round of this turn. If you have not pulled it this turn, it is not local.
+- HARD — EACH TURN STARTS BLANK: your local workspace begins empty every turn. The local bytes of anything you materialized in an earlier turn are not on disk now — files you pulled, checked out, or wrote, and files your tools produced, are all gone. Only the `conv:fi:` / owner refs persist across turns; the local files do not. A file you had locally last turn is NOT here this turn. Before a local-bytes tool uses a durable source THIS turn, use `react.pull` for a readonly reference or `react.checkout` for an editable current-turn copy in an EARLIER round. If neither operation made it local this turn, it is not local.
 - The current turn root `turn_<current>/` is bootstrapped as a sparse local git repo in `OUTPUT_DIR`.
 - The repo root path is `Path(OUTPUT_DIR) / "turn_<current>"`.
-- Runtime keeps git history/refs available there. Materialize needed project files with `react.pull` and `react.checkout`.
+- Runtime keeps git history/refs available there. Pull project files for readonly comparison or checkout them directly into editable current-turn paths.
 - In git mode, the current-turn repo is the active lineage workspace for ongoing project work. Your main project tree is `turn_<current>/git/projects/...`.
 - Treat `turn_<current>/git/projects/...` as the authoritative project tree for the turn. `turn_<current>/files/...` is for current-turn produced artifacts.
 - `conv:fi:` is the versioned file/artifact namespace. It is the main way to refer to older project files, produced files, snapshots, and attachments.
@@ -392,15 +390,15 @@ or file inspection needs artifact bytes, materialize the visible ref with
 - Produced files, attachments, external attachments, snapshots, and hosted binaries use hosted artifact history and normally require exact refs.
 - Code, rendering, local search, and file inspection operate on artifacts currently materialized under `OUTPUT_DIR`. Use `react.pull(paths=[...])` to materialize historical artifacts before local use.
 - `react.read` loads visible context by logical path. File-processing tools require local bytes from `react.pull`.
-- `react.pull` creates local reference material. `react.checkout` is the step that copies versioned `git/projects/...` refs into the current editable project tree.
+- `react.pull` creates collision-safe readonly reference material. `react.checkout` resolves the source itself and creates or resets an editable target under current-turn `git/projects/...` or `files/...`; a prior pull is not required.
 - `react.pull` accepts normal `conv:fi:` refs and external owner refs shown by the runtime.
 - External owner refs are resolved through registered rehosters. Pass the visible `object_ref` or exact owner ref to `react.pull`; then continue from the returned `logical_path` / `physical_path` rows. A missing rehoster is reported in the pull result.
 - `conv:ev:` identifies an event object on the timeline. It is readable with `react.read` like `conv:tc:`, but it is not artifact storage and is not a `react.pull` or `react.checkout` path. If the event shows `object_ref`, pull that ref. If it instead points to bytes or a snapshot body through another field, pull that artifact ref.
 - Bring files in for a reason:
   - use `react.read(paths=[...])` when visible text/context is enough
   - use `react.pull(paths=[...])` when a specific historical or external owner ref must become local reference material for code, rendering, local search, or inspection
-  - use `react.checkout(mode="replace", paths=[...])` after pull when the active current-turn project tree should be built from selected versioned `git/projects/...`
-  - use `react.checkout(mode="overlay", paths=[...])` after pull when selected historical files should be imported into existing current work
+  - use `react.checkout(items=[{"from": <ref>, "to": "git/projects/<scope>", "strategy": "replace"}])` to create or reset an editable project tree directly from a durable source
+  - use a `files/<scope>/<name>` target when creating an editable derivative of an individual artifact; `overlay` is available only for directory sources
 - Folder/slice pulls are supported for `conv:fi:conv_<conversation_id>.turn_<id>.git/projects/<project_scope-or-subtree>`.
 - In git-backed mode, `conv:fi:conv_<conversation_id>.turn_<id>.git/projects/...` folder pulls resolve against the conversation's git-backed workspace lineage for that version.
 - `conv:fi:conv_<conversation_id>.turn_<id>.files/...` requires an exact file ref and is resolved through hosted artifact history.
@@ -409,13 +407,11 @@ or file inspection needs artifact bytes, materialize the visible ref with
 - If you need a binary file from hosting (xlsx, pptx, docx, pdf, image, zip, etc.), name that exact `conv:fi:` ref in `react.pull`.
 - After `react.pull`, use the `logical_path` / `physical_path` rows returned by the tool. Returned physical paths are real `OUTPUT_DIR`-relative files and follow the forms listed in [PATHS & ARTIFACT IDS].
 - `react.pull(paths=["conv:fi:conv_<conversation_id>.turn_<older>.git/projects/..."])` creates a version-scoped historical reference view under `turn_<older>/git/projects/...`. Use checkout when the current project tree should receive an editable copy.
-- Use `react.checkout(mode="replace", paths=[...])` after `react.pull` when the active current-turn project tree itself must contain a runnable/searchable/testable editable copy of historical `git/projects/...`.
-- Use `react.checkout(mode="overlay", paths=[...])` after `react.pull` when you want to import or overwrite selected historical files into already materialized current work.
-- `react.checkout(mode="replace", ...)` replaces the current-turn `git/projects/` tree, then applies the requested `conv:fi:conv_<conversation_id>.turn_<id>.git/projects/...` refs in order.
-- `react.checkout(mode="overlay", ...)` keeps the current-turn `git/projects/` tree and applies the requested refs on top without deleting unspecified files.
-- `react.checkout` is defined for `conv:fi:...git/projects...` refs. It copies selected versioned files into `turn_<current>/git/projects/...` as current editable project state.
+- `react.checkout` takes `items=[{"from": <materializable-ref>, "to": <editable-target>, "strategy": "replace"|"overlay"}]`. The runtime binds `<editable-target>` to this turn; do not put a conversation id or turn id in `to`.
+- `replace` works for files and directories and makes that exact target match the source. Repeating it resets the target. `overlay` is directory-only and keeps destination-only entries.
+- `from` may be a durable `conv:fi:` ref or an external owner `object_ref` with a registered rehoster. `to` must be under `git/projects/...` for versioned project work or `files/...` for an individual derivative/deliverable.
 - File-processing tools (`react.patch`, `react.rg`, and other connected tools that take physical paths) operate on local physical files. Materialize older refs with `react.pull` before those tools use them.
-- To edit historical project files, pull first, checkout after pull, then edit the current copy under `turn_<current>/git/projects/...`.
+- To edit durable source data, checkout it directly, then edit the returned current-turn physical path. Pull separately only when a readonly side-by-side reference is useful.
 - Path namespace determines durable role. Anything under current-turn `turn_<current>/git/projects/<project_scope>/...` is project state. Anything under `turn_<current>/files/<artifact_scope>/...` is a produced artifact or deliverable.
 - In `git/projects/<project_scope>/...`, `project_scope` is a stable project root, for example `workspace_app` or `analytics_dashboard`. Reuse it when continuing the same project.
 - In `files/<artifact_scope>/...`, `artifact_scope` is an artifact grouping bucket for a task/project.
@@ -433,19 +429,19 @@ or file inspection needs artifact bytes, materialize the visible ref with
   - `turn_<current>/files/analytics_dashboard/test_results.txt`
   - reserve `files/tmp/...` only for disposable scratch artifacts
 - Read ANNOUNCE `[WORKSPACE]` first. It tells what is already materialized locally, whether the sparse repo is clean/dirty, and which previous saved workspace paths can be pulled/checked out.
-- In ANNOUNCE, `current editable workspace` is the local editable project tree already present in this turn. `previous saved workspace paths` are top-level `git/projects/...` paths saved from earlier successful turns; pull one to bring it local when you need to focus on it, then checkout it when you need to edit it.
-- To continue a previous saved project path as the active workspace, use its `conv:fi:` form and follow the announced two-step pattern: first `react.pull(paths=["conv:fi:conv_<conversation_id>.turn_<id>.git/projects/<path_under_projects>"])`, then `react.checkout(mode="replace", paths=["conv:fi:conv_<conversation_id>.turn_<id>.git/projects/<path_under_projects>"])`, then write into `turn_<current>/git/projects/<path_under_projects>/...`.
+- In ANNOUNCE, `current editable workspace` is the local editable project tree already present in this turn. `previous saved workspace paths` are top-level `git/projects/...` paths saved from earlier successful turns; checkout one directly when you need to continue editing it.
+- To continue a previous project path, call `react.checkout(items=[{"from":"conv:fi:conv_<conversation_id>.turn_<id>.git/projects/<scope>","to":"git/projects/<scope>","strategy":"replace"}])`, then work under `turn_<current>/git/projects/<scope>/...`.
 - Efficient sparse-workspace pattern:
   1. Read ANNOUNCE workspace status first.
   2. If current-turn local files are already enough, work directly there.
   3. If you need historical content by turn id for comparison or explicit reuse, use `react.pull(paths=[...])`.
-  4. If you need the active project tree in `turn_<current>/git/projects/...`, use `react.pull(paths=[...])` and then `react.checkout(mode="replace", paths=[...])` early in the turn.
-  5. If you later need to import or overwrite only part of that workspace from an older version, use `react.pull(paths=[...])` and then `react.checkout(mode="overlay", paths=[...])`.
+  4. If you need the active project tree in `turn_<current>/git/projects/...`, checkout the durable source directly with `strategy="replace"` early in the turn.
+  5. If you later need to merge an older directory into that workspace, checkout that directory directly with `strategy="overlay"`.
   6. After checkout, work directly in `turn_<current>/git/projects/<project_scope>/...` and use local git commands in the current-turn repo when they help.
   7. Use exact refs for binaries.
 - Local git inspection/diff/status/commit commands are allowed when useful. Runtime synchronization owns network git operations.
 - `react.rg` searches readable local artifact files already materialized on this worker and returns file metadata plus line-numbered regex matches. Use roots that match visible paths: omit `root`, use canonical physical `turn_<id>/...` roots, or matching `conv:fi:` artifact paths.
-- For conversation history and hidden/pruned blocks, use visible refs, `react.memsearch`, and `react.read`; then `react.pull` the artifact before local search. If you need to edit it, checkout the pulled `git/projects/...` ref into the current turn first.
+- For conversation history and hidden/pruned blocks, use visible refs, `react.memsearch`, and `react.read`; then pull an artifact for readonly local search or checkout it directly for editing.
 - Owner-defined namespaces are not built-in readable paths. If exact content is needed, use the configured namespace/service tool or `react.pull` when the runtime exposes a rehoster, then continue from the returned paths.
 """
 
@@ -458,7 +454,7 @@ def get_workspace_implementation_guide(implementation: str | None = None) -> str
 
 DISTRIBUTED_TURN_WORKSPACE_MINIMAL_GUIDE = """
 [DISTRIBUTED TURN WORKSPACE — {tool_list}]
-You have a per-turn file workspace and file tools over CONVERSATION LINKS.
+You have a per-turn file workspace and tools over durable object refs.
 - CRITICAL DISTRIBUTED-WORKSPACE FACT — LOCAL THIS TURN means only files listed under ANNOUNCE `[WORKSPACE] LOCAL`. A visible ref, a provider-rendered preview, or a prior-turn pull is not a local file. Before code or any other local-bytes tool uses anything else, materialize it with {pull_tool} in THIS turn. Apply this before every local file operation.
 - TURN LIFECYCLE: each new user message begins a NEW TURN, and the working
   directory starts EMPTY every turn. Nothing carries over in the directory itself —
@@ -475,13 +471,15 @@ You have a per-turn file workspace and file tools over CONVERSATION LINKS.
   file). They appear beside files throughout the conversation: in `[Files arriving
   this turn]` and in {exec_tool} reports (produced files are listed as
   `link=conv:fi:...`). A link is durable — it identifies the file in ANY turn.
-{read_bullet}- To PROCESS a file with code: call {pull_tool} with its link, then read it from
-  {exec_tool} by the bare filename the pull reports. This works for any file of any
-  turn — arriving now, uploaded earlier, or produced by your own code before.
+{read_bullet}- To PROCESS an object with code: call {pull_tool} with its ref, then use
+  the exact `OUTPUT_DIR`-relative path it reports from {exec_tool}. A `conv:ev:`
+  ref identifies the event record; pull the separate `object_ref` carried by that
+  event. Pulled sources are read-only.
+{checkout_bullet}
 - Your {exec_tool} code runs with the workspace working directory as its current
-  directory; files you pulled are there under their bare filenames. Every file your
-  code writes with a plain relative path is kept with the conversation and
-  delivered to the user.
+  current turn's `files/` directory and exposes `OUTPUT_DIR`. Every file your code
+  writes with a plain relative path is kept with the conversation and delivered to
+  the user.
 - When `[Files arriving this turn]` says a file's contents are not available this
   turn, that is the current truth — say so plainly when it matters to the answer.
 """
@@ -491,25 +489,38 @@ _READ_BULLET = """- To VIEW a file: call {read_tool} with its link. Text comes b
   routed to pull + code.
 """
 
+_CHECKOUT_BULLET = """- To MODIFY or RESET durable source data: call {checkout_tool} with items of
+  exactly `{{from, to, strategy}}`. `to` is under current-turn `files/` or
+  `git/projects/`; `replace` resets a file or directory exactly, while `overlay`
+  is directory-only. Edit the returned `OUTPUT_DIR` path, never the pulled source.
+"""
+
 
 def distributed_turn_workspace_guide(
     *,
     exec_tool: str = "run_python",
     pull_tool: str = "pull_files",
     read_tool: str = "read_file",
+    checkout_tool: str = "checkout",
 ) -> str:
     """The minimal distributed-turn-workspace block for an agent whose workspace
     tooling is read / pull / exec over conversation links (any agent connected to
     the workspace paradigm — not only ReAct). Tool names are parameters so each
     agent's binding names hold; an empty ``read_tool`` drops the view bullet
     (pull + code stays the reader)."""
-    tools = [t for t in (read_tool, pull_tool, exec_tool) if t]
+    tools = [t for t in (read_tool, pull_tool, checkout_tool, exec_tool) if t]
     read_bullet = _READ_BULLET.format(read_tool=read_tool) if read_tool else ""
+    checkout_bullet = (
+        _CHECKOUT_BULLET.format(checkout_tool=checkout_tool)
+        if checkout_tool
+        else ""
+    )
     return DISTRIBUTED_TURN_WORKSPACE_MINIMAL_GUIDE.format(
         tool_list=" / ".join(dict.fromkeys(tools)),
         exec_tool=exec_tool,
         pull_tool=pull_tool,
         read_bullet=read_bullet,
+        checkout_bullet=checkout_bullet,
     )
 
 SCENARIO_FAILURE_STRICTNESS = """
@@ -669,7 +680,7 @@ Using physical relative paths with react.read will result in protocol violation 
 
 #### react.rg results
 - `react.rg` does not load full file contents into context.
-- `react.rg` searches only files already materialized under the local artifact workspace. It is not a search over the whole conversation timeline, hidden/pruned blocks, or unmaterialized artifact history. Materialize needed older files first with `react.pull`; if the goal is editing, then checkout the pulled `git/projects/...` ref into the current turn. Use roots that match visible paths: fully qualified `turn_<id>/git/projects/...`, `turn_<id>/files/...`, `turn_<id>/attachments/...`, or `conv:fi:...`.
+- `react.rg` searches only files already materialized under the local artifact workspace. It is not a search over the whole conversation timeline, hidden/pruned blocks, or unmaterialized artifact history. Pull an older source for readonly local search or checkout it directly when the goal is editing. Use roots that match visible paths: fully qualified `turn_<id>/git/projects/...`, `turn_<id>/files/...`, `turn_<id>/attachments/...`, or `conv:fi:...`.
 - Each hit returns:
   - `path`: relative to the searched root
   - `size_bytes`
@@ -705,7 +716,7 @@ Using physical relative paths with react.read will result in protocol violation 
 - react.patch uses PHYSICAL paths:
   - `react.patch(path="turn_<current>/git/projects/<project_scope>/draft.md", patch="...")`
   - `react.patch(path="turn_<current>/files/<artifact_scope>/page.html", patch="...")`
-- react.patch patches existing current-turn text files under `turn_<current>/git/projects/...` or `turn_<current>/files/...`. It does not require the file to have been created by react.write; current-turn files generated by your tools are patchable. It does not patch logical `conv:fi:` refs or historical `turn_<older>/...` paths directly. Use react.pull first if needed, then react.checkout for historical `git/projects/...` refs you intend to edit. Use react.write only to create new text or intentionally replace a whole file, not to "register" an existing file for patching.
+- react.patch patches existing current-turn text files under `turn_<current>/git/projects/...` or `turn_<current>/files/...`. It does not require the file to have been created by react.write; current-turn files generated by your tools are patchable. It does not patch logical refs or historical paths directly. Use react.checkout to create/reset an editable current-turn copy, then patch that copy. Use react.write only to create new text or intentionally replace a whole file, not to "register" an existing file for patching.
 - rendering_tools.write_* use PHYSICAL paths:
   - `rendering_tools.write_pdf(path="turn_<current>/files/report/report.pdf", content=...)`
 - Use the exact current id and fully qualified physical paths such as `turn_<current>/git/projects/app/docs/report.md` or `turn_<current>/files/report/report.pdf`.
@@ -1334,18 +1345,16 @@ REACT_DECISION_SHARED_OPERATING_GUIDE = f"""
 - For the strategic rules on which actions may share a round (causality, "already visible", live streaming, forbidden same-round chains), the canonical source is the [ROUND / ACTION CAUSALITY] block at the head of the protocol. Treat it as the controlling rule.
 - Workspace activation is explicit. Do NOT assume historical files are locally present at turn start.
   Read `[WORKSPACE]` in ANNOUNCE first.
-  If current local files are not enough, use `react.pull(paths=[...])` to materialize historical refs on this worker. Use `react.checkout(mode="replace", paths=[...])` after pull when the active current-turn workspace itself must receive an editable copy of that historical `git/projects/...` tree, and `react.checkout(mode="overlay", paths=[...])` after pull when you want to import or overwrite selected historical files into the existing workspace.
+  If current local files are not enough, use `react.pull(paths=[...])` for readonly reference material or `react.checkout(items=[{{"from":<ref>,"to":<editable-target>,"strategy":"replace"|"overlay"}}])` for editable current-turn state. Checkout resolves its source itself; do not pull first unless you separately need a readonly comparison.
   Tools do NOT auto-materialize old files for you.
-  In `git` mode, the repo/history shell may exist while the worktree is still sparse. Treat project content as absent until you pulled or intentionally materialized it.
+  In `git` mode, the repo/history shell may exist while the worktree is still sparse. Treat project content as absent until you pulled it for reference or checked it out for editing.
   In `git` mode, your main workspace is `turn_<current>/git/projects/...`. Treat that current-turn tree as the authoritative project structure for the turn.
   In `git` mode, `turn_<current>/files/...` is a produced-artifact area, not part of workspace/git history.
   Use `react.pull(paths=["conv:fi:conv_<conversation_id>.turn_<older>..."])` when you need a specific historical version side-by-side as readonly local reference material.
-  Use `react.checkout(mode="replace", paths=[conv:fi:...])` after pull when the active current-turn workspace itself must contain a runnable/searchable/testable editable copy.
-  Use `react.checkout(mode="overlay", paths=[conv:fi:...])` after pull when you want to import or overwrite selected historical files into an already materialized current-turn workspace.
-  `react.checkout(mode="replace", ...)` replaces the current-turn `git/projects/` tree, then applies the requested `conv:fi:conv_<conversation_id>.turn_<id>.git/projects/...` refs in order.
-  `react.checkout(mode="overlay", ...)` keeps the current-turn `git/projects/` tree and applies the requested refs on top without deleting unspecified files.
-  In ANNOUNCE, `current editable workspace` is the local editable workspace already present in this turn. `previous saved workspace paths` are top-level `git/projects/...` paths saved from earlier successful turns; pull one to bring it local when you need to focus on it, then checkout it when you need to edit it.
-  To continue one of those previous saved workspace paths as the active workspace, use its `conv:fi:` form and follow the announced two-step pattern: first `react.pull(paths=["conv:fi:conv_<conversation_id>.turn_<id>.git/projects/<path_under_projects>"])`, then `react.checkout(mode="replace", paths=["conv:fi:conv_<conversation_id>.turn_<id>.git/projects/<path_under_projects>"])`, then write into the current turn under the matching canonical `turn_<current>/git/projects/<path_under_projects>/...` path.
+  Use `strategy="replace"` for a file or directory when the exact target must be created or reset. Use `strategy="overlay"` only for a directory when destination-only entries must remain.
+  Checkout targets are current-workspace-relative paths under `git/projects/...` or `files/...`; never include the current conversation or turn id in `to`.
+  In ANNOUNCE, `current editable workspace` is the local editable workspace already present in this turn. `previous saved workspace paths` are durable top-level `git/projects/...` refs saved from earlier successful turns; checkout one directly when you need to continue editing it.
+  To continue one of those paths, call `react.checkout(items=[{{"from":"conv:fi:conv_<conversation_id>.turn_<id>.git/projects/<scope>","to":"git/projects/<scope>","strategy":"replace"}}])`, then work under the matching current-turn path.
   Continue inside the matching existing scope when the user is extending the same project.
   If you decide the current project deserves a better scope name, perform that as an intentional rename/migration, not as sibling drift into a second project folder.
 - Keep your context sane: if you just retrieved the large snippet which is useless and you plan the further exploration, hide it with react.hide. Help yourself not to repeat the mistakes in search with setting param replacement such that it will hint what's inside very briefly and why you hide it.
@@ -1469,7 +1478,7 @@ You have following tools to capture content which you produce in the named and d
   For precise targeted edits, read the affected range with `react.read(items=[{{"path":..., "line_start":..., "line_count":..., "line_numbers":"disabled"}}])` and copy context from that raw range. Timeline previews and normal ranged reads may include line-number prefixes; use those prefixes only to choose ranges.
   If the patch contains rendered-preview line-number prefixes, the tool rejects it. Remove those prefixes and retry.
   It patches existing current-turn text files under canonical `turn_<current>/git/projects/...` or `turn_<current>/files/...`; the file does NOT need to have been created by react.write. Current-turn files produced by your tools (checkout, write, prior patch, ...) are patchable once present locally.
-  It does not patch logical `conv:fi:` refs or historical `turn_<older>/...` paths directly. If you intend to edit a historical `git/projects/...` ref, use react.pull first if needed, then react.checkout to copy it into the current-turn `turn_<current>/git/projects/...` namespace before patching. Do not re-emit a whole file with react.write just to "register" it for patching.
+  It does not patch logical `conv:fi:` refs or historical `turn_<older>/...` paths directly. If you intend to edit a durable source, use react.checkout to resolve it directly into the current-turn `turn_<current>/git/projects/...` or `turn_<current>/files/...` namespace before patching. A prior pull is needed only when you also want a readonly comparison. Do not re-emit a whole file with react.write just to "register" it for patching.
   The patch itself is streamed to the user in your chosen channel. If kind='file', the updated file is also shared.
   After patching, a post‑patch check may run; if you see a note `post_patch_check_failed`, decide whether to retry, adjust, or stop.
 
@@ -1481,7 +1490,7 @@ You have following tools to capture content which you produce in the named and d
   This is very useful tool when results retrieved by react.read, react.memsearch or web_tools.web_search / web_tools/web_fetch are irrelevant. In that case you can hide the, to avoid spending tokens, and provide the replacement which explains the irrelevance and helps later to correlate the retrieval query (path or semantic query)
   to result it returned so do not repeat the same irrelevant retrieval later. This is also useful when you have already seen the content but it is far in the tail of your visible context and you want to keep the context clean and focused on more relevant content.
 - react.rg: safe ripgrep-like file/region search over files already materialized on this worker (no shell). Use it to locate readable files by name or regex content before reading/editing. Prefer roots that match visible paths: omit `root`, or use fully qualified `turn_<id>/git/projects/...`, `turn_<id>/files/...`, `turn_<id>/attachments/...`, or matching `conv:fi:` artifact paths.
-  It does not search hidden/pruned timeline, unmaterialized artifact history, or bundle-owned service namespaces. If the target is from an older turn, identify the `conv:fi:` ref from visible context or `react.memsearch`, then `react.pull` it before local search. If you need to modify it, checkout the pulled `git/projects/...` ref into the current turn.
+  It does not search hidden/pruned timeline, unmaterialized artifact history, or bundle-owned service namespaces. If the target is from an older turn, identify its durable ref from visible context or `react.memsearch`, then pull it for readonly local search or checkout it directly for editing.
   It returns discovery metadata (`size_bytes`, `text_symbols`, `line_count`, `logical_path`) and, for content matches, line-numbered previews plus `read_item` ranges. For large text artifacts, search first, then follow up with react.read using `items`/`read_items` for the exact regions you need.
 
 - Use rendering_tools.write_* to render and write the special formats (pdf, pptx, docx, png).

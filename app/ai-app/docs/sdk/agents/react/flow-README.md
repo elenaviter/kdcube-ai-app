@@ -153,7 +153,7 @@ At this point the new turn is ready for the agent loop.
 
 ## What React sees before acting
 
-By the time the decision loop starts, React can see:
+By the time the decision loop starts, the native ReAct Agent can see:
 - the current timeline view
 - the latest sources pool
 - ANNOUNCE
@@ -165,7 +165,7 @@ Current `[WORKSPACE]` content is compact and may include:
 - `current_turn_root`
 - `local turn roots`
 - `current editable workspace`
-- in `git` mode, `previous saved workspace paths (pull to bring local; checkout to edit)`
+- in `git` mode, `previous saved workspace paths (pull to inspect; checkout to edit)`
 - in `git` mode:
   - `repo_mode`
   - `repo_status`
@@ -174,9 +174,12 @@ Current `[WORKSPACE]` content is compact and may include:
 The intended sparse-workspace behavior is:
 1. read `[WORKSPACE]` first
 2. if already-local files are enough, work directly there
-3. if historical/reference files are needed, call `react.pull(...)`
-4. if the active project tree is needed in `turn_<current>/files/...`, call `react.checkout(mode="replace", ...)`
-5. if only selected historical files need to be imported or overwritten into the existing workspace, call `react.checkout(mode="overlay", ...)`
+3. if readonly historical/reference files are needed, call `react.pull(...)`
+4. if durable source data must become editable, call `react.checkout(...)`
+   directly with an explicit target below current-turn `git/projects/...` or
+   `files/...`
+5. use `strategy="replace"` to reset the target exactly, or directory-only
+   `strategy="overlay"` to retain destination-only entries
 6. in `git` mode, use local git commands only after understanding that the worktree may still be sparse
 7. when continuing an existing project, keep working inside the established top-level scope unless you are intentionally renaming the project scope
 8. if `[WORKSPACE]` shows existing top-level scopes for the project you are continuing, keep editing inside that established scope instead of inventing a sibling folder
@@ -232,7 +235,8 @@ Rules:
 - folder pulls bring git-tracked text content only
 - exact binary refs may be pulled point-wise
 - historical files are not auto-hydrated for exec or cross-turn patching
-- if React wants historical files, it must pull them first
+- pull is required before readonly local processing, but checkout resolves its
+  source directly and does not require a prior pull
 
 This rule is enforced in runtime and stated in the agent instructions.
 
@@ -243,20 +247,19 @@ Important distinction:
   - `out/workdir/<current_turn>/git/projects/...` in local runtime storage
 - React should treat `turn_<current_turn>/git/projects/...` as its main project tree for the turn.
 
-If React wants the active current-turn workspace itself to contain a runnable,
-searchable, or testable project snapshot, it should use:
+If the native ReAct Agent wants an editable project snapshot or editable
+artifact derivative in the active current-turn workspace, it should use:
 
 ```json
-{"tool_id":"react.checkout","params":{"paths":["conv:fi:<turn_id>.git/projects/<scope-or-path>"]}}
+{"tool_id":"react.checkout","params":{"items":[{"from":"conv:fi:<turn_id>.git/projects/<scope-or-path>","to":"git/projects/<scope>","strategy":"replace"}]}}
 ```
 
-`react.checkout(mode="replace", ...)` replaces `turn_<current_turn>/git/projects/`,
-then applies the requested `conv:fi:<turn_id>.git/projects/...` refs in order.
-`react.checkout(mode="overlay", ...)` keeps `turn_<current_turn>/git/projects/` and
-imports or overwrites only the selected historical files/scopes on top.
-This is the normal way to seed or selectively extend the active workspace from
-historical/project state; `react.pull(...)` remains historical side
-materialization only.
+Each checkout item names one source, one explicit current-turn target, and one
+strategy. `replace` resets that target exactly. `overlay` merges a directory
+source while preserving destination-only entries. The same operation can place
+a file under `files/...` for local derivative work. All sources resolve before
+the transactional target update begins; `react.pull(...)` remains readonly
+historical side materialization only.
 
 ## Exec tool branch
 

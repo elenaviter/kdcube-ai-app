@@ -53,9 +53,9 @@ agent calls `react.pull` in this turn, waits for the successful result, and uses
 the returned URI for a URI-accepting parameter or the returned physical path
 for a physical-path parameter. The pull result names these fields
 `logical_path` and `physical_path`, respectively. A prior-turn pull, read,
-checkout, or workspace listing does not satisfy this gate. `react.checkout`
-additionally places a pulled historical
-`git/projects/...` artifact in the current editable project tree.
+checkout, or workspace listing does not satisfy this gate. When the source must
+be editable, `react.checkout` resolves it directly into an explicit
+current-turn `git/projects/...` or `files/...` target.
 
 Timeline/context records such as `conv:ar:`, `conv:tc:`, and `conv:ev:` use
 `react.read` directly because they are not workspace files. `react.read`
@@ -131,10 +131,11 @@ Reads existing logical artifacts back into the visible timeline.
   are not direct `react.read` inputs by default. If exact owner content is
   needed, use `react.pull` first; then read/search/execute against the returned
   `conv:fi:` logical path or physical path.
-- `conv:ev:` refs identify event objects on the timeline. Read them like `conv:tc:` refs
-  when the event block itself is needed. If an event points to payload bytes,
-  use the event's `hosted_uri`, `payload.event_ref`, or artifact refs carried
-  inside `payload.event`.
+- `conv:ev:` refs identify event occurrences on the timeline. Read them like
+  `conv:tc:` refs when the event record itself is needed. They are not byte
+  locators. If an event exposes a separate `object_ref`, pull or checkout that
+  locator; otherwise use a separately declared hosted/artifact ref when one is
+  present.
 - cross-conversation `conv:fi:` paths: if a path starts
   `conv:fi:conv_<conversation_id>.turn_<id>...`, it belongs to another
   conversation. Current-conversation `conv:fi:` paths do not have this segment; use
@@ -267,8 +268,8 @@ code or later tools can use them by local path.
   returns the materialized `logical_path` / `physical_path`; use those returned
   paths next
 - event refs: `conv:ev:` identifies a readable timeline event object and is not
-  accepted by `react.pull`; pull the event's `hosted_uri`,
-  `payload.event_ref`, or refs inside `payload.event`
+  accepted by `react.pull`; pull the event's separate `object_ref` or a hosted
+  artifact ref carried by its payload
 - output: local files plus a result block listing pulled paths
 - workspace effect: does not define or replace the active current-turn workspace
 - historical layout: keeps historical material under its historical turn root
@@ -279,22 +280,29 @@ Use it for historical/reference material, not for defining what the current edit
 
 ### `react.checkout`
 
-Copies materialized historical `conv:fi:<turn>.git/projects/...` refs into the active current-turn workspace.
+Resolves durable source locators directly into explicit editable current-turn
+workspace targets.
 
-- input: `paths: list[str]`, `mode: replace|overlay`
-- accepted paths: workspace `conv:fi:<turn>.git/projects/...` refs
-- rejected paths: external owner namespaces and `conv:ev:...`
-  are not checkout refs. Pull/rehost first, then checkout only if the returned
-  `conv:fi:` ref is a `git/projects/...` workspace ref.
-- cross-conversation refs: `conv:fi:conv_<conversation_id>.turn_<id>.git/projects/...`
-  belongs to another conversation and is resolved with that scope
-- output: current-turn workspace files plus a compact checkout result block
-- checkout result: includes `checked_out_from`, per-source file counts, and a tree-like `materialized` summary under `turn_<current>/git/projects`; it is not a per-file manifest
-- `mode=replace`: clears and rebuilds the current-turn `git/projects` workspace
-- `mode=overlay`: applies refs on top of the existing current-turn `git/projects` workspace
-- conflict rule: later refs override earlier refs if they overlap
+- input: `items: list[{"from": str, "to": str, "strategy": "replace"|"overlay"}]`
+- accepted sources: exact `conv:fi:` refs and registered, authorized external
+  owner locators such as `cnv:` or `task:`
+- rejected sources: occurrence/record refs such as `conv:ev:`; read the event
+  and use its separate `object_ref` when present
+- accepted targets: workspace-relative paths below `git/projects/...` or
+  `files/...`; callers never supply an absolute path, conversation id, or turn id
+- cross-conversation refs: `conv:fi:conv_<conversation_id>.turn_<id>...` are
+  resolved under the request's trusted tenant/project/user authority
+- `replace`: resets the target file or directory exactly from its source
+- `overlay`: merges a directory source into a directory target while retaining
+  destination-only entries; it is rejected for file sources
+- transaction rule: every source is resolved before any target is changed;
+  overlapping targets and symlink traversal are rejected
+- output: each source, current-turn target, logical target ref, strategy, and
+  materialized file count
 
-Use it when React needs an editable runnable/searchable/testable project tree in the current turn. For older refs that may not be local on the worker, call `react.pull(paths=[...])` first, then `react.checkout(...)`. Use `react.pull` alone when the older version is only reference material.
+Use it when the native ReAct Agent needs an editable project tree or an
+editable derivative of a durable artifact. A prior pull is not required. Use
+`react.pull` separately when the source should remain readonly for comparison.
 
 ### `react.write`
 
@@ -332,7 +340,9 @@ preserving its path. Use it instead of calling `react.write` again for that path
 - rendered-preview line-number prefixes are rejected; remove the viewing prefixes and retry
 - output: updated local file plus normal tool call/result blocks
 - file origin does not matter: current-turn files produced by exec, `react.write`, `react.patch`, or `react.checkout` are patchable once they exist locally
-- older files are never patched in place; materialize with `react.pull` if needed, then use `react.checkout` for historical `git/projects/...` refs you need to edit and patch the resulting current-turn path
+- older files are never patched in place; use `react.checkout` to create an
+  editable current-turn `git/projects/...` or `files/...` copy, then patch that
+  target
 
 When a unified diff cannot be applied exactly, `react.patch` returns a
 structured `hunk_mismatch` diagnostic. Treat this as a context mismatch, not as
@@ -407,10 +417,11 @@ The targets the agent selects determine which row families come back:
 **Scopes.**
 
 - `scope="conversation"` (default): the current conversation only. Cannot leak across conversations.
-- `scope="user"`: the same user across all of their conversations, inside the same tenant + project + storage boundary. Does not cross tenants or projects. Returned `conv:fi:` paths shaped `conv:fi:conv_<id>.turn_<id>...` indicate cross-conversation artifacts; pass them verbatim to `react.read` / `react.pull` / `react.rg`. Use `react.checkout` only when such a ref is a `git/projects` project ref.
+- `scope="user"`: the same user across all of their conversations, inside the same tenant + project + storage boundary. Does not cross tenants or projects. Returned `conv:fi:` paths shaped `conv:fi:conv_<id>.turn_<id>...` indicate cross-conversation artifacts; pass them verbatim to `react.read` / `react.pull`, or use them as a `react.checkout` source when an editable current-turn copy is needed.
 
-**Retrieval function.** When `query` is set, semantic and lexical retrievals run
-in parallel and are fused by Reciprocal Rank Fusion (`k=60`) per target with a
+**Retrieval function.** When `query` is set, semantic, lexical, and
+trigram-fuzzy retrievals run in parallel and are fused by Reciprocal Rank
+Fusion (`k=60`) per target with a
 multiplicative recency lift (`1 + 0.25 × recency`, half-life 7 days). A turn
 does not have to appear in both lists — single-side matches still count, they
 just contribute one RRF term. Catalog routing (no-query / ordinal / date-only

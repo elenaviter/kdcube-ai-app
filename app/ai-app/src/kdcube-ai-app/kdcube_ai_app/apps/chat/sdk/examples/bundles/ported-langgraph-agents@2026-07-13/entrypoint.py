@@ -117,6 +117,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.turn_record import (
 )
 from .platform.tool_pick import agent_tool_connections, run_python_bound, select_bound_tools
 from .platform.turn_workspace import (
+    build_checkout_tool,
     build_pull_files_tool,
     build_read_file_tool,
     frame_turn_input,
@@ -336,6 +337,11 @@ async def _build_prebuilt_graph(
         # (text bounded; images/PDF as visual payloads — react.read semantics).
         return build_read_file_tool()
 
+    def _checkout_factory() -> Any:
+        # Workspace companion: create/reset editable current-turn state from a
+        # durable file or owner-provided object ref.
+        return build_checkout_tool()
+
     def _web_tool_factories() -> Dict[str, Callable[[], Any]]:
         # web_search / web_fetch run PAID backends (search provider + an LLM
         # that filters/segments the retrieved results) — the LLM side binds to
@@ -364,6 +370,7 @@ async def _build_prebuilt_graph(
         run_python_factory=_run_python_factory,
         pull_files_factory=_pull_files_factory,
         read_file_factory=_read_file_factory,
+        checkout_factory=_checkout_factory,
         extra_factories=_web_tool_factories(),
     )
     # MCP tools declared as `kind: mcp` connections (optional; degrades to none).
@@ -514,6 +521,7 @@ def _prebuilt_system_prompt(
             exec_tool="run_python",
             pull_tool=pull_tool,
             read_tool="read_file" if "read_file" in names else "",
+            checkout_tool="checkout" if "checkout" in names else "",
         ).strip())
         parts.append(exec_capability_guide(exec_tool="run_python", pull_tool=pull_tool))
     else:

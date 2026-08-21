@@ -11,6 +11,29 @@ from typing import Any
 from kdcube_ai_app.apps.chat.sdk.runtime.harness.timeline.identity import block_event_source_id
 
 
+def object_ref_from_event(event: Mapping[str, Any] | None) -> str:
+    """Return the object locator carried by an event, never its occurrence ref."""
+    if not isinstance(event, Mapping):
+        return ""
+    payload = event.get("payload") if isinstance(event.get("payload"), Mapping) else {}
+    nested_event = payload.get("event") if isinstance(payload.get("event"), Mapping) else {}
+    # Accepted event bodies are the most specific projection. Outer envelopes
+    # often carry the occurrence's conv:ev ref in their own ref/path fields.
+    for source in (nested_event, payload, event):
+        for key in (
+            "object_ref",
+            "event_ref",  # Legacy provider alias; conv:ev remains an occurrence.
+            "ref",
+            "hosted_uri",
+            "logical_path",
+            "path",
+        ):
+            text = str(source.get(key) or "").strip()
+            if ":" in text and not text.startswith("conv:ev:"):
+                return text
+    return ""
+
+
 def object_ref_from_block(block: Mapping[str, Any]) -> str:
     """Read the canonical owner ref from a timeline block or nested event payload."""
     for value in (
@@ -19,22 +42,29 @@ def object_ref_from_block(block: Mapping[str, Any]) -> str:
         block.get("hosted_uri"),
     ):
         text = str(value or "").strip()
-        if ":" in text:
+        if ":" in text and not text.startswith("conv:ev:"):
             return text
     event = block.get("event") if isinstance(block.get("event"), Mapping) else {}
     payload = event.get("payload") if isinstance(event.get("payload"), Mapping) else {}
     nested_event = payload.get("event") if isinstance(payload.get("event"), Mapping) else {}
-    for source in (event, payload, nested_event):
-        for key in ("object_ref", "ref", "path", "logical_path", "hosted_uri"):
+    for source in (nested_event, payload, event):
+        for key in (
+            "object_ref",
+            "event_ref",  # Legacy provider alias; conv:ev remains an occurrence.
+            "ref",
+            "path",
+            "logical_path",
+            "hosted_uri",
+        ):
             text = str(source.get(key) or "").strip()
-            if ":" in text:
+            if ":" in text and not text.startswith("conv:ev:"):
                 return text
     meta = block.get("meta") if isinstance(block.get("meta"), Mapping) else {}
     meta_target = meta.get("target") if isinstance(meta.get("target"), Mapping) else {}
     for source in (meta, meta_target):
         for key in ("object_ref", "ref", "path", "logical_path", "hosted_uri"):
             text = str(source.get(key) or "").strip()
-            if ":" in text:
+            if ":" in text and not text.startswith("conv:ev:"):
                 return text
     return ""
 
@@ -288,6 +318,7 @@ __all__ = [
     "namespace_from_ref",
     "normalize_provider_render_patches",
     "object_ref_from_block",
+    "object_ref_from_event",
     "prepare_provider_render_block",
     "render_window_blocks",
 ]

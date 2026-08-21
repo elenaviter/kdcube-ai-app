@@ -6,9 +6,9 @@ React's paradigm, completed for the ported agent: the turn input carries ONLY
 the user message + arriving-file METADATA and conversation LINKS (framed as
 ``[Turn start ...]`` / ``[User message]`` / ``[Files arriving this turn]``);
 nothing is read for the model automatically. The triad over links does the
-rest: ``read_file`` to view (react.read semantics — text bounded, images/PDF
-as visual payloads), ``pull_files`` to materialize, ``run_python`` to
-process. Offline tests: tmp dirs, faked resolver, no store, no redis.
+rest: ``read_file`` to view, ``pull_files`` to materialize read-only sources,
+``checkout`` to create/reset editable state, and ``run_python`` to process.
+Offline tests: tmp dirs, faked resolver, no store, no redis.
 """
 from __future__ import annotations
 
@@ -102,6 +102,47 @@ def test_live_turn_without_files_still_frames_the_boundary(tmp_path):
     assert "EMPTY" in framed and "starts fresh every turn" in framed
     assert "[User message]\ncontinue" in framed
     assert "[Files arriving this turn]" not in framed
+
+
+def test_frame_keeps_event_occurrence_and_object_locator_separate(tmp_path):
+    tw = _module("turn_workspace")
+    events = [{
+        "event_id": "evt-board",
+        "type": "event.canvas.context",
+        "payload": {
+            "object_ref": "cnv:main@52",
+            "label": "Planning board",
+            "summary": "The pinned board revision dragged into this turn.",
+        },
+    }]
+
+    ws = _prepare(tw, _ctx(tmp_path), events)
+    framed = tw.frame_turn_input("inspect this", ws)
+
+    assert "[Objects and events arriving this turn]" in framed
+    assert "event_ref: conv:ev:conv_conv-1.turn_x.events/evt-board" in framed
+    assert "object_ref: cnv:main@52" in framed
+    assert "use object_ref with pull_files" in framed
+
+
+def test_frame_prefers_nested_object_ref_over_outer_event_ref(tmp_path):
+    tw = _module("turn_workspace")
+    events = [{
+        "type": "event.canvas.context",
+        "logical_path": "conv:ev:turn_x.events/canvas/evt-board",
+        "payload": {
+            "event": {
+                "id": "evt-board",
+                "object_ref": "cnv:main@52",
+                "label": "Planning board",
+            },
+        },
+    }]
+
+    framed = tw.frame_turn_input("inspect this", _prepare(tw, _ctx(tmp_path), events))
+
+    assert "event_ref: conv:ev:conv_conv-1.turn_x.events/canvas/evt-board" in framed
+    assert "object_ref: cnv:main@52" in framed
 
 
 def test_no_workspace_no_files_passes_the_question_through():
@@ -202,45 +243,60 @@ def test_read_file_outside_a_scope_fails_open():
 
 def test_pull_files_materializes_through_the_shared_workspace_core(tmp_path, monkeypatch):
     tw = _module("turn_workspace")
-    code_exec = _module("code_exec")
     ctx = _ctx(tmp_path)
-
-    from kdcube_ai_app.apps.chat.sdk.runtime.harness import (
-        workspace as sdk_workspace,
-    )
-
-    async def _fake_pull(*, refs, dest_dir, tenant, project, user_id, conversation_id="", storage_path=None):
-        assert tenant == "tenant-a" and project == "project-a" and user_id == "user-1"
-        target = Path(dest_dir) / "old_report.xlsx"
-        target.write_bytes(_BODY)
-        return [{
-            "ref": refs[0], "ok": True, "filename": "old_report.xlsx",
-            "path": str(target), "size": len(_BODY), "mime": "application/vnd.ms-excel",
-        }]
-
-    monkeypatch.setattr(sdk_workspace, "pull_refs_into_dir", _fake_pull)
+    ref = "conv:fi:conv_c.turn_1.files/old_report.xlsx"
+    _fake_resolver(monkeypatch, {ref: (_BODY, "old_report.xlsx")})
 
     tool = tw.build_pull_files_tool()
     report = _with_ctx(tw, ctx, lambda: tool.ainvoke(
-        {"paths": ["conv:fi:conv_c.turn_1.files/old_report.xlsx"]}))
+        {"refs": [ref]}))
 
-    assert "Pulled 1/1" in report and "old_report.xlsx" in report
-    files_dir = code_exec.exec_files_dir(ctx, create=False)
-    assert (files_dir / "old_report.xlsx").read_bytes() == _BODY
+    assert "Pulled 1/1" in report
+    assert "OUTPUT_DIR/conv_c/turn_1/files/old_report.xlsx" in report
+    from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace import artifact_outdir_for
+
+    pulled = artifact_outdir_for(ctx.outdir) / "conv_c/turn_1/files/old_report.xlsx"
+    assert pulled.read_bytes() == _BODY
+    assert not (pulled.stat().st_mode & 0o200)
 
 
 def test_pull_files_outside_a_scope_fails_open():
     tw = _module("turn_workspace")
     tool = tw.build_pull_files_tool()
 
-    report = asyncio.run(tool.ainvoke({"paths": ["conv:fi:conv_c.turn_1.files/x"]}))
+    report = asyncio.run(tool.ainvoke({"refs": ["conv:fi:conv_c.turn_1.files/x"]}))
 
     assert "not available" in report
 
 
-# ── binding: the workspace triad stands or falls together ───────────────────
+def test_checkout_creates_editable_copy_and_replace_resets_it(tmp_path, monkeypatch):
+    tw = _module("turn_workspace")
+    ctx = _ctx(tmp_path)
+    ref = "conv:fi:conv_c.turn_1.files/source.txt"
+    _fake_resolver(monkeypatch, {ref: (b"original", "source.txt")})
+    tool = tw.build_checkout_tool()
+    args = {"items": [{
+        "from": ref,
+        "to": "files/review/working.txt",
+        "strategy": "replace",
+    }]}
 
-def test_workspace_triad_binds_beside_run_python_and_shares_its_opt_out():
+    first = _with_ctx(tw, ctx, lambda: tool.ainvoke(args))
+    from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace import artifact_outdir_for
+
+    target = artifact_outdir_for(ctx.outdir) / "turn_x/files/review/working.txt"
+    assert "OUTPUT_DIR/turn_x/files/review/working.txt" in first
+    assert target.read_bytes() == b"original"
+    assert target.stat().st_mode & 0o200
+
+    target.write_bytes(b"changed")
+    _with_ctx(tw, ctx, lambda: tool.ainvoke(args))
+    assert target.read_bytes() == b"original"
+
+
+# ── binding: the workspace capability stands or falls together ─────────────
+
+def test_workspace_tools_bind_beside_run_python_and_share_its_opt_out():
     tool_pick = _module("tool_pick")
     connections = [{"alias": "exec", "kind": "python", "allowed": ["run_python"]}]
 
@@ -250,8 +306,9 @@ def test_workspace_triad_binds_beside_run_python_and_shares_its_opt_out():
         run_python_factory=lambda: "RUN_PYTHON",
         pull_files_factory=lambda: "PULL_FILES",
         read_file_factory=lambda: "READ_FILE",
+        checkout_factory=lambda: "CHECKOUT",
     )
-    assert bound == ["RUN_PYTHON", "PULL_FILES", "READ_FILE"]
+    assert bound == ["RUN_PYTHON", "PULL_FILES", "READ_FILE", "CHECKOUT"]
 
     none_bound = tool_pick.select_bound_tools(
         connections, {"exec": True},
@@ -259,6 +316,7 @@ def test_workspace_triad_binds_beside_run_python_and_shares_its_opt_out():
         run_python_factory=lambda: "RUN_PYTHON",
         pull_files_factory=lambda: "PULL_FILES",
         read_file_factory=lambda: "READ_FILE",
+        checkout_factory=lambda: "CHECKOUT",
     )
     assert none_bound == []
 
@@ -271,10 +329,16 @@ def test_workspace_triad_binds_beside_run_python_and_shares_its_opt_out():
 def test_workspace_guide_block_joins_the_prompt_when_tools_are_bound():
     entrypoint = _module_entrypoint()
 
-    bound = [SimpleNamespace(name="run_python"), SimpleNamespace(name="pull_files"), SimpleNamespace(name="read_file")]
+    bound = [
+        SimpleNamespace(name="run_python"),
+        SimpleNamespace(name="pull_files"),
+        SimpleNamespace(name="read_file"),
+        SimpleNamespace(name="checkout"),
+    ]
     prompt = entrypoint._prebuilt_system_prompt(bound)
     assert "[DISTRIBUTED TURN WORKSPACE" in prompt
-    assert "read_file" in prompt and "pull_files" in prompt and "run_python" in prompt
+    assert all(name in prompt for name in ("read_file", "pull_files", "checkout", "run_python"))
+    assert "Pulled sources are read-only" in prompt
     assert "TURN LIFECYCLE" in prompt and "EMPTY every turn" in prompt
     assert prompt.startswith("You are a concise")  # the agent's own prose leads
     # capability level: exec-as-hands joins with run_python; guards always join

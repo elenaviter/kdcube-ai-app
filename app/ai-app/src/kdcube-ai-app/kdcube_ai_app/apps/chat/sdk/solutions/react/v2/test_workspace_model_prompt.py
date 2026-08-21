@@ -9,8 +9,8 @@ def test_get_workspace_implementation_guide_custom_mentions_hosting_backed_mode(
     assert "CRITICAL DISTRIBUTED-WORKSPACE FACT — LOCAL THIS TURN" in guide
     assert "only files listed under ANNOUNCE `[WORKSPACE] LOCAL`" in guide
     assert "react.pull(paths=[...])" in guide
-    assert 'react.checkout(mode="replace", paths=[...])' in guide or 'react.checkout(mode="replace", paths=["conv:fi:' in guide
-    assert "mode=\"overlay\"" in guide
+    assert 'react.checkout(items=[{' in guide and '"from": <ref>' in guide
+    assert '"strategy": "replace"|"overlay"' in guide
     assert "exact file refs" in guide
     assert "hosted binaries require exact file refs" in guide
     assert "HOSTED ARTIFACT-HISTORY MODE" in guide
@@ -29,9 +29,9 @@ def test_get_workspace_implementation_guide_git_mentions_git_backed_mode():
     assert "local git repo" in guide
     assert "active lineage workspace" in guide
     assert "historical reference view" in guide
-    assert 'react.checkout(mode="replace", paths=[...])' in guide or 'react.checkout(mode="replace", paths=["conv:fi:' in guide
+    assert 'react.checkout(items=[{' in guide and '"from": <ref>' in guide
     assert "git/projects" in guide
-    assert "mode=\"overlay\"" in guide
+    assert '"strategy": "replace"|"overlay"' in guide
     assert "turn_<current>/files/..." in guide
     assert "previous saved workspace paths" in guide
     assert "current editable workspace" in guide
@@ -53,9 +53,9 @@ def test_build_decision_system_text_uses_selected_workspace_implementation():
     assert "[REACT HARNESS CONTEXT AND ARTIFACT ACCESS]" in text
     assert "Every artifact has a URI" in text
     assert "every turn starts with a fresh local artifact workspace" in text
-    assert 'react.checkout(mode="replace", paths=[...])' in text or 'react.checkout(mode="replace", paths=["conv:fi:' in text
+    assert 'react.checkout(items=[{' in text and '"from":<ref>' in text
     assert "git/projects" in text
-    assert "mode=\"overlay\"" in text
+    assert '"strategy": "replace"|"overlay"' in text
     assert "turn_<current>/files/..." in text
     assert "existing top-level scope" in text
     assert "previous saved workspace paths" in text

@@ -4,7 +4,7 @@ title: "Harness References And Workspace Paths"
 summary: "Canonical grammar for conversation-owned refs, conversation owner segments, and distributed turn-workspace paths."
 status: active
 tags: ["runtime", "harness", "refs", "workspace", "namespaces", "security"]
-updated_at: 2026-07-18
+updated_at: 2026-08-21
 keywords:
   [
     "conv:fi",
@@ -46,10 +46,39 @@ conv:<family>:<body>
 | `conv:so:` | Source-pool rows and source metadata. | citations and context readers |
 | `conv:ws:` | Working summaries. | context adapters |
 | `conv:su:` | Summary or search-summary records. | context adapters |
-| `conv:ev:` | Accepted event occurrence/object on a timeline. | event/timeline readers |
+| `conv:ev:` | Accepted event occurrence record on a timeline. | event/timeline readers |
 
 External owner namespaces such as `mem:`, `task:`, and `cnv:` are not
 conversation refs. Their providers own authorization and object semantics.
+
+## Event Occurrence And Object Locator
+
+An accepted event and the object mentioned by that event have separate
+identities:
+
+```json
+{
+  "event_ref": "conv:ev:conv_c42.turn_t9.events/canvas/context/evt_17",
+  "object_ref": "cnv:users/u7/canvases/main/objects/card_17/v000004.md"
+}
+```
+
+`event_ref` identifies this occurrence in the conversation. Read it to inspect
+the event record. Do not pass it to pull or checkout.
+
+`object_ref` is supplied by the event producer and identifies the referenced
+object. It can have different forms because its owner defines the locator:
+
+```text
+cnv:users/u7/canvases/main/objects/card_17/v000004.md
+task:issue:ticket_123
+conv:fi:conv_c42.turn_t8.files/report.pdf
+```
+
+If that locator denotes materializable bytes, pull creates a read-only local
+view and checkout creates editable current-turn state. If it denotes a readable
+record instead, the adapter reads it as a record. Some events intentionally
+carry no `object_ref`; the occurrence remains valid and readable.
 
 ## Owner Segment
 
@@ -168,6 +197,15 @@ materializations.
 - safe physical-path normalization;
 - normalization of file payload filenames.
 
+`runtime.harness.workspace.materialization` and `.checkout` own:
+
+- rejecting record refs such as `conv:ev:` as byte sources;
+- resolving exact `conv:fi:` files or calling an adapter's trusted owner-ref
+  resolver;
+- collision-safe read-only pull placement;
+- transactional `checkout(items=[{from,to,strategy}])` into the active turn's
+  `git/projects/...` or `files/...` area.
+
 `runtime.harness.events.resolver` owns:
 
 - canonicalizing `conv:fi:` refs before cross-surface use;
@@ -178,17 +216,20 @@ Framework adapters should call these APIs instead of duplicating path parsing.
 
 ## Adapter Boundaries
 
-The ReAct adapter exposes model tools over this grammar:
+The native ReAct Agent adapter exposes model tools over this grammar:
 
 ```text
 react.pull      materialize historical or owner-domain refs
-react.checkout  make historical git/projects state editable
+react.checkout  resolve a durable source into editable git/projects or files state
 react.read      load supported logical records into model context
 react.rg        search already materialized local bytes
 ```
 
-A ported agent can use the shared resolver and workspace APIs without exposing
-those ReAct tool names.
+A ported LangGraph agent binds the same operations as `pull_files`, `checkout`,
+`read_file`, and `run_python`. A Claude Code wrapper can bind them through a
+local MCP server and use native Read/Grep/Edit/Write/Bash against the returned
+workspace-relative path. The model never supplies tenant, project, user,
+conversation, turn, credentials, or an absolute host path.
 
 ## Checklist
 

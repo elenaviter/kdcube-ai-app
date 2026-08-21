@@ -70,9 +70,12 @@ An accepted conversation event also has a `logical_path` in the `conv:ev:` names
 for example `conv:ev:turn_<id>.events/<event_path>`. That path identifies the event
 object on the timeline and is readable with `react.read`, like `conv:tc:` for tool
 call/result objects. It is not a file/artifact namespace and is not passed to
-`react.pull` or `react.checkout`. If the event body is hosted or points to
-files, the pullable refs live in `hosted_uri`, `payload.event_ref`, or inside
-`payload.event`.
+`react.pull` or `react.checkout`. An event may separately carry a materializable
+`object_ref`, for example `cnv:users/u7/canvases/main/objects/card_17/v000004.md`,
+`task:issue:ticket_123`, or `conv:fi:conv_c1.turn_t8.files/report.pdf`. That
+owner/file locator is the value passed to pull or checkout. Older providers may
+still call this field `payload.event_ref`; it is treated as an object locator
+only when its value is not in the `conv:ev:` occurrence namespace.
 
 From the event-source perspective, a tool call and an accepted conversation
 event are both event occurrences:
@@ -91,8 +94,10 @@ event are both event occurrences:
 Custom `block_production` policies may expand an accepted event into a richer
 group, such as additional payload/artifact blocks. The default event block body
 uses the tool-result-like shape: `ok`, `status`, optional `error`, optional
-`ret`, and optional `surfaces`. `payload.event` becomes `ret`;
-`payload.event_ref` becomes `ret.event_ref`. The default producer also extracts
+`ret`, the `conv:ev:` occurrence as `event_ref`, a separate materializable
+`object_ref` when supplied, and optional `surfaces`. `payload.event` becomes `ret`; legacy
+`payload.event_ref` becomes `ret.event_ref`. The accepted event's own
+`conv:ev:` occurrence ref remains separate. The default producer also extracts
 standard tool-result surfaces from that `ret` and stores them in `surfaces`, including
 exploration rows, hosted/artifact rows, declared file rows, snapshot refs,
 ANNOUNCE candidates, and notices. Those blocks remain grouped by `event_id` and

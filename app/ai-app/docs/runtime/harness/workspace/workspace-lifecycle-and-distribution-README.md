@@ -3,8 +3,8 @@ id: repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/workspace/workspace-lifec
 title: "Harness Workspace Lifecycle And Distribution"
 summary: "Filesystem lifecycle of the per-turn agent workspace, including local origin, runtime population, persistence, and distributed snapshot transport."
 tags: ["runtime", "harness", "workspace", "execution", "snapshot", "fargate", "distributed"]
-updated_at: 2026-07-18
-keywords: ["exec-workspace", "exec_YYYYMMDDHHMMSS", "workdir", "outdir", "timeline.json", "tool_calls_index.json", "user.log", "infra.log", "EXEC_SNAPSHOT", "build_exec_snapshot_workspace", "snapshot_exec_input", "py_code_exec_entry.py"]
+updated_at: 2026-08-21
+keywords: ["exec-workspace", "exec_YYYYMMDDHHMMSS", "workdir", "outdir", "timeline.json", "tool_calls_index.json", "user.log", "infra.log", "pull", "checkout", "EXEC_SNAPSHOT", "build_exec_snapshot_workspace", "snapshot_exec_input", "py_code_exec_entry.py"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/workspace/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/workspace/workspace-model-README.md
@@ -27,10 +27,10 @@ adapters and how it evolves across phases:
 The workspace is execution state. Canonical conversation state still lives in
 timeline, source-pool, turn-log, and hosted-file artifacts.
 
-ReAct currently exercises the complete lifecycle, including ANNOUNCE,
+The native ReAct Agent exercises the complete lifecycle, including ANNOUNCE,
 pull/checkout, optional persistence, and distributed code execution. The ported
-LangGraph example consumes the common materialization and code-exec layout
-without inheriting ReAct's model protocol.
+LangGraph example binds the same harness materialization and checkout
+primitives to its own tools without inheriting the native ReAct Agent protocol.
 
 Scope:
 - this document describes the concrete workspace filesystem and lifecycle
@@ -72,9 +72,10 @@ Current behavior:
 - Reads can target:
   - versioned turn artifacts and attachments
   - any readable artifact file already present under `out/workdir/`
-- External owner refs such as `task:`, `cnv:`, or `mem:` have no derived
-  physical path. A framework adapter asks the owner resolver/rehoster to
-  materialize them. In ReAct, that adapter surface is `react.pull`.
+- External owner refs such as `task:`, `cnv:`, or `mem:` have no path derived
+  from their spelling. The shared harness asks the registered, authorized owner
+  resolver/rehoster to materialize them. Adapter surfaces include `react.pull`,
+  LangGraph `pull_files`, and the foreign-runtime local MCP `pull` operation.
 
 Materialization authority comes from runtime context rather than the ref. An
 agent adapter may request a conversation, turn, or owner locator, but the trusted resolver
@@ -86,19 +87,20 @@ bytes.
 
 Workspace implementation (`RuntimeCtx.workspace_implementation`):
 - `custom`
-  - the agent is taught to use `conv:fi:` plus `react.pull(paths=[...])` for historical materialization and `react.checkout(paths=[...])` for copying pulled `git/projects/...` refs into the active current-turn workspace
+  - the agent is taught to pull durable refs for readonly materialization and to checkout a source directly into an explicit editable `git/projects/...` or `files/...` target
   - `.git/projects/...` and `.files/...` pulls hydrate from artifact/timeline metadata and hosted blobs
   - the agent is not instructed to treat the activated workspace as git
 - `git`
-  - the agent is taught to use `conv:fi:` plus `react.pull(paths=[...])` for historical materialization and `react.checkout(paths=[...])` for copying pulled `git/projects/...` refs into the active current-turn workspace
+  - the agent is taught to pull durable refs for readonly materialization and to checkout a source directly into an explicit editable `git/projects/...` or `files/...` target
   - `.git/projects/...` pulls hydrate from git-backed lineage snapshots
   - the current turn root `out/workdir/<current_turn>/` is bootstrapped as a local git repo
   - that current-turn repo keeps lineage history available but does not eagerly populate the worktree
-  - ANNOUNCE may show `previous saved workspace paths (pull to bring local; checkout to edit)` so ReAct can see prior saved workspace paths without mistaking them for the current editable workspace
+  - ANNOUNCE may show `previous saved workspace paths (pull to inspect; checkout to edit)` so the native ReAct Agent can see prior saved workspace paths without mistaking them for the current editable workspace
   - the agent may use local git inspection/history/edit commands inside that current-turn repo, except pull/push/fetch
 - in both modes:
-  - `react.pull` materializes refs as historical/reference material
-  - `react.checkout` copies selected `conv:fi:...git/projects...` refs into the active current-turn `git/projects/` workspace
+  - shared pull materializes `conv:fi:` or authorized owner locators as readonly historical/reference material
+  - shared checkout resolves each source itself and transactionally writes its explicit current-turn target below `git/projects/...` or `files/...`
+  - `replace` resets a target file or directory exactly; `overlay` merges a directory source while retaining destination-only entries
   - folder pulls expand from timeline/git metadata and fetch exact hosted blobs; they do not list storage buckets or extract execution snapshots
   - in `git` mode, exact non-text `.files/...` refs that resolve to hosted artifacts are still hydrated from artifact/hosting history, not from git
 
@@ -250,8 +252,9 @@ Workspace/read-write summary:
   for generated artifacts that should not become editable project state.
 - `react.pull` materializes selected same-turn, older-turn, cross-conversation,
   or custom-namespace refs into `OUTPUT_DIR`.
-- `react.checkout` copies pulled historical `git/projects/...` refs into the active
-  current-turn `git/projects/` workspace for editing.
+- Shared checkout resolves a `conv:fi:` or authorized owner locator directly
+  into an explicit editable current-turn `git/projects/...` or `files/...`
+  target. It does not require a prior pull.
 - Custom refs such as `nmsp:...`, `cnv:...`, or `mem:...` have no derived local path. `react.pull` calls a
   registered namespace rehoster and its result tells the agent the materialized
   `conv:fi:` path.

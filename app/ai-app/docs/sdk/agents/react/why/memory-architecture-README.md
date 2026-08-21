@@ -575,8 +575,9 @@ Use to search the current local filesystem surface:
 
 It does not search hidden/pruned timeline, unpulled historical snapshots, or
 registered external refs. Use visible refs or `react.memsearch` to identify
-older `conv:fi:` or registered external refs, then `react.pull` or `react.checkout`
-them before local search.
+older `conv:fi:` or registered external refs. Use `react.pull` for readonly
+local search, or `react.checkout` directly when an editable current-turn copy
+is needed.
 
 It returns `logical_path` for hits, and content matches include `read_item` ranges so the agent can immediately reopen exact regions with `react.read({"items":[...]})`.
 
@@ -594,13 +595,13 @@ This is the materialization tool for:
 
 ### `react.checkout`
 
-Use to materialize the active current-turn workspace itself under
-`turn_<current_turn>/git/projects/...` when React needs a runnable/searchable/testable
-project snapshot.
+Use to resolve a durable source directly into an explicit editable target below
+current-turn `git/projects/...` or `files/...` when the native ReAct Agent needs
+a runnable project snapshot or an artifact derivative.
 
-`react.checkout` remains a workspace activation tool. It works from materialized
-workspace file refs, not directly from arbitrary external namespace refs. Pull
-first, then use the returned `conv:fi:...git/projects...` ref when a checkout is needed.
+`react.checkout` accepts exact `conv:fi:` refs and authorized owner locators.
+Each item supplies `from`, `to`, and `strategy`. It resolves all sources before
+applying target changes transactionally; a prior pull is not required.
 
 ### Generated code / exec
 

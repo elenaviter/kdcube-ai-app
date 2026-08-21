@@ -804,7 +804,9 @@ class BaseWorkflow():
 
         self.gate_out_class = gate_out_class or GateOut
 
-        ApplicationHostingService = _react_symbol("solution_workspace", "ApplicationHostingService")
+        from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace.hosting import (
+            ApplicationHostingService,
+        )
         RuntimeCtx = _react_shared_symbol("proto", "RuntimeCtx")
         ContextBrowser = _react_symbol("browser", "ContextBrowser")
 

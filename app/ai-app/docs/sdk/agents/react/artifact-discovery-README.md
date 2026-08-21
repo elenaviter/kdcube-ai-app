@@ -114,8 +114,8 @@ react.pull
   when the content is not already local in [WORKSPACE].
 
 react.checkout
-  Make historical project state editable.
-  Only for conv:fi:conv_<conversation_id>.<turn>.git/projects/... refs.
+  Resolve a durable source directly into editable current-turn state.
+  Targets are explicit paths below git/projects/... or files/....
 ```
 
 ## Search And Local Inspection
@@ -138,7 +138,11 @@ If a search needs older project state:
 If the older project must be edited:
 
 ```text
-react.checkout(paths=["conv:fi:conv_<conversation_id>.turn_<anchor>.git/projects/<project>"], mode="replace")
+react.checkout(items=[{
+  "from": "conv:fi:conv_<conversation_id>.turn_<anchor>.git/projects/<project>",
+  "to": "git/projects/<project>",
+  "strategy": "replace"
+}])
 ```
 
 Then edit:
@@ -188,7 +192,8 @@ local conversation-owned artifact.
 
 - Use `react.read` for readable conversation-owned records.
 - Use `react.pull` when bytes must become local this turn.
-- Use `react.checkout` only for editable `git/projects` project state.
+- Use `react.checkout` for editable current-turn `git/projects/...` project
+  state or `files/...` artifact derivatives; it resolves the source directly.
 - Use returned pull paths; do not invent materialized paths.
 - Use `git/projects` for project state.
 - Use `files` for produced artifacts.

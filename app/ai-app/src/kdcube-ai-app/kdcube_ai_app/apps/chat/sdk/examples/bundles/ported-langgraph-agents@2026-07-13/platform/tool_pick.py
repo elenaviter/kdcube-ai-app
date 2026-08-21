@@ -100,6 +100,7 @@ def select_bound_tools(
     run_python_factory: Callable[[], Any],
     pull_files_factory: Optional[Callable[[], Any]] = None,
     read_file_factory: Optional[Callable[[], Any]] = None,
+    checkout_factory: Optional[Callable[[], Any]] = None,
     extra_factories: Optional[Mapping[str, Callable[[], Any]]] = None,
 ) -> List[Any]:
     """Bind EXACTLY the declared, user-enabled tools (the picker's runtime half).
@@ -112,11 +113,11 @@ def select_bound_tools(
     the admin did not declare is never built (hard ceiling); a user-disabled
     tool is skipped.
 
-    `pull_files` and `read_file` are COMPANIONS of the code workspace, not
-    their own declarations: pull materializes conversation files INTO the
-    sandbox for `run_python`, read views a file in visible context — both bind
-    exactly when `run_python` binds (opting out of run_python drops them too;
-    the workspace triad stands or falls together)."""
+    `pull_files`, `read_file`, and `checkout` are COMPANIONS of the code
+    workspace, not their own declarations: pull creates the read-only source
+    view, read loads one file into visible context, and checkout creates or
+    resets editable state. They bind exactly when `run_python` binds (opting
+    out of run_python drops the whole workspace capability)."""
     allowlist = python_tool_allowlist(connections)
     disabled = disabled_tool_names(allowlist, disabled_map)
     bound: List[Any] = []
@@ -134,6 +135,8 @@ def select_bound_tools(
                     bound.append(pull_files_factory())
                 if read_file_factory is not None:
                     bound.append(read_file_factory())
+                if checkout_factory is not None:
+                    bound.append(checkout_factory())
     return bound
 
 

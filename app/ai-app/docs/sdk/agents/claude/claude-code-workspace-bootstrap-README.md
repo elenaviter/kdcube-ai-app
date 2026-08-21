@@ -3,6 +3,7 @@ id: repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/claude/claude-code-workspace-b
 title: "Claude Code Workspace Management"
 summary: "How KDCube manages Claude Code session continuity through a bundle-controlled local root and an optional git-backed per-conversation session store."
 tags: ["sdk", "agents", "claude", "claude-code", "workspace", "git", "bootstrap"]
+updated_at: 2026-08-21
 keywords:
   [
     "Claude Code workspace",
@@ -59,6 +60,47 @@ not:
 - KDCube conversation message history
 - the final assistant transcript stored by the bundle
 - accounting events
+
+## Harness turn workspace binding
+
+Claude's session store and the Agent Harness turn workspace are separate
+contracts. The session store preserves Claude's private conversation/session
+continuity. The harness workspace gives an adapter explicit access to durable
+conversation files and owner objects, editable current-turn copies, and
+conversation publication.
+
+`ClaudeCodeAgent` does not bind that harness workspace automatically. A hosted
+wrapper can add the SDK's local stdio MCP server and a trusted parent broker:
+
+```text
+accepted event
+  event_ref:  conv:ev:conv_c42.turn_t9.events/canvas/context/evt_17
+  object_ref: cnv:users/u7/canvases/main/objects/card_17/v000004.md
+                         |
+                         v
+Claude Code local MCP: pull | checkout | publish | pulled
+                         |
+              Unix socket, per-turn token
+                         |
+trusted parent: request identity + ContextBrowser + hosting service
+```
+
+- `pull` materializes a `conv:fi:` ref or an authorized owner `object_ref` into
+  a collision-safe readonly path; Claude uses native Read, Grep, or Bash on the
+  returned workspace-relative path.
+- `checkout(items=[{from,to,strategy}])` resolves the source directly into an
+  editable path below `git/projects/...` or `files/...`. Repeating `replace`
+  resets the target from the durable source; `overlay` is directory-only.
+- Claude edits the checked-out path with its native file tools.
+- `publish(paths=[...])` explicitly hosts selected current-turn `files/...`
+  outputs into the conversation and returns durable `conv:fi:` refs.
+
+The MCP child receives operation arguments and bound non-secret identity, not
+provider credentials or a hosting service. Owner resolution and publication
+cross the authenticated local broker to the trusted parent. The Press Claude
+Code wrapper is the worked binding; another bundle must opt in and supply the
+same parent-side services. This mechanism does not by itself make a generic
+Claude Code process safe for mutually hostile users sharing one filesystem.
 
 ## Local vs git session store
 

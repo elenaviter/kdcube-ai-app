@@ -41,7 +41,9 @@ accepted event retained in lane
 ```
 
 For events, `payload.event` is the `ret` analogue. If the body is hosted,
-`payload.event_ref` is represented as `ret.event_ref`. The default event
+Legacy `payload.event_ref` is represented as `ret.event_ref`; the accepted
+event occurrence has a separate `conv:ev:` ref. New producers should expose a
+materializable owner/file locator as `object_ref`. The default event
 producer also runs the common surface extractors and stores non-empty extracted
 rows under `surfaces`, including `source_rows`, `artifact_rows`,
 `declared_file_items`, `snapshot_refs`, `announce_candidates`, and
@@ -188,7 +190,7 @@ treated as raw text and may be rendered with the standard line window,
 
 | Policy ID | Input event type | Default timeline output |
 |---|---|---|
-| `react.block_production.event_default` | `event.external` and other generic domain events | One `event.<type>` JSON block at the accepted event's `conv:ev:` path. The body stores `ok`, `status`, `ret`, optional `error`, optional `event_ref`, and extracted `surfaces`. |
+| `react.block_production.event_default` | `event.external` and other generic domain events | One `event.<type>` JSON block at the accepted event's `conv:ev:` path. The body stores `ok`, `status`, `ret`, optional `error`, the `conv:ev:` occurrence as `event_ref`, a separate materializable `object_ref` when supplied, and extracted `surfaces`. |
 | `react.block_production.snapshot_default` | `event.snapshot` | One `event.snapshot` JSON block at the `conv:ev:` path. The body preserves snapshot refs and ANNOUNCE candidates as read-only projection data. |
 | `react.block_production.canvas_default` | `event.canvas` | One `event.canvas` JSON block at the `conv:ev:` path. The body preserves the canvas revision/state as collaborative domain state; edits must still go through a bundle API/tool that emits a later canvas event. |
 | `react.block_production.user_prompt_default` | `event.user.prompt` | Built-in `user.prompt` block with event identity in metadata. |

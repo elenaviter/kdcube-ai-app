@@ -1050,7 +1050,7 @@ def build_announce_workspace_lines(
         ]
         projects = [p for p in projects if p]
         lines.append("")
-        lines.append("  REMOTE git branch \u2014 top-level projects you can pull (NOT local until pulled).")
+        lines.append("  REMOTE git branch \u2014 durable top-level projects (NOT local until pulled or checked out).")
         if anchor:
             lines.append(f"  latest committed turn: {anchor}")
             lines.append("  \u2192 pull any project or subpath at its latest by building the ref with THIS turn id (same anchor for all projects):")
@@ -1072,7 +1072,12 @@ def build_announce_workspace_lines(
             ex = projects[0]
             lines.append("  examples:")
             lines.append(f'    pull a subfolder:  react.pull(paths=["conv:fi:{anchor}.git/projects/{ex}/<subpath>"])')
-            lines.append(f'    make writable:     react.checkout(mode="replace", paths=["conv:fi:{anchor}.git/projects/{ex}"])')
+            lines.append(
+                "    make writable:     react.checkout(items=[{"
+                f'"from":"conv:fi:{anchor}.git/projects/{ex}",'
+                f'"to":"git/projects/{ex}","strategy":"replace"'
+                "}])"
+            )
 
     return lines
 

@@ -9,10 +9,10 @@
 # through `ApplicationHostingService`). The workspace follows ONE rule with no
 # exceptions: it starts EMPTY every turn, and a file enters it only through an
 # EXPLICIT PULL — including files arriving with the current message. The agent
-# pulls what it needs by conversation link (`conv:fi:`), reads/processes it
-# with code execution, and everything its code writes is hosted back into the
-# conversation. Uniform semantics: current-turn files, earlier-turn files, and
-# the agent's own produced files are all the same thing — a link to pull.
+# pulls what it needs by conversation link (`conv:fi:`) or an event's separate
+# owner `object_ref`, reads/processes it with code execution, and everything
+# its code writes is hosted back into the conversation. Durable sources can be
+# checked out directly into editable `git/projects/...` or `files/...` state.
 #
 # The model learns all of this IN-BAND, the way React's timeline frames its
 # input (`turn.header` / `user.prompt` blocks): each turn's text is framed as
@@ -24,7 +24,8 @@
 # NOTHING is read for the model automatically — not text, not images. The
 # frame carries metadata + the link; the model decides: `read_file` to view a
 # file (text or visual, exactly like react.read), `pull_files` + `run_python`
-# to process it. Same triad as React: read / pull / exec over links. Without
+# to process it, or `checkout` before editing it. These are LangGraph bindings
+# over the same harness workspace operations used by the native ReAct Agent. Without
 # the in-band frame the model trusts stale history ("I pulled that file
 # before, it is still here").
 #
@@ -38,11 +39,11 @@
 #   * `build_read_file_tool` — the view door: one conversation file into
 #     visible context by its link (text bounded; images/PDF as visual
 #     payloads, downscaled under a byte cap — react.read semantics).
-#   * `build_pull_files_tool` — the materialize door: ANY conversation file
-#     into the working directory by its `conv:fi:` link. Byte resolution for
-#     both doors is the shared SDK core (the namespace byte resolver
-#     `read_event_ref_bytes` — the same resolution the file-download action
-#     uses; pull adds `runtime/harness/workspace.pull_refs_into_dir` on top).
+#   * `build_pull_files_tool` — the readonly materialize door for a `conv:fi:`
+#     link or authorized owner locator. Byte resolution uses the shared harness
+#     source resolver and collision-safe workspace materializer.
+#   * `build_checkout_tool` — direct editable import/reset into an explicit
+#     current-turn `git/projects/...` or `files/...` target.
 #
 # Fail-open per file, never per turn: a link that cannot be pulled is reported
 # by the pull result, and the turn proceeds.
@@ -51,7 +52,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, List
+from typing import Any, Dict, List, Mapping
 
 from langchain_core.tools import tool
 
@@ -84,14 +85,95 @@ class TurnFile:
 
 
 @dataclass
+class TurnObject:
+    """One accepted non-file event and the object locator it carries."""
+
+    event_type: str
+    event_ref: str
+    object_ref: str = ""
+    label: str = ""
+    summary: str = ""
+
+
+@dataclass
 class TurnWorkspace:
     """This turn's workspace state and the files that arrived with the turn."""
     live: bool
     files: List[TurnFile] = field(default_factory=list)
+    objects: List[TurnObject] = field(default_factory=list)
     # The current turn's id — stamped into the turn frame so the model anchors
     # "now" against the turn segments inside conv:fi: links (its history spans
     # many turns; the working directory belongs to exactly this one).
     turn_id: str = ""
+
+
+def _event_mappings(event: Mapping[str, Any]) -> List[Mapping[str, Any]]:
+    out: List[Mapping[str, Any]] = [event]
+    payload = event.get("payload")
+    if isinstance(payload, Mapping):
+        out.append(payload)
+        nested = payload.get("event")
+        if isinstance(nested, Mapping):
+            out.append(nested)
+    data = event.get("data")
+    if isinstance(data, Mapping):
+        out.append(data)
+    return out
+
+
+def _first_text(rows: List[Mapping[str, Any]], *keys: str) -> str:
+    for row in rows:
+        for key in keys:
+            value = str(row.get(key) or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _turn_object(
+    event: Any,
+    *,
+    turn_id: str,
+    conversation_id: str,
+    occurrence_index: int,
+) -> TurnObject | None:
+    if not isinstance(event, Mapping):
+        return None
+    event_type = str(event.get("type") or "").strip()
+    if not event_type.startswith("event."):
+        return None
+    if event_type.startswith((
+        "event.user.prompt",
+        "event.user.followup",
+        "event.user.steer",
+        "event.user.attachment",
+    )):
+        return None
+
+    rows = _event_mappings(event)
+    event_id = _first_text(rows, "event_id", "id", "message_id") or f"event_{occurrence_index + 1}"
+    logical_path = _first_text(rows, "logical_path", "logicalPath", "path")
+    if not logical_path.startswith("conv:ev:"):
+        logical_path = ""
+    from kdcube_ai_app.apps.chat.sdk.runtime.harness.timeline import (
+        event_record_ref,
+        object_ref_from_event,
+    )
+
+    event_ref = event_record_ref(
+        turn_id=turn_id,
+        event_id=event_id,
+        conversation_id=conversation_id,
+        logical_path=logical_path,
+    )
+    object_ref = object_ref_from_event(event)
+    return TurnObject(
+        event_type=event_type,
+        event_ref=event_ref,
+        object_ref=object_ref,
+        label=_first_text(rows, "label", "title", "name"),
+        summary=_first_text(rows, "summary", "description"),
+    )
 
 
 async def prepare_turn_workspace(
@@ -111,8 +193,17 @@ async def prepare_turn_workspace(
     hosted = hosted_external_event_attachments(events or [])
     live = bool(ctx is not None and getattr(ctx, "enabled", False) and exec_tool_bound)
     workspace = TurnWorkspace(live=live, turn_id=str(getattr(ctx, "turn_id", "") or "").strip())
-    if not hosted:
-        return workspace
+    conversation_id = str(getattr(ctx, "conversation_id", "") or "").strip()
+
+    for event_index, event in enumerate(events or []):
+        item = _turn_object(
+            event,
+            turn_id=workspace.turn_id,
+            conversation_id=conversation_id,
+            occurrence_index=event_index,
+        )
+        if item is not None:
+            workspace.objects.append(item)
 
     for item in hosted:
         if not isinstance(item, dict):
@@ -148,7 +239,7 @@ def frame_turn_input(question: str, workspace: TurnWorkspace) -> str:
     must be in-band. Without a workspace and without files the user's text
     passes through unframed (there is nothing to explain)."""
     question = question or ""
-    if not workspace.live and not workspace.files:
+    if not workspace.live and not workspace.files and not workspace.objects:
         return question
     header = f"[Turn start {workspace.turn_id}]" if workspace.turn_id else "[Turn start]"
     parts: List[str] = []
@@ -158,8 +249,9 @@ def frame_turn_input(question: str, workspace: TurnWorkspace) -> str:
             "Your working directory is EMPTY — it starts fresh every turn. Files are "
             "given to you as LINKS only; nothing is read for you automatically. To VIEW "
             "a file, call read_file with its conversation link. To PROCESS it with code, "
-            "call pull_files with the link, then read it from run_python by the bare "
-            "filename the pull reports."
+            "call pull_files with its object ref and use the exact OUTPUT_DIR-relative "
+            "path it reports. To modify or reset durable source data, call checkout with "
+            "an explicit editable target under files/ or git/projects/."
         )
     else:
         parts.append(header)
@@ -179,6 +271,24 @@ def frame_turn_input(question: str, workspace: TurnWorkspace) -> str:
             else:
                 lines.append(f"{head} — link: {f.ref}" if f.ref else f"{head} — received.")
         parts.append("\n".join(lines))
+    if workspace.objects:
+        lines = ["[Objects and events arriving this turn]"]
+        for item in workspace.objects:
+            title = item.label or item.event_type
+            lines.append(f"- {title} ({item.event_type})")
+            if item.summary:
+                lines.append(f"  summary: {item.summary}")
+            if item.event_ref:
+                lines.append(f"  event_ref: {item.event_ref}")
+            if item.object_ref:
+                lines.append(f"  object_ref: {item.object_ref}")
+                lines.append(
+                    "  use object_ref with pull_files for read-only local bytes, "
+                    "or checkout when an editable derivative is needed"
+                )
+            else:
+                lines.append("  no materializable object_ref was supplied")
+        parts.append("\n".join(lines))
     return "\n\n".join(parts)
 
 
@@ -188,55 +298,136 @@ def build_pull_files_tool() -> Any:
     same workspace working directory the code reads."""
 
     @tool
-    async def pull_files(paths: List[str]) -> str:
-        """Materialize conversation files into your run_python working directory.
+    async def pull_files(refs: List[str]) -> str:
+        """Materialize object refs into this turn's read-only workspace view.
 
-        This is how ANY file becomes readable by your code: files attached to
-        the current message (their pull links are in `[Files arriving this
-        turn]`), user attachments from earlier turns, and files you produced
-        with run_python before (its report listed each as ``link=conv:fi:...``).
-        Pass each ``conv:fi:`` link exactly as it appears in the conversation;
-        then read the file from run_python with the bare filename this tool
-        reports.
+        Pass a durable ``conv:fi:`` file link or an owner-provided ``object_ref``
+        exactly as shown in the turn frame. ``conv:ev:`` identifies an event
+        record and cannot be pulled; read the event and pass its ``object_ref``.
+        The result reports a collision-safe path relative to ``OUTPUT_DIR``.
+        Pulled bytes are read-only; use ``checkout`` before modifying them.
 
         The working directory starts EMPTY every turn — nothing from earlier
         turns is in it until you pull it again.
         """
-        from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace import pull_refs_into_dir
-        from .code_exec import current_code_exec_context, exec_files_dir
+        from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace import (
+            artifact_outdir_for,
+            pull_refs_into_workspace,
+            resolve_context_workspace_source,
+        )
+        from .code_exec import current_code_exec_context
 
         ctx = current_code_exec_context()
         if ctx is None or not ctx.enabled:
             return "The code workspace is not available for this turn (code execution disabled or offline)."
-        files_dir = exec_files_dir(ctx)
-        if files_dir is None:
+        if ctx.outdir is None:
             return "The code workspace is not available for this turn (no working directory)."
 
-        LOGGER.info("[ported-langgraph] pull_files: %d ref(s) requested", len(paths or []))
-        reports = await pull_refs_into_dir(
-            refs=list(paths or []),
-            dest_dir=files_dir,
+        async def _source_resolver(*, ref: str, staging_dir: Any) -> Any:
+            if ctx.ctx_browser is None:
+                return None
+            return await resolve_context_workspace_source(
+                ref=ref,
+                staging_dir=staging_dir,
+                ctx_browser=ctx.ctx_browser,
+                outdir=ctx.outdir,
+                state=ctx.state,
+                tool_id="workspace.pull",
+            )
+
+        LOGGER.info("[ported-langgraph] pull_files: %d ref(s) requested", len(refs or []))
+        reports = await pull_refs_into_workspace(
+            refs=list(refs or []),
+            artifact_root=artifact_outdir_for(ctx.outdir),
             tenant=ctx.tenant,
             project=ctx.project,
             user_id=ctx.user_id,
             conversation_id=ctx.conversation_id,
+            source_resolver=_source_resolver,
         )
         if not reports:
-            return "No refs were pulled — pass one or more conv:fi: links exactly as shown in the conversation."
+            return "No refs were pulled — pass one or more object refs exactly as shown in the conversation."
         lines: List[str] = []
         for report in reports:
             if report.get("ok"):
                 lines.append(
-                    f"- pulled {report['filename']} ({report.get('mime')}, {_human_size(report.get('size') or 0)}) — "
-                    f"read it from run_python as ./{report['filename']}"
+                    f"- pulled {report['ref']} as read-only "
+                    f"OUTPUT_DIR/{report['physical_path']} "
+                    f"({report.get('mime')}, {_human_size(report.get('size') or 0)})"
                 )
             else:
                 lines.append(f"- FAILED {report.get('ref')}: {report.get('error')}")
         ok_count = sum(1 for r in reports if r.get("ok"))
         LOGGER.info("[ported-langgraph] pull_files: %d/%d ref(s) materialized", ok_count, len(reports))
-        return "\n".join([f"Pulled {ok_count}/{len(reports)} file(s) into the working directory:"] + lines)
+        return "\n".join([f"Pulled {ok_count}/{len(reports)} object(s) into the read-only workspace view:"] + lines)
 
     return pull_files
+
+
+def build_checkout_tool() -> Any:
+    """Return the shared workspace checkout contract as a LangChain tool."""
+
+    @tool
+    async def checkout(items: List[Dict[str, str]]) -> str:
+        """Create or reset editable workspace state from durable object refs.
+
+        Each item has exactly ``from``, ``to``, and ``strategy``. ``from`` is a
+        materializable object ref. ``to`` is a current-workspace-relative path
+        below ``files/`` or ``git/projects/``; do not include conversation or
+        turn ids. ``replace`` works for a file or directory and resets the
+        target exactly. ``overlay`` is directory-only and keeps unrelated
+        target files. The whole batch is validated before any target changes.
+        """
+        from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace import (
+            artifact_outdir_for,
+            checkout_workspace_items,
+            resolve_context_workspace_source,
+        )
+        from .code_exec import current_code_exec_context
+
+        ctx = current_code_exec_context()
+        if ctx is None or not ctx.enabled:
+            return "The code workspace is not available for this turn (code execution disabled or offline)."
+        if ctx.outdir is None:
+            return "The code workspace is not available for this turn (no working directory)."
+
+        async def _source_resolver(*, ref: str, staging_dir: Any) -> Any:
+            if ctx.ctx_browser is None:
+                return None
+            return await resolve_context_workspace_source(
+                ref=ref,
+                staging_dir=staging_dir,
+                ctx_browser=ctx.ctx_browser,
+                outdir=ctx.outdir,
+                state=ctx.state,
+                tool_id="workspace.checkout",
+            )
+
+        try:
+            result = await checkout_workspace_items(
+                items=list(items or []),
+                artifact_root=artifact_outdir_for(ctx.outdir),
+                current_turn_id=ctx.turn_id,
+                tenant=ctx.tenant,
+                project=ctx.project,
+                user_id=ctx.user_id,
+                conversation_id=ctx.conversation_id,
+                source_resolver=_source_resolver,
+            )
+        except Exception as error:
+            LOGGER.warning("[ported-langgraph] checkout failed", exc_info=True)
+            details = getattr(error, "details", None)
+            suffix = f" Details: {details}" if details else ""
+            return f"Checkout failed: {error}.{suffix}"
+
+        rows = [
+            f"- {row['from']} -> OUTPUT_DIR/{row['physical_path']} "
+            f"({row['strategy']}, editable, link={row['logical_path']})"
+            for row in result.get("items", [])
+        ]
+        return "\n".join([f"Checked out {len(rows)} item(s):"] + rows)
+
+    return checkout
 
 
 # react.read-mirroring caps: bounded text view; images/PDF ride as visual

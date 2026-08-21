@@ -362,7 +362,7 @@ def _make_hosting_service_for_runtime(comm: ChatCommunicator | None) -> Any | No
         return None
     try:
         from kdcube_ai_app.apps.chat.sdk.storage.conversation_store import ConversationStore
-        from kdcube_ai_app.apps.chat.sdk.solutions.react.solution_workspace import ApplicationHostingService
+        from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace.hosting import ApplicationHostingService
 
         storage_path = get_settings().STORAGE_PATH
         if not storage_path:

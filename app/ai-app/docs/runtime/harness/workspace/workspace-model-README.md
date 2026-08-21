@@ -4,7 +4,7 @@ title: "Agent Harness Workspace Model"
 summary: "Authoritative contract for the sparse per-turn workspace, project state, produced files, snapshots, attachments, and materialization."
 status: active
 tags: ["runtime", "harness", "workspace", "pull", "checkout", "artifacts"]
-updated_at: 2026-07-18
+updated_at: 2026-08-21
 keywords:
   [
     "sparse workspace",
@@ -33,9 +33,9 @@ durable logical refs survive across turns and workers
 bytes appear locally only after ingress, production, pull, or checkout
 ```
 
-This model is shared. ReAct's `[WORKSPACE]` ANNOUNCE and model tools are one
-adapter over it; ported agents can consume the same path and materialization
-contracts through their own adapter.
+This model is shared. The native ReAct Agent's `[WORKSPACE]` ANNOUNCE and model
+tools are one adapter over it; ported agents consume the same path and
+materialization contracts through their own bindings.
 
 ## Physical Layout
 
@@ -91,7 +91,20 @@ files        + external  -> user/client deliverable
 files        + internal  -> runtime/agent artifact
 ```
 
-## Materialization
+## Records, Locators, And Materialization
+
+An event record ref and its referenced object are distinct:
+
+```text
+event_ref  conv:ev:conv_c1.turn_9.events/canvas/evt_17   readable occurrence
+object_ref cnv:main@52                                   owner object locator
+```
+
+`conv:ar:`, `conv:ev:`, `conv:so:`, `conv:su:`, `conv:tc:`, and
+`conv:ws:` identify records. They do not become filesystem bytes through pull
+or checkout. An adapter renders or reads the record, then uses a separately
+supplied materializable `object_ref` or artifact ref when local bytes are
+needed.
 
 ```text
 logical ref or owner ref
@@ -100,7 +113,7 @@ logical ref or owner ref
 trusted resolver under runtime identity
           |
           v
-bytes copied into a selected workspace destination
+bytes copied into a collision-safe read-only source path
           |
           v
 adapter returns logical_path + physical_path
@@ -110,58 +123,66 @@ The runtime, not the model, binds tenant, project, actor, user, and authority.
 For owner refs such as `mem:`, `task:`, or `cnv:`, the owner provider/rehoster
 authorizes and chooses the resulting artifact semantics.
 
-The framework-neutral primitive is
-`runtime.harness.workspace.pull_refs_into_dir(...)`. It accepts canonical
-conversation refs and writes resolved bytes into a supplied destination. The
-ReAct adapter adds richer `react.pull` behavior, including owner namespace
-rehosters and returned workspace rows.
+The framework-neutral pull primitive is
+`runtime.harness.workspace.pull_refs_into_workspace(...)`. Exact `conv:fi:`
+files use the conversation byte resolver. Owner refs use an adapter-supplied
+trusted resolver, which must return a pinned `conv:fi:` ref and a local source.
+The target preserves source conversation, turn, namespace, and relative path,
+so same-basename files cannot overwrite each other. Pulled data is made
+read-only.
 
-## ReAct Adapter
+## Editable Checkout
 
-ReAct maps model-facing operations onto the shared workspace:
+Checkout resolves its source itself; pull is not a prerequisite:
 
-| ReAct tool | Adapter behavior |
-| --- | --- |
-| `react.pull` | Materializes historical `conv:fi:` refs or registered owner refs and returns actual paths. |
-| `react.checkout` | Copies historical `git/projects` state into the current editable tree. |
-| `react.read` | Loads supported logical records or file content into model context. |
-| `react.rg` | Searches only materialized local files. |
-| `react.write` / `react.patch` | Mutates current-turn project, file, or snapshot paths according to tool policy. |
-
-`react.checkout` accepts project state, not arbitrary files:
-
-```text
-valid:
-  conv:fi:conv_<conversation_id>.turn_<turn_id>.git/projects/<scope>
-
-invalid:
-  mem:...
-  task:...
-  cnv:...
-  conv:fi:conv_<conversation_id>.turn_<turn_id>.files/report.pdf
-  conv:fi:conv_<conversation_id>.turn_<turn_id>.git/snapshots/story.json
+```json
+{
+  "items": [
+    {
+      "from": "conv:fi:conv_c1.turn_7.files/source.pdf",
+      "to": "files/pdf-review/working.pdf",
+      "strategy": "replace"
+    }
+  ]
+}
 ```
 
-After checkout, edit:
+- `from` is an exact `conv:fi:` ref or an authorized owner locator.
+- `to` is relative to the active workspace and lies below `git/projects/...`
+  or `files/...`; runtime context supplies conversation and turn identity.
+- `replace` makes a file or directory target exactly match the source and is
+  also the reset operation.
+- `overlay` merges a source directory into a destination directory while
+  retaining destination-only entries.
 
-```text
-turn_<current>/git/projects/<scope>/...
-```
+The harness resolves and validates the entire item list before mutation,
+rejects overlapping targets and symlinks, then applies the batch with rollback.
+Each result reports the pinned source and exact current logical and physical
+path.
 
-not the historical source path.
+## Adapter Bindings
 
-## Other Agent Adapters
+| Capability | Native ReAct Agent | Hosted LangGraph example | Hosted Claude Code pattern |
+| --- | --- | --- | --- |
+| Read event/record | `react.read` | framed event plus `read_file` for supported file refs | event in prompt; wrapper-specific record reader |
+| Read-only bytes | `react.pull` | `pull_files` | local MCP `pull` plus native Read/Grep/Bash |
+| Editable copy/reset | `react.checkout` | `checkout` | local MCP `checkout` plus native Edit/Write/Bash |
+| Produce files | write/render/exec tools | `run_python` | native file/code tools |
+| Conversation publication | tool/output hosting contract | `run_python` hosts declared outputs | local MCP `publish` when the wrapper binds a trusted host |
 
-A ported agent is not required to expose ReAct tools. It can:
+A ported agent is not required to expose native ReAct Agent tool names. It can:
 
 1. select refs from its own input/state;
 2. call the shared resolver or pull primitive;
-3. place bytes in its turn workspace;
-4. execute against physical paths;
-5. emit canonical `conv:fi:` refs for resulting artifacts.
+3. pull read-only bytes or checkout editable bytes into its turn workspace;
+4. inspect or modify the returned physical path using its own facilities;
+5. ask a trusted host to publish selected outputs as canonical `conv:fi:` refs.
 
-The worked LangGraph port uses this pattern for user/event attachments and
-code-exec outputs.
+The worked LangGraph port uses this pattern for event objects, attachments, and
+code-exec outputs. The Press Claude Code wrapper uses a turn-scoped local MCP
+server plus a trusted parent broker: the child sends refs and `files/...`
+paths, while identity, owner resolvers, credentials, and conversation hosting
+remain in the parent process.
 
 ## ReAct `[WORKSPACE]`
 
@@ -183,11 +204,13 @@ Critical distributed-runtime invariant:
 
 A logical ref, content preview, or pull completed in a prior turn is durable
 evidence that an object exists, not evidence that its bytes are local now.
-Before `react.rg`, code, patching, rendering, or another local-bytes operation
+Before `react.rg`, code, rendering, or another readonly local-bytes operation
 uses anything absent from the current `LOCAL` list, call `react.pull` in this
-turn. Add `react.checkout` only when historical `git/projects/...` state must
-become editable. A direct `react.read` preview does not establish locality;
-trust the next round's `LOCAL` list.
+turn. When durable source data must become editable, call `react.checkout`
+directly with an explicit current-turn `git/projects/...` or `files/...`
+target. Checkout resolves its source; a prior pull is needed only for a
+separate readonly comparison. A direct `react.read` preview does not establish
+locality; trust the next round's `LOCAL` list.
 
 That presentation is ReAct-specific. The underlying sparse workspace and
 logical refs are shared.
