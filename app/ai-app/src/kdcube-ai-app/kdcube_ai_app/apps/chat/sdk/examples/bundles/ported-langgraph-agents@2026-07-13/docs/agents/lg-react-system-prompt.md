@@ -1,3 +1,15 @@
+---
+id: repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/ported-langgraph-agents@2026-07-13/docs/agents/lg-react-system-prompt.md
+title: "lg-react System Prompt And Capability Composition"
+summary: "How the ported LangGraph tool-loop agent composes conduct, workspace, named-service, conversation-recovery, optional turn-summary, and administrator instruction blocks each turn."
+tags: ["sdk", "examples", "langgraph", "agents", "instructions", "tools", "conversation"]
+updated_at: 2026-08-22
+keywords: ["lg-react system prompt", "record_turn_summary", "turn summary contribution", "LangGraph tool inventory", "admin customization envelope"]
+see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/timeline/turn-summary-contributions-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/conversation/hosted-agent-conversation-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/system-instruction-README.md
+---
 # lg-react: System Prompt Composition And Tool Docs Placement
 
 How the final instruction reaching lg-react's model is assembled each turn-build,
@@ -13,9 +25,10 @@ mechanisms shared with other agents:
   (for any workspace-paradigm external agent);
 - the named-services block —
   `...solutions.named_services_providers.agent_instructions`
-  (`surface="bridge"`, the same mechanism ReAct uses with `surface="react"`);
+  (`surface="bridge"`, the same mechanism the ReAct Agent uses with
+  `surface="react"`);
 - the admin envelope — the SDK's `append_agent_admin_customization`, the same
-  envelope ReAct agents use.
+  envelope ReAct Agents use.
 
 ## The design rule: signature level vs capability level
 
@@ -36,6 +49,10 @@ signature:
   letting the model pretend to attach files.
 - **history recovery** — with a `conv` namespace connected, history beyond the
   visible (compacted) window is searchable, not lost.
+- **shared turn context** — with `record_turn_summary` bound, the model may
+  deliberately preserve one reusable result, its durable refs, and retrieval
+  anchors in KDCube's shared conversation record. The framework's checkpoint
+  remains private.
 
 ## Harness workspace binding
 
@@ -106,13 +123,18 @@ model call
 │                                              SDK conversation_recovery_guide:
 │                                              history beyond the window is
 │                                              searchable; found files pull by link
-│   8. [START AGENT ADMIN CUSTOMIZATION - HARD OVERRIDE]
+│   8. [SHARED TURN CONTEXT — `record_turn_summary`]
+│                                              SDK turn_summary_contribution_guide:
+│                                              one replaceable reusable summary,
+│                                              persisted only on successful completion
+│   9. [START AGENT ADMIN CUSTOMIZATION - HARD OVERRIDE]
 │      <surfaces.as_consumer.agents.lg-react.additional_instructions>
 │      [END AGENT ADMIN CUSTOMIZATION]         ALWAYS LAST — the admin's voice,
 │                                              hard override below platform safety,
 │                                              never revealed to the user
 └── tools parameter (provider-native function-calling declarations)
     calc, unit_convert, …                      kind: python connections
+    record_turn_summary                       optional kind: python contribution
     run_python, pull_files, read_file, checkout code-exec + workspace companions
     web_search, web_fetch                      paid web backends
     named_services_* / other MCP tools         kind: mcp connections (delegated)
@@ -136,11 +158,12 @@ any prompt or binding change.
 | 5 | consent note | ≥1 pending delegated MCP connection | `_mcp_consent_prompt_note` |
 | 6 | named-services block | ≥1 connected namespace in `as_consumer` config | SDK `named_service_agent_instruction_block(surface="bridge")` + discovery intros; falls back to the short usage note when namespaces are 0 but `named_services*` tools are bound |
 | 7 | conversation recovery | a `conv` namespace among the connected set | SDK `conversation_recovery_guide` |
-| 8 | admin envelope | `additional_instructions` prop non-empty | descriptor `surfaces.as_consumer.agents.lg-react.additional_instructions`, wrapped by SDK `append_agent_admin_customization` |
+| 8 | shared turn context | `record_turn_summary` survives the declared tool ceiling and current conversation's disabled-tool selection | SDK `turn_summary_contribution_guide`; ordinary `kind: python` tool binding |
+| 9 | admin envelope | `additional_instructions` prop non-empty | descriptor `surfaces.as_consumer.agents.lg-react.additional_instructions`, wrapped by SDK `append_agent_admin_customization` |
 
-Block 8 is deliberately last: the administrator's customization reads in the
+Block 9 is deliberately last: the administrator's customization reads in the
 position of highest precedence, after every generic block it may specialize —
-the same ordering the ReAct harness gives the same prop.
+the same ordering the ReAct Agent harness gives the same prop.
 
 ## Configuration
 
@@ -149,13 +172,20 @@ surfaces:
   as_consumer:
     agents:
       lg-react:
+        tools:
+          - name: turn_context
+            kind: python
+            alias: turn_context
+            allowed: [record_turn_summary]
         additional_instructions: |
           <the administrator's customization — tone, boundaries, domain rules>
 ```
 
 Declared in the app descriptor (see `config/bundles.template.yaml`). A live
 change without restart goes through the platform property write; a descriptor
-edit lands on the next restart. Empty string = no block 8.
+edit lands on the next restart. Empty string = no block 9. Omitting the
+`turn_context` connection keeps `record_turn_summary` outside the admin ceiling;
+the user's capability selection may subtract it for one conversation.
 
 The namespace inventory in block 6 derives from the same descriptor: the agent's
 `as_consumer` named-service connections decide WHICH namespaces are listed

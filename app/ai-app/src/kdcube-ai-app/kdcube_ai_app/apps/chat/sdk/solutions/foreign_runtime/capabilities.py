@@ -119,6 +119,46 @@ def disabled_category(disabled: Mapping[str, Any] | None, category: str) -> Dict
     return dict(raw) if isinstance(raw, Mapping) else {}
 
 
+def declared_python_tool_enabled(
+    connections: Any,
+    disabled_tools: Optional[Mapping[str, Any]],
+    tool_name: str,
+) -> bool:
+    """Whether one declared ``kind: python`` tool survives user narrowing.
+
+    This is the framework-neutral form of the ordinary agent-tool inventory
+    rule: the descriptor connection list is the admin ceiling and
+    ``disabled.tools`` is the conversation user's subtraction from it.
+    """
+    wanted = str(tool_name or "").strip()
+    if not wanted or not isinstance(connections, list):
+        return False
+    denied = disabled_tools if isinstance(disabled_tools, Mapping) else {}
+    for raw in connections:
+        if not isinstance(raw, Mapping):
+            continue
+        if str(raw.get("kind") or "python").strip().lower() != "python":
+            continue
+        alias = str(raw.get("alias") or raw.get("name") or "").strip()
+        allowed = raw.get("allowed")
+        names = (
+            [str(value).strip() for value in allowed if str(value).strip()]
+            if isinstance(allowed, list) and allowed
+            else ([alias] if alias else [])
+        )
+        if wanted not in names:
+            continue
+        disabled_spec = denied.get(alias)
+        if disabled_spec is True:
+            return False
+        if isinstance(disabled_spec, list):
+            return wanted not in {
+                str(value).strip() for value in disabled_spec if str(value).strip()
+            }
+        return True
+    return False
+
+
 async def resolve_turn_role_models(
     entrypoint: Any, state: Dict[str, Any], agent_id: str
 ) -> Dict[str, Dict[str, str]]:

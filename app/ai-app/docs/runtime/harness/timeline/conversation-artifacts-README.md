@@ -3,12 +3,13 @@ id: repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/timeline/conversation-art
 title: "Harness Conversation Artifacts"
 summary: "Timeline, TurnLog, source-pool, feedback, event/stream, and searchable transcript projections persisted for agent conversations, with their blob, index-row, and embedding contracts kept distinct."
 tags: ["runtime", "harness", "timeline", "artifacts", "conversation"]
-updated_at: 2026-08-20
+updated_at: 2026-08-22
 keywords: ["ContextRAGClient", "save_artifact", "save_turn_log_artifact", "conversation store", "minimal turn transcript rows", "conv.artifacts.events", "projection:minimal.turn.log"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/timeline/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/timeline/turn-view-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/timeline/turn-log-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/timeline/turn-summary-contributions-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/workspace/artifact-storage-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/artifact-discovery-README.md
 ---
@@ -41,11 +42,11 @@ Reference implementations:
 
 | Kind / projection | Stored blob | Index row | Embedding | Tags (base) | When stored | Responsibility |
 | --- | --- | --- | --- | --- | --- | --- |
-| `conv.timeline.v1` | Yes | Yes | No | `artifact:conv.timeline.v1`, `turn:<turn_id>` | End of a recorded turn. | Conversation registration and, for the ReAct agent, the progressive conversation-level block/source projection. Its compact index metadata powers list/title/recency. |
-| `conv:sources_pool` | Yes | Yes | No | `artifact:conv:sources_pool`, `turn:<turn_id>` | ReAct agent timeline persistence. | Authoritative progressive source pool. Its index text is a compact source projection. |
+| `conv.timeline.v1` | Yes | Yes | No | `artifact:conv.timeline.v1`, `turn:<turn_id>` | End of a recorded turn. | Conversation registration and, for the ReAct Agent, the progressive conversation-level block/source projection. Its compact index metadata powers list/title/recency. |
+| `conv:sources_pool` | Yes | Yes | No | `artifact:conv:sources_pool`, `turn:<turn_id>` | ReAct Agent timeline persistence. | Authoritative progressive source pool. Its index text is a compact source projection. |
 | `turn.log` (`artifact:turn.log`) | Yes | Yes | No | `kind:turn.log`, `artifact:turn.log`, `turn:<turn_id>` | Whenever a `TurnLog` is persisted. | Per-turn reload envelope. Its index text is compact accounting metadata rather than transcript text. |
-| Minimal transcript role rows | No (`index_only`) | Yes | Best effort | `chat:user` or `chat:assistant`, `turn:<turn_id>`, `projection:minimal.turn.log` | Alongside every minimal TurnLog. | One row per folded user submission plus the final assistant completion. Semantic, lexical, and trigram topic discovery use these rows; lexical/trigram remain available when embedding fails. |
-| ReAct agent semantic role rows | No (`index_only`) | Yes | Yes where model service succeeds | Role/kind tags such as `chat:user`, `chat:assistant`, `kind:working.summary`, `kind:react.note` | ReAct agent finalization and compaction. | Prompt/completion content plus richer supported attachment, summary, anchor, and selected-note projections. |
+| Minimal transcript role rows | No (`index_only`) | Yes | Best effort | `chat:user` or `chat:assistant`, `turn:<turn_id>`, `projection:minimal.turn.log`; optional summary also carries `chat:summary`, `kind:working.summary`, `summary_scope:turn` | Alongside every minimal TurnLog. | One row per folded user submission, an optional explicitly contributed hosted-agent summary, and the final assistant completion. Semantic, lexical, and trigram topic discovery use these rows; lexical/trigram remain available when embedding fails. |
+| ReAct Agent semantic role rows | No (`index_only`) | Yes | Yes where model service succeeds | Role/kind tags such as `chat:user`, `chat:assistant`, `kind:working.summary`, `kind:react.note` | ReAct Agent finalization and compaction. | Prompt/completion content plus richer supported attachment, summary, anchor, and selected-note projections. |
 | `turn.log.reaction` | Yes | Yes | No | `artifact:turn.log.reaction`, `turn:<turn_id>`, `origin:<user|machine>` | When feedback is added. | Feedback/reaction linked to a turn. |
 | `conv.range.summary` | No (`index_only`) | Yes | Best effort | `artifact:conv.range.summary`, `turn:<turn_id>` | When context compaction runs. | Searchable summary for a range of turns. |
 | `conv.artifacts.events` | Yes | Yes | No | `artifact:conv.artifacts.events`, `turn:<turn_id>`, `conversation`, `events` | Turn post-run persistence. | Full recorded chat-event payloads selected for reload, including economics/timing and framework-neutral conversation objects such as steps, citations, and follow-ups. |
@@ -66,7 +67,7 @@ Reference implementations:
   UI artifacts in the fetch payload.
 - TurnLog existence and replay ownership are separate per-turn signals. A
   minimal log owns message/file reload and its searchable role projection;
-  dynamic event/stream artifacts remain active. A rich ReAct agent log owns those
+  dynamic event/stream artifacts remain active. A rich ReAct Agent log owns those
   block projections and suppresses the duplicate framework-neutral exporters.
 - Fetch reconstruction can emit multiple `chat:user` and multiple `chat:assistant` artifacts
   from a single turn. Opening prompts, preserved followups/steers, and each visible assistant
@@ -75,9 +76,9 @@ Reference implementations:
   via block metadata; they are not standalone conversation artifacts here.
 - Feedback is persisted as `artifact:turn.log.reaction` and mirrored into the **turn log payload**
   (`turn_log.feedbacks[]` and `turn_log.entries[]`) inside `artifact:turn.log`.
-  When cache is cold, ReAct agent v2 injects `turn.feedback` blocks into the timeline and those
+  When cache is cold, ReAct Agent v2 injects `turn.feedback` blocks into the timeline and those
   blocks are persisted inside `conv.timeline.v1`.
-- ReAct agent v2 refreshes feedback by querying **latest reaction per turn** (SQL `DISTINCT ON`),
+- ReAct Agent v2 refreshes feedback by querying **latest reaction per turn** (SQL `DISTINCT ON`),
   filtered by `artifact:turn.log.reaction` tag and the timeline’s `turn_id`s.
 - `artifact:turn.log.reaction` rows store reaction JSON in `conv_messages.text`
   for fast index‑only reads. Shape:
@@ -113,11 +114,14 @@ Reference implementations:
 - Minimal hosted turns additionally write separate `role=user` and
   `role=assistant` rows tagged `projection:minimal.turn.log`. Their text comes
   from the same saved TurnLog blocks, so topic discovery and reload share turn
-  identity without making the artifact row itself a transcript index.
+  identity without making the artifact row itself a transcript index. A hosted
+  agent with the configured `record_turn_summary` tool may add one
+  `conv.working.summary` block and corresponding anchored assistant row; see
+  [Hosted Agent Turn Summary Contributions](turn-summary-contributions-README.md).
 - The timeline artifact payload includes the current full `sources_pool` so logical source reads and
   exec `fetch_ctx` can recover fetched source content. The indexed text remains compact, and the
   authoritative progressive pool is also persisted as `conv:sources_pool` and loaded at turn start.
-- The ReAct agent adapter loads these artifacts through
+- The ReAct Agent adapter loads these artifacts through
   `ContextBrowser.load_timeline`
   (`src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/react/browser.py`).
   Conversation APIs use the shared harness payload/turn-view modules directly.

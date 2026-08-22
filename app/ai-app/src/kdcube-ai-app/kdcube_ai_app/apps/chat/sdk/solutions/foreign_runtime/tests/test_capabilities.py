@@ -211,6 +211,23 @@ def test_disabled_category_slices_without_a_second_read() -> None:
     assert capabilities.disabled_category({"tools": ["web"]}, capabilities.DISABLED_TOOLS) == {}
 
 
+def test_declared_python_tool_is_ceiling_minus_user_opt_out() -> None:
+    declared = [
+        {
+            "name": "turn_context",
+            "kind": "python",
+            "alias": "turn_context",
+            "allowed": ["record_turn_summary"],
+        },
+        {"name": "press", "kind": "mcp", "alias": "press", "allowed": ["search"]},
+    ]
+    enabled = capabilities.declared_python_tool_enabled
+    assert enabled(declared, {}, "record_turn_summary") is True
+    assert enabled(declared, {"turn_context": ["record_turn_summary"]}, "record_turn_summary") is False
+    assert enabled(declared, {"turn_context": True}, "record_turn_summary") is False
+    assert enabled(declared, {}, "undeclared") is False
+
+
 def test_nothing_picked_leaves_the_full_declared_inventory() -> None:
     for selection in ({}, {"disabled": {}}, None):
         entrypoint, _store = _entrypoint(selection)

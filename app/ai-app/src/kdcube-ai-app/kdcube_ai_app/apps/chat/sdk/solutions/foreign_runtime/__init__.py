@@ -18,6 +18,7 @@ later phase.
 """
 
 from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.capabilities import (
+    declared_python_tool_enabled,
     disabled_category,
     resolve_turn_disabled_mcp,
     resolve_turn_disabled_namespaces,
@@ -68,6 +69,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.workspace_tools impor
     WORKSPACE_MCP_SERVER_ID,
     WORKSPACE_PUBLISH_TOOL,
     WORKSPACE_PULL_TOOL,
+    WORKSPACE_TURN_SUMMARY_TOOL,
     WorkspacePublishError,
     build_workspace_hosting_service,
     checkout_into_workspace,
@@ -108,6 +110,7 @@ __all__ = [
     "WORKSPACE_MCP_SERVER_ID",
     "WORKSPACE_PUBLISH_TOOL",
     "WORKSPACE_PULL_TOOL",
+    "WORKSPACE_TURN_SUMMARY_TOOL",
     "WorkspaceBroker",
     "WorkspaceBrokerError",
     "WorkspacePublishError",
@@ -128,6 +131,7 @@ __all__ = [
     "broker_source_resolver",
     "build_workspace_hosting_service",
     "current_turn_user_sub",
+    "declared_python_tool_enabled",
     "disabled_category",
     "emit_turn_timing",
     "finalize_conversation_title",

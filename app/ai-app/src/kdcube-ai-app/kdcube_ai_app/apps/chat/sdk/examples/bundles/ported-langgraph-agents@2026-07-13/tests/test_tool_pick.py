@@ -44,6 +44,12 @@ _PLAIN_CONNS = [
     {"name": "kb_search", "kind": "python", "alias": "kb_search", "allowed": ["kb_search"]},
 ]
 _EXEC_CONN = {"name": "code_exec", "kind": "python", "alias": "code_exec", "allowed": ["run_python"], "code_exec": {"timeout_s": 90}}
+_SUMMARY_CONN = {
+    "name": "turn_context",
+    "kind": "python",
+    "alias": "turn_context",
+    "allowed": ["record_turn_summary"],
+}
 
 
 def _bind(mod, connections, disabled):
@@ -85,3 +91,24 @@ def test_bound_order_follows_declaration() -> None:
     mod = _tool_pick()
     conns = [_PLAIN_CONNS[2], _PLAIN_CONNS[0], _EXEC_CONN]  # kb_search, calc, exec
     assert _bind(mod, conns, {}) == ["kb_search", "calc", "run_python"]
+
+
+def test_extra_factory_tool_obeys_the_same_declared_and_disabled_contract() -> None:
+    mod = _tool_pick()
+    extra = {"record_turn_summary": lambda: _FakeTool("record_turn_summary")}
+    bound = mod.select_bound_tools(
+        [_SUMMARY_CONN],
+        {},
+        plain_registry=_registry(),
+        run_python_factory=_run_python_factory,
+        extra_factories=extra,
+    )
+    assert _names(bound) == ["record_turn_summary"]
+    disabled = mod.select_bound_tools(
+        [_SUMMARY_CONN],
+        {"turn_context": ["record_turn_summary"]},
+        plain_registry=_registry(),
+        run_python_factory=_run_python_factory,
+        extra_factories=extra,
+    )
+    assert disabled == []

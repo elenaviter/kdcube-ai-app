@@ -2,6 +2,15 @@
 # Copyright (c) 2026 Elena Viter
 """Agent-harness timeline identity, projection, and persistence contracts."""
 
+from kdcube_ai_app.apps.chat.sdk.runtime.harness.timeline.contributions import (
+    TURN_SUMMARY_CONTRIBUTION_KEY,
+    TURN_SUMMARY_TOOL_NAME,
+    render_turn_summary,
+    stage_turn_summary,
+    staged_turn_summary,
+    turn_summary_block,
+)
+
 from kdcube_ai_app.apps.chat.sdk.runtime.harness.timeline.identity import (
     block_event_id,
     block_event_source_id,
@@ -21,6 +30,12 @@ from kdcube_ai_app.apps.chat.sdk.runtime.harness.timeline.projection import (
 )
 
 __all__ = [
+    "TURN_SUMMARY_CONTRIBUTION_KEY",
+    "TURN_SUMMARY_TOOL_NAME",
+    "render_turn_summary",
+    "stage_turn_summary",
+    "staged_turn_summary",
+    "turn_summary_block",
     "block_event_id",
     "block_event_source_id",
     "block_matches_event_source",

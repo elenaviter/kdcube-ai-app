@@ -2914,6 +2914,14 @@ class BaseEntrypoint:
             assistant_files = [f for f in raw_files if isinstance(f, dict)]
         except Exception:
             assistant_files = []
+        from kdcube_ai_app.apps.chat.sdk.runtime.harness.timeline.contributions import (
+            staged_turn_summary,
+        )
+
+        turn_summary_contribution = staged_turn_summary(
+            state,
+            turn_id=str(turn_id or ""),
+        )
         try:
             client = await self.get_ctx_client()
             if client is None:
@@ -2946,12 +2954,14 @@ class BaseEntrypoint:
                 user_messages=user_messages,
                 batch_id=batch_id,
                 assistant_files=assistant_files,
+                turn_summary_contribution=turn_summary_contribution,
             )
             try:
                 self.logger.log(
                     f"[turn-log-fallback] recorded conversation={thread_id} turn={turn_id} "
                     f"wrote={wrote_turn_log} user_event_type={user_event_type} "
                     f"prompt_len={len(user_prompt_text)} attachments={len(user_attachments)} "
+                    f"summary={bool(turn_summary_contribution)} "
                     f"title={conversation_title!r}",
                     "INFO",
                 )

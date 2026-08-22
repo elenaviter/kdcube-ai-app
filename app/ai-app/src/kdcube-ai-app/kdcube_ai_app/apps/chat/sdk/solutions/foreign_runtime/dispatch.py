@@ -33,12 +33,14 @@ class AgentSpec:
       the row-scope discriminator in shared storage).
     - ``role``         — the accounted model role the agent's answer bills under
       (e.g. ``"<agent>.answer"``).
-    - ``build_graph``  — ``async (entrypoint, *, disabled=None) -> runtime``:
+    - ``build_graph``  — ``async (entrypoint, *, disabled=None, state=None) -> runtime``:
       build the agent's runtime object FOR THIS TURN (never cached — scaled
       serving: turns hop workers, so no process-local runtime is continuity).
       ``disabled`` is this conversation's saved capability deny map (the whole
       block ``resolve_turn_selection_disabled`` returns, sliced per category by
-      the builder); an agent with nothing pickable ignores it.
+      the builder). ``state`` is trusted current-turn state for capabilities
+      whose model-facing binding must not accept identity from the model. An
+      agent with nothing pickable or state-bound ignores those arguments.
     - ``stream``       — ``async (runtime, inputs, run_config) -> str``: run one
       turn through the agent's OWN stream adapter; returns the answer text.
     - ``build_inputs`` — ``(question, ident, attachments) -> (inputs, run_config)``.

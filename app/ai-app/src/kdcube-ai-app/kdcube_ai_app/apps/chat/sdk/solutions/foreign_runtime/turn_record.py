@@ -234,6 +234,11 @@ async def record_foreign_runtime_turn_log(
             break
     raw_files = state.get("hosted_files") or result.get("files") or []
     assistant_files = [row for row in raw_files if isinstance(row, dict)]
+    from kdcube_ai_app.apps.chat.sdk.runtime.harness.timeline.contributions import (
+        staged_turn_summary,
+    )
+
+    turn_summary_contribution = staged_turn_summary(state, turn_id=turn_id)
     conversation_title = str(
         result.get("conversation_title")
         or state.get("conversation_title")
@@ -260,13 +265,15 @@ async def record_foreign_runtime_turn_log(
         user_messages=user_messages,
         batch_id=batch_id,
         assistant_files=assistant_files,
+        turn_summary_contribution=turn_summary_contribution,
     )
     LOGGER.info(
         "[foreign-runtime] turn-log record conversation=%s turn=%s wrote=%s "
         "events=%d messages=%d user_event_type=%s prompt_len=%d attachments=%d "
-        "assistant_files=%d final_answer_len=%d title=%r",
+        "assistant_files=%d summary=%s final_answer_len=%d title=%r",
         conversation_id, turn_id, wrote_turn_log, len(events), len(user_messages), user_event_type,
         len(user_prompt_text), len(user_attachments), len(assistant_files),
+        bool(turn_summary_contribution),
         len(final_answer), conversation_title,
     )
     return bool(wrote_turn_log)

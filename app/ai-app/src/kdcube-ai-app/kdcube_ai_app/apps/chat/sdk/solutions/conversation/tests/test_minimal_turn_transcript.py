@@ -17,6 +17,10 @@ from kdcube_ai_app.apps.chat.sdk.solutions.conversation.record import (
     rich_turn_log_was_recorded,
     turn_log_recording_kind,
 )
+from kdcube_ai_app.apps.chat.sdk.runtime.harness.timeline.contributions import (
+    stage_turn_summary,
+    staged_turn_summary,
+)
 
 
 class _Index:
@@ -135,6 +139,73 @@ async def test_embedding_failure_keeps_lexical_and_trigram_transcript_rows() -> 
     assert [row["role"] for row in idx.rows] == ["user", "user", "assistant"]
     assert all(row["embedding"] is None for row in idx.rows)
     assert all(row["text"] for row in idx.rows)
+
+
+@pytest.mark.asyncio
+async def test_staged_turn_summary_enters_turn_log_and_search_projection() -> None:
+    state = {"turn_id": "turn-1"}
+    first = stage_turn_summary(
+        state,
+        summary="Initial draft",
+        phrases=["square image"],
+    )
+    second = stage_turn_summary(
+        state,
+        summary="The image was cropped to a reusable square asset.",
+        refs=["conv:fi:conv_c1.turn_1.files/crop.png"],
+        phrases=["square crop", "square crop"],
+        entities=["crop.png"],
+        contributor="langgraph",
+    )
+    assert first["replaced"] is False
+    assert second["replaced"] is True
+
+    contribution = staged_turn_summary(state, turn_id="turn-1")
+    payload = build_minimal_turn_log_payload(
+        final_answer="The cropped image is ready.",
+        turn_id="turn-1",
+        user_prompt_text="Crop the image",
+        turn_summary_contribution=contribution,
+        ts="2026-08-20T10:00:02Z",
+    )
+    summary_block = next(
+        block for block in payload["blocks"]
+        if block.get("type") == "conv.working.summary"
+    )
+    assert summary_block["path"] == "conv:ws:turn-1.conv.working.summary.attempt.1"
+    assert "conv:fi:conv_c1.turn_1.files/crop.png" in summary_block["text"]
+    assert "Retrieval-anchors:" in summary_block["text"]
+    assert summary_block["meta"]["contributor"] == "langgraph"
+
+    idx = _Index()
+    model = _Model()
+    client = ContextRAGClient(conv_idx=idx, store=_Store(), model_service=model)
+    persisted = await client.save_minimal_turn_transcript_rows(
+        user="user-1",
+        conversation_id="conversation-1",
+        turn_id="turn-1",
+        bundle_id="agent-app@1",
+        agent_id="lg-react",
+        payload=payload,
+    )
+
+    assert persisted == 3
+    assert [row["role"] for row in idx.rows] == ["user", "assistant", "assistant"]
+    summary_row = idx.rows[1]
+    assert "chat:summary" in summary_row["tags"]
+    assert "kind:working.summary" in summary_row["tags"]
+    assert "summary_scope:turn" in summary_row["tags"]
+    assert summary_row["anchors_text"] == '"square crop" crop.png'
+    assert all(row["embedding"] is not None for row in idx.rows)
+
+
+def test_staged_turn_summary_is_scoped_to_its_trusted_turn() -> None:
+    state = {"turn_id": "turn-1"}
+    stage_turn_summary(state, summary="Turn one")
+    assert staged_turn_summary(state, turn_id="turn-1") is not None
+    assert staged_turn_summary(state, turn_id="turn-2") is None
+    with pytest.raises(ValueError, match="must not be empty"):
+        stage_turn_summary(state, summary="  ")
 
 
 @pytest.mark.asyncio

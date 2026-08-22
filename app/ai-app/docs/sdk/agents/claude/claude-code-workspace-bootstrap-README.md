@@ -1,9 +1,9 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/claude/claude-code-workspace-bootstrap-README.md
 title: "Claude Code Workspace Management"
-summary: "How KDCube manages Claude Code session continuity and binds the shared Agent Harness Workspace to a hosted Claude turn."
+summary: "How KDCube manages Claude Code session continuity and binds shared pull, checkout, publication, and optional turn-summary capabilities to a hosted Claude turn."
 tags: ["sdk", "agents", "claude", "claude-code", "workspace", "git", "bootstrap"]
-updated_at: 2026-08-21
+updated_at: 2026-08-22
 keywords:
   [
     "Claude Code workspace",
@@ -14,6 +14,8 @@ keywords:
     "run_claude_code_turn",
     "bind_claude_code_turn_workspace",
     "workspace publication policy",
+    "record_turn_summary",
+    "Claude Code turn summary contribution",
   ]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/claude/claude-code-README.md
@@ -24,6 +26,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/claude_code/agent.py
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/claude_code/harness_workspace.py
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/foreign_runtime/publication.py
+  - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/timeline/turn-summary-contributions-README.md
 ---
 # Claude Code Workspace Management
 
@@ -57,8 +60,9 @@ Both profiles use the same policy-neutral `ClaudeCodeAgent` and
   archive are all owned by the app.
 - **Harness-bound conversational execution.** The app additionally calls
   `bind_claude_code_turn_workspace(...)` when Claude must resolve conversation
-  or owner refs, create/reset editable turn files, or explicitly deliver files
-  into a conversation. The Press app is the reference.
+  or owner refs, create/reset editable turn files, explicitly deliver files
+  into a conversation, or contribute a searchable turn summary. The Press app
+  is the reference.
 
 The harness binding is additive and opt-in. The generic runner does not create
 a broker, expose conversation refs, or acquire file-hosting authority by
@@ -115,7 +119,7 @@ accepted event
   object_ref: cnv:users/u7/canvases/main/objects/card_17/v000004.md
                          |
                          v
-Claude Code local MCP: pull | checkout | publish | pulled
+Claude Code local MCP: pull | checkout | publish | record_turn_summary | pulled
                          |
               Unix socket, per-turn token
                          |
@@ -133,6 +137,11 @@ turn_workspace = await bind_claude_code_turn_workspace(
     entrypoint=entrypoint,
     state=state,
     publication_policy=product_policy,
+    turn_summary_enabled=declared_python_tool_enabled(
+        declared_connections,
+        disabled_tools,
+        "record_turn_summary",
+    ),
 )
 servers = turn_workspace.merge_mcp_servers(product_servers)
 workspace_config = turn_workspace.apply_workspace_config(
@@ -161,11 +170,33 @@ finally:
   hosting, the shared gate enforces count, per-file size, aggregate size, and
   supported MIME families. A product callback may narrow or deny the concrete
   request under trusted runtime identity, but cannot widen the shared ceiling.
+- `record_turn_summary(summary, refs, phrases, entities)` stages one
+  replaceable semantic contribution for the current turn. The trusted
+  successful-turn recorder persists the final draft as a searchable
+  `conv.working.summary` block; it never reads or exports Claude's private
+  session summary. The wrapper enables this operation only when its ordinary
+  `kind: python` tool declaration survives the admin ceiling and the user's
+  per-conversation narrowing.
+
+The matching descriptor inventory entry is ordinary agent configuration:
+
+```yaml
+tools:
+  - name: turn_context
+    kind: python
+    alias: turn_context
+    allowed: [record_turn_summary]
+```
+
+Omit the entry to keep the capability outside the app's ceiling. A user may
+switch it off for one conversation like any other declared Python tool. The
+common capability instruction joins only when the operation is actually
+available to Claude.
 
 The MCP child receives operation arguments and bound non-secret identity, not
-provider credentials or a hosting service. Owner resolution and publication
-cross the authenticated local broker to the trusted parent. The Press Claude
-Code wrapper is the worked consumer of the reusable binding. A new wrapper
+provider credentials or a hosting service. Owner resolution, publication, and
+summary staging cross the authenticated local broker to the trusted parent.
+The Press Claude Code wrapper is the worked consumer of the reusable binding. A new wrapper
 chooses its workspace, session lineage, product instructions, and publication
 approval policy; it does not reimplement resolver, broker, hosting, or Claude
 configuration glue. This mechanism does not by itself change the process and

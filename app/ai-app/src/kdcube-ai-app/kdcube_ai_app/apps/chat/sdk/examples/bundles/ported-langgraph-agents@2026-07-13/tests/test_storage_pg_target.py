@@ -189,8 +189,9 @@ def test_entrypoint_holds_no_per_user_state_across_turns(monkeypatch) -> None:
 
     build_calls: list[str] = []
 
-    async def _fake_build_graph(agent_id, *, disabled=None):
+    async def _fake_build_graph(agent_id, *, disabled=None, state=None):
         # Built fresh every turn (scaled serving) — nothing cached on the instance.
+        assert isinstance(state, dict)
         build_calls.append(agent_id)
         return _StubGraph()
 

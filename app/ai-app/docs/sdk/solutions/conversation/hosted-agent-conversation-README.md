@@ -1,9 +1,9 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/conversation/hosted-agent-conversation-README.md
 title: "The Conversation For Any Agent"
-summary: "How KDCube maintains the conversation for any hosted agent: the native KDCube ReAct agent or a wrapped external framework such as LangGraph, LangChain, or a raw loop. The model has two owners: the agent owns working continuation in its native checkpointer/store, while KDCube owns the platform conversation record used for list, reload, search, files, and titles. Details the minimal and rich TurnLog projections, separate searchable role rows, conv.timeline.v1 registration, dynamic event/stream replay, conversation files, recording-kind ownership, cost/time restoration, first-turn titles, and durable checkpointer keying."
+summary: "How KDCube maintains the conversation for any hosted agent: the native KDCube ReAct Agent or a wrapped external framework such as LangGraph, LangChain, or a raw loop. The agent owns private continuation in its native checkpointer/store, while KDCube owns the platform conversation record used for list, reload, search, files, and titles. Hosted agents may also contribute one optional searchable turn summary through an ordinary configurable tool."
 tags: ["sdk", "solutions", "conversation", "hosting", "langgraph", "port", "checkpointer", "turn-recorder", "conversation-record", "reload", "turn-log"]
-updated_at: 2026-08-20
+updated_at: 2026-08-22
 keywords:
   [
     "hosted agent conversation",
@@ -25,6 +25,9 @@ keywords:
     "rich_turn_log_was_recorded",
     "minimal turn transcript rows",
     "projection:minimal.turn.log",
+    "record_turn_summary",
+    "conv.working.summary",
+    "hosted agent semantic contribution",
     "conversation title first turn",
     "chat.conversation.title",
     "scene_object_action",
@@ -40,12 +43,13 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/dataflow/connect-agentic-loop-to-ordered-delivery-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/conversation/search-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/chat/chat-widget-solution-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/timeline/turn-summary-contributions-README.md
 ---
 # The Conversation For Any Agent
 
 A user talks to an app: they ask, get an answer, come back tomorrow, reopen the
 thread, and expect both the screen and the agent to remember. KDCube maintains
-that conversation the same way for **any** agent — its native ReAct agent workflow or a
+that conversation the same way for **any** agent - its native ReAct Agent workflow or a
 wrapped external framework (a LangGraph graph, a `create_agent`, a raw loop)
 serving turns through `execute_core`. This page is the reference for that
 machinery: what the durable record consists of, who writes each piece, how the
@@ -94,7 +98,7 @@ transcript as an ordered block list `{ts, blocks, blocks_count}`:
   (rebuilds the file cards, powers Download);
 - `assistant.completion` — the final answer (rebuilds the assistant bubble).
 
-The native ReAct agent workflow writes a RICH turn log at `finish_turn` (full timeline:
+The native ReAct Agent workflow writes a RICH turn log at `finish_turn` (full timeline:
 thinking, canvas, sources_pool, and more). A framework-neutral turn gets the
 MINIMAL log above from the fallback recorder — same block shapes, so the shared
 reload reader (`Timeline.build_turn_view`) treats both alike.
@@ -129,15 +133,27 @@ turn-workspace contract built on these links — nothing auto-read, pull/read by
 link, workspace empty every turn — is the port recipe's "distributed turn
 workspace" section.
 
+**Optional hosted-agent turn summary.** An adapter may expose the ordinary
+`record_turn_summary` tool in that agent's configured tool inventory. The tool
+stages one replaceable draft under trusted current-turn state. On successful
+turn finalization, the minimal recorder adds it as a
+`conv.working.summary` block and projects a separate searchable row. The model
+may supply durable refs plus phrase/entity retrieval anchors. Repeated calls in
+one turn replace the draft; a failed turn does not publish it. This contribution
+is independent of the framework's private checkpoint, compaction summary, or
+session store. See [Turn Summary Contributions](../../../runtime/harness/timeline/turn-summary-contributions-README.md).
+
 **Searchable transcript rows.** A minimal TurnLog also projects each folded
 user submission and the final assistant completion into separate index-only
-`conv_messages` rows. These rows carry the conversation, turn, app, agent,
-role, event type, batch, and arrival time. The model service embeds them in one
-batch when available; if embedding fails, the text rows still support lexical
-and trigram discovery. The TurnLog artifact remains compact and unembedded: it
-owns reload, while these role rows own topic candidate generation. The ReAct agent writes
-the same role-level contract through its richer finalization path and can add
-working summaries, anchors, notes, and supported attachment text.
+`conv_messages` rows. If the hosted agent staged `record_turn_summary`, the
+same projection adds its summary row and retrieval anchors. These rows carry
+the conversation, turn, app, agent, role, event type, batch, and arrival time.
+The model service embeds them in one batch when available; if embedding fails,
+the text rows still support lexical and trigram discovery. The TurnLog artifact
+remains compact and unembedded: it owns reload, while these content rows own
+topic candidate generation. The ReAct Agent writes the same role-level contract
+through its richer finalization path and can add working summaries, anchors,
+notes, and supported attachment text.
 
 ## Who writes it: one contract, two doors
 
@@ -148,10 +164,10 @@ write. `turn_log_was_recorded()` answers whether a log exists and prevents a
 second log. `rich_turn_log_was_recorded()` answers whether that log already
 owns the dynamic event/stream projection. The state is a **mutable dict on a
 ContextVar**: writers mutate the shared object, so a log written in a sibling
-asyncio task (ReAct agent finalization) is visible to the parent door. Recording-kind
+asyncio task (ReAct Agent finalization) is visible to the parent door. Recording-kind
 precedence is monotonic, so a later minimal mark cannot downgrade a rich one.
 
-**Door 1 — the native ReAct agent workflow.** Writes its own rich turn log at `finish_turn`,
+**Door 1 — the native ReAct Agent workflow.** Writes its own rich turn log at `finish_turn`,
 persists the events artifact in its `post_run_hook`, and persists stream
 artifacts itself. The framework-neutral fallbacks see a rich mark and stay
 inert, so the same dynamic object is not rendered twice.
@@ -173,16 +189,18 @@ sequence:
    follow-up, or steer and its context/attachments from
    `state["external_events"]`, produced files from `state["hosted_files"]` /
    `result["files"]`, and the first-turn title from
-   `result["conversation_title"]`. The minimal write also projects searchable
-   user/assistant rows. Recording never fails the turn.
+   `result["conversation_title"]`. If the active adapter exposed and used
+   `record_turn_summary`, this finalization step also consumes the staged draft.
+   The minimal write projects searchable user, assistant, and optional summary
+   rows. Recording never fails the turn.
 
 Current integrations use that contract as follows:
 
 | Adapter | Platform conversation projection | Agent-private continuation |
 | --- | --- | --- |
-| Ported LangGraph | The explicit foreign-runtime recorder preserves every folded submission with event type/batch/time, context events, attachment refs, the final completion, and hosted code-output `conv:fi:` refs. Recorded `chat.step`/citation/follow-up events and canvas/tool/subsystem streams remain separate replay artifacts. Minimal role rows make prompts and the completion searchable. | The graph's native checkpointer remains authoritative for what the graph restores next turn. |
-| Generic hosted Claude Code, including Press | The base fallback preserves every folded submission, context event, attachment ref, and Claude's final answer, then projects searchable role rows. An app that records Claude tool activity as `chat.step` can replay those rows. Edits in the application's workset remain application state; a wrapper may opt into the reusable Agent Harness Workspace binding, whose explicit policy-checked `publish` operation creates conversation files. | Claude's session/git store remains authoritative for CLI continuation. |
-| Native KDCube ReAct agent | The rich TurnLog and progressive timeline preserve the adapter's ordered blocks; the ReAct agent also contributes prompts, completions, supported attachment text, working summaries, anchors, and selected notes to search. | The ReAct agent owns and restores its richer timeline/round protocol. |
+| Ported LangGraph | The explicit foreign-runtime recorder preserves every folded submission with event type/batch/time, context events, attachment refs, the final completion, and hosted code-output `conv:fi:` refs. Recorded `chat.step`/citation/follow-up events and canvas/tool/subsystem streams remain separate replay artifacts. Minimal role rows make prompts and the completion searchable. The app may declare `record_turn_summary` as an ordinary Python tool; the per-turn binder and prompt include it only when it survives the admin ceiling and user narrowing. | The graph's native checkpointer remains authoritative for what the graph restores next turn. |
+| Generic hosted Claude Code, including Press | The base fallback preserves every folded submission, context event, attachment ref, and Claude's final answer, then projects searchable role rows. An app that records Claude tool activity as `chat.step` can replay those rows. A wrapper may opt into the reusable Agent Harness Workspace binding for policy-checked `pull`, `checkout`, `publish`, and `record_turn_summary`; the summary tool is enabled only when its ordinary inventory declaration survives per-conversation narrowing. | Claude's session/git store remains authoritative for CLI continuation. Workset edits that are not explicitly published remain application state. |
+| Native KDCube ReAct Agent | The rich TurnLog and progressive timeline preserve the adapter's ordered blocks; the ReAct Agent also contributes prompts, completions, supported attachment text, working summaries, anchors, and selected notes to search. | The ReAct Agent owns and restores its richer timeline/round protocol. |
 
 **The failure sibling.** A turn that raises without surfacing its own failure
 gets `_surface_turn_failure`: a user-visible `chat.error` plus
@@ -224,7 +242,8 @@ the recorded turn (and the agent) sees the prompt only.
   object materialization. A TurnLog is the reload source, not the searchable
   transcript: its compact index text contains accounting metadata rather than
   prompt/answer text and carries no embedding. Minimal hosted turns project
-  each folded user submission and final completion into role rows; the ReAct agent adds
+  each folded user submission and final completion into role rows and includes
+  a deliberately staged hosted-agent summary when present; the ReAct Agent adds
   its richer summary/note/attachment projections. See
   [conversation search](./search-README.md).
 
@@ -234,7 +253,7 @@ The per-turn cost (`$`) and elapsed time the chat component shows are part of
 the record, not just live badges. The economics door emits `accounting.usage`
 (`cost_total_usd`) and `chat.turn.summary` (`elapsed_ms`) as chat events; they
 persist through the `conv.artifacts.events` artifact (`_save_events_artifact`)
-and re-surface on reload. The ReAct agent workflow does this in its own
+and re-surface on reload. The ReAct Agent workflow does this in its own
 `post_run_hook`; any other door adds the same call (and, having no timeline of
 its own, emits `chat.turn.summary` itself) or the reloaded turn shows no cost or
 time. Match the platform event shapes — do not hand-roll a parallel economics

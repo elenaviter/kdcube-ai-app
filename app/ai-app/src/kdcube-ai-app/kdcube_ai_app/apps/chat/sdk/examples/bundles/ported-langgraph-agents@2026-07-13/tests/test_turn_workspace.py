@@ -374,6 +374,29 @@ def test_conversation_recovery_block_joins_when_conv_namespace_connected():
     assert "[CONVERSATION RECOVERY" not in without
 
 
+def test_turn_summary_tool_stages_shared_context_and_adds_capability_guide():
+    turn_context = _module("turn_context")
+    state = {"turn_id": "turn_x"}
+    summary_tool = turn_context.build_record_turn_summary_tool(state)
+
+    result = asyncio.run(summary_tool.ainvoke({
+        "summary": "Prepared a reusable square image.",
+        "refs": ["conv:fi:conv_c1.turn_x.files/image.png"],
+        "phrases": ["square image"],
+        "entities": ["image.png"],
+    }))
+    assert "becomes durable and searchable" in result
+    staged = state["_kdcube_turn_summary_contribution"]
+    assert staged["summary"] == "Prepared a reusable square image."
+    assert staged["contributor"] == "langgraph"
+
+    entrypoint = _module_entrypoint()
+    prompt = entrypoint._prebuilt_system_prompt([summary_tool])
+    assert "[SHARED TURN CONTEXT — `record_turn_summary`]" in prompt
+    without = entrypoint._prebuilt_system_prompt([SimpleNamespace(name="calc")])
+    assert "[SHARED TURN CONTEXT" not in without
+
+
 def test_admin_customization_envelope_is_last():
     entrypoint = _module_entrypoint()
 

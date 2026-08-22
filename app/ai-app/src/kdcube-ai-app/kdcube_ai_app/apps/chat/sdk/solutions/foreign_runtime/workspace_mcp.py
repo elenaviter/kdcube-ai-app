@@ -181,6 +181,49 @@ def build_app() -> Any:
         return "\n".join(lines) if len(lines) > 1 else "No files were published."
 
     @app.tool()
+    async def record_turn_summary(
+        summary: str,
+        refs: List[str] | None = None,
+        phrases: List[str] | None = None,
+        entities: List[str] | None = None,
+    ) -> str:
+        """Stage one searchable summary of this turn's reusable result.
+
+        State the outcome, durable facts, decisions, and relevant object/file
+        refs. ``phrases`` are exact ways a person may search for it; ``entities``
+        are names or identifiers. Call again to replace the earlier draft. The
+        trusted parent persists only the final draft, and only if the turn
+        completes successfully. This does not alter the agent's private session.
+        """
+        if not ident["broker_socket"] or not ident["broker_token"]:
+            return (
+                "Turn summary failed (turn_summary_unavailable): this hosted runtime "
+                "has no trusted summary binding."
+            )
+        try:
+            receipt = await request_workspace_broker(
+                socket_path=ident["broker_socket"],
+                token=ident["broker_token"],
+                operation="record_turn_summary",
+                payload={
+                    "summary": summary,
+                    "refs": list(refs or []),
+                    "phrases": list(phrases or []),
+                    "entities": list(entities or []),
+                },
+            )
+        except Exception as error:
+            return (
+                f"Turn summary failed ({getattr(error, 'code', 'turn_summary_failed')}): "
+                f"{error}"
+            )
+        action = "replaced" if bool((receipt or {}).get("replaced")) else "staged"
+        return (
+            f"Turn summary {action}; it becomes durable and searchable only after "
+            "this turn completes successfully."
+        )
+
+    @app.tool()
     async def pulled() -> str:
         """List what you have already pulled this turn."""
         root = workspace_artifact_root(ident["workspace"])

@@ -684,7 +684,8 @@ class ContextRAGClient:
         for block in blocks:
             if not isinstance(block, dict):
                 continue
-            if str(block.get("type") or "").strip() != "assistant.completion":
+            block_type = str(block.get("type") or "").strip()
+            if block_type not in {"assistant.completion", "conv.working.summary"}:
                 continue
             block_turn_id = str(block.get("turn_id") or block.get("turn") or "").strip()
             if block_turn_id and block_turn_id != turn_id:
@@ -694,14 +695,36 @@ class ContextRAGClient:
                 continue
             meta = block.get("meta") if isinstance(block.get("meta"), dict) else {}
             tags = ["chat:assistant", f"turn:{turn_id}", MINIMAL_TURN_TRANSCRIPT_TAG]
-            if meta.get("error"):
+            anchors_text = ""
+            if block_type == "conv.working.summary":
+                tags.extend(["chat:summary", "kind:working.summary"])
+                scope = str(meta.get("summary_scope") or "").strip()
+                if scope:
+                    tags.append(f"summary_scope:{scope}")
+                try:
+                    from kdcube_ai_app.apps.chat.sdk.context.vector.anchors import (
+                        parse_retrieval_anchors,
+                    )
+
+                    anchors_text = parse_retrieval_anchors(text)
+                except Exception:
+                    anchors_text = ""
+            elif meta.get("error"):
                 tags.append("chat:error")
             rows.append({
                 "role": "assistant",
                 "text": text,
                 "ts": str(block.get("ts") or payload.get("end_ts") or payload.get("ts") or "").strip(),
-                "path": str(block.get("path") or f"conv:ar:{turn_id}.assistant.completion").strip(),
+                "path": str(
+                    block.get("path")
+                    or (
+                        f"conv:ws:{turn_id}.conv.working.summary.attempt.1"
+                        if block_type == "conv.working.summary"
+                        else f"conv:ar:{turn_id}.assistant.completion"
+                    )
+                ).strip(),
                 "tags": tags,
+                "anchors_text": anchors_text,
             })
 
         if not rows:
@@ -755,6 +778,7 @@ class ContextRAGClient:
                     user_type=CONVERSATION_TRANSCRIPT_INDEX_LABEL,
                     embedding=embedding,
                     message_id=message_id,
+                    anchors_text=str(row.get("anchors_text") or ""),
                 )
                 persisted += 1
             except Exception:

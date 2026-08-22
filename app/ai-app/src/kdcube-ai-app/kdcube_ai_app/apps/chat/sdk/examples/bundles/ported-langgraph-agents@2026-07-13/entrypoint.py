@@ -232,7 +232,10 @@ def _solution_scope(ep: "LGPortedAgentsBundle", agent_id: str) -> StorageScope:
 
 
 async def _build_solution_graph(
-    ep: "LGPortedAgentsBundle", *, disabled: Optional[Mapping[str, Any]] = None
+    ep: "LGPortedAgentsBundle",
+    *,
+    disabled: Optional[Mapping[str, Any]] = None,
+    state: Optional[Dict[str, Any]] = None,
 ) -> Any:
     """Build lg-solution's research graph. (`disabled` is accepted for a
     uniform build signature but ignored — the linear research graph has no pickable
@@ -241,6 +244,7 @@ async def _build_solution_graph(
     by columns) and its checkpointer onto the same shared Postgres via a psycopg
     DSN, hand the graph an accounted + economics-guarded model/embedding edge, open
     its checkpointer, seed the KB."""
+    del disabled, state
     own = get_solution_config()
     scope = _solution_scope(ep, "lg-solution")
     schema = schema_for_scope(scope.tenant, scope.project)
@@ -286,7 +290,10 @@ def _current_turn_user_sub(ep: "LGPortedAgentsBundle") -> str:
 
 
 async def _build_prebuilt_graph(
-    ep: "LGPortedAgentsBundle", *, disabled: Optional[Mapping[str, Any]] = None
+    ep: "LGPortedAgentsBundle",
+    *,
+    disabled: Optional[Mapping[str, Any]] = None,
+    state: Optional[Dict[str, Any]] = None,
 ) -> Any:
     """Build lg-react's create_agent graph FOR THIS TURN (never cached).
 
@@ -362,6 +369,12 @@ async def _build_prebuilt_graph(
 
         return {"web_search": _search, "web_fetch": _fetch}
 
+    extra_factories = _web_tool_factories()
+    if isinstance(state, dict):
+        from .platform.turn_context import build_record_turn_summary_tool
+
+        extra_factories["record_turn_summary"] = lambda: build_record_turn_summary_tool(state)
+
     # Plain + code-exec tools narrowed to (admin-declared − user-disabled) this turn.
     tools = select_bound_tools(
         connections,
@@ -371,7 +384,7 @@ async def _build_prebuilt_graph(
         pull_files_factory=_pull_files_factory,
         read_file_factory=_read_file_factory,
         checkout_factory=_checkout_factory,
-        extra_factories=_web_tool_factories(),
+        extra_factories=extra_factories,
     )
     # MCP tools declared as `kind: mcp` connections (optional; degrades to none).
     # A `delegated: true` connection is served under the AGENT's delegated-client
@@ -497,12 +510,14 @@ def _prebuilt_system_prompt(
        the short hand note when only ns tools are bound)
     7. conversation-recovery block (when a `conv` namespace is connected —
        history beyond the visible window is searchable, not lost)
-    8. admin customization envelope (descriptor prop) — ALWAYS LAST, the same
+    8. shared turn-context guide (when `record_turn_summary` is bound)
+    9. admin customization envelope (descriptor prop) — ALWAYS LAST, the same
        SDK envelope the ReAct harness uses."""
     from kdcube_ai_app.apps.chat.sdk.skills.instructions.workspace_agent_instructions import (
         conversation_recovery_guide,
         exec_capability_guide,
         prose_only_output_guide,
+        turn_summary_contribution_guide,
         workspace_agent_conduct_guards,
     )
     from .solution.lg_prebuilt.agent import SYSTEM_PROMPT
@@ -557,6 +572,9 @@ def _prebuilt_system_prompt(
             namespace=conv_ns,
             pull_tool=pull_tool if has_exec else "",
         ))
+
+    if "record_turn_summary" in names:
+        parts.append(turn_summary_contribution_guide())
 
     prompt = "\n\n".join(part for part in parts if part)
     if str(additional_instructions or "").strip():
@@ -947,7 +965,11 @@ class LGPortedAgentsBundle(BaseEntrypointWithEconomics):
     # ── graph build (per turn) ────────────────────────────────────────────────
 
     async def _build_graph(
-        self, agent_id: str, *, disabled: Optional[Mapping[str, Any]] = None
+        self,
+        agent_id: str,
+        *,
+        disabled: Optional[Mapping[str, Any]] = None,
+        state: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """Build the agent's graph FOR THIS TURN — never cached in-process.
 
@@ -961,7 +983,7 @@ class LGPortedAgentsBundle(BaseEntrypointWithEconomics):
         saved capability opt-outs (tools, MCP servers, namespaces) — the per-turn build
         is exactly what lets them narrow what the agent gets (lg-react); an agent with
         nothing pickable ignores it."""
-        return await AGENTS[agent_id].build_graph(self, disabled=disabled)
+        return await AGENTS[agent_id].build_graph(self, disabled=disabled, state=state)
 
     # ── the turn (the dispatcher) ─────────────────────────────────────────────
 
@@ -986,7 +1008,7 @@ class LGPortedAgentsBundle(BaseEntrypointWithEconomics):
         disabled_tools = disabled_category(disabled, DISABLED_TOOLS)
 
         # Built fresh every turn — no in-process graph cache (scaled serving).
-        graph = await self._build_graph(agent_id, disabled=disabled)
+        graph = await self._build_graph(agent_id, disabled=disabled, state=state)
 
         # (pending-lane fold) dispatch names one wake occurrence. Read the whole
         # still-pending lane once so this turn also sees attachment/context

@@ -24,6 +24,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.workspace_broker impo
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.workspace_tools import (
     WORKSPACE_MCP_SERVER_ID,
+    WORKSPACE_TURN_SUMMARY_TOOL,
 )
 
 
@@ -73,6 +74,7 @@ def test_reusable_binding_owns_broker_server_config_and_publication(tmp_path):
             return WorkspacePublicationDecision.approved()
 
         hosting = _Hosting()
+        turn_state = {"turn_id": "turn_9"}
         binding = await bind_claude_code_turn_workspace(
             workspace=tmp_path,
             tenant="tenant",
@@ -83,6 +85,8 @@ def test_reusable_binding_owns_broker_server_config_and_publication(tmp_path):
             source_resolver=resolve,
             hosting_service=hosting,
             publication_policy=WorkspacePublicationPolicy(approver=approve),
+            state=turn_state,
+            turn_summary_enabled=True,
             user_type="registered",
             request_id="request-9",
         )
@@ -104,6 +108,8 @@ def test_reusable_binding_owns_broker_server_config_and_publication(tmp_path):
         assert "KDCube turn workspace" in config.instructions_markdown
         assert ".kdcube/turn-workspace/turn_9" in config.instructions_markdown
         assert config.instructions_markdown.count("kdcube-agent-harness-workspace") == 1
+        assert "record_turn_summary" in config.instructions_markdown
+        assert WORKSPACE_TURN_SUMMARY_TOOL not in config.denied_tools
 
         resolved = await request_workspace_broker(
             socket_path=str(socket_path),
@@ -126,6 +132,23 @@ def test_reusable_binding_owns_broker_server_config_and_publication(tmp_path):
         assert approvals[0].request_id == "request-9"
         assert approvals[0].files[0].relative_path == "result.md"
 
+        contribution = await request_workspace_broker(
+            socket_path=str(socket_path),
+            token=binding.broker.token,
+            operation="record_turn_summary",
+            payload={
+                "summary": "Prepared the reviewed publication.",
+                "refs": [published[0]["logical_path"]],
+                "phrases": ["reviewed publication"],
+                "entities": ["result.md"],
+            },
+        )
+        assert contribution["status"] == "staged"
+        assert turn_state["_kdcube_turn_summary_contribution"]["contributor"] == "claude_code"
+        assert turn_state["_kdcube_turn_summary_contribution"]["refs"] == [
+            published[0]["logical_path"]
+        ]
+
         await binding.close()
         assert binding.closed
         assert not socket_path.exists()
@@ -146,7 +169,9 @@ def test_reusable_binding_denies_publish_tool_when_hosting_is_unavailable(tmp_pa
         )
         config = binding.apply_workspace_config(ClaudeCodeWorkspaceConfig())
         assert "mcp__turn_workspace__publish" in config.denied_tools
+        assert WORKSPACE_TURN_SUMMARY_TOOL in config.denied_tools
         assert "publication is unavailable" in config.instructions_markdown
+        assert "record_turn_summary" not in config.instructions_markdown
         await binding.close()
 
     asyncio.run(scenario())

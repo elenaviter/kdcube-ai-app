@@ -19,6 +19,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/timeline/turn-view-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/timeline/conversation-artifacts-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/timeline/provider-projection-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/timeline/turn-summary-contributions-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/timeline-README.md
 ---
 # Agent Harness Timeline
@@ -42,7 +43,7 @@ accepted events and agent output
        followups, thinking
 ```
 
-ReAct builds a rich live timeline around its rounds. Other agent adapters may
+The ReAct Agent builds a rich live timeline around its rounds. Other agent adapters may
 produce a smaller block set. Once blocks are accepted, persistence and client
 reconstruction use the same harness contracts.
 
@@ -55,6 +56,7 @@ reconstruction use the same harness contracts.
 | `turn_log.py` | Per-turn ordered block log, feedback/index summary, and reconstruction input. |
 | `turn_view.py` | Framework-neutral projection of persisted blocks into user prompts, assistant completions, attachments, files, citations, followups, clarifications, thinking, and timeline text. |
 | `projection.py` | Safe application of namespace-provider rendering patches to provider-owned blocks only. |
+| `contributions.py` | Validation, replace semantics, and TurnLog block shape for optional hosted-agent semantic turn summaries. |
 
 ## Persisted Timeline Payload
 
@@ -89,16 +91,16 @@ Shared:
 - client turn-view reconstruction;
 - namespace ownership checks for provider render patches.
 
-ReAct-specific:
+ReAct Agent-specific:
 
 - decision rounds and output-channel protocol;
 - ANNOUNCE, plan, compaction, cache points, and memory beacons;
 - live steer/followup folding policy;
-- ReAct tool-call block production and model-facing render layout.
+- ReAct Agent tool-call block production and model-facing render layout.
 
 A run-to-completion adapter may consume external events only at turn start and
 still persist the resulting blocks through this timeline contract. That does
-not imply ReAct's live mid-turn folding behavior.
+not imply the ReAct Agent's live mid-turn folding behavior.
 
 ## Canonical Reading
 
@@ -106,4 +108,5 @@ not imply ReAct's live mid-turn folding behavior.
 - [Turn View](turn-view-README.md)
 - [Conversation Artifacts](conversation-artifacts-README.md)
 - [Provider Projection](provider-projection-README.md)
-- [ReAct Timeline Adapter](../../../sdk/agents/react/timeline-README.md)
+- [Hosted Agent Turn Summary Contributions](turn-summary-contributions-README.md)
+- [ReAct Agent Timeline Adapter](../../../sdk/agents/react/timeline-README.md)

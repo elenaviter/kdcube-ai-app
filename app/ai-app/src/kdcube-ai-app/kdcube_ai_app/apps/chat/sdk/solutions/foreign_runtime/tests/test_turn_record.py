@@ -26,6 +26,9 @@ from kdcube_ai_app.apps.chat.sdk.solutions.conversation.record import (
     reset_turn_log_recorded,
     turn_log_was_recorded,
 )
+from kdcube_ai_app.apps.chat.sdk.runtime.harness.timeline.contributions import (
+    stage_turn_summary,
+)
 
 
 class _RecordingEntrypoint:
@@ -171,6 +174,13 @@ def test_record_foreign_runtime_turn_log_records_ordered_user_and_assistant_bloc
             }
         ],
     }
+    stage_turn_summary(
+        state,
+        summary="The cropped image was delivered for reuse.",
+        refs=["conv:fi:t1.assistant/test.png"],
+        phrases=["cropped image"],
+        contributor="langgraph",
+    )
 
     wrote = asyncio.run(record_foreign_runtime_turn_log(
         ep,
@@ -196,6 +206,7 @@ def test_record_foreign_runtime_turn_log_records_ordered_user_and_assistant_bloc
         "user.prompt",
         "user.attachment.meta",
         "react.tool.result",
+        "conv.working.summary",
         "assistant.completion",
     ]
     assert blocks[0]["text"] == "send this image"
@@ -205,10 +216,66 @@ def test_record_foreign_runtime_turn_log_records_ordered_user_and_assistant_bloc
     assert blocks[1]["meta"]["batch_id"] == "batch-2"
     assert blocks[2]["meta"]["filename"] == "image.png"
     assert json.loads(blocks[3]["text"])["filename"] == "test.png"
-    assert blocks[4]["text"] == "uploaded"
+    assert blocks[4]["meta"]["contributor"] == "langgraph"
+    assert "The cropped image was delivered for reuse." in blocks[4]["text"]
+    assert blocks[5]["text"] == "uploaded"
     assert saved["recording_kind"] == "minimal"
     assert saved["index_transcript"] is True
     assert client.timeline_artifacts
+
+
+def test_base_entrypoint_fallback_consumes_a_staged_turn_summary() -> None:
+    """Press and other direct execute_core apps use the generic fallback door."""
+    from kdcube_ai_app.apps.chat.sdk.solutions.chatbot.entrypoint import BaseEntrypoint
+
+    class _Logger:
+        def log(self, *_args, **_kwargs) -> None:
+            return None
+
+    class _FallbackEntrypoint(BaseEntrypoint):
+        def __init__(self, client: _TurnLogClient) -> None:
+            self.client = client
+            self.pg_pool = object()
+            self.logger = _Logger()
+
+        async def get_ctx_client(self):
+            return self.client
+
+    reset_turn_log_recorded()
+    client = _TurnLogClient()
+    entrypoint = _FallbackEntrypoint(client)
+    state = {
+        "turn_id": "turn-press",
+        "conversation_id": "conversation-press",
+        "external_events": [],
+    }
+    stage_turn_summary(
+        state,
+        summary="Publication review decisions were recorded.",
+        entities=["publication-review"],
+        contributor="claude_code",
+    )
+
+    asyncio.run(entrypoint._record_turn_log_fallback(
+        result={"final_answer": "The review is complete."},
+        state=state,
+        tenant="tenant",
+        project="project",
+        user_id="user",
+        user_type="registered",
+        thread_id="conversation-press",
+        turn_id="turn-press",
+        bundle_id="press@2026-08-16",
+        agent_id="main",
+    ))
+
+    assert len(client.turn_logs) == 1
+    blocks = client.turn_logs[0]["payload"]["blocks"]
+    assert [block["type"] for block in blocks] == [
+        "conv.working.summary",
+        "assistant.completion",
+    ]
+    assert blocks[0]["meta"]["contributor"] == "claude_code"
 
 
 def test_record_foreign_runtime_turn_log_is_inert_after_a_rich_log_was_recorded() -> None:

@@ -15,6 +15,9 @@ from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace.context_resolver impo
 from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace.materialization import (
     WorkspaceSourceResolver,
 )
+from kdcube_ai_app.apps.chat.sdk.runtime.harness.timeline.contributions import (
+    stage_turn_summary,
+)
 from kdcube_ai_app.apps.chat.sdk.solutions.claude_code.types import (
     ClaudeCodeWorkspaceConfig,
 )
@@ -28,6 +31,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.workspace_broker impo
 from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.workspace_tools import (
     WORKSPACE_MCP_SERVER_ID,
     WORKSPACE_PUBLISH_TOOL,
+    WORKSPACE_TURN_SUMMARY_TOOL,
     build_workspace_hosting_service,
     publish_workspace_files,
     workspace_mcp_server,
@@ -50,7 +54,9 @@ def _deduplicate(values: tuple[str, ...] | list[str]) -> tuple[str, ...]:
     return tuple(result)
 
 
-def _workspace_instruction_block(*, publication_available: bool, turn_id: str) -> str:
+def _workspace_instruction_block(
+    *, publication_available: bool, turn_summary_available: bool, turn_id: str
+) -> str:
     current_root = f".kdcube/turn-workspace/{turn_id}"
     publication = (
         "- Use `publish(paths=[...])` only for selected current-turn file outputs. "
@@ -60,34 +66,40 @@ def _workspace_instruction_block(*, publication_available: bool, turn_id: str) -
         if publication_available
         else "- Conversation-file publication is unavailable in this binding. Keep outputs local and say so."
     )
-    return "\n".join(
-        [
-            _WORKSPACE_INSTRUCTION_MARKER,
-            "## KDCube turn workspace",
-            "",
-            "Events and objects are separate. A `conv:ev:` value identifies an event record; "
-            "use its separate `object_ref` when bytes are available.",
-            "",
-            f"The active physical turn root is `{current_root}`. Native Read, Grep, Edit, Write, "
-            "and Bash use paths below that root. Workspace tool arguments use stable `files/...` "
-            "or `git/projects/...` destinations and return the physical workspace-relative path.",
-            "",
-            "- Use `pull(refs=[...])` for a read-only local copy. Open the returned "
-            "workspace-relative path with Read, Grep, or Bash.",
-            "- Use `checkout(items=[{from,to,strategy}])` to create or reset editable "
-            "state. `to` is below `files/...` or `git/projects/...`; `replace` resets "
-            "a file or directory and `overlay` merges a directory.",
-            "- Edit checked-out paths with ordinary Claude Code file tools. Repeating "
-            "checkout from the durable source is reset.",
-            publication,
-        ]
-    )
+    lines = [
+        _WORKSPACE_INSTRUCTION_MARKER,
+        "## KDCube turn workspace",
+        "",
+        "Events and objects are separate. A `conv:ev:` value identifies an event record; "
+        "use its separate `object_ref` when bytes are available.",
+        "",
+        f"The active physical turn root is `{current_root}`. Native Read, Grep, Edit, Write, "
+        "and Bash use paths below that root. Workspace tool arguments use stable `files/...` "
+        "or `git/projects/...` destinations and return the physical workspace-relative path.",
+        "",
+        "- Use `pull(refs=[...])` for a read-only local copy. Open the returned "
+        "workspace-relative path with Read, Grep, or Bash.",
+        "- Use `checkout(items=[{from,to,strategy}])` to create or reset editable "
+        "state. `to` is below `files/...` or `git/projects/...`; `replace` resets "
+        "a file or directory and `overlay` merges a directory.",
+        "- Edit checked-out paths with ordinary Claude Code file tools. Repeating "
+        "checkout from the durable source is reset.",
+        publication,
+    ]
+    if turn_summary_available:
+        from kdcube_ai_app.apps.chat.sdk.skills.instructions.workspace_agent_instructions import (
+            turn_summary_contribution_guide,
+        )
+
+        lines.extend(["", turn_summary_contribution_guide()])
+    return "\n".join(lines)
 
 
 def _append_workspace_instructions(
     current: Optional[str],
     *,
     publication_available: bool,
+    turn_summary_available: bool,
     turn_id: str,
 ) -> str:
     base = str(current or "").rstrip()
@@ -95,6 +107,7 @@ def _append_workspace_instructions(
         return base + "\n"
     block = _workspace_instruction_block(
         publication_available=publication_available,
+        turn_summary_available=turn_summary_available,
         turn_id=turn_id,
     )
     return f"{base}\n\n{block}\n" if base else f"{block}\n"
@@ -109,6 +122,7 @@ class ClaudeCodeTurnWorkspaceBinding:
     broker: WorkspaceBroker
     server_spec: Mapping[str, Any]
     publication_available: bool
+    turn_summary_available: bool
     _owner_task: Optional[asyncio.Task[Any]] = field(default=None, repr=False)
     _owner_callback: Any = field(default=None, repr=False)
 
@@ -149,6 +163,8 @@ class ClaudeCodeTurnWorkspaceBinding:
         denied_values = list(config.denied_tools)
         if not self.publication_available:
             denied_values.append(WORKSPACE_PUBLISH_TOOL)
+        if not self.turn_summary_available:
+            denied_values.append(WORKSPACE_TURN_SUMMARY_TOOL)
         denied = _deduplicate(denied_values)
         return replace(
             config,
@@ -159,6 +175,7 @@ class ClaudeCodeTurnWorkspaceBinding:
             instructions_markdown=_append_workspace_instructions(
                 config.instructions_markdown,
                 publication_available=self.publication_available,
+                turn_summary_available=self.turn_summary_available,
                 turn_id=self.turn_id,
             ),
         )
@@ -195,6 +212,7 @@ async def bind_claude_code_turn_workspace(
     source_resolver: Optional[WorkspaceSourceResolver] = None,
     hosting_service: Any = _AUTO_HOSTING_SERVICE,
     publication_policy: Optional[WorkspacePublicationPolicy] = None,
+    turn_summary_enabled: bool = False,
     user_type: str = "",
     request_id: str = "",
     storage_path: str = "",
@@ -203,7 +221,7 @@ async def bind_claude_code_turn_workspace(
     tool_id: str = "workspace.pull",
     tool_call_id: str = "claude-code-turn-workspace",
 ) -> ClaudeCodeTurnWorkspaceBinding:
-    """Bind the shared pull/checkout/publish workspace to one Claude turn.
+    """Bind shared workspace and optional turn-context tools to one Claude turn.
 
     Identity, resolvers, hosting, and product approval stay in the trusted
     parent. The child receives only bound non-secret identity, an authenticated
@@ -274,9 +292,28 @@ async def bind_claude_code_turn_workspace(
             policy=publication_policy,
         )
 
+    turn_summary_available = bool(turn_summary_enabled and isinstance(state, dict))
+
+    async def _record_turn_summary(
+        *,
+        summary: str,
+        refs: Any = None,
+        phrases: Any = None,
+        entities: Any = None,
+    ) -> Dict[str, Any]:
+        return stage_turn_summary(
+            turn_state,
+            summary=summary,
+            refs=refs,
+            phrases=phrases,
+            entities=entities,
+            contributor="claude_code",
+        )
+
     broker = await start_workspace_broker(
         source_resolver=resolver,
         publisher=_publish if host is not None else None,
+        summary_contributor=_record_turn_summary if turn_summary_available else None,
     )
     server_spec = workspace_mcp_server(
         workspace=root,
@@ -297,6 +334,7 @@ async def bind_claude_code_turn_workspace(
         broker=broker,
         server_spec=server_spec,
         publication_available=host is not None,
+        turn_summary_available=turn_summary_available,
         _owner_task=owner_task,
     )
     if owner_task is not None:

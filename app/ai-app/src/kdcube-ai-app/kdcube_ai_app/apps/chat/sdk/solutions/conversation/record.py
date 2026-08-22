@@ -580,6 +580,7 @@ def build_minimal_turn_log_payload(
     user_messages: Optional[Sequence[Dict[str, Any]]] = None,
     batch_id: str = "",
     assistant_files: Optional[Sequence[Dict[str, Any]]] = None,
+    turn_summary_contribution: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """The smallest valid turn-log payload. Records the assistant's final answer, and
     now also — so a run-to-completion turn reloads like React — the USER prompt, any
@@ -626,7 +627,21 @@ def build_minimal_turn_log_payload(
         file_block = _assistant_file_block(row, turn_id=turn_id, ts=now, index=i)
         if file_block:
             blocks.append(file_block)
-    # 5) the final answer
+    # 5) an optional framework-neutral semantic contribution. The model-facing
+    # tool only staged it in trusted turn state; reaching this successful-turn
+    # writer is what makes it durable and searchable.
+    from kdcube_ai_app.apps.chat.sdk.runtime.harness.timeline.contributions import (
+        turn_summary_block,
+    )
+
+    summary_block = turn_summary_block(
+        turn_summary_contribution,
+        turn_id=turn_id,
+        ts=now,
+    )
+    if summary_block:
+        blocks.append(summary_block)
+    # 6) the final answer
     blocks.append({
         "type": ASSISTANT_COMPLETION_BLOCK_TYPE,
         "turn": turn_id,
@@ -1090,6 +1105,7 @@ async def record_minimal_turn_log_if_absent(
     user_messages: Optional[Sequence[Dict[str, Any]]] = None,
     batch_id: str = "",
     assistant_files: Optional[Sequence[Dict[str, Any]]] = None,
+    turn_summary_contribution: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """Record the minimal turn log when none was written this turn.
 
@@ -1125,6 +1141,7 @@ async def record_minimal_turn_log_if_absent(
         user_messages=user_messages,
         batch_id=batch_id,
         assistant_files=assistant_files,
+        turn_summary_contribution=turn_summary_contribution,
     )
     prior_payload = await _latest_turn_log_payload(
         conversation_client=conversation_client,

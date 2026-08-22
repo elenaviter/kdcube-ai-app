@@ -6,10 +6,11 @@ Claude Code starts local MCP servers as subprocesses. Those children can copy
 ordinary ``conv:fi:`` bytes, but they do not own the active ContextBrowser,
 namespace rehosters, conversation hosting service, or request authority. This
 short-lived Unix-socket broker keeps those objects in the parent process while
-letting the child request two bounded operations:
+letting the child request bounded operations:
 
 * materialize one object locator through the parent's authorized resolver;
 * publish selected current-turn ``files/...`` paths through the parent's host.
+* stage one semantic turn summary for successful-turn persistence.
 
 The child supplies refs and paths only. Identity and credentials never cross the
 socket. A random bearer and a mode-0600 socket bind requests to this one turn.
@@ -37,6 +38,7 @@ from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace.materialization impor
 
 
 WorkspacePublisher = Callable[..., Awaitable[Sequence[Mapping[str, Any]] | Mapping[str, Any]]]
+WorkspaceSummaryContributor = Callable[..., Awaitable[Mapping[str, Any]] | Mapping[str, Any]]
 _MAX_MESSAGE_BYTES = 1024 * 1024
 _REQUEST_TIMEOUT_SECONDS = 120.0
 
@@ -98,6 +100,7 @@ async def start_workspace_broker(
     *,
     source_resolver: Optional[WorkspaceSourceResolver] = None,
     publisher: Optional[WorkspacePublisher] = None,
+    summary_contributor: Optional[WorkspaceSummaryContributor] = None,
 ) -> WorkspaceBroker:
     """Start one turn-scoped broker and return its child binding."""
     temp_root = Path(tempfile.mkdtemp(prefix="kdcube-ws-broker-"))
@@ -153,6 +156,21 @@ async def start_workspace_broker(
                 if inspect.isawaitable(published):
                     published = await published
                 await _reply(writer, {"ok": True, "published": published or []})
+            elif operation == "record_turn_summary":
+                if summary_contributor is None:
+                    raise WorkspaceBrokerError(
+                        "turn_summary_unavailable",
+                        "this hosted runtime has no turn-summary contribution binding",
+                    )
+                contribution = summary_contributor(
+                    summary=str(request.get("summary") or ""),
+                    refs=request.get("refs"),
+                    phrases=request.get("phrases"),
+                    entities=request.get("entities"),
+                )
+                if inspect.isawaitable(contribution):
+                    contribution = await contribution
+                await _reply(writer, {"ok": True, "contribution": contribution or {}})
             else:
                 raise WorkspaceBrokerError(
                     "unsupported_operation",
@@ -217,6 +235,8 @@ async def request_workspace_broker(
             )
         if operation == "materialize":
             return response.get("source")
+        if operation == "record_turn_summary":
+            return response.get("contribution")
         return response.get("published")
     finally:
         writer.close()
@@ -249,6 +269,7 @@ __all__ = [
     "WorkspaceBroker",
     "WorkspaceBrokerError",
     "WorkspacePublisher",
+    "WorkspaceSummaryContributor",
     "broker_source_resolver",
     "request_workspace_broker",
     "start_workspace_broker",

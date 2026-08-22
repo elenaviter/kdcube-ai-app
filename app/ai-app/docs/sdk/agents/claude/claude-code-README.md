@@ -1,10 +1,10 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/claude/claude-code-README.md
 title: "Claude Code Agent"
-summary: "Native Python SDK runner for direct app-owned and harness-bound Claude Code integrations, including deterministic continuity, streaming, accounting, workspace tools, and the subprocess trust boundary."
+summary: "Native Python SDK runner for direct app-owned and harness-bound Claude Code integrations, including deterministic continuity, streaming, accounting, configurable workspace and turn-summary tools, and the subprocess trust boundary."
 tags: ["sdk", "agents", "claude", "claude-code", "streaming", "communicator", "workspace", "security"]
-updated_at: 2026-08-21
-keywords: ["ClaudeCodeAgent", "run_followup", "run_steer", "allowedTools", "session-id", "resume", "add-dir", "permission-mode", "stream-json", "ChatCommunicator", "timeout_seconds", "structured_output_prefixes", "mcp-config", "strict-mcp-config", "workspace trust", "turn_workspace", "activity rows", "per-conversation workspace", "prompt cache", "direct bundle-owned Claude execution", "harness-bound conversational Claude execution", "Claude Code trust boundary", "ambient subprocess authority"]
+updated_at: 2026-08-22
+keywords: ["ClaudeCodeAgent", "run_followup", "run_steer", "allowedTools", "session-id", "resume", "add-dir", "permission-mode", "stream-json", "ChatCommunicator", "timeout_seconds", "structured_output_prefixes", "mcp-config", "strict-mcp-config", "workspace trust", "turn_workspace", "record_turn_summary", "activity rows", "per-conversation workspace", "prompt cache", "direct bundle-owned Claude execution", "harness-bound conversational Claude execution", "Claude Code trust boundary", "ambient subprocess authority"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/app-with-resident-coding-agent-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-agent-integration-README.md
@@ -13,6 +13,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/tools/tool-subsystem-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/claude/claude-code-accounting-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/claude/claude-code-workspace-bootstrap-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/timeline/turn-summary-contributions-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
 ---
 # Claude Code Agent
@@ -69,7 +70,7 @@ each lane; one app may use both in different lanes.
 | Profile | Runtime shape | State and output owner | Reference |
 | --- | --- | --- | --- |
 | Direct app-owned execution | job, cron, or API -> app workspace -> Claude CLI -> app validator | the app owns inputs, session lineage, validation, and app-domain persistence; no conversation workspace is required | News generation pipeline |
-| Harness-bound conversational execution | chat turn -> app wrapper -> Claude CLI + local `turn_workspace` MCP | the Agent Harness Workspace resolves refs, checks out editable copies, and explicitly publishes selected files into the conversation | Press assistant |
+| Harness-bound conversational execution | chat turn -> app wrapper -> Claude CLI + local `turn_workspace` MCP | the Agent Harness Workspace resolves refs, checks out editable copies, explicitly publishes selected files, and may stage a searchable turn summary | Press assistant |
 
 The second profile is additive. `bind_claude_code_turn_workspace(...)` does not
 replace Claude's private session store or require every Claude Code integration
@@ -450,6 +451,7 @@ turn_workspace = await bind_claude_code_turn_workspace(
     entrypoint=self,
     state=state,
     publication_policy=product_policy,
+    turn_summary_enabled=summary_tool_survives_selection,
 )
 workspace_config = turn_workspace.apply_workspace_config(
     ClaudeCodeWorkspaceConfig(
@@ -464,12 +466,19 @@ finally:
 ```
 
 The binding exposes the common `pull`, `checkout`, `publish`, and `pulled`
-operations. `pull` lazily materializes a durable `conv:fi:` file locator or an
+operations. It also exposes `record_turn_summary` when that ordinary tool
+survives the app's configured inventory and the user's per-conversation
+narrowing. `pull` lazily materializes a durable `conv:fi:` file locator or an
 authorized owner `object_ref` into a collision-safe read-only path. `checkout`
 creates or resets an editable copy below current-turn `files/...` or
 `git/projects/...`. `publish` admits only selected current-turn files through
 the shared size/type ceiling and any narrower product approval policy, then the
 trusted parent hosts them and returns durable `conv:fi:` refs.
+
+`record_turn_summary` stages one replaceable summary plus optional durable refs
+and retrieval anchors. Successful turn finalization persists the last draft in
+KDCube's shared searchable conversation record. Claude's own session and any
+private compaction state remain private and authoritative for continuation.
 
 An `event_ref` identifies the event record and is not itself a byte locator. If
 an event carries an object, the adapter preserves its `object_ref` in the

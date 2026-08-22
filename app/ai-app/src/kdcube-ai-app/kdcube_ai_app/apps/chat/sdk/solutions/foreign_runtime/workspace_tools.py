@@ -45,6 +45,7 @@ __all__ = [
     "WORKSPACE_PULL_TOOL",
     "WORKSPACE_CHECKOUT_TOOL",
     "WORKSPACE_PUBLISH_TOOL",
+    "WORKSPACE_TURN_SUMMARY_TOOL",
     "WorkspacePublishError",
     "build_workspace_hosting_service",
     "workspace_mcp_server",
@@ -62,6 +63,7 @@ WORKSPACE_MCP_SERVER_ID = "turn_workspace"
 WORKSPACE_PULL_TOOL = f"mcp__{WORKSPACE_MCP_SERVER_ID}__pull"
 WORKSPACE_CHECKOUT_TOOL = f"mcp__{WORKSPACE_MCP_SERVER_ID}__checkout"
 WORKSPACE_PUBLISH_TOOL = f"mcp__{WORKSPACE_MCP_SERVER_ID}__publish"
+WORKSPACE_TURN_SUMMARY_TOOL = f"mcp__{WORKSPACE_MCP_SERVER_ID}__record_turn_summary"
 
 #: The adapter-visible mount point differs by harness, but everything below it
 #: follows the canonical turn workspace layout.
