@@ -4,11 +4,12 @@ title: "How To Write A Bundle"
 summary: "Authoring guide for bundle creators and integrators: bundle shape, lifecycle, decorators, runtime surfaces, bundle events, configuration and storage decisions, and how to turn a product idea or existing app into a deployable bundle."
 tags: ["sdk", "bundle", "authoring", "workflow", "widget", "api", "events", "testing"]
 keywords: ["bundle authoring guide", "bundle creator path", "bundle integrator path", "end to end bundle design", "decorator selection", "runtime surface selection", "widget api mcp cron on_job choices", "bundle events", "event sources", "artifact rehosters", "shared sdk widget components", "configuration and storage decisions", "bundle lifecycle design", "reference authoring patterns"]
-updated_at: 2026-07-16
+updated_at: 2026-08-25
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/what-i-should-know-about-app-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/how-to-integrate-with-kdcube-apps-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-navigate-kdcube-docs-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-journal-solution-work-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-test-bundle-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-assemble-bundle-with-sdk-building-blocks-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-avoid-common-bundle-integration-failures-README.md
@@ -515,7 +516,7 @@ Add implementation folders only when their ownership is real:
 | `docs/README.md` | Architecture and design index: owners, process/runtime boundaries, dependency direction, and links to deeper design/integration/operations docs. |
 | `docs/storage/README.md` | Ownership matrix for descriptors, secrets, Postgres, Redis, object storage, app storage, caches, remote providers, generated outputs, retention, backup, and cleanup. Explicitly distinguish owned, read-through, and ephemeral state. |
 | `docs/journal/README.md` | Human-readable index of dated change entries. |
-| `docs/journal/journal.md` | Stable chronological index. Update it in the same change as meaningful app work. |
+| `docs/journal/journal.md` | Stable chronological index. Update it in the same change as meaningful app work. When a change spans several apps or repositories, the solution-level journal contract in [how-to-journal-solution-work-README.md](how-to-journal-solution-work-README.md) applies on top of this app journal. |
 | `tests/` | App-owned unit and contract tests. At minimum cover entrypoint/manifest discovery, configured surface wiring, auth-sensitive boundaries, and the primary product path. |
 
 ### What `AGENTS.md` must contain

@@ -14,7 +14,7 @@ keywords:
     "which doc to read next",
     "bundle docs map",
   ]
-updated_at: 2026-07-10
+updated_at: 2026-08-25
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/how-to-integrate-with-kdcube-apps-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-index-README.md
@@ -23,6 +23,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-avoid-common-bundle-integration-failures-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-understand-conversation-events-and-react-turns-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-write-bundle-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-journal-solution-work-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-subsystem-integration-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-properties-and-secrets-lifecycle-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/bundle-runtime-configuration-and-secrets-README.md
@@ -141,6 +142,7 @@ Conditional additions:
 | Chat turns, semantic search, task execution, or background jobs that spend money/quota | [../bundle-economics-integration-README.md](../bundle-economics-integration-README.md) |
 | Release tag, descriptor ref, release validation | [how-to-release-bundle-content-README.md](how-to-release-bundle-content-README.md) |
 | Agent should configure and run local KDCube | [how-to-bootstrap-local-bundle-runtime-as-coding-agent-README.md](how-to-bootstrap-local-bundle-runtime-as-coding-agent-README.md) |
+| Maintenance work spans more than one app or repository (journals, reciprocal links, central solution memory) | [how-to-journal-solution-work-README.md](how-to-journal-solution-work-README.md) |
 
 ## Question-To-Doc Map
 
@@ -161,6 +163,7 @@ Conditional additions:
 | Where do platform settings vs bundle props vs user state belong? | [../../../configuration/bundle-runtime-configuration-and-secrets-README.md](../../../configuration/bundle-runtime-configuration-and-secrets-README.md) |
 | How do I run or reload a bundle locally? | [how-to-configure-and-run-bundle-README.md](how-to-configure-and-run-bundle-README.md) |
 | How do I test the bundle? | [how-to-test-bundle-README.md](how-to-test-bundle-README.md) |
+| Where do I journal a change that spans several apps or repositories? | [how-to-journal-solution-work-README.md](how-to-journal-solution-work-README.md) |
 | How do I expose APIs, widgets, MCP, cron, jobs, or Data Bus handlers? | [../bundle-platform-integration-README.md](../bundle-platform-integration-README.md) |
 | How do browser widgets communicate with bundle operations and streams? | [Client Transport Protocols](../../../service/comm/client-transport-protocols-README.md) |
 | How does a host app or server integrate with KDCube without necessarily using a widget? | [../../../how-to-integrate-with-kdcube-apps-README.md](../../../how-to-integrate-with-kdcube-apps-README.md) |

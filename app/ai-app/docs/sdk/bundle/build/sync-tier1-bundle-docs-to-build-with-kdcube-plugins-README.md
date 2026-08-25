@@ -4,7 +4,7 @@ title: "Tier 1 Bundle Pack For Build-With-KDCube Plugins"
 summary: "Short handoff note for Claude Code and Codex plugin engineers describing the Tier 1 bundle-doc pack, bundle events, the agent task facets it must support, and the minimal integration contract."
 tags: ["sdk", "bundle", "plugins", "claude-code", "codex", "handoff", "tier-1"]
 keywords: ["tier 1 bundle pack", "build with kdcube plugin", "claude code plugin", "codex plugin", "bundle docs pack", "bundle agent facets", "shared sdk widget source", "bundle events", "event sources", "artifact rehosters", "plugin doc links update"]
-updated_at: 2026-07-12
+updated_at: 2026-08-25
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/how-to-integrate-with-kdcube-apps-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-navigate-kdcube-docs-README.md
@@ -13,6 +13,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-avoid-common-bundle-integration-failures-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-understand-conversation-events-and-react-turns-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-write-bundle-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-journal-solution-work-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-subsystem-integration-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-properties-and-secrets-lifecycle-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/bundle-runtime-configuration-and-secrets-README.md
@@ -99,6 +100,14 @@ projection. This is the sharp architecture view for the event lane, wake
 queue, processor, bundle-load/on-message fence, ContextBrowser consumer,
 timeline, and stale-owner rollback path. Plugin prompts should route agents to
 this page before they inspect implementation code.
+
+Add [how-to-journal-solution-work-README.md](how-to-journal-solution-work-README.md)
+whenever maintenance work spans more than one app or repository. It owns the
+two-layer journal contract: the per-app `docs/journal/` plus one central
+solution journal in the operator's designated solution repository, reciprocal
+`## Related Journals` links between the indexes, pointer indexes for packages
+whose history lives centrally, and clock-true timestamps. Plugin prompts
+should route maintainer agents there instead of restating the journal rules.
 
 Add [../../../how-to-integrate-with-kdcube-apps-README.md](../../../how-to-integrate-with-kdcube-apps-README.md)
 whenever the task is about integrating a host product, website scene, server,
