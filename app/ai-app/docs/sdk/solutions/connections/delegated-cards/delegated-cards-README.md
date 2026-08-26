@@ -5,7 +5,7 @@ summary: "Canonical lifecycle of Connection Hub Delegated by KDCube cards: what 
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "delegated-access", "cards", "grants", "mcp", "named-services"]
 keywords: ["Delegated by KDCube", "AutomationAccessRecord", "resource_grants", "named_service_operations", "account_scope", "registry_access_id", "card authority", "descriptor drift", "grant lifecycle"]
-updated_at: 2026-08-11
+updated_at: 2026-08-26
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-connections/delegated-connections-README.md
@@ -91,12 +91,17 @@ delegated-cards/v1/
       revisions/card_revision_2026-08-11-15-04-19-881_00000002_b9d06ee7124a.json
       current.json
 
-Redis delegated-access:automation:<access_id>
+Redis delegated-access:card:<access_id>
   latest committed live projection, or a short-lived updating/revoked marker
 
-Redis delegated-access:automation-by-grantor:<subject_hash>
+Redis delegated-access:cards-by-grantor:<subject_hash>
   sorted set of access_id -> expires_at for the active-card list
 ```
+
+The older `delegated-access:automation:<access_id>` and
+`delegated-access:automation-by-grantor:<subject_hash>` records are
+compatibility mirrors for pre-migration readers. They are not the durable
+source or the current serving cache described in this section.
 
 Each immutable revision contains the complete authorization decision,
 `card_revision`, `catalog_version`, lifecycle state, timestamps, and non-secret
@@ -911,16 +916,28 @@ Those fields come from three request-time inputs:
 | Named-service namespace and inner operation | Parsed `NamedServiceRequest`, before provider invocation. |
 | Claim | The exact current resource/operation policy check that failed. |
 
-The managed REST/MCP guard checks resource, claims, and outer operation. The
-inner resource/namespace/operation check runs after request decoding and before
-provider selection, at each entrance a delegated call can take:
+The managed REST/MCP guard checks resource, claims, and outer operation. Every
+common named-service dispatcher then requires explicit admission after request
+decoding and before provider selection:
 
-| Entrance | Where the inner check runs |
+| Entrance | Admission construction and inner check |
 | --- | --- |
-| MCP door | `kdcube-services@1-0` named-services bridge, on the parsed `NamedServiceRequest`. |
-| Native agent turn | The per-agent gate, on the namespace and operation the tool call names. |
+| Managed MCP door | The guard retains a sanitized immutable snapshot of the exact live card and `ActiveCatalogCapabilities` already accepted for this singular request. The bridge reuses that snapshot at the common dispatcher for the decoded namespace and effective operation. |
+| Native hosted-agent tool | Each `_call` constructs delegated admission from trusted source bundle, agent, client, and user identity. Direct execution asks Connection Hub once for that invocation; a relayed execution carries the selector and resolves it once at the target. |
+| Data Bus relay target | The handler validates the typed selector against the restored actor, resolves the exact current card/catalog decision through Connection Hub, binds its account scope, and invokes the provider. |
+| Application-owned callers | The trusted call site constructs `NamedServiceAdmission.application(...)` and dispatches under application authority. |
 
-Neither infers namespace or inner operation by parsing a tool name.
+The inner check uses the decoded `NamedServiceRequest`; tool names remain outer
+surface routing. Admission is platform-owned dispatch state and stays separate
+from request context and provider payloads.
+
+For a bearer-authenticated delegated client, the request/session projection
+carries `identity_authority.delegated_card_binding` with the exact `access_id`,
+delegated client, grantor, delegate, and expiry metadata established by the
+managed guard. A relay selector must match that binding. Connection Hub then
+loads that exact card rather than selecting another card owned by the same
+user. The binding records authenticated identity; current grants are resolved
+again for each invocation.
 
 No historical catalog body is required on this request path. Exact membership
 in the card proves the capability belonged to its stored selection; absence
@@ -978,6 +995,9 @@ grant operation, not a pointer move to a historical revision.
 | Live provider requirement enrichment | `automation_access.AutomationAccessService._named_service_options` plus provider discovery `spec.metadata.connected_accounts` |
 | Pointer-backed live card resolution | `...delegated_credentials.live_grant` |
 | Managed request projection | `...delegated_credentials.oauth.surface_guard._live_grant_record` |
+| Generic named-service admission contract | `...solutions.named_services_providers.admission` |
+| Connection Hub admission resolvers and managed snapshot | `...solutions.connections.named_service_admission` |
+| Relayed selector validation and target resolution | `...solutions.named_services_providers.relay` |
 | Connection Hub operations and descriptor binding | `connection-hub@1-0/entrypoint.py` |
 | List/create/edit UI and account-requirement fusion | `connection-hub@1-0/ui/widgets/connections/src/features/delegatedAccess` |
 | Connected-account credential resolution | delegated-to-KDCube broker and provider adapters |

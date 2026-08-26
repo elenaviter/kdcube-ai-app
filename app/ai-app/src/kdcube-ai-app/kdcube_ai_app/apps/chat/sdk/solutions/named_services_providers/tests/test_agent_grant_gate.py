@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""The native named-service gate keeps three outcomes apart.
-
-Open when the boundary does not apply, refuse without asking for consent when
-the deployment no longer offers the capability, and refuse retryably when
-current authority cannot be established.
-"""
+"""Native named-service admission is positive, delegated, and per invocation."""
 
 from __future__ import annotations
 
@@ -49,6 +44,11 @@ def _bind_hub(monkeypatch, answer):
         return SimpleNamespace(value={"ok": True, "ret": {"object": answer}})
 
     monkeypatch.setattr(bundle_operations, "call_bundle_named_service", _call)
+    monkeypatch.setattr(
+        bundle_operations,
+        "get_current_bundle_named_service_caller",
+        lambda: object(),
+    )
 
 
 def _forbid_consent(monkeypatch):
@@ -61,10 +61,15 @@ def _forbid_consent(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_non_agent_turn_is_not_gated(monkeypatch):
+async def test_missing_agent_identity_is_denied(monkeypatch):
     _bind_agent_turn(monkeypatch, agent=False)
 
-    assert await tools._agent_grant_gate("mail", "object.search", "search") is None
+    admission, denial = await tools._agent_grant_admission(
+        "mail", "object.search", "search"
+    )
+
+    assert admission is None
+    assert denial["error"] == "delegated_named_service_identity_missing"
 
 
 @pytest.mark.asyncio
@@ -72,15 +77,63 @@ async def test_a_granted_capability_opens_the_gate(monkeypatch):
     _bind_agent_turn(monkeypatch)
     _bind_hub(monkeypatch, {"governed": True, "granted": True, "resource": "r", "claims": []})
 
-    assert await tools._agent_grant_gate("mail", "object.search", "search") is None
+    admission, denial = await tools._agent_grant_admission(
+        "mail", "object.search", "search"
+    )
+
+    assert denial is None
+    assert admission.mode == "delegated"
 
 
 @pytest.mark.asyncio
-async def test_an_ungoverned_namespace_opens_the_gate(monkeypatch):
+async def test_each_native_invocation_reads_current_hub_authority(monkeypatch):
+    _bind_agent_turn(monkeypatch)
+    answers = iter(
+        [
+            {"governed": True, "granted": True, "resource": "r", "claims": []},
+            {"governed": True, "granted": False, "removed": REMOVED},
+        ]
+    )
+    calls = 0
+
+    async def _call(**_kwargs):
+        nonlocal calls
+        calls += 1
+        answer = next(answers)
+        return SimpleNamespace(value={"ok": True, "ret": {"object": answer}})
+
+    monkeypatch.setattr(bundle_operations, "call_bundle_named_service", _call)
+    monkeypatch.setattr(
+        bundle_operations,
+        "get_current_bundle_named_service_caller",
+        lambda: object(),
+    )
+
+    first_admission, first_denial = await tools._agent_grant_admission(
+        "mail", "object.search", "search"
+    )
+    second_admission, second_denial = await tools._agent_grant_admission(
+        "mail", "object.search", "search"
+    )
+
+    assert first_admission is not None
+    assert first_denial is None
+    assert second_admission is None
+    assert second_denial["error"]["code"] == "delegated_capability_no_longer_available"
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_an_ungoverned_namespace_is_denied(monkeypatch):
     _bind_agent_turn(monkeypatch)
     _bind_hub(monkeypatch, {"governed": False})
 
-    assert await tools._agent_grant_gate("calendar", "object.search", "search") is None
+    admission, denial = await tools._agent_grant_admission(
+        "calendar", "object.search", "search"
+    )
+
+    assert admission is None
+    assert denial["error"] == "delegated_named_service_not_governed"
 
 
 @pytest.mark.asyncio
@@ -91,8 +144,11 @@ async def test_a_removed_capability_is_refused_without_asking_for_consent(monkey
         monkeypatch, {"governed": True, "granted": False, "removed": REMOVED}
     )
 
-    result = await tools._agent_grant_gate("mail", "object.search", "search")
+    admission, result = await tools._agent_grant_admission(
+        "mail", "object.search", "search"
+    )
 
+    assert admission is None
     assert result is not None
     assert result["error"]["code"] == "delegated_capability_no_longer_available"
     assert result["error"]["retryable"] is False
@@ -103,8 +159,11 @@ async def test_an_unavailable_catalog_refuses_retryably(monkeypatch):
     _bind_agent_turn(monkeypatch)
     _bind_hub(monkeypatch, {"unavailable": "active_catalog_not_registered"})
 
-    result = await tools._agent_grant_gate("mail", "object.search", "search")
+    admission, result = await tools._agent_grant_admission(
+        "mail", "object.search", "search"
+    )
 
+    assert admission is None
     assert result is not None
     assert result["error"]["code"] == "temporarily_unavailable"
     assert result["error"]["retryable"] is True
@@ -119,8 +178,11 @@ async def test_an_unreachable_hub_refuses_instead_of_failing_open(monkeypatch):
     _bind_agent_turn(monkeypatch)
     _bind_hub(monkeypatch, RuntimeError("hub unreachable"))
 
-    result = await tools._agent_grant_gate("mail", "object.search", "search")
+    admission, result = await tools._agent_grant_admission(
+        "mail", "object.search", "search"
+    )
 
+    assert admission is None
     assert result is not None
     assert result["error"]["code"] == "temporarily_unavailable"
     assert result["ret"]["reason"] == "agent_grant_check_unavailable"

@@ -209,15 +209,35 @@ def test_managed_policy_parses_per_tool_grants():
     assert policy.tool_policies["records_export"].grants == ("records:read",)
 
 
-def test_extract_mcp_tool_calls_handles_batch():
+def test_extract_mcp_tool_calls_returns_the_singular_supported_call():
     calls = surface_guard.extract_mcp_tool_calls(
-        b"""[
-          {"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}},
-          {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"records_export"}}
-        ]"""
+        b'{"jsonrpc":"2.0","id":2,"method":"tools/call",'
+        b'"params":{"name":"records_export"}}'
     )
 
     assert calls == [(2, "records_export")]
+
+
+def test_managed_mcp_transport_rejects_json_rpc_batches(monkeypatch):
+    client = _client(
+        monkeypatch,
+        grant_record={
+            "operations": ["records_export"],
+            "credential": _authority(),
+        },
+    )
+
+    response = client.post(
+        "/guard",
+        json=[_rpc_tool_call(rpc_id=1), _rpc_tool_call(rpc_id=2)],
+        headers={"Authorization": "Bearer reader"},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "error": "invalid_request",
+        "error_description": "JSON-RPC batch requests are not supported by this MCP transport",
+    }
 
 
 def _client(
@@ -878,6 +898,37 @@ def test_managed_guard_exposes_runtime_projection_for_proc_bridge(monkeypatch):
     assert authority["economics_user_id"] == "a1b2c3d4-5e6f-7a8b-9c0d-1e2f3a4b5c6d"
     assert authority["budget_bypass"] is True
     assert authority["actor_identity"] == "integration:claude:a1b2c3d4-5e6f-7a8b-9c0d-1e2f3a4b5c6d"
+
+
+def test_live_card_identity_is_carried_in_the_runtime_projection(monkeypatch):
+    redis = _Redis()
+    card = _live_card()
+    _store_live_card(redis, card)
+    client = _client(
+        monkeypatch,
+        return_projection=True,
+        grant_record=_pointer_grant(card.access_id),
+        redis=redis,
+    )
+
+    response = client.post(
+        "/guard",
+        json=_rpc_tool_call(),
+        headers={"Authorization": "Bearer reader"},
+    )
+
+    assert response.status_code == 200
+    binding = response.json()["projection"]["identity_authority"][
+        "delegated_card_binding"
+    ]
+    assert binding == {
+        "schema": "connection_hub.delegated_card_binding.v1",
+        "access_id": card.access_id,
+        "client_id": card.client_id,
+        "grantor_user_id": card.grantor_subject,
+        "delegate_identity": card.delegate_subject,
+        "expires_at": card.expires_at,
+    }
 
 
 def test_managed_guard_enforces_grants_per_called_tool(monkeypatch):

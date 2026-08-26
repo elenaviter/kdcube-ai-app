@@ -24,6 +24,9 @@ from .client_tools import named_service_namespace_provider_configs_from_config
 from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.consent import (
     raise_named_service_consent_demand,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.admission import (
+    NamedServiceAdmission,
+)
 from .transports.api_client import NamedServiceEndpoint, call_named_service_endpoint_stream
 from .types import OBJECT_GET, NamedServiceRequest
 
@@ -197,6 +200,7 @@ class NamedServiceArtifactNamespaceRehoster:
                     },
                     payload={"key": str(key or "").strip()},
                 ),
+                admission=NamedServiceAdmission.application(source="react.pull"),
             )
         except Exception as exc:
             LOGGER.warning(

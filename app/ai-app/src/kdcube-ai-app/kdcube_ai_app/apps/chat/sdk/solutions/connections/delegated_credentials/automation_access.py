@@ -2178,15 +2178,17 @@ class AutomationAccessService:
         client_id: str,
         namespace: str,
         operation: str,
+        access_id: str = "",
+        delegate_identity: str = "",
     ) -> dict[str, Any]:
-        """Whether an agent client holds the delegated-by grant a NATIVE
-        named-service call needs.
+        """Resolve current delegated authority for one named-service call.
 
         The ceiling is the registered catalog, not live props, so this answers
         the same question the managed guard answers for the MCP door: the
         catalog resource that publishes ``namespace``, the operation's declared
-        grants plus the resource's entry grants, intersected with the agent's
-        card.
+        grants plus the resource's entry grants, intersected with the selected
+        card. ``access_id`` selects the exact bearer-authenticated card; without
+        it, ``client_id`` selects the hosted agent's deterministic card.
 
         Outcomes:
 
@@ -2206,9 +2208,43 @@ class AutomationAccessService:
         op = _clean(operation)
         if not ns or not op:
             return {"governed": False}
+        exact_access_id = _clean(access_id)
+        exact_record: AutomationAccessRecord | None = None
+        if exact_access_id:
+            exact_record = await self._load_record(
+                exact_access_id,
+                grantor_subject=grantor_subject,
+            )
+            if exact_record is None:
+                return {
+                    "governed": True,
+                    "granted": False,
+                    "access_id": exact_access_id,
+                    "card_error": "delegated_card_not_active",
+                }
+            if _clean(exact_record.client_id) != _clean(client_id):
+                return {
+                    "governed": True,
+                    "granted": False,
+                    "access_id": exact_access_id,
+                    "card_error": "delegated_card_client_mismatch",
+                }
+            expected_delegate = _clean(delegate_identity)
+            if expected_delegate and _clean(exact_record.delegate_subject) != expected_delegate:
+                return {
+                    "governed": True,
+                    "granted": False,
+                    "access_id": exact_access_id,
+                    "card_error": "delegated_card_delegate_mismatch",
+                }
         active = await self._active_catalog()
         catalog = ActiveCatalogCapabilities(active)
         for cfg in oauth_delegated_config_from_connections(active.connections).resources:
+            if (
+                exact_record is not None
+                and cfg.resource not in exact_record.resource_grants
+            ):
+                continue
             named = cfg.named_services if isinstance(cfg.named_services, Mapping) else None
             raw_namespaces = named.get("namespaces") if named else None
             if not isinstance(raw_namespaces, Mapping):
@@ -2243,12 +2279,15 @@ class AutomationAccessService:
                     required |= self._operation_grants({}, dict(tool_policy))
             # A service method reads through its own persistence port; the
             # standalone probe exists for callers that have no service.
-            record = await self._load_record(
-                agent_grant_access_id(grantor_subject, client_id, [cfg.resource]),
-                grantor_subject=grantor_subject,
-            )
-            if record is not None and record.source != ACCESS_SOURCE_AGENT:
-                record = None
+            if exact_access_id:
+                record = exact_record
+            else:
+                record = await self._load_record(
+                    agent_grant_access_id(grantor_subject, client_id, [cfg.resource]),
+                    grantor_subject=grantor_subject,
+                )
+                if record is not None and record.source != ACCESS_SOURCE_AGENT:
+                    record = None
             # The namespace survives, but the operation under it may not. A
             # capability the catalog no longer offers is refused outright —
             # consent cannot restore it.
@@ -2315,9 +2354,16 @@ class AutomationAccessService:
                 "resource": cfg.resource,
                 "claims": sorted(required),
                 "client_id": client_id,
+                "access_id": record.access_id if record is not None else exact_access_id,
+                "card_revision": record.card_revision if record is not None else 0,
+                "card_catalog_version": record.catalog_version if record is not None else "",
+                "active_catalog_version": catalog.version,
+                "delegate_identity": record.delegate_subject if record is not None else "",
+                "expires_at": record.expires_at if record is not None else 0,
                 # The agent's per-account claim binding, so the native gate can
                 # bind it for the connected-account resolver (which account +
-                # which claims this agent may use per provider). Empty => any.
+                # which claims this agent may use per provider). Empty remains
+                # a delegated, default-closed binding.
                 "account_scope": {
                     provider: {account_id: list(claims) for account_id, claims in accounts.items()}
                     for provider, accounts in (record.account_scope.items() if record is not None else ())
@@ -2333,6 +2379,8 @@ class AutomationAccessService:
             client_id=client_id,
             namespace=ns,
             operation=op,
+            exact_record=exact_record,
+            exact=bool(exact_access_id),
         )
         if removed is not None:
             return {"governed": True, "granted": False, "removed": removed}
@@ -2346,6 +2394,8 @@ class AutomationAccessService:
         client_id: str,
         namespace: str,
         operation: str,
+        exact_record: AutomationAccessRecord | None = None,
+        exact: bool = False,
     ) -> dict[str, Any] | None:
         """The structured denial for a namespace this agent's card still holds.
 
@@ -2354,8 +2404,18 @@ class AutomationAccessService:
         proves the capability was granted.
         """
         client = _clean(client_id)
-        for record in await self._list_active_records(grantor_subject):
-            if record.source != ACCESS_SOURCE_AGENT or _clean(record.client_id) != client:
+        records = (
+            [exact_record]
+            if exact and exact_record is not None
+            else await self._list_active_records(grantor_subject)
+        )
+        for record in records:
+            if record is None:
+                continue
+            if not exact and (
+                record.source != ACCESS_SOURCE_AGENT
+                or _clean(record.client_id) != client
+            ):
                 continue
             namespaces = (record.named_services or {}).get("namespaces")
             if not isinstance(namespaces, Mapping):

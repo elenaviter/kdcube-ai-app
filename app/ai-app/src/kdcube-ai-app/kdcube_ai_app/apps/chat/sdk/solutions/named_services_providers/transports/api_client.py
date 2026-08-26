@@ -22,6 +22,10 @@ from kdcube_ai_app.apps.chat.sdk.runtime.http_ops import (
     BundleFileResponse,
     BundleStreamResponse,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.admission import (
+    NamedServiceAdmission,
+    NamedServiceAdmissionDecision,
+)
 
 from ..client import NamedServiceClient
 from ..discovery import ConfiguredNamedServiceDiscovery, get_current_named_service_discovery
@@ -164,6 +168,9 @@ async def _call_module_endpoint_raw(
 async def _call_bundle_registry_endpoint(
     endpoint: NamedServiceEndpoint,
     request: NamedServiceRequest,
+    *,
+    admission: NamedServiceAdmission,
+    admission_decision: NamedServiceAdmissionDecision | None,
 ) -> NamedServiceResponse | NamedServiceStreamResult | BundleStreamResponse | BundleFileResponse | BundleBinaryResponse:
     if not endpoint.bundle_id:
         raise RuntimeError("bundle_registry named-service endpoint requires bundle_id")
@@ -188,16 +195,26 @@ async def _call_bundle_registry_endpoint(
         return await relay_named_service_call(
             bundle_id=endpoint.bundle_id,
             request=request,
+            admission=admission,
             tenant=endpoint.tenant or "",
             project=endpoint.project or "",
         )
-    result = await call_bundle_named_service(
-        tenant=endpoint.tenant,
-        project=endpoint.project,
-        bundle_id=endpoint.bundle_id,
-        request=request,
-        registry_method=endpoint.registry_method,
-    )
+    decision = admission_decision or await admission.authorize(request)
+    if not decision.allowed:
+        return decision.denial or NamedServiceResponse.error_response(
+            code="named_service_admission_denied",
+            message="Named-service admission was denied.",
+            status=403,
+            namespace=request.namespace,
+        )
+    with decision.bind():
+        result = await call_bundle_named_service(
+            tenant=endpoint.tenant,
+            project=endpoint.project,
+            bundle_id=endpoint.bundle_id,
+            request=request,
+            registry_method=endpoint.registry_method,
+        )
     if isinstance(result, BundleNamedServiceResult):
         return result.value
     if hasattr(result, "value"):
@@ -337,6 +354,8 @@ async def _resolve_endpoint_from_discovery(
 async def call_named_service_endpoint(
     endpoint: NamedServiceEndpoint,
     request: NamedServiceRequest | Mapping[str, Any],
+    *,
+    admission: NamedServiceAdmission,
 ) -> NamedServiceResponse:
     """Call a named-service provider endpoint through its configured transport.
 
@@ -351,6 +370,17 @@ async def call_named_service_endpoint(
     if endpoint.namespace and not payload.get("namespace"):
         payload["namespace"] = endpoint.namespace
     req = NamedServiceRequest.from_dict(payload)
+    admission.validate(req)
+    admission_decision = (
+        await admission.authorize(req) if admission.can_authorize_locally else None
+    )
+    if admission_decision is not None and not admission_decision.allowed:
+        return admission_decision.denial or NamedServiceResponse.error_response(
+            code="named_service_admission_denied",
+            message="Named-service admission was denied.",
+            status=403,
+            namespace=req.namespace,
+        )
     endpoint = await _resolve_endpoint_from_discovery(endpoint, req)
     payload = req.to_dict()
     if endpoint.provider and not payload.get("provider"):
@@ -367,10 +397,24 @@ async def call_named_service_endpoint(
             object_ref=req.object_ref,
         )
     if endpoint.transport == ENDPOINT_TRANSPORT_MODULE:
-        return await _call_module_endpoint(endpoint, req)
+        decision = admission_decision or await admission.authorize(req)
+        if not decision.allowed:
+            return decision.denial or NamedServiceResponse.error_response(
+                code="named_service_admission_denied",
+                message="Named-service admission was denied.",
+                status=403,
+                namespace=req.namespace,
+            )
+        with decision.bind():
+            return await _call_module_endpoint(endpoint, req)
     if endpoint.transport == ENDPOINT_TRANSPORT_BUNDLE_REGISTRY:
         try:
-            raw = await _call_bundle_registry_endpoint(endpoint, req)
+            raw = await _call_bundle_registry_endpoint(
+                endpoint,
+                req,
+                admission=admission,
+                admission_decision=admission_decision,
+            )
             if isinstance(raw, Mapping):
                 return NamedServiceResponse.from_dict(_unwrap_operation_response(raw, endpoint.operation))
             try:
@@ -387,6 +431,14 @@ async def call_named_service_endpoint(
                 endpoint.provider or "",
                 endpoint.namespace or "",
             )
+    decision = admission_decision or await admission.authorize(req)
+    if not decision.allowed:
+        return decision.denial or NamedServiceResponse.error_response(
+            code="named_service_admission_denied",
+            message="Named-service admission was denied.",
+            status=403,
+            namespace=req.namespace,
+        )
     try:
         LOGGER.info(
             "Named-service endpoint call start: transport=%s bundle=%s operation=%s provider=%s namespace=%s request_operation=%s",
@@ -397,14 +449,15 @@ async def call_named_service_endpoint(
             endpoint.namespace or req.namespace or "",
             req.operation,
         )
-        raw = await call_bundle_operation(
-            tenant=endpoint.tenant,
-            project=endpoint.project,
-            bundle_id=endpoint.bundle_id,
-            operation=endpoint.operation,
-            route=endpoint.route,
-            data=payload,
-        )
+        with decision.bind():
+            raw = await call_bundle_operation(
+                tenant=endpoint.tenant,
+                project=endpoint.project,
+                bundle_id=endpoint.bundle_id,
+                operation=endpoint.operation,
+                route=endpoint.route,
+                data=payload,
+            )
     except Exception as exc:
         LOGGER.warning(
             "Named-service endpoint call failed: transport=%s bundle=%s operation=%s provider=%s namespace=%s request_operation=%s error=%s",
@@ -478,6 +531,19 @@ def _error_stream_result(
         media_type=None,
         headers={},
         status_code=status,
+    )
+
+
+def _admission_denial_stream_result(
+    denial: NamedServiceResponse,
+) -> NamedServiceStreamResult:
+    return NamedServiceStreamResult(
+        response=denial,
+        chunks=_empty_chunks(),
+        filename=None,
+        media_type=None,
+        headers={},
+        status_code=int(denial.status or 403),
     )
 
 
@@ -595,6 +661,7 @@ async def call_named_service_endpoint_stream(
     endpoint: NamedServiceEndpoint,
     request: NamedServiceRequest | Mapping[str, Any],
     *,
+    admission: NamedServiceAdmission,
     chunk_size: int = 1024 * 1024,
 ) -> NamedServiceStreamResult:
     """Call a named-service provider endpoint that returns response metadata plus bytes."""
@@ -607,6 +674,18 @@ async def call_named_service_endpoint_stream(
         payload["namespace"] = endpoint.namespace
     payload["response_mode"] = "stream"
     req = NamedServiceRequest.from_dict(payload)
+    admission.validate(req)
+    admission_decision = (
+        await admission.authorize(req) if admission.can_authorize_locally else None
+    )
+    if admission_decision is not None and not admission_decision.allowed:
+        denial = admission_decision.denial or NamedServiceResponse.error_response(
+            code="named_service_admission_denied",
+            message="Named-service admission was denied.",
+            status=403,
+            namespace=req.namespace,
+        )
+        return _admission_denial_stream_result(denial)
     endpoint = await _resolve_endpoint_from_discovery(endpoint, req)
     payload = req.to_dict()
     if endpoint.provider and not payload.get("provider"):
@@ -624,8 +703,18 @@ async def call_named_service_endpoint_stream(
             status=404,
         )
     if endpoint.transport == ENDPOINT_TRANSPORT_MODULE:
+        decision = admission_decision or await admission.authorize(req)
+        if not decision.allowed:
+            denial = decision.denial or NamedServiceResponse.error_response(
+                code="named_service_admission_denied",
+                message="Named-service admission was denied.",
+                status=403,
+                namespace=req.namespace,
+            )
+            return _admission_denial_stream_result(denial)
         try:
-            raw = await _call_module_endpoint_raw(endpoint, req)
+            with decision.bind():
+                raw = await _call_module_endpoint_raw(endpoint, req)
         except Exception as exc:
             return _error_stream_result(
                 endpoint=endpoint,
@@ -637,7 +726,12 @@ async def call_named_service_endpoint_stream(
         return _coerce_stream_endpoint_result(raw, endpoint=endpoint, req=req, chunk_size=chunk_size)
     if endpoint.transport == ENDPOINT_TRANSPORT_BUNDLE_REGISTRY:
         try:
-            raw = await _call_bundle_registry_endpoint(endpoint, req)
+            raw = await _call_bundle_registry_endpoint(
+                endpoint,
+                req,
+                admission=admission,
+                admission_decision=admission_decision,
+            )
             return _coerce_stream_endpoint_result(raw, endpoint=endpoint, req=req, chunk_size=chunk_size)
         except RuntimeError as exc:
             if "No request-bound bundle named-service caller" not in str(exc):
@@ -654,6 +748,15 @@ async def call_named_service_endpoint_stream(
                 endpoint.provider or "",
                 endpoint.namespace or "",
             )
+    decision = admission_decision or await admission.authorize(req)
+    if not decision.allowed:
+        denial = decision.denial or NamedServiceResponse.error_response(
+            code="named_service_admission_denied",
+            message="Named-service admission was denied.",
+            status=403,
+            namespace=req.namespace,
+        )
+        return _admission_denial_stream_result(denial)
     LOGGER.info(
         "Named-service stream call start: transport=%s bundle=%s operation=%s provider=%s namespace=%s request_operation=%s",
         endpoint.transport,
@@ -664,15 +767,16 @@ async def call_named_service_endpoint_stream(
         req.operation,
     )
     try:
-        result = await call_bundle_operation_stream(
-            tenant=endpoint.tenant,
-            project=endpoint.project,
-            bundle_id=endpoint.bundle_id,
-            operation=endpoint.operation,
-            route=endpoint.route,
-            data=payload,
-            chunk_size=chunk_size,
-        )
+        with decision.bind():
+            result = await call_bundle_operation_stream(
+                tenant=endpoint.tenant,
+                project=endpoint.project,
+                bundle_id=endpoint.bundle_id,
+                operation=endpoint.operation,
+                route=endpoint.route,
+                data=payload,
+                chunk_size=chunk_size,
+            )
     except Exception as exc:
         LOGGER.warning(
             "Named-service stream call failed: transport=%s bundle=%s operation=%s provider=%s namespace=%s request_operation=%s error=%s",

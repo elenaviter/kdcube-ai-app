@@ -65,6 +65,7 @@ class _Redis:
 class _Store:
     def __init__(self) -> None:
         self.bound: list[dict] = []
+        self.revoked_access: list[str] = []
 
     async def bind_access_grant(self, access_token, operations, expires_in, **kwargs):
         self.bound.append(
@@ -75,6 +76,10 @@ class _Store:
                 **kwargs,
             }
         )
+
+    async def revoke_access_grant(self, access_token: str) -> bool:
+        self.revoked_access.append(access_token)
+        return True
 
 
 class _Authority:
@@ -1147,6 +1152,76 @@ async def test_agent_namespace_grant_state_governs_and_grants(card_persistence):
         grantor_subject="platform-user-1", client_id=_AGENT_CLIENT,
         namespace="calendar", operation="object.search",
     )) == {"governed": False}
+
+
+@pytest.mark.asyncio
+async def test_exact_bearer_card_selects_its_own_catalog_resource(card_persistence):
+    service = _named_services_agent_service(card_persistence)
+    resource = "*/kdcube-services@1-0/public/mcp/named_services*"
+    created = await service.create_access(
+        _AGENT_USER,
+        label="Claude",
+        client_id="claude",
+        resource_grants={resource: ["mail:read", "named_services:use"]},
+        named_service_operations={resource: {"mail": ["object.search"]}},
+    )
+    access_id = created["access"]["access_id"]
+    record = await service._load_record(
+        access_id, grantor_subject="platform-user-1"
+    )
+
+    # A different resource may publish the same namespace. Exact bearer
+    # admission evaluates only resources carried by the selected card.
+    connections = copy.deepcopy(service._catalog_resolver.connections)
+    decoy = copy.deepcopy(
+        connections["delegated_credentials"]["oauth"]["resources"][0]
+    )
+    decoy["resource"] = "*/other-service/public/mcp/named_services*"
+    decoy["named_services"]["namespaces"]["mail"]["tools"]["search"][
+        "grants"
+    ] = ["wrong:read"]
+    connections["delegated_credentials"]["oauth"]["resources"].insert(0, decoy)
+    service._catalog_resolver.connections = connections
+
+    granted = await service.agent_namespace_grant_state(
+        grantor_subject="platform-user-1",
+        client_id="claude",
+        namespace="mail",
+        operation="object.search",
+        access_id=access_id,
+        delegate_identity=record.delegate_subject,
+    )
+    wrong_client = await service.agent_namespace_grant_state(
+        grantor_subject="platform-user-1",
+        client_id="other-client",
+        namespace="mail",
+        operation="object.search",
+        access_id=access_id,
+    )
+    wrong_delegate = await service.agent_namespace_grant_state(
+        grantor_subject="platform-user-1",
+        client_id="claude",
+        namespace="mail",
+        operation="object.search",
+        access_id=access_id,
+        delegate_identity="integration:other:user-1",
+    )
+
+    assert granted["granted"] is True
+    assert granted["resource"] == resource
+    assert granted["access_id"] == access_id
+    assert wrong_client["card_error"] == "delegated_card_client_mismatch"
+    assert wrong_delegate["card_error"] == "delegated_card_delegate_mismatch"
+
+    await service.revoke_access(_AGENT_USER, access_id=access_id)
+    revoked = await service.agent_namespace_grant_state(
+        grantor_subject="platform-user-1",
+        client_id="claude",
+        namespace="mail",
+        operation="object.search",
+        access_id=access_id,
+    )
+    assert revoked["card_error"] == "delegated_card_not_active"
 
 
 @pytest.mark.asyncio

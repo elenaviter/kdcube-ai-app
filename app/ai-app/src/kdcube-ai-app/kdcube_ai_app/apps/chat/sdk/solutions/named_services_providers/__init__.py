@@ -12,6 +12,17 @@ from __future__ import annotations
 
 from kdcube_ai_app.apps.chat.sdk.infra.auth_context import AuthContext
 
+from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.admission import (
+    ADMISSION_MODE_APPLICATION,
+    ADMISSION_MODE_DELEGATED,
+    DELEGATED_SELECTOR_AGENT,
+    DELEGATED_SELECTOR_BEARER,
+    NamedServiceAdmission,
+    NamedServiceAdmissionDecision,
+    NamedServiceAdmissionSelector,
+    effective_named_service_operation,
+)
+
 from .agent_instructions import (
     compose_named_service_agent_instructions,
     named_service_agent_instruction_block,
@@ -157,6 +168,13 @@ __all__ = [
     "SCHEMA_VIEW_OPERATION",
     "SCHEMA_VIEW_SEARCH",
     "AuthContext",
+    "ADMISSION_MODE_APPLICATION",
+    "ADMISSION_MODE_DELEGATED",
+    "DELEGATED_SELECTOR_AGENT",
+    "DELEGATED_SELECTOR_BEARER",
+    "NamedServiceAdmission",
+    "NamedServiceAdmissionDecision",
+    "NamedServiceAdmissionSelector",
     "NamedServiceApiTransport",
     "NamedServiceBoundaryCatalog",
     "ConfiguredNamedServiceDiscovery",
@@ -211,6 +229,7 @@ __all__ = [
     "named_services_config",
     "named_service_tool_spec",
     "namespace_for_ref",
+    "effective_named_service_operation",
     "register_configured_named_service_canvas_resolvers",
     "register_configured_named_service_artifact_rehosters",
     "register_configured_named_service_event_sources",

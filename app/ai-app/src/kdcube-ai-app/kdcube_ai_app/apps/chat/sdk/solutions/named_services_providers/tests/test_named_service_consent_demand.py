@@ -326,7 +326,7 @@ async def test_a_boundary_refusal_asks_for_the_operation_it_was_refused(monkeypa
     import kdcube_ai_app.apps.chat.sdk.runtime.comm_ctx as comm_ctx
     import kdcube_ai_app.apps.chat.sdk.solutions.connections.mcp_consent as mcp_consent
     from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.tools import (
-        _agent_grant_gate,
+        _agent_grant_admission,
     )
 
     resource = "*/kdcube-services@1-0/public/mcp/named_services*"
@@ -358,6 +358,11 @@ async def test_a_boundary_refusal_asks_for_the_operation_it_was_refused(monkeypa
         return SimpleNamespace(value={"ok": True, "ret": {"object": state}})
 
     monkeypatch.setattr(bundle_operations, "call_bundle_named_service", fake_call)
+    monkeypatch.setattr(
+        bundle_operations,
+        "get_current_bundle_named_service_caller",
+        lambda: object(),
+    )
 
     announced: list[Any] = []
 
@@ -366,8 +371,11 @@ async def test_a_boundary_refusal_asks_for_the_operation_it_was_refused(monkeypa
 
     monkeypatch.setattr(mcp_consent, "announce_agent_consent", fake_announce)
 
-    result = await _agent_grant_gate("mem", "object.search", "named_services_search")
+    admission, result = await _agent_grant_admission(
+        "mem", "object.search", "named_services_search"
+    )
 
+    assert admission is None
     assert result["error"]["code"] == "delegated_capability_not_granted"
     grant = result["consent"]["grant"]["payload"]
     assert grant["named_service_operations"] == {"mem": ["object.search"]}

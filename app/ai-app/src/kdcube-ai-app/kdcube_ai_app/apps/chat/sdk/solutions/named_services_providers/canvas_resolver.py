@@ -10,6 +10,9 @@ from kdcube_ai_app.apps.chat.sdk.solutions.canvas.events.resolver import (
     CanvasObjectResolver,
     object_ref_from_payload,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.admission import (
+    NamedServiceAdmission,
+)
 
 from .client_tools import (
     named_service_namespace_client_resolver_config,
@@ -97,6 +100,13 @@ class NamedServiceCanvasObjectResolver(CanvasObjectResolver):
                 },
                 payload=dict(payload or {}),
             ),
+            admission=NamedServiceAdmission.application(
+                source=(
+                    "canvas.object_resolve"
+                    if operation == OBJECT_RESOLVE
+                    else "canvas.object_action"
+                )
+            ),
         )
         if not response.ok:
             message = response.error.message if response.error else "Named service resolver failed"
@@ -122,15 +132,24 @@ class NamedServiceCanvasObjectResolver(CanvasObjectResolver):
                 "extra": dict(response.extra or {}),
             }
 
+        canonical_object = dict(response.object or {})
         result: dict[str, Any] = {
             **base,
             "ok": True,
             "operation": operation,
             "provider": dict(response.provider or {}),
-            "object": dict(response.object or {}),
+            "object": canonical_object,
             "items": list(response.items or []),
             "extra": dict(response.extra or {}),
         }
+        # Canvas resolver consumers use a flat presentation view. Preserve the
+        # canonical object while projecting only its provider-owned body; its
+        # identity remains canonical unless explicit response attrs/extra
+        # promote a field into the canvas contract.
+        body = canonical_object.get("body")
+        if isinstance(body, Mapping):
+            for key, value in body.items():
+                result.setdefault(str(key), value)
         result.update(dict(response.extra or {}))
         if response.namespace:
             result["namespace"] = response.namespace

@@ -61,6 +61,10 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.hub import (
     normalize_delegated_identity_scope,
     resolve_delegated_authority_projection,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.named_service_admission import (
+    delegated_card_binding_from_request,
+    store_managed_named_service_admission_snapshot,
+)
 
 
 MANAGED_MCP_AUTH_MODE = "managed"
@@ -329,23 +333,16 @@ def _decode_json_body(body: bytes) -> Any:
 
 
 def extract_mcp_tool_calls(body: bytes) -> list[tuple[Any, str]]:
-    """Return JSON-RPC ids and tool names for `tools/call` messages."""
+    """Return the singular JSON-RPC ``tools/call`` accepted by this transport."""
 
     message = _decode_json_body(body)
-    rows = message if isinstance(message, list) else [message]
-    out: list[tuple[Any, str]] = []
-    for item in rows:
-        if not isinstance(item, Mapping):
-            continue
-        if item.get("method") != "tools/call":
-            continue
-        params = item.get("params")
-        if not isinstance(params, Mapping):
-            continue
-        name = str(params.get("name") or "").strip()
-        if name:
-            out.append((item.get("id"), name))
-    return out
+    if not isinstance(message, Mapping) or message.get("method") != "tools/call":
+        return []
+    params = message.get("params")
+    if not isinstance(params, Mapping):
+        return []
+    name = str(params.get("name") or "").strip()
+    return [(message.get("id"), name)] if name else []
 
 
 def _credential_scopes(envelope: CredentialEnvelope) -> set[str]:
@@ -621,6 +618,8 @@ async def _live_grant_record(request: Any, grant_record: Optional[Dict[str, Any]
     resolved = dict(grant_record)
     credential = dict(resolved.get("credential") or {})
     attrs = dict(credential.get("attrs") or {})
+    attrs["client_id"] = card.client_id
+    attrs["grantor_subject"] = card.grantor_subject
     attrs["resource_grants"] = {res: list(grants or []) for res, grants in resource_grants.items()}
     attrs["scopes"] = all_grants
     attrs["grants"] = all_grants
@@ -629,8 +628,15 @@ async def _live_grant_record(request: Any, grant_record: Optional[Dict[str, Any]
         provider: {account_id: list(claims) for account_id, claims in accounts.items()}
         for provider, accounts in card.account_scope.items()
     }
+    credential["subject"] = card.delegate_subject
     credential["attrs"] = attrs
     resolved["credential"] = credential
+    resolved["registry_access_id"] = card.access_id
+    resolved["client_id"] = card.client_id
+    resolved["grantor_subject"] = card.grantor_subject
+    resolved["delegate_subject"] = card.delegate_subject
+    resolved["expires_at"] = int(card.expires_at or 0)
+    resolved["source"] = str(card.source or "")
     resolved["operations"] = list(card.operations)
     resolved["grants"] = all_grants
     # Carry the card's per-agent account binding so the door can enforce it
@@ -728,6 +734,9 @@ def _delegated_runtime_projection(request: Request, *, surface: str) -> dict[str
             "provenance": dict(projection.get("provenance") or economics.get("provenance") or {}),
         }
     )
+    delegated_card_binding = delegated_card_binding_from_request(request)
+    if delegated_card_binding:
+        identity_authority["delegated_card_binding"] = delegated_card_binding
     identity_authority = {
         key: value for key, value in identity_authority.items()
         if value not in ("", None, [], {})
@@ -1001,6 +1010,13 @@ async def authorize_delegated_mcp_request(
     if policy is None:
         return None
 
+    if isinstance(_decode_json_body(body), list):
+        return _json_response(
+            400,
+            "invalid_request",
+            "JSON-RPC batch requests are not supported by this MCP transport",
+        )
+
     token = _extract_bearer(request)
     if not token:
         LOGGER.info(
@@ -1143,6 +1159,25 @@ async def authorize_delegated_mcp_request(
     )
     tool_calls = extract_mcp_tool_calls(body)
     if not tool_calls:
+        try:
+            store_managed_named_service_admission_snapshot(
+                request,
+                catalog=catalog,
+                grant_record=grant_record or {},
+                credential=envelope,
+                resource=matched_resource,
+                request_resource=request_resource,
+            )
+        except ValueError as exc:
+            LOGGER.warning(
+                "[connection-hub.oauth.mcp_guard] admission snapshot unavailable: %s",
+                exc,
+            )
+            return _json_response(
+                503,
+                "temporarily_unavailable",
+                "Exact delegated-card authority is unavailable for this request",
+            )
         runtime = delegated_mcp_runtime_projection(request)
         LOGGER.info(
             "[connection-hub.oauth.mcp_guard] accepted resource=%s subject=%s grantor=%s delegate=%s authority=%s scopes=%s tools=%s identity_scope=%s tool_calls=0",
@@ -1205,6 +1240,26 @@ async def authorize_delegated_mcp_request(
                     f"tool not consented for this connection: {tool_name}",
                 )
 
+    try:
+        store_managed_named_service_admission_snapshot(
+            request,
+            catalog=catalog,
+            grant_record=grant_record or {},
+            credential=envelope,
+            resource=matched_resource,
+            request_resource=request_resource,
+            outer_operation=tool_calls[0][1],
+        )
+    except ValueError as exc:
+        LOGGER.warning(
+            "[connection-hub.oauth.mcp_guard] admission snapshot unavailable: %s",
+            exc,
+        )
+        return _json_response(
+            503,
+            "temporarily_unavailable",
+            "Exact delegated-card authority is unavailable for this request",
+        )
     runtime = delegated_mcp_runtime_projection(request)
     LOGGER.info(
         "[connection-hub.oauth.mcp_guard] accepted resource=%s subject=%s grantor=%s delegate=%s authority=%s scopes=%s tools=%s identity_scope=%s tool_calls=%s",

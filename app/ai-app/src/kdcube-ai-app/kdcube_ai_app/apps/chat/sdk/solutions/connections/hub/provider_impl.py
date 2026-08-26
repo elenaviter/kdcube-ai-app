@@ -243,10 +243,15 @@ class ConnectionHubProvider(ConnectionsProviderBase):
         client_id: str,
         namespace: str,
         operation: str,
+        access_id: str = "",
+        delegate_identity: str = "",
     ) -> dict[str, Any]:
-        """The native named-service gate over the delegated-grant catalog: maps
-        the namespace to its configured named-services resource and answers
-        governed/granted with the required claims (see
+        """Resolve one named-service invocation against current card/catalog state.
+
+        The namespace maps to its configured named-services resource. An exact
+        ``access_id`` selects bearer authority; otherwise ``client_id`` selects
+        hosted-agent authority. The result reports governed/granted state and
+        required claims (see
         ``AutomationAccessService.agent_namespace_grant_state``)."""
         if self._automation_access_factory is None:
             return {"governed": False}
@@ -266,6 +271,8 @@ class ConnectionHubProvider(ConnectionsProviderBase):
                 client_id=client_id,
                 namespace=namespace,
                 operation=operation,
+                access_id=access_id,
+                delegate_identity=delegate_identity,
             )
         except CatalogUnavailable as exc:
             # Unknown current authority is unavailability, and the caller must

@@ -4,7 +4,7 @@ title: "Integrate One KDCube App With Another"
 summary: "Builder recipe for choosing and implementing the correct same-KDCube app-to-app contract: direct API operations, named services, Data Bus, jobs, conversation ingress, MCP, REST, and UI composition."
 status: active
 tags: ["recipes", "apps", "interoperability", "api", "named-services", "data-bus", "mcp"]
-updated_at: 2026-08-12
+updated_at: 2026-08-26
 keywords:
   [
     "KDCube app integration",
@@ -200,6 +200,7 @@ Request-bound app code can call the resolved provider endpoint:
 
 ```python
 from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers import (
+    NamedServiceAdmission,
     NamedServiceEndpoint,
     call_named_service_endpoint,
 )
@@ -213,6 +214,9 @@ response = await call_named_service_endpoint(
         "query": "blocked authentication issues",
         "limit": 20,
     },
+    admission=NamedServiceAdmission.application(
+        source="task_dashboard.blocked_issue_search",
+    ),
 )
 
 if not response.ok:
@@ -220,6 +224,18 @@ if not response.ok:
 
 items = response.ret.get("items", [])
 ```
+
+`admission` is required and names who owns authority for this invocation.
+Application code selects `NamedServiceAdmission.application(...)` positively at
+its trusted call site. A delegated entrance, including a hosted-agent tool or a
+managed MCP bearer, constructs delegated admission from its current Connection
+Hub card; missing delegated state never falls back to application authority.
+Admission is separate from `NamedServiceRequest.context`, provider input, and
+caller identity.
+
+This is a required SDK signature change. Existing two-argument calls raise a
+`TypeError`; migrate each trusted call site by selecting its positive
+application or delegated admission mode.
 
 Discovery selects the current provider and one of the configured local
 transports:

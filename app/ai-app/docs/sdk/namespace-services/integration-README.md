@@ -4,7 +4,7 @@ title: "Namespace Services: Integration Flow"
 summary: "Visual host/client integration flow for namespace service providers, using task-tracker and workspace as the current reference path."
 status: current
 tags: ["sdk", "namespace-services", "integration", "task-tracker", "workspace", "scene", "canvas", "chat"]
-updated_at: 2026-07-18
+updated_at: 2026-08-26
 keywords:
   [
     "namespace service integration",
@@ -800,21 +800,31 @@ agent reads — same declaration, different binding step, described in
      NamedServiceRequest.object_ref = tool params object_ref, when present
      NamedServiceRequest.context.source = named_services.client_tool
      NamedServiceRequest.context.auth = current ReAct request/session
+     NamedServiceAdmission = delegated authority for this exact invocation
+       source bundle + agent + client identify the delegated card
+       current card/catalog state is resolved again for every tool call
 
         |
         v
 
 5. Generic provider discovery/transport
    executor: NamedServiceEndpoint / call_named_service_endpoint(...)
-   surface: service discovery + bundle_registry/bundle_operation transport
+   surface: admission + service discovery + bundle_registry/bundle_operation transport
    customized: provider endpoint config/discovery entry
    work:
+     require explicit application or delegated admission
+     direct delegated call: resolve current authority before provider selection
+     relayed delegated call: carry a typed selector; resolve in the target worker
      Discovery.resolve(operation, base_namespace, object_ref)
        -> Discovery.entry(provider_id=<provider id>, bundle_id=<provider app>)
      bundle_registry:
        call ProviderEntrypoint.named_services() in-process
      bundle_operation:
        call ProviderEntrypoint.@api(alias="named_service", route="operations")
+
+   admission is platform-owned dispatch state:
+     never serialized in NamedServiceRequest.context or provider payload
+     provider account scope is bound only around the admitted invocation
 
         |
         v

@@ -105,13 +105,30 @@ class ConnectionsClient:
             return None
         return ConnectionToken.coerce(obj)
 
-    async def agent_grant_check(self, client_id: str, namespace: str, operation: str) -> dict[str, Any]:
-        """The native named-service gate's answer for (agent client, namespace,
-        operation): ``{"governed": False}`` or ``{"governed": True, "granted":
-        bool, "resource", "claims"}`` — claims ready for the one-click grant."""
-        response = await self._call(
-            AGENT_GRANT_CHECK, client_id=client_id, namespace=namespace, operation=operation,
-        )
+    async def agent_grant_check(
+        self,
+        client_id: str,
+        namespace: str,
+        operation: str,
+        *,
+        access_id: str = "",
+        delegate_identity: str = "",
+    ) -> dict[str, Any]:
+        """Resolve delegated admission for one named-service invocation.
+
+        ``access_id`` selects an exact bearer-authenticated card. An empty
+        ``access_id`` selects the hosted agent card derived from ``client_id``.
+        """
+        payload = {
+            "client_id": client_id,
+            "namespace": namespace,
+            "operation": operation,
+        }
+        if access_id:
+            payload["access_id"] = access_id
+        if delegate_identity:
+            payload["delegate_identity"] = delegate_identity
+        response = await self._call(AGENT_GRANT_CHECK, **payload)
         return dict(response.object)
 
     async def disconnect(self, provider: str, account_id: str) -> dict[str, Any]:

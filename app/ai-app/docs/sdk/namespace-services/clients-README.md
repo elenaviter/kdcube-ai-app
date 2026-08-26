@@ -4,7 +4,7 @@ title: "Namespace Services: Clients"
 summary: "How apps (bundles), agents, widgets, jobs, and external clients consume configured namespace service providers."
 status: design
 tags: ["sdk", "namespace-services", "clients", "tools", "resolvers", "apps", "bundles"]
-updated_at: 2026-08-07
+updated_at: 2026-08-26
 keywords:
   [
     "namespace service client",
@@ -113,6 +113,17 @@ registry object under the current request/session context. Use
 `bundle_operation` when the owner should be reached through its
 `@api(alias="named_service")` facade. Use `module` when the provider registry
 is in an importable Python module in the same runtime.
+
+Calls through the generic endpoint dispatcher also name their authority with a
+required `NamedServiceAdmission`. Trusted app code constructs
+`NamedServiceAdmission.application(source=...)`; delegated MCP and hosted-agent
+entrances construct delegated admission from current Connection Hub state. The
+dispatcher validates that admission against the decoded namespace and
+operation before provider discovery. See
+[Integrate One KDCube App With Another](../../recipes/apps/integrate-cross-app-surface-README.md#3-call-an-owner-defined-named-service)
+for the bundle-facing call pattern and
+[Named-Service Calls From Isolated Runtimes](../solutions/kdcube-services/named-services-from-isolated-runtime-README.md)
+for the relayed path.
 
 Explicit providers are still provider endpoint overrides, not the normal
 consumer surface. Keep them outside the agent-visible tool contract and use

@@ -579,46 +579,22 @@ def _gate_unavailable(reason: str, namespace: str, operation: str) -> Dict[str, 
     return payload
 
 
-async def _agent_grant_gate(base_ns: str, operation: str, tool_name: str) -> Dict[str, Any] | None:
-    """The per-agent delegated-by gate for NATIVE named-service calls.
+async def _agent_grant_admission(
+    base_ns: str,
+    operation: str,
+    tool_name: str,
+) -> tuple[Any | None, Dict[str, Any] | None]:
+    """Resolve delegated authority for one native named-service invocation."""
 
-    Connecting an account (Delegated to KDCube) answers whether KDCUBE may use
-    the user's provider account; it does not say which AGENT may act. When the
-    deployment's delegated catalog publishes this namespace, the calling agent
-    — `kdcube-agent:<app>:<agent>`, the same client entity a hosted MCP
-    consumer is — must hold the user's delegated-by grant for it. Pending →
-    the consent demand rises at THIS attempt (demand-driven per tool) and the
-    agent gets the explainable consent result.
-
-    Three outcomes are kept apart:
-
-        not an agent turn, or nothing publishes the namespace  -> open
-        the catalog no longer offers the capability            -> refuse, and
-                                                                  never ask for
-                                                                  consent
-        current authority cannot be established                -> refuse,
-                                                                  retryable
-    """
-    agent_turn = False
     try:
+        from kdcube_ai_app.apps.chat.sdk.infra.bundle_operations import (
+            call_bundle_named_service,
+            get_current_bundle_named_service_caller,
+        )
         from kdcube_ai_app.apps.chat.sdk.runtime.comm_ctx import (
             get_current_request_context,
             get_current_user_identity,
         )
-
-        identity = get_current_user_identity() or {}
-        user_id = str(identity.get("user_id") or "").strip()
-        bundle_id = str(identity.get("bundle_id") or "").strip()
-        agent_id = ""
-        try:
-            ctx = get_current_request_context()
-            agent_id = str(getattr(getattr(ctx, "event", None), "agent_id", "") or "").strip()
-        except Exception:
-            agent_id = ""
-        if not user_id or not bundle_id or not agent_id:
-            return None  # not an agent turn — this boundary does not apply
-        agent_turn = True
-        from kdcube_ai_app.apps.chat.sdk.infra.bundle_operations import call_bundle_named_service
         from kdcube_ai_app.apps.chat.sdk.solutions.connections.connection_edges import (
             DEFAULT_CONNECTION_HUB_BUNDLE_ID,
         )
@@ -629,58 +605,85 @@ async def _agent_grant_gate(base_ns: str, operation: str, tool_name: str) -> Dic
         from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_mcp import (
             delegated_client_id_for_agent,
         )
+        from kdcube_ai_app.apps.chat.sdk.solutions.connections.named_service_admission import (
+            native_agent_admission_from_state,
+            native_agent_admission_selector,
+        )
+        from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.admission import (
+            NamedServiceAdmission,
+        )
         from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.types import (
             NamedServiceResponse,
         )
 
+        identity = get_current_user_identity() or {}
+        user_id = str(identity.get("user_id") or "").strip()
+        bundle_id = str(identity.get("bundle_id") or "").strip()
+        ctx = get_current_request_context()
+        agent_id = str(
+            getattr(getattr(ctx, "event", None), "agent_id", "") or ""
+        ).strip()
+        if not user_id or not bundle_id or not agent_id:
+            return None, _error(
+                "delegated_named_service_identity_missing",
+                "A native named-service invocation requires restored user, bundle, and agent identity.",
+                namespace=base_ns,
+                operation=operation,
+            )
+
         client_id = delegated_client_id_for_agent(bundle_id, agent_id)
+        selector = native_agent_admission_selector(
+            source_bundle_id=bundle_id,
+            source_agent_id=agent_id,
+            client_id=client_id,
+            grantor_user_id=user_id,
+        )
+        if get_current_bundle_named_service_caller() is None:
+            return NamedServiceAdmission.delegated(selector=selector), None
+
         result = await call_bundle_named_service(
             bundle_id=DEFAULT_CONNECTION_HUB_BUNDLE_ID,
             request={
                 "namespace": CONNECTIONS_NAMESPACE,
                 "operation": AGENT_GRANT_CHECK,
-                "payload": {"client_id": client_id, "namespace": base_ns, "operation": operation},
+                "payload": {
+                    "client_id": client_id,
+                    "namespace": base_ns,
+                    "operation": operation,
+                },
             },
         )
         value = getattr(result, "value", None)
         response = NamedServiceResponse.coerce(value) if value is not None else None
         if response is None or not response.ok:
-            return _gate_unavailable("agent_grant_check_failed", base_ns, operation)
+            return None, _gate_unavailable("agent_grant_check_failed", base_ns, operation)
         state = dict(response.object or {})
         unavailable = _clean_text(state.get("unavailable"))
         if unavailable:
-            return _gate_unavailable(unavailable, base_ns, operation)
+            return None, _gate_unavailable(unavailable, base_ns, operation)
         removed = state.get("removed")
         if isinstance(removed, Mapping):
-            # The deployment no longer offers this capability. Consent cannot
-            # restore it, so no demand is raised.
             LOGGER.warning(
                 "Named-service agent gate: capability no longer available\n"
                 "  namespace: %s\n  operation: %s\n  tool: %s",
-                base_ns, operation, tool_name,
+                base_ns,
+                operation,
+                tool_name,
             )
-            return dict(removed)
-        # Bind the agent's per-provider account scope for the connected-account
-        # resolver — whether or not the call proceeds — so a granted native call
-        # restricts to the account(s) this agent may use (parity with the MCP
-        # door, which binds it from the bearer credential). Bind UNCONDITIONALLY:
-        # a grant record with no account_scope means "nothing bound yet", and the
-        # identity is what makes the resolver default-CLOSED (empty binding →
-        # agent-grant consent) instead of falling into the non-agent
-        # "no restriction" path.
-        from kdcube_ai_app.apps.chat.sdk.solutions.connections.agent_account_scope import (
-            set_agent_account_scope,
-            set_agent_identity,
-        )
+            return None, dict(removed)
+        if not state.get("governed"):
+            return None, _error(
+                "delegated_named_service_not_governed",
+                "The active delegated-service catalog does not publish this named-service capability.",
+                namespace=base_ns,
+                operation=operation,
+            )
+        if state.get("granted"):
+            return native_agent_admission_from_state(
+                selector=selector,
+                state=state,
+            ), None
 
-        raw_scope = state.get("account_scope")
-        set_agent_account_scope(raw_scope if isinstance(raw_scope, Mapping) else {})
-        # Carry the agent identity so a per-account claim miss at the broker
-        # routes to THIS agent's grant card (Delegated by KDCube), not a
-        # connect-a-provider banner.
-        set_agent_identity(client_id=client_id, resource=str(state.get("resource") or ""))
-        if not state.get("governed") or state.get("granted"):
-            return None
         gate_claims = [str(c) for c in (state.get("claims") or [])]
         # What the card actually lacks, not everything the operation declares:
         # a demand that re-asks for held claims is deduplicated away and the
@@ -712,7 +715,7 @@ async def _agent_grant_gate(base_ns: str, operation: str, tool_name: str) -> Dic
             )
             refused = dict(not_granted)
             refused["consent"] = boundary_consent.consent
-            return refused
+            return None, refused
         # Demand ordering (operator ruling 2026-07-25): when this operation is
         # account-backed and the user has ZERO connected accounts on the
         # backing provider, the CONNECT demand leads — the guided plan ends in
@@ -765,7 +768,7 @@ async def _agent_grant_gate(base_ns: str, operation: str, tool_name: str) -> Dic
                 "  namespace: %s\n  operation: %s\n  tool: %s\n  agent_client: %s\n  provider: %s",
                 base_ns, operation, tool_name, client_id, connect_first.get("provider_id"),
             )
-            return connect_first
+            return None, connect_first
         from kdcube_ai_app.apps.chat.sdk.solutions.connections.mcp_consent import (
             announce_agent_consent,
             mcp_consent_from_denial,
@@ -786,18 +789,16 @@ async def _agent_grant_gate(base_ns: str, operation: str, tool_name: str) -> Dic
             "  namespace: %s\n  operation: %s\n  tool: %s\n  agent_client: %s",
             base_ns, operation, tool_name, client_id,
         )
-        return consent.to_tool_result()
+        return None, consent.to_tool_result()
     except Exception:
-        if not agent_turn:
-            # The boundary never applied: nothing was refused.
-            LOGGER.info("Named-service agent gate not applicable.", exc_info=True)
-            return None
         LOGGER.warning(
             "Named-service agent gate could not establish current authority\n"
             "  namespace: %s\n  operation: %s",
             base_ns, operation, exc_info=True,
         )
-        return _gate_unavailable("agent_grant_check_unavailable", base_ns, operation)
+        return None, _gate_unavailable(
+            "agent_grant_check_unavailable", base_ns, operation
+        )
 
 
 async def _call(
@@ -872,12 +873,24 @@ async def _call(
             action=action,
             client_id=_client_id(),
         )
-    # The per-agent delegated-by boundary (in agent turns, on governed
-    # namespaces): the user must have granted THIS agent before its native
-    # named-service call proceeds to the endpoint.
-    gate = await _agent_grant_gate(base_ns, operation, tool_name)
-    if gate is not None:
-        return gate
+    authorization_operation = (
+        f"{OBJECT_ACTION}.{str(action or '').strip()}"
+        if operation == OBJECT_ACTION and str(action or "").strip()
+        else operation
+    )
+    admission, admission_denial = await _agent_grant_admission(
+        base_ns,
+        authorization_operation,
+        tool_name,
+    )
+    if admission_denial is not None:
+        return admission_denial
+    if admission is None:
+        return _gate_unavailable(
+            "named_service_admission_unavailable",
+            base_ns,
+            authorization_operation,
+        )
     endpoint = _endpoint(ns)
     if isinstance(endpoint, dict):
         LOGGER.warning(
@@ -962,7 +975,11 @@ async def _call(
         _client_id(),
         get_current_named_service_discovery() is not None,
     )
-    response = await call_named_service_endpoint(endpoint, request)
+    response = await call_named_service_endpoint(
+        endpoint,
+        request,
+        admission=admission,
+    )
     payload = response.to_dict()
     await _raise_named_service_consent_demand(payload, namespace=ns, tool_name=tool_name)
     log_fn = LOGGER.info if payload.get("ok") else LOGGER.warning

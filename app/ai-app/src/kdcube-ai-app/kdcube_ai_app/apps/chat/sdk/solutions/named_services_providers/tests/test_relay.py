@@ -12,6 +12,7 @@ is idempotent per message id so bus redelivery never re-runs the action.
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
 
@@ -25,6 +26,15 @@ from kdcube_ai_app.apps.chat.sdk.protocol import (
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.comm_ctx import bind_current_request_context
 from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers import relay
+from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.admission import (
+    NamedServiceAdmission,
+    NamedServiceAdmissionDecision,
+    NamedServiceAdmissionSelector,
+    DELEGATED_SELECTOR_BEARER,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.named_service_admission import (
+    DELEGATED_CARD_BINDING_SCHEMA,
+)
 from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.types import (
     NamedServiceRequest,
     NamedServiceResponse,
@@ -47,6 +57,10 @@ def _send_request() -> NamedServiceRequest:
         action="send",
         payload={"to": "user@example.test", "subject": "Hi"},
     )
+
+
+def _application_admission() -> NamedServiceAdmission:
+    return NamedServiceAdmission.application(source="test.relay")
 
 
 class _FakeRedis:
@@ -78,6 +92,7 @@ async def test_relay_call_carries_identity_and_returns_provider_response(monkeyp
         response = await relay.relay_named_service_call(
             bundle_id="kdcube-services@1-0",
             request=_send_request(),
+            admission=_application_admission(),
         )
 
     assert isinstance(response, NamedServiceResponse)
@@ -88,6 +103,11 @@ async def test_relay_call_carries_identity_and_returns_provider_response(monkeyp
     assert captured["actor"]["user_id"] == "user-1"
     assert captured["actor"]["user_type"] == "registered"
     assert captured["payload"]["request"]["action"] == "send"
+    assert captured["payload"]["admission"] == {
+        "mode": "application",
+        "source": "test.relay",
+    }
+    assert "admission" not in captured["payload"]["request"]
     # Redelivery protection: the message id doubles as the idempotency key.
     assert captured["idempotency_key"] == captured["message_id"]
 
@@ -103,6 +123,7 @@ async def test_relay_call_times_out_loudly(monkeypatch):
         response = await relay.relay_named_service_call(
             bundle_id="kdcube-services@1-0",
             request=_send_request(),
+            admission=_application_admission(),
         )
 
     assert response.ok is False
@@ -116,6 +137,7 @@ async def test_relay_call_requires_bound_identity():
     response = await relay.relay_named_service_call(
         bundle_id="kdcube-services@1-0",
         request=_send_request(),
+        admission=_application_admission(),
         tenant="demo-tenant",
         project="demo-project",
     )
@@ -149,7 +171,11 @@ async def test_relay_handler_dispatches_once_and_replays_recorded_result(monkeyp
         project="demo-project",
         bundle_id="kdcube-services@1-0",
         message_id="nsrelay_1",
-        payload={"request": _send_request().to_dict()},
+        actor={"source_bundle_id": "workspace@2026-03-31-13-36"},
+        payload={
+            "request": _send_request().to_dict(),
+            "admission": _application_admission().relay_selector(),
+        },
     )
 
     with bind_current_request_context(_request_context()):
@@ -174,8 +200,253 @@ async def test_relay_handler_rejects_message_without_request():
         project="demo-project",
         bundle_id="kdcube-services@1-0",
         message_id="nsrelay_2",
+        actor={},
         payload={},
     )
     result = await relay.handle_named_service_relay(ctx, message)
     assert result["status"] == "rejected"
     assert result["error"]["code"] == "named_service_relay_request_invalid"
+
+
+@pytest.mark.asyncio
+async def test_relay_handler_rejects_message_without_admission():
+    ctx = SimpleNamespace(bundle=SimpleNamespace(redis=None, named_services=lambda: object()))
+    message = SimpleNamespace(
+        tenant="demo-tenant",
+        project="demo-project",
+        bundle_id="kdcube-services@1-0",
+        message_id="nsrelay_no_admission",
+        actor={"source_bundle_id": "workspace@2026-03-31-13-36"},
+        payload={"request": _send_request().to_dict()},
+    )
+
+    result = await relay.handle_named_service_relay(ctx, message)
+
+    assert result["status"] == "rejected"
+    assert result["error"]["code"] == "named_service_relay_admission_missing"
+
+
+@pytest.mark.asyncio
+async def test_bearer_relay_resolves_once_and_binds_scope_for_dispatch(monkeypatch):
+    state = {"authorizations": 0, "provider_calls": 0, "bound": False}
+
+    class _Scope:
+        @contextmanager
+        def bind(self):
+            state["bound"] = True
+            try:
+                yield
+            finally:
+                state["bound"] = False
+
+    async def _authorize(self, request):
+        state["authorizations"] += 1
+        return NamedServiceAdmissionDecision.allow(execution_scope=_Scope())
+
+    class _FakeClient:
+        def __init__(self, registry, *, auth_context=None, **kwargs):
+            del registry, auth_context, kwargs
+
+        async def call(self, request):
+            assert state["bound"] is True
+            state["provider_calls"] += 1
+            return NamedServiceResponse.ok_response(namespace=request.namespace)
+
+    monkeypatch.setattr(
+        "kdcube_ai_app.apps.chat.sdk.solutions.connections.named_service_admission.HubNamedServiceAdmissionAuthorizer.authorize",
+        _authorize,
+    )
+    monkeypatch.setattr(
+        "kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.client.NamedServiceClient",
+        _FakeClient,
+    )
+
+    selector = NamedServiceAdmissionSelector(
+        mode="delegated",
+        source="managed_mcp.named_services",
+        delegated_kind=DELEGATED_SELECTOR_BEARER,
+        access_id="oauth-access-1",
+        client_id="claude",
+        grantor_user_id="user-1",
+        delegate_identity="integration:claude:user-1",
+    )
+    actor = {
+        "user_id": "user-1",
+        "source_bundle_id": "workspace@2026-03-31-13-36",
+        "identity_authority": {
+            "delegated_card_binding": {
+                "schema": DELEGATED_CARD_BINDING_SCHEMA,
+                "access_id": selector.access_id,
+                "client_id": selector.client_id,
+                "grantor_user_id": selector.grantor_user_id,
+                "delegate_identity": selector.delegate_identity,
+            }
+        },
+    }
+    redis = _FakeRedis()
+    ctx = SimpleNamespace(
+        bundle=SimpleNamespace(redis=redis, named_services=lambda: object())
+    )
+    message = SimpleNamespace(
+        tenant="demo-tenant",
+        project="demo-project",
+        bundle_id="kdcube-services@1-0",
+        message_id="nsrelay_bearer_1",
+        actor=actor,
+        payload={"request": _send_request().to_dict(), "admission": selector.to_dict()},
+    )
+
+    first = await relay.handle_named_service_relay(ctx, message)
+    replay = await relay.handle_named_service_relay(ctx, message)
+
+    assert first["status"] == "ok"
+    assert replay == first
+    assert state == {"authorizations": 1, "provider_calls": 1, "bound": False}
+
+
+@pytest.mark.asyncio
+async def test_relay_replays_an_admission_denial_without_reauthorizing(monkeypatch):
+    state = {"authorizations": 0, "provider_calls": 0}
+
+    async def _authorize(self, request):
+        state["authorizations"] += 1
+        return NamedServiceAdmissionDecision.deny(
+            NamedServiceResponse.error_response(
+                code="delegated_card_not_active",
+                message="The delegated card is no longer active.",
+                status=403,
+                namespace=request.namespace,
+            )
+        )
+
+    class _FakeClient:
+        def __init__(self, registry, *, auth_context=None, **kwargs):
+            del registry, auth_context, kwargs
+
+        async def call(self, request):
+            del request
+            state["provider_calls"] += 1
+            raise AssertionError("denied admission must not invoke the provider")
+
+    monkeypatch.setattr(
+        "kdcube_ai_app.apps.chat.sdk.solutions.connections.named_service_admission."
+        "HubNamedServiceAdmissionAuthorizer.authorize",
+        _authorize,
+    )
+    monkeypatch.setattr(
+        "kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.client."
+        "NamedServiceClient",
+        _FakeClient,
+    )
+
+    selector = NamedServiceAdmissionSelector(
+        mode="delegated",
+        source="managed_mcp.named_services",
+        delegated_kind=DELEGATED_SELECTOR_BEARER,
+        access_id="oauth-access-1",
+        client_id="claude",
+        grantor_user_id="user-1",
+        delegate_identity="integration:claude:user-1",
+    )
+    actor = {
+        "user_id": "user-1",
+        "source_bundle_id": "workspace@2026-03-31-13-36",
+        "identity_authority": {
+            "delegated_card_binding": {
+                "schema": DELEGATED_CARD_BINDING_SCHEMA,
+                "access_id": selector.access_id,
+                "client_id": selector.client_id,
+                "grantor_user_id": selector.grantor_user_id,
+                "delegate_identity": selector.delegate_identity,
+            }
+        },
+    }
+    redis = _FakeRedis()
+    ctx = SimpleNamespace(
+        bundle=SimpleNamespace(redis=redis, named_services=lambda: object())
+    )
+    message = SimpleNamespace(
+        tenant="demo-tenant",
+        project="demo-project",
+        bundle_id="kdcube-services@1-0",
+        message_id="nsrelay_bearer_denied",
+        actor=actor,
+        payload={"request": _send_request().to_dict(), "admission": selector.to_dict()},
+    )
+
+    first = await relay.handle_named_service_relay(ctx, message)
+    replay = await relay.handle_named_service_relay(ctx, message)
+
+    assert first["data"]["response"]["error"]["code"] == "delegated_card_not_active"
+    assert replay == first
+    assert state == {"authorizations": 1, "provider_calls": 0}
+
+
+@pytest.mark.asyncio
+async def test_bearer_relay_rejects_actor_binding_mismatch_before_hub(monkeypatch):
+    async def _never(*_args, **_kwargs):
+        raise AssertionError("Hub admission must not run for a forged selector")
+
+    monkeypatch.setattr(
+        "kdcube_ai_app.apps.chat.sdk.solutions.connections.named_service_admission.HubNamedServiceAdmissionAuthorizer.authorize",
+        _never,
+    )
+    selector = NamedServiceAdmissionSelector(
+        mode="delegated",
+        source="managed_mcp.named_services",
+        delegated_kind=DELEGATED_SELECTOR_BEARER,
+        access_id="oauth-access-1",
+        client_id="claude",
+        grantor_user_id="user-1",
+        delegate_identity="integration:claude:user-1",
+    )
+    ctx = SimpleNamespace(
+        bundle=SimpleNamespace(redis=None, named_services=lambda: object())
+    )
+    message = SimpleNamespace(
+        tenant="demo-tenant",
+        project="demo-project",
+        bundle_id="kdcube-services@1-0",
+        message_id="nsrelay_bearer_bad",
+        actor={
+            "user_id": "user-1",
+            "source_bundle_id": "workspace@2026-03-31-13-36",
+            "identity_authority": {
+                "delegated_card_binding": {
+                    "schema": DELEGATED_CARD_BINDING_SCHEMA,
+                    "access_id": "different-card",
+                    "client_id": "claude",
+                    "grantor_user_id": "user-1",
+                    "delegate_identity": "integration:claude:user-1",
+                }
+            },
+        },
+        payload={"request": _send_request().to_dict(), "admission": selector.to_dict()},
+    )
+
+    result = await relay.handle_named_service_relay(ctx, message)
+
+    assert result["status"] == "rejected"
+    assert result["error"]["code"] == "named_service_relay_admission_invalid"
+    assert "does not match" in result["error"]["message"]
+
+    message.message_id = "nsrelay_bearer_bad_grantor"
+    message.actor = {
+        "user_id": "different-user",
+        "source_bundle_id": "workspace@2026-03-31-13-36",
+        "identity_authority": {
+            "delegated_card_binding": {
+                "schema": DELEGATED_CARD_BINDING_SCHEMA,
+                "access_id": selector.access_id,
+                "client_id": selector.client_id,
+                "grantor_user_id": selector.grantor_user_id,
+                "delegate_identity": selector.delegate_identity,
+            }
+        },
+    }
+
+    wrong_grantor = await relay.handle_named_service_relay(ctx, message)
+
+    assert wrong_grantor["status"] == "rejected"
+    assert wrong_grantor["error"]["code"] == "named_service_relay_admission_invalid"
+    assert "grantor identity" in wrong_grantor["error"]["message"]

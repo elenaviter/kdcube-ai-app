@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""The named-services door intersects the card with the active catalog.
-
-A card's materialized boundary proves an operation was selected under the
-catalog generation the card was saved against. It does not prove the deployment
-still offers it, so the door checks the parsed namespace and operation against
-the active catalog before a provider is selected.
-"""
+"""The named-services door uses the guard's exact card/catalog snapshot."""
 
 from __future__ import annotations
 
@@ -16,13 +10,28 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from kdcube_ai_app.apps.chat.sdk.runtime.dynamic_module_loader import load_dynamic_module_for_path
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.tests.helpers import (
-    bind_delegated_catalog,
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.authority_registry import (
+    CredentialEnvelope,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.catalog.authorization import (
+    ActiveCatalogCapabilities,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.catalog.models import (
+    CatalogDocument,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.named_service_admission import (
+    managed_named_service_admission,
+    store_managed_named_service_admission_snapshot,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers import NamedServiceRequest
+from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.transports import (
+    api_client as named_service_api_client,
 )
 
 BUNDLE_ROOT = Path(__file__).resolve().parents[1]
 
 RESOURCE = "*/api/integrations/bundles/*/*/kdcube-services@1-0/public/mcp/named_services*"
+REQUEST_RESOURCE = "/api/integrations/bundles/t/p/kdcube-services@1-0/public/mcp/named_services"
 CARD_VERSION = "delegated_catalog_2026-08-09-09-00-00-000_a1b2c3d4e5f6"
 
 NAMED_SERVICES = {
@@ -60,52 +69,11 @@ def _bridge_module():
     return module
 
 
-class _Policy:
-    namespace = "mail"
-
-    def tool_configured(self, tool_name):
-        return True
-
-    def operation_configured(self, *, tool_name, operation):
-        return True
-
-    def grants_for(self, *, tool_name, operation):
-        return []
-
-    def authority_for(self, *, tool_name, operation):
-        return ""
-
-
-def _request(*, delegated=True, connections=CONNECTIONS, unavailable="", resolvers=True):
-    state = SimpleNamespace()
-    if delegated:
-        state.delegated_credential = {
-            "credential": {"attrs": {"grants": ["named_services:use"]}},
-            "grant_record": {
-                "client_id": "claude",
-                "registry_access_id": "oauth-5aa44826664a0bdd",
-                "card_revision": 8,
-                "catalog_version": CARD_VERSION,
-                "resource_grants": {RESOURCE: ["named_services:use"]},
-                "named_services": copy.deepcopy(NAMED_SERVICES),
-            },
-        }
-    if resolvers:
-        bind_delegated_catalog(
-            SimpleNamespace(state=state), connections, unavailable=unavailable
-        )
-    return SimpleNamespace(state=state)
-
-
-def _bridge(module, request, *, config=None):
-    return module.NamedServicesMcpBridge(
-        config=config or {}, tenant="t", project="p", request=request
-    )
-
-
 def _without(namespace: str = "", operation_tool: str = "") -> dict:
     trimmed = copy.deepcopy(CONNECTIONS)
-    namespaces = trimmed["delegated_credentials"]["oauth"]["resources"][0]["named_services"]["namespaces"]
+    namespaces = trimmed["delegated_credentials"]["oauth"]["resources"][0][
+        "named_services"
+    ]["namespaces"]
     if namespace:
         namespaces.pop(namespace, None)
     if operation_tool:
@@ -113,36 +81,98 @@ def _without(namespace: str = "", operation_tool: str = "") -> dict:
     return trimmed
 
 
-async def test_an_operation_the_catalog_still_offers_is_admitted():
-    module = _bridge_module()
-    bridge = _bridge(module, _request())
+_DEFAULT_CARD_BOUNDARY = object()
 
-    denial = await bridge._current_catalog_denial(
-        namespace="mail", operation="object.search", tool_name="named_services_search"
+
+def _request(
+    *,
+    connections=CONNECTIONS,
+    card_boundary=_DEFAULT_CARD_BOUNDARY,
+    snapshot: bool = True,
+):
+    boundary = (
+        copy.deepcopy(NAMED_SERVICES)
+        if card_boundary is _DEFAULT_CARD_BOUNDARY
+        else copy.deepcopy(card_boundary)
+    )
+    grant_record = {
+        "client_id": "claude",
+        "registry_access_id": "oauth-5aa44826664a0bdd",
+        "grantor_subject": "user-1",
+        "delegate_subject": "integration:claude:user-1",
+        "card_revision": 8,
+        "catalog_version": CARD_VERSION,
+        "resource_grants": {RESOURCE: ["named_services:use"]},
+        "account_scope": {},
+    }
+    if card_boundary is not None:
+        grant_record["named_services"] = boundary
+    credential = CredentialEnvelope(
+        subject="integration:claude:user-1",
+        attrs={
+            "client_id": "claude",
+            "grantor_subject": "user-1",
+            "grants": ["named_services:use"],
+            "resource": RESOURCE,
+        },
+    )
+    request = SimpleNamespace(
+        state=SimpleNamespace(
+            delegated_credential={
+                "credential": credential.to_dict(),
+                "grant_record": grant_record,
+            }
+        )
+    )
+    if snapshot:
+        store_managed_named_service_admission_snapshot(
+            request,
+            catalog=ActiveCatalogCapabilities(CatalogDocument.build(connections)),
+            grant_record=grant_record,
+            credential=credential,
+            resource=RESOURCE,
+            request_resource=REQUEST_RESOURCE,
+            outer_operation="named_services_search",
+        )
+    return request
+
+
+def _bridge(module, request, *, config=None):
+    return module.NamedServicesMcpBridge(
+        config=copy.deepcopy(NAMED_SERVICES) if config is None else config,
+        tenant="t",
+        project="p",
+        request=request,
     )
 
-    assert denial is None
+
+async def _decision(request, *, operation="object.search"):
+    return await managed_named_service_admission(request).authorize(
+        NamedServiceRequest(operation=operation, namespace="mail")
+    )
+
+
+async def test_an_operation_the_catalog_still_offers_is_admitted():
+    decision = await _decision(_request())
+    assert decision.allowed is True
 
 
 async def test_a_namespace_removed_from_the_catalog_denies_with_its_whole_path():
-    module = _bridge_module()
-    bridge = _bridge(module, _request(connections=_without(namespace="mail")))
+    decision = await _decision(_request(connections=_without(namespace="mail")))
 
-    denial = await bridge._current_catalog_denial(
-        namespace="mail", operation="object.search", tool_name="named_services_search"
-    )
-
+    assert decision.allowed is False
+    denial = decision.denial
     assert denial is not None
-    assert denial["error"]["code"] == "delegated_capability_no_longer_available"
-    assert denial["error"]["retryable"] is False
-    ret = denial["ret"]
-    assert ret["access_id"] == "oauth-5aa44826664a0bdd"
-    assert ret["card_revision"] == 8
-    assert ret["card_catalog_version"] == CARD_VERSION
-    assert ret["active_catalog_version"] != CARD_VERSION
-    assert ret["requested_capability"] == {
+    assert denial.error.code == "delegated_capability_no_longer_available"
+    assert denial.status == 403
+    assert denial.ret["access_id"] == "oauth-5aa44826664a0bdd"
+    assert denial.ret["card_revision"] == 8
+    assert denial.ret["card_catalog_version"] == CARD_VERSION
+    assert denial.ret["active_catalog_version"] != CARD_VERSION
+    assert denial.ret["requested_capability"] == {
         "kind": "named_service_operation",
         "resource": RESOURCE,
+        "request_resource": REQUEST_RESOURCE,
         "surface": "named_service",
         "outer_operation": "named_services_search",
         "namespace": "mail",
@@ -151,58 +181,14 @@ async def test_a_namespace_removed_from_the_catalog_denies_with_its_whole_path()
 
 
 async def test_a_removed_operation_denies_while_its_namespace_survives():
-    module = _bridge_module()
-    bridge = _bridge(module, _request(connections=_without(operation_tool="schema")))
+    request = _request(connections=_without(operation_tool="schema"))
 
-    removed = await bridge._current_catalog_denial(
-        namespace="mail", operation="object.schema", tool_name="named_services_schema"
-    )
-    surviving = await bridge._current_catalog_denial(
-        namespace="mail", operation="object.search", tool_name="named_services_search"
-    )
+    removed = await _decision(request, operation="object.schema")
+    surviving = await _decision(request, operation="object.search")
 
-    assert removed is not None
-    assert removed["ret"]["requested_capability"]["operation"] == "object.schema"
-    assert surviving is None
-
-
-async def test_a_caller_without_a_delegated_credential_is_not_narrowed():
-    module = _bridge_module()
-    bridge = _bridge(module, _request(delegated=False))
-
-    denial = await bridge._current_catalog_denial(
-        namespace="mail", operation="object.search", tool_name="named_services_search"
-    )
-
-    assert denial is None
-
-
-async def test_an_unreadable_catalog_is_retryable_unavailability():
-    module = _bridge_module()
-    bridge = _bridge(module, _request(unavailable="durable_active_unreadable"))
-
-    denial = await bridge._current_catalog_denial(
-        namespace="mail", operation="object.search", tool_name="named_services_search"
-    )
-
-    assert denial is not None
-    assert denial["error"]["code"] == "temporarily_unavailable"
-    assert denial["error"]["retryable"] is True
-    assert denial["ret"]["reason"] == "durable_active_unreadable"
-
-
-async def test_uninstalled_serving_resolvers_fail_closed():
-    """Absent readers are a composition failure, never "no requirement"."""
-    module = _bridge_module()
-    bridge = _bridge(module, _request(resolvers=False))
-
-    denial = await bridge._current_catalog_denial(
-        namespace="mail", operation="object.search", tool_name="named_services_search"
-    )
-
-    assert denial is not None
-    assert denial["error"]["code"] == "temporarily_unavailable"
-    assert denial["ret"]["reason"] == "delegated_serving_resolvers_absent"
+    assert removed.allowed is False
+    assert removed.denial.ret["requested_capability"]["operation"] == "object.schema"
+    assert surviving.allowed is True
 
 
 async def test_the_door_refuses_before_a_provider_is_selected(monkeypatch):
@@ -212,128 +198,59 @@ async def test_the_door_refuses_before_a_provider_is_selected(monkeypatch):
     async def _never(*_args, **_kwargs):
         raise AssertionError("provider must not be reached")
 
-    monkeypatch.setattr(module, "call_named_service_endpoint", _never)
-
+    monkeypatch.setattr(named_service_api_client, "_call_bundle_registry_endpoint", _never)
     payload = await bridge.call(
-        tool_name="named_services_search", operation="object.search", namespace="mail",
+        tool_name="search",
+        operation="object.search",
+        namespace="mail",
     )
 
     assert payload["error"]["code"] == "delegated_capability_no_longer_available"
 
 
-async def test_a_delegated_card_with_an_empty_boundary_reaches_no_namespace():
-    """The card's empty tree is its boundary; the descriptor does not refill it."""
+async def test_a_delegated_card_with_an_empty_boundary_reaches_no_operation(monkeypatch):
     module = _bridge_module()
-    request = _request()
-    request.state.delegated_credential["grant_record"]["named_services"] = {"namespaces": {}}
-    bridge = _bridge(module, request, config=copy.deepcopy(NAMED_SERVICES))
+    bridge = _bridge(module, _request(card_boundary={"namespaces": {}}))
 
+    async def _never(*_args, **_kwargs):
+        raise AssertionError("provider must not be reached")
+
+    monkeypatch.setattr(named_service_api_client, "_call_bundle_registry_endpoint", _never)
     payload = await bridge.call(
-        tool_name="named_services_search", operation="object.search", namespace="mail",
+        tool_name="search",
+        operation="object.search",
+        namespace="mail",
     )
 
-    assert payload["error"] == "namespace_not_configured"
+    assert payload["error"]["code"] == "delegated_capability_not_granted"
+    assert payload["ret"]["recovery"]["request_user_consent"] is True
 
 
-async def test_a_card_written_before_the_boundary_field_keeps_the_descriptor():
-    """Absence of the field is a pre-encoding card, not an empty boundary."""
-    module = _bridge_module()
-    request = _request()
-    request.state.delegated_credential["grant_record"].pop("named_services")
-    bridge = _bridge(module, request, config=copy.deepcopy(NAMED_SERVICES))
+async def test_a_pre_boundary_card_fails_closed_at_dispatch():
+    decision = await _decision(_request(card_boundary=None))
 
-    assert set(bridge._catalog.namespace_names()) == {"mail"}
+    assert decision.allowed is False
+    assert decision.denial.error.code == "delegated_card_boundary_unavailable"
+    assert decision.denial.status == 503
 
 
-class _NarrowedPolicy(_Policy):
-    """The card's boundary: the tool is configured, this operation is not."""
-
-    def operation_configured(self, *, tool_name, operation):
-        return operation != "object.search"
-
-
-async def test_an_operation_the_card_does_not_cover_names_its_remedy():
-    """The mirror of the removal denial.
-
-    The catalog still offers this, so the answer is not "gone" — the card's
-    grantor can add it. Without saying so the door returned an anonymous
-    `named_service_operation_not_configured`, and the caller had nothing to act
-    on in the one case where a remedy exists.
-    """
-    module = _bridge_module()
-    # The card's own tree is the boundary, so narrowing it is how this happens.
-    request = _request()
-    tools = request.state.delegated_credential["grant_record"]["named_services"]
-    tools["namespaces"]["mail"]["tools"].pop("search")
-    bridge = _bridge(module, request)
-
-    denial = await bridge._authorize(
-        bridge._catalog.policy_for("mail"),
-        "object.search",
-        tool_name="named_services_search",
-    )
-
-    assert denial is not None
-    assert denial["error"]["code"] == "delegated_capability_not_granted"
-    assert denial["error"]["retryable"] is False
-    ret = denial["ret"]
-    assert ret["access_id"] == "oauth-5aa44826664a0bdd"
-    assert ret["card_revision"] == 8
-    assert ret["card_catalog_version"] == CARD_VERSION
-    assert ret["recovery"] == {
-        "action": "grant_capability_in_delegated_access",
-        "retry_same_request": False,
-        "request_user_consent": True,
-    }
-    assert ret["requested_capability"] == {
-        "kind": "named_service_operation",
-        "resource": RESOURCE,
-        "surface": "named_service",
-        "outer_operation": "named_services_search",
-        "namespace": "mail",
-        "operation": "object.search",
-    }
-
-
-async def test_a_non_delegated_caller_still_gets_the_descriptor_answer():
-    """Nothing to grant and no card to point at: the boundary is the descriptor
-    itself, so the flat configuration error stays."""
-    module = _bridge_module()
-    bridge = _bridge(module, _request(delegated=False))
-
-    denial = await bridge._authorize(
-        _NarrowedPolicy(), "object.search", tool_name="named_services_search"
-    )
-
-    assert denial["error"] == "named_service_operation_not_configured"
-
-
-async def test_the_listing_hides_an_operation_the_catalog_withdrew():
-    """Discovery is bounded by the card's tree; execution intersects it with the
-    catalog as it is now. Without the same intersection here a withdrawn
-    operation stays advertised, and the removal denial's own recovery -
-    "refresh discovery" - confirms the wrong answer."""
+async def test_the_listing_intersects_card_and_active_catalog():
     module = _bridge_module()
 
     listed = await _bridge(module, _request()).list_services()
     mail = next(ns for ns in listed["services"] if ns["namespace"] == "mail")
-    assert "search" in mail["tools"]
+    assert set(mail["tools"]) == {"search", "schema"}
 
-    # The card keeps its materialized tree; only the catalog loses the tool.
     withdrawn = await _bridge(
         module, _request(connections=_without(operation_tool="search"))
     ).list_services()
     mail = next(ns for ns in withdrawn["services"] if ns["namespace"] == "mail")
-    assert "search" not in mail["tools"], mail["tools"]
-    assert "schema" in mail["tools"]
+    assert set(mail["tools"]) == {"schema"}
 
-    # And execution agrees with the listing.
-    denial = await _bridge(
-        module, _request(connections=_without(operation_tool="search"))
-    )._current_catalog_denial(
-        namespace="mail", operation="object.search", tool_name="named_services_search"
-    )
-    assert denial is not None
+    empty_card = await _bridge(
+        module, _request(card_boundary={"namespaces": {}})
+    ).list_services()
+    assert empty_card["services"] == []
 
 
 async def test_a_namespace_the_catalog_dropped_leaves_the_listing():
@@ -341,21 +258,25 @@ async def test_a_namespace_the_catalog_dropped_leaves_the_listing():
     listed = await _bridge(
         module, _request(connections=_without(namespace="mail"))
     ).list_services()
-    assert [ns["namespace"] for ns in listed["services"]] == []
+    assert listed["services"] == []
 
 
-async def test_the_listing_fails_closed_when_the_catalog_is_unavailable():
-    """Falling back to the card's tree here would reopen the gap on every cache
-    miss."""
+async def test_missing_managed_snapshot_fails_closed():
     module = _bridge_module()
-    listed = await _bridge(module, _request(unavailable="catalog_unavailable")).list_services()
-    assert listed.get("ok") is False
+    bridge = _bridge(module, _request(snapshot=False))
 
-
-async def test_a_caller_with_no_delegated_credential_lists_the_descriptor():
-    module = _bridge_module()
-    bridge = _bridge(
-        module, _request(delegated=False), config=copy.deepcopy(NAMED_SERVICES)
-    )
     listed = await bridge.list_services()
-    assert [ns["namespace"] for ns in listed["services"]] == ["mail"]
+    called = await bridge.call(
+        tool_name="search",
+        operation="object.search",
+        namespace="mail",
+    )
+
+    assert listed == {
+        "ok": False,
+        "status": 503,
+        "error": "named_service_admission_unavailable",
+        "message": "Managed named-service admission snapshot is unavailable",
+    }
+    assert called["status"] == 503
+    assert called["error"] == "named_service_admission_unavailable"

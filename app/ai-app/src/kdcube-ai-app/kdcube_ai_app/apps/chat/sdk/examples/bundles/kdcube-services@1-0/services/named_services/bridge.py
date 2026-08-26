@@ -7,24 +7,9 @@ from typing import Any, Iterable, Mapping, Sequence
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.credential_view import (
     delegated_credential_view,
 )
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.catalog.authorization import (
-    CAPABILITY_NAMED_SERVICE_OPERATION,
-    ActiveCatalogCapabilities,
-    CapabilityRequest,
-    CardProvenance,
-    authorize_current_capability,
-    card_boundary_denial,
-    catalog_unavailable_denial,
-)
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.catalog.resolver import (
-    CatalogUnavailable,
-)
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.named_service_policy import (
-    boundary_permits_operation,
-    configured_named_service_operations,
-)
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.serving import (
-    delegated_serving_resolvers,
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.named_service_admission import (
+    managed_named_service_admission,
+    managed_named_service_catalog_operations,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.comm_ctx import (
     get_current_request_context,
@@ -155,11 +140,6 @@ def _delegated_grant_record(request: Any) -> dict[str, Any]:
     return dict(grant_record or {}) if isinstance(grant_record, Mapping) else {}
 
 
-def _named_service_catalog_config_from_request(request: Any) -> dict[str, Any]:
-    raw = delegated_credential_view(request).named_services
-    return dict(raw or {}) if isinstance(raw, Mapping) else {}
-
-
 def _credential_authority_id_from_request(request: Any) -> str:
     return delegated_credential_view(request).authority_id
 
@@ -266,7 +246,7 @@ class NamedServicesMcpBridge:
         # Capture the public origin the client connected to so downstream providers
         # can mint absolute out-of-band URLs (e.g. binary file downloads).
         set_public_base_url_from_request(request)
-        view = self._bind_delegated_request_scope()
+        view = delegated_credential_view(request)
         LOGGER.info(
             "[kdcube-services.named_services_mcp] credential projection present=%s client_id=%s resources=%s "
             "grants=%s account_scope=%s",
@@ -276,15 +256,10 @@ class NamedServicesMcpBridge:
             sorted(view.grants),
             _account_scope_summary(view.account_scope),
         )
-        # A card that carries a materialized tree is bounded by it, and an empty
-        # tree is that card's own boundary — falling back to the full descriptor
-        # there would widen what consent narrowed. A request with no delegated
-        # credential, or a card written before the field, runs on the descriptor.
-        catalog_config = (
-            _named_service_catalog_config_from_request(request)
-            if view.named_services_present
-            else self._config
-        )
+        # Descriptor policy owns provider routing. The request-bound admission
+        # snapshot independently narrows that inventory to the exact card and
+        # active catalog accepted by the managed MCP guard.
+        catalog_config = self._config
         # The guarded service decides which connector app serves each provider
         # in auth scenarios (never a user pick): bind its declaration so realm
         # integrations and consent composers resolve it for this request.
@@ -297,88 +272,24 @@ class NamedServicesMcpBridge:
             if isinstance(catalog_config, Mapping) else None
         )
         self._catalog = NamedServiceBoundaryCatalog(catalog_config)
-        # The card's materialized tree, raw: the shared predicate reads it.
-        # None for a caller with no card.
-        self._card_named_services = (
-            catalog_config if view.named_services_present else None
-        )
-
-    def _bind_delegated_request_scope(self):
-        # Bind the calling agent's per-provider account scope so the shared
-        # connected-account resolver can restrict which account satisfies a
-        # provider claim (the agent's card names which account(s) per provider).
-        # The identity MUST be bound too, even when the card has no account
-        # bindings yet: a door caller is always a delegated caller, and the
-        # identity is what makes the resolver default-CLOSED (empty binding =
-        # nothing granted -> agent-grant consent), instead of falling back to
-        # the non-agent "no restriction" path.
-        #
-        # This is intentionally called both at bridge construction and again at
-        # each tool-call entry. Streamable MCP can execute the tool in a later
-        # task than the app construction path; binding here keeps the
-        # account_scope attached to the exact invocation that reaches providers.
-        from kdcube_ai_app.apps.chat.sdk.solutions.connections.agent_account_scope import (
-            set_agent_account_scope,
-            set_agent_identity,
-        )
-
-        view = delegated_credential_view(self._request)
-        set_agent_account_scope(view.account_scope)
-        set_agent_identity(
-            client_id=view.client_id,
-            resource=view.resources[0] if view.resources else "",
-        )
-        return view
-
-    async def _delegated_catalog_operations(
-        self,
-    ) -> tuple[dict[str, set[str]] | None, dict[str, Any] | None]:
-        """``(namespace -> operations the active catalog offers, denial)``.
-
-        Both ``None`` for a caller with no delegated credential: the descriptor
-        is that caller's only boundary. Resolved for the door the request
-        arrived at, because a card may hold several.
-        """
-        view = delegated_credential_view(self._request)
-        if not view.present:
-            return None, None
-        resolvers = delegated_serving_resolvers(self._request)
-        if resolvers is None:
-            return None, catalog_unavailable_denial("delegated_serving_resolvers_absent")
-        try:
-            document = await resolvers.catalog.resolve_active()
-        except CatalogUnavailable as exc:
-            return None, catalog_unavailable_denial(exc.reason)
-        except Exception:
-            LOGGER.warning(
-                "[kdcube-services.named_services_mcp] active catalog unreadable", exc_info=True
-            )
-            return None, catalog_unavailable_denial("catalog_unavailable")
-        resource_cfg = ActiveCatalogCapabilities(document).resource_config(
-            CapabilityRequest(
-                kind=CAPABILITY_NAMED_SERVICE_OPERATION,
-                resource=view.resource,
-                surface="named_service",
-            )
-        )
-        named_services = getattr(resource_cfg, "named_services", None)
-        if not isinstance(named_services, Mapping) or not named_services:
-            return {}, None
-        return configured_named_service_operations(named_services), None
 
     async def list_services(self) -> dict[str, Any]:
-        self._bind_delegated_request_scope()
         # The listing is bounded by the card's materialized tree, which is what
         # the catalog offered when the card was saved. Execution intersects that
         # with the catalog as it is now, so without the same intersection here a
         # withdrawn operation stays advertised - and the removal denial's own
         # recovery, "refresh discovery", confirms the wrong answer.
-        offered, denial = await self._delegated_catalog_operations()
-        if denial is not None:
-            return denial
+        try:
+            offered = managed_named_service_catalog_operations(self._request)
+        except ValueError as exc:
+            return {
+                "ok": False,
+                "status": 503,
+                "error": "named_service_admission_unavailable",
+                "message": str(exc),
+            }
         services = self._catalog.list_public()
-        if offered is not None:
-            services = _narrow_public_services(services, offered)
+        services = _narrow_public_services(services, offered)
         return {
             "ok": True,
             "services": services,
@@ -413,94 +324,8 @@ class NamedServicesMcpBridge:
             )
         return endpoint
 
-    async def _current_catalog_denial(
-        self, *, namespace: str, operation: str, tool_name: str
-    ) -> dict[str, Any] | None:
-        """Intersect the requested namespace operation with the active catalog.
-
-        The card's materialized tree proves the operation was selected under
-        the catalog generation the card was saved against; it does not prove
-        the deployment still offers it. Runs on the parsed request, never on a
-        tool name.
-        """
-        view = delegated_credential_view(self._request)
-        if not view.present:
-            # Not a delegated caller: the descriptor is the only boundary.
-            return None
-        resolvers = delegated_serving_resolvers(self._request)
-        if resolvers is None:
-            return catalog_unavailable_denial("delegated_serving_resolvers_absent")
-        try:
-            document = await resolvers.catalog.resolve_active()
-        except CatalogUnavailable as exc:
-            return catalog_unavailable_denial(exc.reason)
-        except Exception:
-            LOGGER.warning(
-                "[kdcube-services.named_services_mcp] active catalog unreadable", exc_info=True
-            )
-            return catalog_unavailable_denial("catalog_unavailable")
-        return authorize_current_capability(
-            catalog=ActiveCatalogCapabilities(document),
-            provenance=CardProvenance(
-                access_id=view.registry_access_id,
-                card_revision=view.card_revision,
-                catalog_version=view.catalog_version,
-            ),
-            request=CapabilityRequest(
-                kind=CAPABILITY_NAMED_SERVICE_OPERATION,
-                resource=view.resource,
-                surface="named_service",
-                outer_operation=tool_name,
-                namespace=namespace,
-                operation=operation,
-            ),
-        )
-
-    def _card_boundary_denial(
-        self, *, namespace: str, operation: str, tool_name: str
-    ) -> dict[str, Any] | None:
-        """The card-side refusal, or ``None`` for a caller with no card.
-
-        The active catalog was consulted before this, so reaching here means the
-        deployment offers the capability and only the card does not cover it —
-        a remedy its grantor owns. Both the missing-tool and missing-operation
-        branches are that same condition.
-        """
-        view = delegated_credential_view(self._request)
-        if not view.present:
-            return None
-        return card_boundary_denial(
-            provenance=CardProvenance(
-                access_id=view.registry_access_id,
-                card_revision=view.card_revision,
-                catalog_version=view.catalog_version,
-            ),
-            request=CapabilityRequest(
-                kind=CAPABILITY_NAMED_SERVICE_OPERATION,
-                resource=view.resource,
-                surface="named_service",
-                outer_operation=tool_name,
-                namespace=namespace,
-                operation=operation,
-            ),
-        )
-
     async def _authorize(self, policy: NamespaceBoundaryPolicy, operation: str, tool_name: str) -> dict[str, Any] | None:
-        if self._card_named_services is not None:
-            # The card-side question, answered by the predicate the native
-            # agent gate uses. The tool name is this surface's routing; the
-            # card grants operations.
-            if not boundary_permits_operation(
-                self._card_named_services,
-                namespace=policy.namespace,
-                operation=operation,
-            ):
-                denial = self._card_boundary_denial(
-                    namespace=policy.namespace, operation=operation, tool_name=tool_name
-                )
-                if denial is not None:
-                    return denial
-        elif not policy.tool_configured(tool_name):
+        if not policy.tool_configured(tool_name):
             return {
                 "ok": False,
                 "error": "named_service_tool_not_configured",
@@ -630,7 +455,6 @@ class NamedServicesMcpBridge:
                 "allowed_operations": list(EXPOSED_OPERATIONS),
             }
 
-        self._bind_delegated_request_scope()
         # Log EVERY inbound call attempt (including unknown/unconsented namespaces),
         # before any authorization decision, so denials are always traceable.
         trace = _credential_trace_context(self._request)
@@ -685,13 +509,9 @@ class NamedServicesMcpBridge:
             if op == OBJECT_ACTION and action_name
             else op
         )
-        denial = await self._current_catalog_denial(
-            namespace=ns, operation=authorization_operation, tool_name=tool_name
+        denial = await self._authorize(
+            policy, authorization_operation, tool_name=tool_name
         )
-        if denial is None:
-            denial = await self._authorize(
-                policy, authorization_operation, tool_name=tool_name
-            )
         if denial is not None:
             LOGGER.warning(
                 "[kdcube-services.named_services_mcp] denied tool=%s operation=%s namespace=%s error=%s missing_grants=%s available_grants=%s delegate=%s grantor=%s",
@@ -729,9 +549,19 @@ class NamedServicesMcpBridge:
             idempotency_key=str(idempotency_key or "").strip() or None,
         )
         try:
+            admission = managed_named_service_admission(self._request)
+        except ValueError as exc:
+            return {
+                "ok": False,
+                "status": 503,
+                "error": "named_service_admission_unavailable",
+                "message": str(exc),
+            }
+        try:
             response = await call_named_service_endpoint(
                 self._endpoint_for(policy, provider=provider),
                 request,
+                admission=admission,
             )
         except Exception:
             LOGGER.exception(

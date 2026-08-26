@@ -29,6 +29,7 @@ from kdcube_ai_app.apps.chat.sdk.protocol import (
 from kdcube_ai_app.apps.chat.sdk.runtime.comm_ctx import bind_current_request_context
 from kdcube_ai_app.apps.chat.sdk.runtime import comm_ctx as comm_ctx_mod
 from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers import (
+    NamedServiceAdmission,
     NamedServiceEndpoint,
     NamedServiceCanvasObjectResolver,
     NamedServiceClient,
@@ -64,6 +65,22 @@ from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers import (
 import kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.discovery as discovery_mod
 import kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.tools as named_service_client_tools
 from kdcube_ai_app.apps.chat.sdk.solutions.canvas.events.resolver import CanvasObjectResolverRegistry
+
+
+def _application_admission() -> NamedServiceAdmission:
+    return NamedServiceAdmission.application(source="test.named_services")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_native_admission(monkeypatch):
+    async def _admission(*_args, **_kwargs):
+        return _application_admission(), None
+
+    monkeypatch.setattr(
+        named_service_client_tools,
+        "_agent_grant_admission",
+        _admission,
+    )
 
 
 class FakeDiscoveryRedis:
@@ -388,6 +405,7 @@ async def test_api_endpoint_client_calls_bound_bundle_operation_and_unwraps_resp
         response = await call_named_service_endpoint(
             endpoint,
             NamedServiceRequest(operation="provider.about"),
+            admission=_application_admission(),
         )
 
     assert response.ok is True
@@ -426,6 +444,7 @@ async def test_endpoint_defaults_to_direct_bundle_registry_when_bound():
         response = await call_named_service_endpoint(
             endpoint,
             NamedServiceRequest(operation="provider.about"),
+            admission=_application_admission(),
         )
 
     assert response.ok is True
@@ -464,6 +483,7 @@ async def test_bundle_registry_endpoint_accepts_equivalent_response_object():
         response = await call_named_service_endpoint(
             endpoint,
             NamedServiceRequest(operation="object.get", namespace="task", object_ref="task:issue:BUG-123"),
+            admission=_application_admission(),
         )
 
     assert response.ok is True
@@ -518,6 +538,7 @@ async def test_discovery_routes_one_namespace_to_multiple_provider_bundles_by_op
         issue = await call_named_service_endpoint(
             endpoint,
             NamedServiceRequest(operation="object.get", namespace="task", object_ref="task:issue:BUG-123"),
+            admission=_application_admission(),
         )
         attachment = await call_named_service_endpoint(
             endpoint,
@@ -527,6 +548,7 @@ async def test_discovery_routes_one_namespace_to_multiple_provider_bundles_by_op
                 object_ref="task:issue:attachment:BUG-123/attachments/a1/v000001/evidence.md",
                 payload={"object_kind": "task.attachment"},
             ),
+            admission=_application_admission(),
         )
 
     assert issue.ok is True
@@ -829,6 +851,7 @@ async def test_endpoint_streams_direct_bundle_registry_bytes_when_bound():
                 operation="object.get",
                 object_ref="task:issue:attachment:BUG-123/attachments/ta_1/v000001/evidence.md",
             ),
+            admission=_application_admission(),
         )
 
     data = b""
@@ -1597,7 +1620,8 @@ async def test_named_service_block_render_projection_fans_out_and_merges_owned_p
 
     calls: list[NamedServiceRequest] = []
 
-    async def _call(_endpoint, request):
+    async def _call(_endpoint, request, *, admission):
+        assert admission.mode == "application"
         calls.append(request)
         namespace = request.namespace
         if namespace == "mem":

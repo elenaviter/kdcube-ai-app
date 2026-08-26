@@ -220,14 +220,25 @@ class ConnectionsProviderBase(NamedServiceProvider):
         client_id = str(payload.get("client_id") or "").strip()
         namespace = str(payload.get("namespace") or "").strip()
         operation = str(payload.get("operation") or "").strip()
+        access_id = str(payload.get("access_id") or "").strip()
+        delegate_identity = str(payload.get("delegate_identity") or "").strip()
         if not client_id or not namespace or not operation:
             return self._error(
                 "connections_agent_grant_args_required",
                 "client_id, namespace, and operation are required", status=400,
             )
         try:
+            selector: dict[str, str] = {}
+            if access_id:
+                selector["access_id"] = access_id
+            if delegate_identity:
+                selector["delegate_identity"] = delegate_identity
             state = await self.agent_grant_state(
-                ctx, client_id=client_id, namespace=namespace, operation=operation,
+                ctx,
+                client_id=client_id,
+                namespace=namespace,
+                operation=operation,
+                **selector,
             )
         except Exception as exc:
             return self._error("connections_agent_grant_check_failed", str(exc))
@@ -283,15 +294,20 @@ class ConnectionsProviderBase(NamedServiceProvider):
         client_id: str,
         namespace: str,
         operation: str,
+        access_id: str = "",
+        delegate_identity: str = "",
     ) -> dict[str, Any]:
-        """The native named-service gate's answer for (agent client, namespace,
-        operation): ``{"governed": False}`` (this provider gates nothing) or
-        ``{"governed": True, "granted": bool, "resource", "claims"}``.
+        """Resolve delegated admission for one named-service invocation.
 
-        Concrete default: ungoverned — a provider without a delegated-grant
-        catalog imposes no per-agent gate, so callers fail open to the existing
-        connected-account boundary."""
-        del client_id, namespace, operation
+        The result is ``{"governed": False}`` when this provider publishes no
+        matching delegated capability, or ``{"governed": True, "granted":
+        bool, "resource", "claims"}`` when it does.
+
+        Concrete default: ungoverned. The admission caller interprets that
+        state according to its positively selected authority mode; a delegated
+        invocation does not become application-owned when this provider has no
+        delegated-grant catalog."""
+        del client_id, namespace, operation, access_id, delegate_identity
         return {"governed": False}
 
     @abstractmethod

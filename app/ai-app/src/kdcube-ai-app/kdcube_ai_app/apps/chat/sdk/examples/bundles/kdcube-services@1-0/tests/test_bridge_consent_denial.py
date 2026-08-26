@@ -16,6 +16,20 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from kdcube_ai_app.apps.chat.sdk.runtime.dynamic_module_loader import load_dynamic_module_for_path
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.authority_registry import (
+    CredentialEnvelope,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.catalog.authorization import (
+    ActiveCatalogCapabilities,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.catalog.models import (
+    CatalogDocument,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.named_service_admission import (
+    managed_named_service_admission,
+    store_managed_named_service_admission_snapshot,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers import NamedServiceRequest
 
 BUNDLE_ROOT = Path(__file__).resolve().parents[1]
 
@@ -48,16 +62,53 @@ RESOURCE_PATTERN = (
 )
 
 
-def _bind_catalog(state, namespaces):
-    """A delegated call resolves the active catalog, so a test that reaches
-    dispatch states the generation it runs under."""
-    from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.tests.helpers import (
-        bind_delegated_catalog,
+def _request(
+    client_id: str,
+    grants=None,
+    account_scope=None,
+    *,
+    catalog_namespaces=None,
+    card_namespaces=None,
+):
+    grants = list(grants or ["named_services:use", "slack:read"])
+    credential = CredentialEnvelope(
+        subject=f"integration:{client_id}:user-1",
+        attrs={
+            "client_id": client_id,
+            "grantor_subject": "user-1",
+            "grants": grants,
+            "resource": RESOURCE_PATTERN,
+        },
     )
-
-    bind_delegated_catalog(
-        SimpleNamespace(state=state),
-        {
+    grant_record = {
+        "client_id": client_id,
+        "registry_access_id": "oauth-test-access",
+        "grantor_subject": "user-1",
+        "delegate_subject": credential.subject,
+        "card_revision": 3,
+        "catalog_version": "test-card-catalog",
+        "grants": [],
+        "resource_grants": {RESOURCE_PATTERN: [*grants]},
+        "account_scope": dict(account_scope or {}),
+    }
+    if catalog_namespaces is not None:
+        grant_record["named_services"] = {
+            "namespaces": (
+                card_namespaces
+                if card_namespaces is not None
+                else catalog_namespaces
+            )
+        }
+    request = SimpleNamespace(
+        state=SimpleNamespace(
+            delegated_credential={
+                "credential": credential.to_dict(),
+                "grant_record": grant_record,
+            }
+        )
+    )
+    if catalog_namespaces is not None:
+        connections = {
             "delegated_credentials": {
                 "oauth": {
                     "enabled": True,
@@ -65,34 +116,24 @@ def _bind_catalog(state, namespaces):
                         {
                             "resource": RESOURCE_PATTERN,
                             "grants": ["named_services:use"],
-                            "named_services": {"namespaces": namespaces},
+                            "named_services": {"namespaces": catalog_namespaces},
                         },
                     ],
                 },
             },
-        },
-    )
-
-
-def _request(
-    client_id: str,
-    grants=None,
-    account_scope=None,
-    *,
-    catalog_namespaces=None,
-):
-    grants = list(grants or ["named_services:use", "slack:read"])
-    request = SimpleNamespace(state=SimpleNamespace(delegated_credential={
-        "credential": {"attrs": {"grants": grants}},
-        "grant_record": {
-            "client_id": client_id,
-            "grants": [],
-            "resource_grants": {RESOURCE_PATTERN: [*grants]},
-            "account_scope": dict(account_scope or {}),
-        },
-    }))
-    if catalog_namespaces is not None:
-        _bind_catalog(request.state, catalog_namespaces)
+        }
+        store_managed_named_service_admission_snapshot(
+            request,
+            catalog=ActiveCatalogCapabilities(CatalogDocument.build(connections)),
+            grant_record=grant_record,
+            credential=credential,
+            resource=RESOURCE_PATTERN,
+            request_resource=(
+                "/api/integrations/bundles/t/p/kdcube-services@1-0/public/mcp/"
+                "named_services"
+            ),
+            outer_operation="named_services_call",
+        )
     return request
 
 
@@ -271,7 +312,8 @@ async def test_bounded_action_authorizes_the_exact_action_key(monkeypatch) -> No
     )
     captured = {}
 
-    async def fake_endpoint(_endpoint, request):
+    async def fake_endpoint(_endpoint, request, *, admission):
+        assert admission.mode == "delegated"
         captured["request"] = request
         return m.NamedServiceResponse.ok_response(namespace="slack")
 
@@ -297,12 +339,7 @@ async def test_bounded_action_authorizes_the_exact_action_key(monkeypatch) -> No
     assert denied["missing_grants"] == ["slack:files:write"]
 
 
-async def test_tool_call_rebinds_agent_account_scope_before_provider_call(monkeypatch) -> None:
-    # Streamable MCP may invoke the tool after app construction. The bridge must
-    # bind the delegated account_scope at the tool-call boundary too, otherwise
-    # provider-backed Slack checks see an empty agent scope and ask for consent
-    # even after the card shows the account claims.
-    m = _bridge_module()
+async def test_admission_binds_account_scope_for_the_provider_call_only() -> None:
     config = {
         "namespaces": {
             "slack": {
@@ -319,16 +356,11 @@ async def test_tool_call_rebinds_agent_account_scope_before_provider_call(monkey
             }
         }
     }
-    bridge = m.NamedServicesMcpBridge(
-        config=config,
-        tenant="t",
-        project="p",
-        request=_request(
-            "kdcube-agent:ported-langgraph-agents@2026-07-13:lg-react",
-            ["named_services:use"],
-            account_scope={"slack": {"slack-1": ["slack:files:write"]}},
-            catalog_namespaces=config["namespaces"],
-        ),
+    request = _request(
+        "kdcube-agent:ported-langgraph-agents@2026-07-13:lg-react",
+        ["named_services:use"],
+        account_scope={"slack": {"slack-1": ["slack:files:write"]}},
+        catalog_namespaces=config["namespaces"],
     )
 
     from kdcube_ai_app.apps.chat.sdk.solutions.connections.agent_account_scope import (
@@ -337,23 +369,21 @@ async def test_tool_call_rebinds_agent_account_scope_before_provider_call(monkey
     )
 
     clear_agent_account_scope()
+    decision = await managed_named_service_admission(request).authorize(
+        NamedServiceRequest(
+            namespace="slack",
+            operation="object.action",
+            action="upload_file",
+        )
+    )
 
-    async def fake_endpoint(_endpoint, request):
+    assert decision.allowed is True
+    assert account_claim_scope_for("slack") is None
+    with decision.bind():
         assert account_claim_scope_for("slack") == {
             "slack-1": ("slack:files:write",)
         }
-        return m.NamedServiceResponse.ok_response(namespace="slack")
-
-    monkeypatch.setattr(m, "call_named_service_endpoint", fake_endpoint)
-
-    result = await bridge.object_action(
-        namespace="slack",
-        object_ref="slack:slack-1",
-        action="upload_file",
-        payload_json='{"staged_ref":"upload:1"}',
-    )
-
-    assert result["ok"] is True
+    assert account_claim_scope_for("slack") is None
 
 
 async def test_account_scope_claim_satisfies_provider_backed_bridge_gate(monkeypatch) -> None:
@@ -390,7 +420,8 @@ async def test_account_scope_claim_satisfies_provider_backed_bridge_gate(monkeyp
     )
     captured = {}
 
-    async def fake_endpoint(_endpoint, request):
+    async def fake_endpoint(_endpoint, request, *, admission):
+        assert admission.mode == "delegated"
         captured["request"] = request
         return m.NamedServiceResponse.ok_response(namespace="slack")
 
@@ -416,20 +447,27 @@ async def test_a_tool_the_card_does_not_carry_denies_like_a_missing_operation():
     going to make.
     """
     m = _bridge_module()
-    request = _request("dcr-claude")
-    # A card whose tree covers nothing in this namespace.
-    request.state.delegated_credential["grant_record"]["named_services"] = {
-        "namespaces": {"mail": {"tools": {}}}
+    catalog_namespaces = {
+        "mail": {
+            "tools": {
+                "search": {"operation": "object.search"},
+            }
+        }
     }
+    request = _request(
+        "dcr-claude",
+        catalog_namespaces=catalog_namespaces,
+        card_namespaces={"mail": {"tools": {}}},
+    )
+    decision = await managed_named_service_admission(request).authorize(
+        NamedServiceRequest(namespace="mail", operation="object.search")
+    )
 
-    bridge = _bridge(m, request)
-    denial = await bridge._authorize(_Policy(), "object.search", tool_name="search")
-
-    assert denial is not None
-    assert (denial.get("error") or {}).get("code") == "delegated_capability_not_granted", denial
-    recovery = (denial.get("ret") or {}).get("recovery") or {}
-    assert recovery.get("request_user_consent") is True, denial
-    assert recovery.get("action") == "grant_capability_in_delegated_access", denial
+    assert decision.allowed is False
+    assert decision.denial.error.code == "delegated_capability_not_granted"
+    recovery = decision.denial.ret["recovery"]
+    assert recovery["request_user_consent"] is True
+    assert recovery["action"] == "grant_capability_in_delegated_access"
 
 
 async def test_a_caller_with_no_card_still_reads_it_as_a_configuration_gap():

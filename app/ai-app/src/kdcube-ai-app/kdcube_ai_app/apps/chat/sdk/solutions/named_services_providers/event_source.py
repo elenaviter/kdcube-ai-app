@@ -8,6 +8,9 @@ from collections.abc import Mapping
 from typing import Any
 
 from kdcube_ai_app.apps.chat.sdk.runtime.harness.timeline import object_ref_from_block
+from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.admission import (
+    NamedServiceAdmission,
+)
 
 from .client_tools import named_service_namespace_provider_configs_from_config
 from .discovery import (
@@ -81,7 +84,13 @@ async def resolve_named_service_event_source(
         },
         namespace=namespace,
     )
-    response = await call_named_service_endpoint(endpoint, request)
+    response = await call_named_service_endpoint(
+        endpoint,
+        request,
+        admission=NamedServiceAdmission.application(
+            source="runtime.harness.events"
+        ),
+    )
     if not response.ok:
         return {
             "ok": False,
@@ -169,6 +178,9 @@ async def produce_named_service_blocks(
                     else {}
                 ),
             },
+        ),
+        admission=NamedServiceAdmission.application(
+            source="runtime.harness.events.block_produce"
         ),
     )
     if not response.ok:

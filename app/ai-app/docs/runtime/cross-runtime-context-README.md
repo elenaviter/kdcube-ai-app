@@ -14,7 +14,7 @@ keywords:
     "PORTABLE_SPEC_JSON",
     "ContextVar restore",
   ]
-updated_at: 2026-08-12
+updated_at: 2026-08-26
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/tenant-project-user-and-execution-boundaries-README.md
@@ -338,6 +338,16 @@ Provider calls still run through a runtime bridge:
 | `bundle_operation` | Same-KDCube operation facade, useful when the provider exposes `@api(alias="named_service")` or when direct registry call is unavailable. |
 | `module` | Same-runtime importable module provider. |
 
+Provider discovery, caller identity, and named-service admission answer three
+different questions. Discovery locates the provider. The restored request and
+`AuthContext` identify the actor. Required `NamedServiceAdmission` selects
+application or delegated authority for one decoded invocation. A delegated
+relay carries only a typed, non-secret selector alongside the provider request;
+the target validates it against the restored actor and resolves the current
+Connection Hub card/catalog decision immediately before dispatch. Card bodies,
+catalog documents, account scopes, and credentials remain in their owning
+trusted services.
+
 The isolated-runtime named-service path uses the trusted Data Bus
 request/reply relay to reach one of those provider bridges. MCP is a separate
 protocol surface: an app may explicitly expose the same domain through MCP,
@@ -382,9 +392,11 @@ Per-user entry denials (the capability-picker selection) ride separately as
 part of the contextvars snapshot; the policy above is the configuration
 ceiling.
 
-Provider calls from isolated runtimes execute through the Data Bus relay —
-the request travels to the provider bundle's worker in the proc and runs
-there under the carried identity. Full round-trip reference:
+Provider calls from isolated runtimes execute through the Data Bus relay. The
+provider request and its platform-owned admission selector travel to the
+provider bundle's worker. That worker restores identity, binds a local
+peer-bundle caller, resolves delegated authority for this invocation, and
+dispatches under the resulting account scope. Full round-trip reference:
 `docs/sdk/solutions/kdcube-services/named-services-from-isolated-runtime-README.md`.
 
 ## Bundle Call Context
@@ -422,7 +434,7 @@ and re-bind it when that later invocation starts.
 | Docker/Fargate supervisor | Same portable context restore, plus descriptor-backed settings/secrets for trusted supervisor tools. |
 | Docker/Fargate executor | Minimal safe env and supervisor socket only; executor asks supervisor for approved tool calls. |
 | Peer bundle local operation | Platform local caller builds a target request context for the target bundle and binds it around the call. |
-| Data Bus handler | Handler receives `DataBusContext`; if it needs user context, the message actor/auth metadata must carry it. |
+| Data Bus handler | Handler receives `DataBusContext`; actor/auth metadata restores user context, and the worker binds a local peer-bundle named-service caller for nested platform calls. |
 | Cron/job | Headless by default; use stored job auth/request metadata when a job must act on behalf of a user. |
 
 ## Design Rules

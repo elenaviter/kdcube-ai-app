@@ -21,6 +21,9 @@ from kdcube_ai_app.apps.chat.sdk.runtime.harness.timeline.projection import (
     coerce_block_index,
     namespace_from_ref,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.admission import (
+    NamedServiceAdmission,
+)
 
 from .client_tools import named_service_namespace_provider_configs_from_config
 from .event_source import (
@@ -148,6 +151,9 @@ async def _call_named_service_block_render(
                         },
                     },
                 },
+            ),
+            admission=NamedServiceAdmission.application(
+                source="named_services.block_render"
             ),
         )
     except Exception as exc:

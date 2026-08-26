@@ -25,9 +25,15 @@ import logging
 import os
 from typing import Any, Mapping
 
-from kdcube_ai_app.apps.chat.sdk.runtime.comm_ctx import get_current_request_context
+from kdcube_ai_app.apps.chat.sdk.runtime.comm_ctx import (
+    get_current_request_context,
+    get_current_user_identity,
+)
 from kdcube_ai_app.apps.chat.sdk.runtime.data_bus.publisher import DataBusPublisher
 from kdcube_ai_app.apps.chat.sdk.runtime.data_bus.types import timestamp_message_id
+from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.admission import (
+    NamedServiceAdmission,
+)
 
 from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.types import (
     NamedServiceError,
@@ -52,6 +58,8 @@ def _relay_actor() -> dict[str, Any]:
     ctx = get_current_request_context()
     user = getattr(ctx, "user", None)
     routing = getattr(ctx, "routing", None)
+    event = getattr(ctx, "event", None)
+    identity = get_current_user_identity() or {}
     if user is None:
         return {}
     return {
@@ -64,6 +72,8 @@ def _relay_actor() -> dict[str, Any]:
         "permissions": list(getattr(user, "permissions", None) or []),
         "identity_authority": dict(getattr(user, "identity_authority", None) or {}),
         "session_id": getattr(routing, "session_id", None),
+        "source_bundle_id": str(identity.get("bundle_id") or "").strip(),
+        "source_agent_id": str(getattr(event, "agent_id", "") or "").strip(),
     }
 
 
@@ -89,6 +99,7 @@ async def relay_named_service_call(
     *,
     bundle_id: str,
     request: NamedServiceRequest,
+    admission: NamedServiceAdmission,
     tenant: str = "",
     project: str = "",
     timeout_ms: int = NAMED_SERVICE_RELAY_TIMEOUT_MS,
@@ -103,6 +114,7 @@ async def relay_named_service_call(
     tenant_value = str(tenant or ctx_tenant or "").strip()
     project_value = str(project or ctx_project or "").strip()
     bundle_value = str(bundle_id or "").strip()
+    admission.validate(request)
     if not (tenant_value and project_value and bundle_value):
         return _error_response(
             "named_service_relay_scope_missing",
@@ -133,7 +145,10 @@ async def relay_named_service_call(
     try:
         result = await publisher.publish_and_wait(
             subject=NAMED_SERVICE_RELAY_SUBJECT,
-            payload={"request": request.to_dict()},
+            payload={
+                "request": request.to_dict(),
+                "admission": admission.relay_selector(),
+            },
             actor=actor,
             idempotency_key=message_id,
             message_id=message_id,
@@ -170,6 +185,19 @@ def _result_cache_key(message: Any) -> str:
     )
 
 
+async def _record_relay_result(redis: Any, cache_key: str, result: Mapping[str, Any]) -> None:
+    if redis is None:
+        return
+    try:
+        await redis.setex(
+            cache_key,
+            NAMED_SERVICE_RELAY_RESULT_TTL_SECONDS,
+            json.dumps(dict(result), ensure_ascii=False),
+        )
+    except Exception:
+        LOGGER.debug("[named_service.relay] result cache write failed", exc_info=True)
+
+
 async def handle_named_service_relay(ctx: Any, message: Any) -> dict[str, Any]:
     """Server side of the relay: runs inside the provider bundle's Data Bus
     handler, in the proc.
@@ -179,6 +207,10 @@ async def handle_named_service_relay(ctx: Any, message: Any) -> dict[str, Any]:
     Idempotent per message id: bus redelivery returns the recorded response.
     """
     from kdcube_ai_app.apps.chat.sdk.infra.auth_context import AuthContext
+    from kdcube_ai_app.apps.chat.sdk.solutions.connections.named_service_admission import (
+        NamedServiceAdmissionResolutionError,
+        admission_from_relay_selector,
+    )
     from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.client import (
         NamedServiceClient,
     )
@@ -209,26 +241,54 @@ async def handle_named_service_relay(ctx: Any, message: Any) -> dict[str, Any]:
             },
         }
     request = NamedServiceRequest.from_dict(raw_request)
+    raw_admission = (message.payload or {}).get("admission")
+    if not isinstance(raw_admission, Mapping):
+        return {
+            "status": "rejected",
+            "error": {
+                "code": "named_service_relay_admission_missing",
+                "message": "Relay message carries no typed admission selector.",
+            },
+        }
+    try:
+        admission = admission_from_relay_selector(
+            raw_admission,
+            actor=message.actor if isinstance(message.actor, Mapping) else {},
+        )
+    except (NamedServiceAdmissionResolutionError, TypeError, ValueError) as exc:
+        return {
+            "status": "rejected",
+            "error": {
+                "code": "named_service_relay_admission_invalid",
+                "message": str(exc),
+            },
+        }
+    decision = await admission.authorize(request)
+    if not decision.allowed:
+        denial = decision.denial or _error_response(
+            "named_service_admission_denied",
+            "Named-service admission was denied.",
+            status=403,
+        )
+        result = {
+            "status": "ok",
+            "data": {"response": denial.to_dict()},
+        }
+        await _record_relay_result(redis, cache_key, result)
+        return result
 
     registry = ctx.bundle.named_services()
     auth = AuthContext.from_current_request_context(source="named_service.relay")
     client = NamedServiceClient(registry, auth_context=auth)
-    response = await client.call(request)
+    with decision.bind():
+        response = await client.call(request)
     response = NamedServiceResponse.coerce(response)
 
     result: dict[str, Any] = {
         "status": "ok",
         "data": {"response": response.to_dict()},
     }
-    if redis is not None:
-        try:
-            await redis.setex(
-                cache_key,
-                NAMED_SERVICE_RELAY_RESULT_TTL_SECONDS,
-                json.dumps(result, ensure_ascii=False),
-            )
-        except Exception:
-            LOGGER.debug("[named_service.relay] result cache write failed", exc_info=True)
+    await _record_relay_result(redis, cache_key, result)
     return result
 
 

@@ -28,6 +28,7 @@ connected; the binding is the grant.
 from __future__ import annotations
 
 import contextvars
+from contextlib import contextmanager
 from typing import Any, Mapping
 
 _ACCOUNT_SCOPE: contextvars.ContextVar[dict] = contextvars.ContextVar(
@@ -44,10 +45,7 @@ _AGENT_IDENTITY: contextvars.ContextVar[dict] = contextvars.ContextVar(
 )
 
 
-def set_agent_account_scope(scope: Mapping[str, Any] | None) -> None:
-    """Bind the current agent's per-account claim scope
-    ({provider_id: {account_id: [claims]}}). Accepts the legacy list form
-    ({provider_id: [account_ids]}) and migrates it (account -> any claim)."""
+def _normalize_agent_account_scope(scope: Mapping[str, Any] | None) -> dict[str, dict[str, tuple[str, ...]]]:
     normalized: dict[str, dict[str, tuple[str, ...]]] = {}
     for provider, entry in dict(scope or {}).items():
         pkey = str(provider or "").strip()
@@ -68,7 +66,14 @@ def set_agent_account_scope(scope: Mapping[str, Any] | None) -> None:
                     accounts[akey] = ("*",)
         if accounts:
             normalized[pkey] = accounts
-    _ACCOUNT_SCOPE.set(normalized)
+    return normalized
+
+
+def set_agent_account_scope(scope: Mapping[str, Any] | None) -> None:
+    """Bind the current agent's per-account claim scope
+    ({provider_id: {account_id: [claims]}}). Accepts the legacy list form
+    ({provider_id: [account_ids]}) and migrates it (account -> any claim)."""
+    _ACCOUNT_SCOPE.set(_normalize_agent_account_scope(scope))
 
 
 def clear_agent_account_scope() -> None:
@@ -86,6 +91,28 @@ def set_agent_identity(*, client_id: str = "", resource: str = "") -> None:
     cid = str(client_id or "").strip()
     res = str(resource or "").strip()
     _AGENT_IDENTITY.set({"client_id": cid, "resource": res} if cid else {})
+
+
+@contextmanager
+def bind_agent_account_scope(
+    scope: Mapping[str, Any] | None,
+    *,
+    client_id: str,
+    resource: str = "",
+):
+    """Bind one delegated provider invocation and restore prior task state."""
+
+    cid = str(client_id or "").strip()
+    res = str(resource or "").strip()
+    scope_token = _ACCOUNT_SCOPE.set(_normalize_agent_account_scope(scope))
+    identity_token = _AGENT_IDENTITY.set(
+        {"client_id": cid, "resource": res} if cid else {}
+    )
+    try:
+        yield
+    finally:
+        _AGENT_IDENTITY.reset(identity_token)
+        _ACCOUNT_SCOPE.reset(scope_token)
 
 
 def agent_identity() -> dict:
@@ -120,4 +147,5 @@ __all__ = [
     "account_claim_scope_for",
     "set_agent_identity",
     "agent_identity",
+    "bind_agent_account_scope",
 ]

@@ -4,7 +4,7 @@ title: "Security And Trust Model"
 summary: "Canonical KDCube security model: one tenant/project runtime, trusted applications, request-scoped users, profile-dependent generated-code isolation, server-side credentials, and guarded REST/MCP surfaces."
 status: current
 tags: ["arch", "security", "trust", "tenancy", "apps", "execution", "credentials", "mcp"]
-updated_at: 2026-07-29
+updated_at: 2026-08-26
 keywords: ["KDCube security model", "tenant/project deployment scope", "multi-user runtime", "trusted application", "generated-code isolation", "MCP security", "secret isolation"]
 see_also:
   - repo:kdcube-ai-app/SECURITY.md
@@ -13,6 +13,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/exec/README-runtime-modes-builtin-tools.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/agent-acting-for-user/agent-acting-for-user-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/kdcube-services/named-services-from-isolated-runtime-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/secrets-descriptor-README.md
 ---
 # Security And Trust Model
@@ -226,6 +227,29 @@ trusted tool + bound request + claims -------+
                                              v
                                       external provider
 ```
+
+### Named-service authority is explicit per invocation
+
+Every common named-service dispatch receives a required
+`NamedServiceAdmission`. A trusted call site selects application authority for
+an operation owned by that application, or delegated authority backed by a
+Connection Hub resolver. Delegated admission resolves the current card and
+active catalog once for each invocation; missing, revoked, expired, mismatched,
+or unavailable authority produces a structured refusal before provider
+selection.
+
+Caller identity and admission remain separate. `AuthContext` identifies who
+caused the work and preserves lineage. `NamedServiceAdmission` identifies the
+authority regime for the decoded namespace and operation.
+`NamedServiceRequest.context` carries provider-visible diagnostic context only.
+
+Across the Data Bus relay, platform-owned metadata carries a typed, non-secret
+selector. The destination validates it against the restored actor, resolves
+current Connection Hub state, binds the resulting account scope for the
+provider invocation, and restores the prior scope afterward. Provider tokens,
+raw cards, catalog documents, and account scopes stay in trusted services.
+See [Named-Service Calls From Isolated Runtimes](../sdk/solutions/kdcube-services/named-services-from-isolated-runtime-README.md)
+for the complete direct and relayed sequence.
 
 This is a supervisor/tool-side guarantee, not a property of every execution
 profile. The local subprocess implementation inherits the host process
