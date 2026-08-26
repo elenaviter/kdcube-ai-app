@@ -114,7 +114,7 @@ def build_named_services_mcp_app(
         structured_output=False,
     )
     async def _named_services_list() -> dict[str, Any]:
-        return _bridge().list_services()
+        return await _bridge().list_services()
 
     @mcp.tool(
         name="named_services_about",

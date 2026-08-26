@@ -65,6 +65,30 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.acc
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.automation_access import (
     AutomationAccessService,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.cache_settings import (
+    DelegatedCacheSettings,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.catalog.publisher import (
+    ensure_delegated_catalog,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.cards.persistence import (
+    DurableCardPersistence,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.cards.store import (
+    BundleStorageDelegatedCardStore,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.catalog.resolver import (
+    DelegatedCatalogResolver,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.catalog.runtime_cache import (
+    DelegatedCatalogRuntimeCache,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.catalog.source import (
+    connections_from_props,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.catalog.store import (
+    BundleStorageDelegatedCatalogStore,
+)
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube import (
     RedisOAuthStateStore,
     DelegatedToKdcubeStore,
@@ -179,6 +203,23 @@ def _payload(data: Optional[Mapping[str, Any]] = None, **kwargs: Any) -> Dict[st
     return merged
 
 
+def _expected_card_revision(payload: Mapping[str, Any]) -> Optional[int]:
+    """The revision the editor loaded. Absent means no precondition.
+
+    A malformed value raises rather than defaulting, so a bad request cannot
+    read as a stale-editor conflict.
+    """
+    if "expected_card_revision" not in payload:
+        return None
+    raw = payload.get("expected_card_revision")
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        raise ValueError("expected_card_revision must be an integer")
+
+
 def _bool(value: Any, default: bool = False) -> bool:
     if value is None:
         return default
@@ -187,6 +228,21 @@ def _bool(value: Any, default: bool = False) -> bool:
     if isinstance(value, (int, float)):
         return bool(value)
     return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _named_service_operations_for(payload: Mapping[str, Any], resource: str) -> Any:
+    """The card-level selection a per-resource grant payload carries.
+
+    The demand names one door, so its payload names namespaces under that door;
+    `"*"` is card-level and travels as the string. Absent stays absent — the
+    service decides what an omitted selection means per entrance.
+    """
+    raw = payload.get("named_service_operations")
+    if isinstance(raw, str):
+        return raw.strip() or None
+    if isinstance(raw, Mapping) and raw:
+        return {resource: dict(raw)}
+    return None
 
 
 def _safe_list(value: Any) -> list[str]:
@@ -562,6 +618,15 @@ def _bind_delegated_client_request_config(entrypoint: Any, request: Any) -> Dict
             )
         except Exception:
             request.state.connections_delegated_config = None
+        # The delegated-access service is composed here because only the bundle
+        # knows its storage root and catalog. SDK request code receives the
+        # capability and never builds it. Lazy: most OAuth requests never touch
+        # it, and the frozen config keeps a later build consistent with what
+        # this request validated.
+        parsed = oauth_delegated_config(request)
+        request.state.automation_access_factory = (
+            lambda: _automation_access_service_for(entrypoint, parsed)
+        )
     return cfg
 
 
@@ -573,14 +638,60 @@ def _delegated_oauth_config_from_entrypoint(entrypoint: Any, request: Any) -> An
     return oauth_delegated_config(SimpleNamespace(state=state))
 
 
-def _automation_access_service(entrypoint: Any, request: Any) -> AutomationAccessService:
+def _delegated_catalog_resolver(entrypoint: Any, redis: Any) -> Any:
+    """Resolver over this bundle's registered catalog, or ``None`` when its
+    storage root is unavailable — card writes then fail closed."""
+    storage_root = entrypoint.bundle_storage_root()
+    if storage_root is None:
+        return None
+    tenant, project = _runtime_tenant_project(entrypoint)
+    connections = _connections_config(entrypoint)
+    return DelegatedCatalogResolver(
+        cache=DelegatedCatalogRuntimeCache(redis, tenant=tenant, project=project),
+        store=BundleStorageDelegatedCatalogStore(storage_root),
+        settings=DelegatedCacheSettings.from_connections(connections),
+    )
+
+
+def _delegated_card_persistence(entrypoint: Any, redis: Any) -> Any:
+    """Durable card persistence, or ``None`` when bundle storage is
+    unavailable — card operations then fail closed."""
+    storage_root = entrypoint.bundle_storage_root()
+    if storage_root is None:
+        return None
+    tenant, project = _runtime_tenant_project(entrypoint)
+    return DurableCardPersistence(
+        redis=redis,
+        tenant=tenant,
+        project=project,
+        card_store=BundleStorageDelegatedCardStore(storage_root),
+        settings=DelegatedCacheSettings.from_connections(_connections_config(entrypoint)),
+    )
+
+
+def _automation_access_service_for(entrypoint: Any, config: Any) -> AutomationAccessService:
+    """Build the service against an already-resolved delegated-client config.
+
+    The config is the request's authorization input, so it is frozen by the
+    caller rather than re-read here: bundle props are runtime-mutable, and a
+    later rebuild could otherwise act under a config the handler never
+    validated.
+    """
     tenant, project = _runtime_tenant_project(entrypoint)
     redis = getattr(entrypoint, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
     return AutomationAccessService(
         redis=redis,
         tenant=tenant,
         project=project,
-        config=_delegated_oauth_config_from_entrypoint(entrypoint, request),
+        config=config,
+        catalog_resolver=_delegated_catalog_resolver(entrypoint, redis),
+        card_persistence=_delegated_card_persistence(entrypoint, redis),
+    )
+
+
+def _automation_access_service(entrypoint: Any, request: Any) -> AutomationAccessService:
+    return _automation_access_service_for(
+        entrypoint, _delegated_oauth_config_from_entrypoint(entrypoint, request)
     )
 
 
@@ -1316,6 +1427,45 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             self._named_service_registry = registry
         return self._named_service_registry
 
+    async def on_app_deploy(self, **kwargs: Any) -> None:
+        """Publish the delegated-service catalog for this app generation.
+
+        The generation is ready only after the immutable version and the
+        complete active document are committed durably and in Redis. Request
+        paths never publish; they may only restore an expired projection.
+        """
+        await super().on_app_deploy(**kwargs)
+        props = kwargs.get("props")
+        if props is None:
+            props = getattr(self, "bundle_props", None)
+        storage_root = kwargs.get("storage_root") or self.bundle_storage_root()
+        if storage_root is None:
+            raise RuntimeError(
+                "[connection-hub] on_app_deploy: bundle storage is unavailable; "
+                "the delegated catalog cannot be published"
+            )
+        redis = kwargs.get("redis") or getattr(self, "redis", None)
+        if redis is None:
+            redis = get_async_redis_client(get_settings().REDIS_URL)
+        tenant = str(kwargs.get("tenant") or "").strip()
+        project = str(kwargs.get("project") or "").strip()
+        if not (tenant and project):
+            tenant, project = _runtime_tenant_project(self)
+
+        connections = connections_from_props(props)
+        result = await ensure_delegated_catalog(
+            connections=connections,
+            store=BundleStorageDelegatedCatalogStore(storage_root),
+            cache=DelegatedCatalogRuntimeCache(redis, tenant=tenant, project=project),
+            settings=DelegatedCacheSettings.from_connections(connections),
+            reason=str(kwargs.get("reason") or "app_deploy"),
+        )
+        LOGGER.info(
+            "[connection-hub] on_app_deploy: delegated catalog version=%s created=%s",
+            result.version,
+            result.created,
+        )
+
     async def on_bundle_load(self, **kwargs: Any) -> None:
         # BaseEntrypoint.on_bundle_load (via super) publishes named-service
         # discovery from _named_service_providers().
@@ -1863,11 +2013,11 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 label=str(payload.get("label") or "").strip(),
                 resource_grants=dict(payload.get("resource_grants") or {}),
                 operations=_safe_list(payload.get("operations")),
-                # Both preserve absent vs empty: None leaves the dimension
-                # unrestricted, an empty mapping restricts to nothing.
-                # broker.py keys on `is not None`.
+                # Both preserve absent vs empty. An omitted selection keeps the
+                # record's own state; "*" is the full policy of the saved
+                # catalog, and {} allows no named-service operation.
                 named_service_operations=(
-                    dict(payload.get("named_service_operations") or {})
+                    payload.get("named_service_operations")
                     if "named_service_operations" in payload
                     else None
                 ),
@@ -1910,7 +2060,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 access_id=str(payload.get("access_id") or "").strip(),
                 resource_grants=dict(payload.get("resource_grants") or {}),
                 named_service_operations=(
-                    dict(payload.get("named_service_operations") or {})
+                    payload.get("named_service_operations")
                     if "named_service_operations" in payload
                     else None
                 ),
@@ -1920,6 +2070,11 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                     else None
                 ),
                 label=str(payload.get("label") or "").strip() or None,
+                expected_card_revision=_expected_card_revision(payload),
+                expected_catalog_version=str(
+                    payload.get("expected_catalog_version") or ""
+                ).strip()
+                or None,
             )
         except ValueError as exc:
             return {"ok": False, "error": "invalid_delegated_access_request", "message": str(exc)}
@@ -1974,6 +2129,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 resource=resource,
                 claims=claims,
                 account_scope=account_scope,
+                named_service_operations=_named_service_operations_for(payload, resource),
                 replace=bool(payload.get("replace")),
                 # Optional rename: a DCR client registers one fixed name, so the
                 # user may label the card. Empty keeps the existing name.
@@ -1984,10 +2140,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         # Optional named-service narrowing for THIS resource (namespace -> exact
         # operations), same selector the manual create flow sends — so extending
         # an agent's access from the hub can include named-service resources.
-        raw_ns = payload.get("named_service_operations")
-        named_service_operations = (
-            {resource: dict(raw_ns)} if isinstance(raw_ns, Mapping) and raw_ns else None
-        )
+        named_service_operations = _named_service_operations_for(payload, resource)
         # Default = MERGE (a one-click grant accumulates). `replace: true` is
         # the EDIT semantics: the submitted claim set becomes the record exactly
         # (the user unchecked something). Removing everything is a revoke, not

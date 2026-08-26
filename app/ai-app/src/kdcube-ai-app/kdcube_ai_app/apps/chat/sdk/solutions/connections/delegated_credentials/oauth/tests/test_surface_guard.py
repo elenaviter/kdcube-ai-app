@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import time
 
+import pytest
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
@@ -14,16 +15,111 @@ from starlette.requests import Request as StarletteRequest
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth import (
     surface_guard,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.tests.helpers import (
+    bind_delegated_catalog,
+)
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.store import (
     GrantStoreUnavailable,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.automation_access import (
     ACCESS_SOURCE_OAUTH,
     AutomationAccessRecord,
-    automation_record_key,
+    card_authority_from_record,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.cache_io import (
+    encode_cache_value,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.cards.cache import (
+    DelegatedCardRuntimeCache,
+)
+
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.cards.model import (
+    CARD_STATE_REVOKED,
+    NamedServiceSelection,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.cards.service import (
+    replace_state,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.cards.store import (
+    BundleStorageDelegatedCardStore,
+    subject_hash_for,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.serving import (
+    SERVING_RESOLVERS_ATTR,
 )
 
 GUARD_RESOURCE = "http://testserver/guard"
+
+# The catalog generation these tests enforce against. Drift cases trim it.
+GUARD_CONNECTIONS = {
+    "delegated_credentials": {
+        "oauth": {
+            "enabled": True,
+            "resources": [
+                {
+                    "resource": GUARD_RESOURCE,
+                    "grants": [
+                        "records:read",
+                        "records:write",
+                        "memories:read",
+                        "memories:write",
+                    ],
+                    "tools": {
+                        "records_export": {"grants": ["records:read"]},
+                        "records_update": {"grants": ["records:write"]},
+                        "memory_search": {"grants": ["memories:read"]},
+                        "memory_delete": {"grants": ["memories:write"]},
+                    },
+                },
+            ],
+        },
+    },
+}
+
+
+def _connections_with_admin_wildcard(*, keep_guard_resource: bool = True) -> dict:
+    """The catalog shape the guard suite could not express before.
+
+    A deployment that declares the all-resource administrator row alongside its
+    specific rows. Withdrawing a specific row then leaves a row that matches
+    every URL, which is exactly the state that must still deny.
+    """
+    import copy as _copy
+
+    trimmed = _copy.deepcopy(GUARD_CONNECTIONS)
+    resources = trimmed["delegated_credentials"]["oauth"]["resources"]
+    if not keep_guard_resource:
+        resources.clear()
+    resources.append(
+        {
+            "resource": "*",
+            "label": "All platform and application APIs",
+            "admin_only": True,
+            "grants": ["kdcube:role:super-admin"],
+        }
+    )
+    return trimmed
+
+
+def _connections_without(*, tool: str = "", claim: str = "", resource: bool = True) -> dict:
+    import copy as _copy
+
+    trimmed = _copy.deepcopy(GUARD_CONNECTIONS)
+    resources = trimmed["delegated_credentials"]["oauth"]["resources"]
+    if not resource:
+        resources.clear()
+        return trimmed
+    if tool:
+        resources[0]["tools"].pop(tool, None)
+    if claim:
+        resources[0]["grants"] = [
+            grant for grant in resources[0]["grants"] if grant != claim
+        ]
+    return trimmed
+
+
+def _card_key(access_id: str) -> str:
+    return DelegatedCardRuntimeCache(None, tenant="home", project="demo").card_key(access_id)
 
 
 class _GrantStore:
@@ -133,6 +229,9 @@ def _client(
     return_projection=False,
     return_named_services=False,
     redis=None,
+    connections=None,
+    catalog_unavailable="",
+    cards=None,
 ):
     async def fake_authenticate(token: str):
         if token != "reader":
@@ -152,6 +251,12 @@ def _client(
     app = FastAPI()
     app.state.oauth_grant_store = _GrantStore(grant_record, redis=redis)
     app.state.oauth_delegated_config = {"tenant": "home", "project": "demo"}
+    bind_delegated_catalog(
+        app,
+        GUARD_CONNECTIONS if connections is None else connections,
+        unavailable=catalog_unavailable,
+        cards=cards,
+    )
     auth = auth or {
         "mode": "managed",
         "authority_id": "delegated_client",
@@ -192,6 +297,9 @@ def _rest_client(
     user=None,
     operation="records_export",
     redis=None,
+    connections=None,
+    catalog_unavailable="",
+    cards=None,
 ):
     async def fake_authenticate(token: str):
         if token != "reader":
@@ -211,6 +319,12 @@ def _rest_client(
     app = FastAPI()
     app.state.oauth_grant_store = _GrantStore(grant_record, redis=redis)
     app.state.oauth_delegated_config = {"tenant": "home", "project": "demo"}
+    bind_delegated_catalog(
+        app,
+        GUARD_CONNECTIONS if connections is None else connections,
+        unavailable=catalog_unavailable,
+        cards=cards,
+    )
     auth = auth or {
         "mode": "managed",
         "authority_id": "delegated_client",
@@ -251,6 +365,7 @@ def _live_card(
     resource_grants=None,
     named_service_operations=None,
     named_services=None,
+    expires_at=None,
 ) -> AutomationAccessRecord:
     return AutomationAccessRecord(
         access_id=access_id,
@@ -266,24 +381,31 @@ def _live_card(
             if resource_grants is not None
             else {GUARD_RESOURCE: ("records:read",)}
         ),
-        named_service_operations=named_service_operations or {},
+        named_service_operations=(
+            NamedServiceSelection.exact(named_service_operations)
+            if named_service_operations
+            else NamedServiceSelection.unknown()
+        ),
         named_services=named_services or {},
-        expires_at=int(time.time()) + 3600,
+        expires_at=int(time.time()) + 3600 if expires_at is None else int(expires_at),
         source=ACCESS_SOURCE_OAUTH,
     )
 
 
 def _store_live_card(redis: _Redis, card: AutomationAccessRecord) -> None:
-    redis.values[
-        automation_record_key("home", "demo", card.access_id)
-    ] = json.dumps(card.to_dict())
+    authority = card_authority_from_record(card)
+    redis.values[_card_key(card.access_id)] = encode_cache_value(
+        {
+            "kind": "card",
+            "card_revision": authority.card_revision,
+            "authority": authority.to_dict(),
+        }
+    )
 
 
 def test_managed_mcp_guard_fails_closed_when_live_card_is_malformed(monkeypatch):
     redis = _Redis()
-    redis.values[
-        automation_record_key("home", "demo", "oauth-access-1")
-    ] = "{"
+    redis.values[_card_key("oauth-access-1")] = "{"
     client = _client(
         monkeypatch,
         grant_record=_pointer_grant(),
@@ -855,8 +977,24 @@ def test_managed_guard_rejects_missing_resource(monkeypatch):
 
 
 def test_managed_guard_compares_forwarded_public_resource(monkeypatch):
+    # The catalog selector is a pattern, as a deployed descriptor writes it.
+    forwarded_catalog = {
+        "delegated_credentials": {
+            "oauth": {
+                "enabled": True,
+                "resources": [
+                    {
+                        "resource": "*/guard",
+                        "grants": ["records:read"],
+                        "tools": {"records_export": {"grants": ["records:read"]}},
+                    },
+                ],
+            },
+        },
+    }
     client = _client(
         monkeypatch,
+        connections=forwarded_catalog,
         grant_record={
             "operations": ["records_export"],
             "credential": _authority(
@@ -971,8 +1109,346 @@ def test_named_service_boundary_narrowed_to_nothing_reaches_the_bridge(monkeypat
     assert boundary == {"namespaces": {}}
 
 
-def test_named_service_boundary_falls_back_to_the_snapshot_on_a_legacy_card(monkeypatch):
-    """Cards written before the field keep the bound snapshot."""
+def test_a_card_that_materialized_nothing_is_bounded_by_nothing(monkeypatch):
+    """A pre-encoding card is bounded by what it materialized, not by the
+    binding's embedded snapshot.
+
+    The boundary key was omitted when a card carried neither a selection nor a
+    tree, and an absent key leaves the descriptor as the only ceiling — so a
+    record whose writer never filled the field reached every namespace the
+    deployment configures.
+    """
     boundary = _boundary(monkeypatch, named_services={})
 
-    assert set(boundary["namespaces"]) == {"stale"}
+    assert boundary == {}
+
+
+# -- current-catalog intersection ----------------------------------------------
+
+
+def _denial_path(payload):
+    return payload["ret"]["requested_capability"]
+
+
+def test_a_resource_removed_from_the_catalog_denies_before_the_tool_runs(monkeypatch):
+    client = _client(
+        monkeypatch,
+        connections=_connections_without(resource=False),
+        grant_record={"operations": ["records_export"], "credential": _authority()},
+    )
+
+    response = client.post(
+        "/guard", json=_rpc_tool_call(), headers={"Authorization": "Bearer reader"},
+    )
+
+    assert response.status_code == 403
+    payload = response.json()
+    assert payload["error"]["code"] == "delegated_capability_no_longer_available"
+    assert payload["error"]["retryable"] is False
+    assert _denial_path(payload)["kind"] == "resource"
+
+
+def test_a_tool_removed_from_the_catalog_denies_with_its_whole_path(monkeypatch):
+    client = _client(
+        monkeypatch,
+        connections=_connections_without(tool="records_export"),
+        grant_record={"operations": ["records_export"], "credential": _authority()},
+    )
+
+    response = client.post(
+        "/guard", json=_rpc_tool_call(), headers={"Authorization": "Bearer reader"},
+    )
+
+    # A tool call is refused inside the RPC result, carrying the full path.
+    assert response.status_code == 200
+    result = response.json()["result"]
+    assert result["isError"] is True
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["error"]["code"] == "delegated_capability_no_longer_available"
+    path = _denial_path(payload)
+    assert path["kind"] == "outer_operation"
+    assert path["outer_operation"] == "records_export"
+    assert path["resource"] == GUARD_RESOURCE
+    assert path["surface"] == "mcp"
+
+
+def test_a_claim_removed_from_the_catalog_denies_the_rest_operation(monkeypatch):
+    client = _rest_client(
+        monkeypatch,
+        connections=_connections_without(claim="records:read"),
+        auth={
+            "mode": "managed",
+            "authority_id": "delegated_client",
+            "grants": ["records:read"],
+            "operations": {"records_export": {"grants": ["records:read"]}},
+            "selected_operation_grants": True,
+        },
+        grant_record={"operations": ["records_export"], "credential": _authority()},
+    )
+
+    response = client.post("/guard", headers={"Authorization": "Bearer reader"})
+
+    assert response.status_code == 403
+    payload = response.json()
+    assert payload["error"]["code"] == "delegated_capability_no_longer_available"
+    path = _denial_path(payload)
+    assert path["kind"] == "resource_claim"
+    assert path["claim"] == "records:read"
+
+
+def test_a_card_that_still_matches_the_catalog_is_admitted(monkeypatch):
+    client = _client(
+        monkeypatch,
+        grant_record={"operations": ["records_export"], "credential": _authority()},
+    )
+
+    response = client.post(
+        "/guard", json=_rpc_tool_call(), headers={"Authorization": "Bearer reader"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+
+def test_an_unreadable_catalog_is_retryable_unavailability_not_a_denial(monkeypatch):
+    client = _client(
+        monkeypatch,
+        catalog_unavailable="durable_active_unreadable",
+        grant_record={"operations": ["records_export"], "credential": _authority()},
+    )
+
+    response = client.post(
+        "/guard", json=_rpc_tool_call(), headers={"Authorization": "Bearer reader"},
+    )
+
+    assert response.status_code == 503
+    payload = response.json()
+    assert payload["error"]["code"] == "temporarily_unavailable"
+    assert payload["error"]["retryable"] is True
+    assert payload["ret"]["reason"] == "durable_active_unreadable"
+
+
+def test_uninstalled_serving_resolvers_fail_closed(monkeypatch):
+    """Absent readers are a composition failure, never "no requirement"."""
+    client = _client(
+        monkeypatch,
+        grant_record={"operations": ["records_export"], "credential": _authority()},
+    )
+    delattr(client.app.state, "delegated_serving_resolvers")
+
+    response = client.post(
+        "/guard", json=_rpc_tool_call(), headers={"Authorization": "Bearer reader"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["ret"]["reason"] == "delegated_serving_resolvers_absent"
+
+
+# -- durable card read-through --------------------------------------------------
+
+
+async def _commit_card(store, card: AutomationAccessRecord, *, revoked: bool = False) -> None:
+    from datetime import datetime, timezone
+
+    authority = card_authority_from_record(card)
+    if revoked:
+        authority = replace_state(authority, CARD_STATE_REVOKED)
+    subject = subject_hash_for(card.grantor_subject)
+    pointer = await store.write_revision(
+        subject_hash=subject, authority=authority, updated_at=datetime.now(timezone.utc)
+    )
+    await store.advance_current(subject_hash=subject, pointer=pointer)
+
+
+def _durable_client(monkeypatch, store, *, redis=None):
+    return _client(
+        monkeypatch,
+        grant_record=_pointer_grant(),
+        redis=redis if redis is not None else _Redis(),
+        cards=store,
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_evicted_projection_is_restored_from_the_committed_revision(
+    monkeypatch, tmp_path
+):
+    """A lost projection is not a revoked card: the durable revision stands."""
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    await _commit_card(store, _live_card())
+    client = _durable_client(monkeypatch, store)
+
+    response = client.post(
+        "/guard", json=_rpc_tool_call(), headers={"Authorization": "Bearer reader"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_an_expired_durable_card_denies(monkeypatch, tmp_path):
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    await _commit_card(store, _live_card(expires_at=int(time.time()) - 60))
+    client = _durable_client(monkeypatch, store)
+
+    response = client.post(
+        "/guard", json=_rpc_tool_call(), headers={"Authorization": "Bearer reader"},
+    )
+
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_a_revoked_durable_card_denies(monkeypatch, tmp_path):
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    await _commit_card(store, _live_card(), revoked=True)
+    client = _durable_client(monkeypatch, store)
+
+    response = client.post(
+        "/guard", json=_rpc_tool_call(), headers={"Authorization": "Bearer reader"},
+    )
+
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_unreadable_durable_state_is_unavailability_not_a_denial(
+    monkeypatch, tmp_path
+):
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    card = _live_card()
+    await _commit_card(store, card)
+    # The pointer names a revision that is gone: corruption, not absence.
+    subject = subject_hash_for(card.grantor_subject)
+    current = await store.read_current(subject_hash=subject, access_id=card.access_id)
+    store.revision_path(
+        subject_hash=subject,
+        access_id=card.access_id,
+        revision_name=current.revision_name,
+    ).unlink()
+    client = _durable_client(monkeypatch, store)
+
+    response = client.post(
+        "/guard", json=_rpc_tool_call(), headers={"Authorization": "Bearer reader"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"] == "temporarily_unavailable"
+
+
+def test_a_capability_the_catalog_still_offers_keeps_the_consent_path(monkeypatch):
+    """A card that never held a capability is not a withdrawn capability.
+
+    Collapsing the two would answer "no longer available" to someone who only
+    has to grant it, and consent is not offered for a withdrawn capability.
+    """
+    client = _client(
+        monkeypatch,
+        grant_record={"operations": [], "credential": _authority()},
+    )
+
+    response = client.post(
+        "/guard", json=_rpc_tool_call(), headers={"Authorization": "Bearer reader"},
+    )
+
+    assert response.status_code == 200
+    result = response.json()["result"]
+    assert result["isError"] is True
+    text = result["content"][0]["text"]
+    assert "not consented" in text
+    assert "delegated_capability_no_longer_available" not in text
+
+
+def test_a_removed_capability_denial_reads_no_historical_catalog(monkeypatch):
+    """Governed execution intersects with the active catalog and nothing else."""
+    client = _client(
+        monkeypatch,
+        connections=_connections_without(resource=False),
+        grant_record={"operations": ["records_export"], "credential": _authority()},
+    )
+    resolvers = getattr(client.app.state, SERVING_RESOLVERS_ATTR)
+    catalog = resolvers.catalog
+    reads: list[str] = []
+    original = catalog.resolve_version
+
+    async def _counted(version: str):
+        reads.append(version)
+        return await original(version)
+
+    catalog.resolve_version = _counted
+
+    response = client.post(
+        "/guard", json=_rpc_tool_call(), headers={"Authorization": "Bearer reader"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "delegated_capability_no_longer_available"
+    assert reads == []
+
+
+# -- the administrator all-resource row is a surface, not a catch-all ---------
+
+
+def test_a_withdrawn_resource_is_denied_even_when_the_catalog_keeps_a_wildcard_row(
+    monkeypatch,
+):
+    """The invariant the whole slice exists for: an administrator can take a
+    door away. With a `*` row present, matching by request URL alone would find
+    it, and the bearer would keep authority nobody could revoke through the
+    catalog."""
+    client = _client(
+        monkeypatch,
+        connections=_connections_with_admin_wildcard(keep_guard_resource=False),
+        grant_record={"operations": ["records_export"], "credential": _authority()},
+    )
+
+    response = client.post(
+        "/guard", json=_rpc_tool_call(), headers={"Authorization": "Bearer reader"},
+    )
+
+    assert response.status_code == 403
+    body = response.json()
+    assert body["error"]["code"] == "delegated_capability_no_longer_available"
+    assert body["ret"]["requested_capability"]["kind"] == "resource"
+
+
+def test_an_administrator_card_still_reaches_the_wildcard_row(monkeypatch):
+    """The same row remains a real delegation surface for a card that holds it:
+    `*` answers a selector that is itself `*`."""
+    authority = _authority(scopes=["kdcube:role:super-admin"])
+    authority["attrs"]["resource_grants"] = {"*": ["kdcube:role:super-admin"]}
+    client = _client(
+        monkeypatch,
+        connections=_connections_with_admin_wildcard(keep_guard_resource=False),
+        auth={
+            "mode": "managed",
+            "authority_id": "delegated_client",
+            "tools": {"records_export": {"grants": ["kdcube:role:super-admin"]}},
+            "selected_tool_grants": True,
+        },
+        grant_record={"operations": ["records_export"], "credential": authority},
+    )
+
+    response = client.post(
+        "/guard", json=_rpc_tool_call(), headers={"Authorization": "Bearer reader"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+
+
+def test_a_surviving_resource_is_unaffected_by_the_wildcard_row(monkeypatch):
+    """A specific row still answers its own requests when both exist."""
+    client = _client(
+        monkeypatch,
+        connections=_connections_with_admin_wildcard(),
+        grant_record={"operations": ["records_export"], "credential": _authority()},
+    )
+
+    response = client.post(
+        "/guard", json=_rpc_tool_call(), headers={"Authorization": "Bearer reader"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True

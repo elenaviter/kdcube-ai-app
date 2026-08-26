@@ -8,6 +8,8 @@ import type {
   DelegatedAccessNamedServiceOperations,
   DelegatedAccessRecord,
   DelegatedAccessResourceOption,
+  DelegatedAccessStoredNamedServices,
+  DelegatedCatalogDrift,
   DelegatedToKdcubeAccount,
 } from '../../api/types';
 import {
@@ -65,6 +67,10 @@ type PendingAgentGrant = {
   // The user still ticks the checkbox explicitly; the picker is default-closed.
   accountId?: string;
   accountClaim?: string;
+  // The inner capability the refused call wanted. Approval grants this one
+  // operation, not everything its claims allow.
+  namespace?: string;
+  operation?: string;
 };
 
 function pendingAgentGrantFromParams(get: (key: string) => string): PendingAgentGrant | null {
@@ -75,7 +81,17 @@ function pendingAgentGrantFromParams(get: (key: string) => string): PendingAgent
   const claims = get('claims').split(',').map((item) => item.trim()).filter(Boolean);
   const accountId = get('account_id').trim();
   const accountClaim = get('account_claim').trim();
-  return { clientId, resource, claims, accountId: accountId || undefined, accountClaim: accountClaim || undefined };
+  const namespace = get('namespace').trim();
+  const operation = get('operation').trim();
+  return {
+    clientId,
+    resource,
+    claims,
+    accountId: accountId || undefined,
+    accountClaim: accountClaim || undefined,
+    namespace: namespace || undefined,
+    operation: operation || undefined,
+  };
 }
 
 /** The pending per-agent grant a chat consent card carries here — as the
@@ -418,13 +434,247 @@ function CountFold({ entries, noun }: { entries: string[]; noun: string }) {
   );
 }
 
+/** The stored selection has three forms and only one of them is a map. A
+ *  wildcard names no operations to list — it means whatever the acknowledged
+ *  catalog offers — so it yields no rows here and the caller says so in words. */
+function isWildcardNamedServices(
+  selection: DelegatedAccessRecord['named_service_operations'],
+): boolean {
+  return typeof selection === 'string';
+}
+
+/** What the card covers, for display and for seeding the editor.
+ *
+ *  The stored selection answers this only when it is an exact map. A wildcard
+ *  and a pre-encoding record name no operations of their own, so the server
+ *  ships the expansion it saved them against; without it both draw exactly like
+ *  an explicit {}. */
+function cardNamedServiceOperations(
+  item: DelegatedAccessRecord,
+): DelegatedAccessNamedServiceOperations {
+  const effective = item.effective_named_service_operations;
+  if (effective && Object.keys(effective).length) return effective;
+  const selection = item.named_service_operations;
+  if (!selection || isWildcardNamedServices(selection)) return {};
+  return selection as DelegatedAccessNamedServiceOperations;
+}
+
+/** Whether this card's doors configure named services at all.
+ *
+ *  Separates "covers nothing" from "there is nothing to cover". Only the first
+ *  is worth a row: a card that selected no operation reaches none of them, and
+ *  drawing nothing reads as if the question did not apply. */
+function cardOffersNamedServices(
+  item: DelegatedAccessRecord,
+  resources: DelegatedAccessResourceOption[],
+): boolean {
+  const offered = offeredNamedServiceOperations(
+    resources,
+    Object.keys(item.resource_grants || {}),
+    (key) => (item.catalog_row_by_resource || {})[key] || key,
+  );
+  return Object.keys(offered).length > 0;
+}
+
+/** One row per namespace the card covers.
+ *
+ *  Rows are merged across doors. A wildcard and a pre-encoding card store ONE
+ *  materialized tree for the whole card, and the projection attributes that
+ *  same tree to every door the card holds — printing it once per door states a
+ *  per-door fact the card does not carry. */
+function namedServiceRows(item: DelegatedAccessRecord): string[] {
+  const merged = new Map<string, Set<string>>();
+  Object.values(cardNamedServiceOperations(item)).forEach((namespaces) => {
+    Object.entries(namespaces || {}).forEach(([namespace, operations]) => {
+      const held = merged.get(namespace) || new Set<string>();
+      (operations || []).forEach((operation) => held.add(operation));
+      merged.set(namespace, held);
+    });
+  });
+  return Array.from(merged.entries())
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([namespace, operations]) => (
+      `${namespace} (${Array.from(operations).sort().join(', ')})`
+    ));
+}
+
+/** Every named-service operation the ACTIVE catalog offers for these resources.
+ *
+ *  The same rows the picker draws, so "all of them are ticked" is a question
+ *  the panel can answer without guessing. */
+function offeredNamedServiceOperations(
+  resources: DelegatedAccessResourceOption[],
+  forResources: string[],
+  // The create form picks resources FROM the options, so its keys are already
+  // catalog keys; a stored card's may not be.
+  rowFor: (resource: string) => string = (resource) => resource,
+): DelegatedAccessNamedServiceOperations {
+  const out: DelegatedAccessNamedServiceOperations = {};
+  forResources.forEach((resource) => {
+    const option = catalogRowFor(resources, resource, rowFor);
+    if (!option) return;
+    const namespaces: Record<string, string[]> = {};
+    (option.named_services || []).forEach((namespace) => {
+      const operations = operationRows(namespace).map((row) => row.operation);
+      if (operations.length) namespaces[namespace.namespace] = operations;
+    });
+    // Keyed by the CARD's resource, so the selection and this map align.
+    if (Object.keys(namespaces).length) out[resource] = namespaces;
+  });
+  return out;
+}
+
+/** The catalog row a card resource resolves to.
+ *
+ *  A card key is the row's own pattern (hub-created) or a concrete URL (an
+ *  OAuth client's `resource`). The server resolves the two through one matcher
+ *  and ships the answer as `catalog_row_by_resource`; string equality is the
+ *  fallback for a record that predates the field. */
+function catalogRowFor(
+  resources: DelegatedAccessResourceOption[],
+  resource: string,
+  rowFor: (resource: string) => string,
+): DelegatedAccessResourceOption | undefined {
+  const key = rowFor(resource) || resource;
+  return resources.find((option) => option.resource === key);
+}
+
+/** The card-level selection as the server stores it.
+ *
+ *  `"*"` is not a separate mode in the design: an explicitly submitted wildcard
+ *  "means the operator selected all operations shown from the current catalog",
+ *  which is the one case Save may keep as `"*"` against the new catalog
+ *  version. So ticking every offered box encodes as `"*"`, anything less as the
+ *  exact map, and nothing as an explicit {}. */
+function encodeNamedServiceSelection(
+  selected: DelegatedAccessNamedServiceOperations,
+  offered: DelegatedAccessNamedServiceOperations,
+): DelegatedAccessStoredNamedServices {
+  const entries = Object.entries(offered);
+  if (!entries.length) return selected;
+  const everythingTicked = entries.every(([resource, namespaces]) => (
+    Object.entries(namespaces).every(([namespace, operations]) => {
+      const held = new Set(selected[resource]?.[namespace] || []);
+      return operations.every((operation) => held.has(operation));
+    })
+  ));
+  return everythingTicked ? '*' : selected;
+}
+
+/** The card's coverage, kept to what the picker can actually draw.
+ *
+ *  Operations the active catalog no longer offers have no checkbox, so seeding
+ *  them would resubmit choices the operator cannot see or untick — the design
+ *  is explicit that the frontend never sends a hidden stale operation back
+ *  merely to reconstruct the old card. */
+function seedNamedServiceOperations(
+  item: DelegatedAccessRecord,
+  offered: DelegatedAccessNamedServiceOperations,
+): DelegatedAccessNamedServiceOperations {
+  const covered = cardNamedServiceOperations(item);
+  const out: DelegatedAccessNamedServiceOperations = {};
+  Object.entries(offered).forEach(([resource, namespaces]) => {
+    const held = covered[resource] || {};
+    const kept: Record<string, string[]> = {};
+    Object.entries(namespaces).forEach(([namespace, operations]) => {
+      const selected = new Set(held[namespace] || []);
+      const surviving = operations.filter((operation) => selected.has(operation));
+      if (surviving.length) kept[namespace] = surviving;
+    });
+    if (Object.keys(kept).length) out[resource] = kept;
+  });
+  return out;
+}
+
+function driftLabel(row: { resource: string; namespace?: string; claim?: string; operation?: string }): string {
+  const parts = [doorAlias(row.resource) || row.resource];
+  if (row.namespace) parts.push(row.namespace);
+  parts.push(row.claim || row.operation || '');
+  return parts.filter(Boolean).join(' · ');
+}
+
+/** Backend-computed drift. The panel renders what the server decided; it never
+ *  compares catalogs itself. */
+function CatalogDriftNotice({ drift }: { drift?: DelegatedCatalogDrift }) {
+  if (!drift) return null;
+  if (drift.status === 'current' || drift.status === 'no_relevant_change') return null;
+
+  if (drift.status === 'unavailable') {
+    return (
+      <div className="notice" style={{ marginTop: 10, marginBottom: 10 }}>
+        <strong>Service access cannot be checked right now</strong>
+        <div>Editing is unavailable until the service catalog can be read again.</div>
+      </div>
+    );
+  }
+
+  const removed = [
+    ...(drift.removed?.resources || []),
+    ...(drift.removed?.claims || []),
+    ...(drift.removed?.outer_operations || []),
+    ...(drift.removed?.named_service_operations || []),
+  ];
+  const added = [
+    ...(drift.added?.claims || []),
+    ...(drift.added?.outer_operations || []),
+    ...(drift.added?.named_service_operations || []),
+  ];
+  if (!removed.length && !added.length && drift.status !== 'baseline_missing') return null;
+
+  return (
+    <div className="notice" style={{ marginTop: 10, marginBottom: 10 }}>
+      <strong>Service access changed since this grant was last saved</strong>
+      <details>
+        <summary>What changed</summary>
+        {removed.length ? (
+          <div>
+            <div className="card-field-label">No longer available</div>
+            <ul>
+              {removed.map((row) => (
+                <li key={`removed-${driftLabel(row)}`}>
+                  <code>{driftLabel(row)}</code> — already ineffective, removed when you save
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        {added.length ? (
+          <div>
+            <div className="card-field-label">Newly available</div>
+            <ul>
+              {added.map((row) => (
+                <li key={`added-${driftLabel(row)}`}>
+                  <code>{driftLabel(row)}</code> — not granted; select it to allow
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        {drift.status === 'baseline_missing' ? (
+          <div>
+            This grant predates the recorded service catalog, so newly available options
+            cannot be listed.
+          </div>
+        ) : null}
+      </details>
+    </div>
+  );
+}
+
 export function DelegatedAccessPanel({ openParams }: { openParams?: Record<string, string> } = {}) {
   const dispatch = useAppDispatch();
   const { platformUserId, items, grantOptions, resources, issuedToken, issuedHeader, issuedAccess, busy } = useAppSelector((s) => s.delegatedAccess);
   const { providers, accounts } = useAppSelector((s) => s.delegatedToKdcube);
   const [label, setLabel] = useState('Automation access');
   const [resourceGrants, setResourceGrants] = useState<Record<string, string[]>>({});
-  const [namedServiceOperations, setNamedServiceOperations] = useState<DelegatedAccessNamedServiceOperations>({});
+  const [namedServiceOperations, setNamedServiceOperations] = useState<DelegatedAccessNamedServiceOperations>(
+    // The demand names the operation it was refused; approval grants that one.
+    () => {
+      const asked = pendingAgentGrantRequest(openParams);
+      if (!asked?.namespace || !asked.operation || !asked.resource) return {};
+      return { [asked.resource]: { [asked.namespace]: [asked.operation] } };
+    },
+  );
   const [ttlSeconds, setTtlSeconds] = useState(ttlOptions[0].value);
   const [pendingGrant, setPendingGrant] = useState(() => pendingAgentGrantRequest(openParams));
   const manualFocus = useMemo(() => manualAccessFocusRequest(openParams), [openParams]);
@@ -459,6 +709,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // Namespace narrowing being edited: {resource: {namespace: [operation]}}.
   const [editNamedServiceOperations, setEditNamedServiceOperations] =
     useState<DelegatedAccessNamedServiceOperations>({});
+  // Card resource -> catalog row, for the record being edited.
+  const [editCatalogRows, setEditCatalogRows] = useState<Record<string, string>>({});
+  const editRowFor = useCallback(
+    (resource: string) => editCatalogRows[resource] || resource,
+    [editCatalogRows],
+  );
   // Per-account claim binding being edited: {provider_id: {account_id: [claims]}}.
   // Default-closed: a provider with nothing ticked grants NO account to this
   // client; only the ticked accounts+claims are allowed.
@@ -581,7 +837,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     await dispatch(createDelegatedAccess({
       label: label.trim() || 'Automation access',
       resourceGrants,
-      namedServiceOperations: selectedNamedServiceOperations,
+      namedServiceOperations: encodeNamedServiceSelection(
+        selectedNamedServiceOperations,
+        offeredNamedServiceOperations(
+          resources,
+          selectedResourceEntries.map(([resource]) => resource),
+        ),
+      ),
       accountScope: createAccountScope,
       ttlSeconds,
     })).unwrap().catch(() => undefined);
@@ -645,9 +907,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     });
     // A per-account-only change (the deep link from a binding miss: the door
     // claim is already granted, the user only ticked a per-account permission)
-    // has no new door claim to send. Still emit the resource carrying its
-    // EXISTING claims so the account binding persists rather than being dropped.
-    if (Object.keys(pendingAccountScope).length && !merged[pendingGrant.resource]) {
+    // has no new door claim to send. An operation-only ask — the card holds
+    // every claim the operation declares and only its boundary excludes it —
+    // has none either. Still emit the resource carrying its EXISTING claims so
+    // the binding and the operation reach the record.
+    const operationOnlyAsk = Boolean(pendingGrant.namespace && pendingGrant.operation);
+    if ((Object.keys(pendingAccountScope).length || operationOnlyAsk) && !merged[pendingGrant.resource]) {
       const existing = items.find((record) => (record.client_id || '') === pendingGrant.clientId);
       merged[pendingGrant.resource] = [...((existing?.resource_grants || {})[pendingGrant.resource] || [])];
     }
@@ -728,20 +993,24 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     });
     setEditingAccessId(item.access_id);
     setEditPicks(picks);
+    setEditCatalogRows({ ...(item.catalog_row_by_resource || {}) });
+    // Seeded from what the card COVERS, not from what it names: a wildcard
+    // names nothing, and an empty picker is indistinguishable from an explicit
+    // {} — the operator would then narrow the card with the first box they tick
+    // believing they widen it.
     setEditNamedServiceOperations(
-      Object.fromEntries(
-        Object.entries(item.named_service_operations || {})
-          .map(([resource, namespaces]) => [
-            resource,
-            Object.fromEntries(
-              Object.entries(namespaces || {}).map(([ns, ops]) => [ns, [...(ops || [])]]),
-            ),
-          ]),
+      seedNamedServiceOperations(
+        item,
+        offeredNamedServiceOperations(
+          resources,
+          Object.keys(item.resource_grants || {}),
+          (resource) => (item.catalog_row_by_resource || {})[resource] || resource,
+        ),
       ),
     );
     setEditAccountScope(seedAccountScopeFromRecord(item));
     setEditLabel(item.label || '');
-  }, [seedAccountScopeFromRecord]);
+  }, [resources, seedAccountScopeFromRecord]);
   // Human label for one connected account (falls back to the id).
   const accountLabelById = useMemo(() => {
     const map = new Map<string, string>();
@@ -892,7 +1161,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const toggleEditClaim = (resource: string, claim: string, checked: boolean) => {
     setEditPicks((current) => ({ ...current, [`${resource}:${claim}`]: checked }));
     if (checked) return;
-    const resourceOption = resources.find((item) => item.resource === resource);
+    const resourceOption = catalogRowFor(resources, resource, editRowFor);
     if (!resourceOption) return;
     setEditNamedServiceOperations((current) => {
       const existingNamespaces = current[resource];
@@ -921,7 +1190,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     checked: boolean,
   ) => {
     if (checked) {
-      const resourceOption = resources.find((item) => item.resource === resource);
+      const resourceOption = catalogRowFor(resources, resource, editRowFor);
       const required = [
         ...grants,
         ...(resourceOption ? commonOperationGrants(resourceOption) : []),
@@ -956,11 +1225,22 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // The catalog's claims (so one can be added) union the record's own (so a
   // claim the catalog dropped is still shown and removable).
   const editableClaimsFor = (item: DelegatedAccessRecord, resource: string): string[] => {
-    const option = resources.find((candidate) => candidate.resource === resource);
+    const option = catalogRowFor(
+      resources, resource, (key) => (item.catalog_row_by_resource || {})[key] || key,
+    );
     return Array.from(new Set([
       ...((item.resource_grants || {})[resource] || []),
       ...(option ? grantsForResource(option) : []),
     ]));
+  };
+
+  /** Claims this card holds that the active catalog no longer offers, per the
+   *  backend's comparison. */
+  const withdrawnClaims = (item: DelegatedAccessRecord, resource: string): Set<string> => {
+    const rows = item.catalog_drift?.removed?.claims || [];
+    return new Set(
+      rows.filter((row) => row.resource === resource && row.claim).map((row) => row.claim as string),
+    );
   };
 
   const saveEdit = async (item: DelegatedAccessRecord) => {
@@ -977,55 +1257,38 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       void dispatch(loadDelegatedAccess());
       return;
     }
-    // A manual automation has no live client identity the guard narrows; its
-    // CARD is the authority, keyed by access_id. Editing rewrites that card in
-    // place — the token the operator already copied stays valid, only the scope
-    // (and label) changes — so it saves through the automation-update op, not
-    // the agent-grant path.
-    if (item.source === 'manual') {
-      const prunedKept = Object.fromEntries(
-        Object.entries(kept).filter(([, claims]) => claims.length > 0),
-      );
-      // The edited selection, minus resources fully unchecked above. Left
-      // undefined when the card carries no narrowing and none was picked, so a
-      // rename preserves it instead of narrowing every resource to nothing.
-      const keptNamedServiceOperations = Object.fromEntries(
-        Object.entries(editNamedServiceOperations)
-          .filter(([resource]) => prunedKept[resource]),
-      );
-      await dispatch(updateDelegatedAccess({
-        accessId: item.access_id,
-        label: editLabel.trim() || item.label || 'Automation access',
-        resourceGrants: prunedKept,
-        namedServiceOperations: Object.keys(keptNamedServiceOperations).length
-          ? keptNamedServiceOperations
-          : undefined,
-        accountScope: editAccountScope,
-      })).unwrap().catch(() => undefined);
-      clearEditState();
-      void dispatch(loadDelegatedAccess());
-      return;
-    }
-    if (!item.client_id) return;
-    {
-      // The account binding is a per-client (not per-resource) edit, so send it
-      // once with the first resource; `replace` makes the submitted scope
-      // authoritative (an unchecked provider clears its binding -> nothing
-      // granted there; the runtime is default-closed for delegated callers).
-      const accountScope = editAccountScope;
-      let first = true;
-      for (const [resource, claims] of Object.entries(kept)) {
-        if (!claims.length) continue;
-        await dispatch(grantAgentAccess({
-          clientId: item.client_id,
-          resource,
-          claims,
-          replace: true,
-          ...(first ? { accountScope, label: editLabel.trim() } : {}),
-        })).unwrap().catch(() => undefined);
-        first = false;
-      }
-    }
+    // One save for every family: the card is the authority, keyed by access_id,
+    // and the edit replaces the authority the operator reviewed. The credential
+    // is untouched — a copied manual token, an agent's reusable bearer and an
+    // OAuth client's handles all keep working, on their very next call.
+    const prunedKept = Object.fromEntries(
+      Object.entries(kept).filter(([, claims]) => claims.length > 0),
+    );
+    // The edited selection, minus resources fully unchecked above.
+    const keptNamedServiceOperations = Object.fromEntries(
+      Object.entries(editNamedServiceOperations)
+        .filter(([resource]) => prunedKept[resource]),
+    );
+    // Nothing offered anywhere means there is nothing to say about the inner
+    // boundary; omitting preserves the card's own policy. Otherwise the save
+    // is explicit — `"*"` when every offered box is ticked, the exact map
+    // otherwise, {} when the operator cleared them all.
+    const offered = offeredNamedServiceOperations(
+      resources, Object.keys(prunedKept), editRowFor,
+    );
+    await dispatch(updateDelegatedAccess({
+      accessId: item.access_id,
+      label: editLabel.trim() || item.label || 'Automation access',
+      resourceGrants: prunedKept,
+      namedServiceOperations: Object.keys(offered).length
+        ? encodeNamedServiceSelection(keptNamedServiceOperations, offered)
+        : undefined,
+      accountScope: editAccountScope,
+      // What this editor was opened on. The server refuses the save when
+      // either moved.
+      expectedCardRevision: item.card_revision,
+      expectedCatalogVersion: item.catalog_drift?.current_version || item.catalog_version,
+    })).unwrap().catch(() => undefined);
     clearEditState();
     void dispatch(loadDelegatedAccess());
   };
@@ -1037,6 +1300,16 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // grant checked earlier stays selected while the user searches on.
   const visibleResources = resources.filter((item) => resourceMatchesQuery(item, resourceQuery, grantOptionByName));
   const searching = Boolean(resourceQuery.trim());
+  // The identity the card in progress has already committed to, or '' while
+  // nothing is selected and every door is still reachable.
+  const committedIdentityScope = (() => {
+    const scopes = new Set(
+      resources
+        .filter((item) => (resourceGrants[item.resource] || []).length)
+        .map((item) => item.identity_scope || 'grantor'),
+    );
+    return scopes.size === 1 ? Array.from(scopes)[0] : '';
+  })();
   const renderResourceList = () => (
     <div className="resource-list">
       <input
@@ -1054,6 +1327,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         const grants = grantsForResource(item);
         const selectedCount = (resourceGrants[item.resource] || []).length;
         const isOpen = openResources[item.resource] ?? (searching || selectedCount > 0);
+        // One card issues ONE credential, so every door on it must run under
+        // the same identity. The server refuses a mixture; offering it is what
+        // makes that refusal a surprise.
+        const scope = item.identity_scope || 'grantor';
+        const scopeBlocked = Boolean(committedIdentityScope) && scope !== committedIdentityScope;
         return (
           <div className="resource-option resource-option-stack" key={item.resource}>
             <button
@@ -1080,13 +1358,27 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             </button>
             {isOpen ? (
               <>
+                {scopeBlocked ? (
+                  <p className="resource-boundaries-empty">
+                    This endpoint runs under <code>{scope}</code>, and this card is
+                    already committed to <code>{committedIdentityScope}</code>. One
+                    card carries one identity - grant it on a separate card.
+                  </p>
+                ) : null}
                 <div className="resource-grants">
                   {grants.map((grant) => {
                     const option = grantOptionByName.get(grant);
                     return (
-                      <label className="grant-chip" key={`${item.resource}:${grant}`} title={option?.label || undefined}>
+                      <label
+                        className={`grant-chip${scopeBlocked ? ' grant-chip-blocked' : ''}`}
+                        key={`${item.resource}:${grant}`}
+                        title={scopeBlocked
+                          ? `Runs under ${scope}; this card is already committed to ${committedIdentityScope}`
+                          : (option?.label || undefined)}
+                      >
                         <input
                           type="checkbox"
+                          disabled={scopeBlocked}
                           checked={(resourceGrants[item.resource] || []).includes(grant)}
                           onChange={(event) => toggleResourceGrant(item.resource, grant, event.target.checked)}
                         />
@@ -1323,7 +1615,14 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                           {/* Edit mode keeps the per-claim checkboxes; the
                               read-only view is the same labelled-row card the
                               connected-app grants use. */}
-                          {editing ? Object.entries(item.resource_grants || {}).map(([resource, grants]) => (
+                          {editing ? Object.entries(item.resource_grants || {}).map(([resource, grants]) => {
+                            const resourceOption = catalogRowFor(
+                              resources, resource, (key) => (item.catalog_row_by_resource || {})[key] || key,
+                            );
+                            const editedGrants = grants.filter(
+                              (claim) => editPicks[`${resource}:${claim}`] !== false,
+                            );
+                            return (
                             <div key={resource}>
                               <div className="account-title">{doorAlias(resource) || resourceLabelFor(resource) || resource}</div>
                               {resource !== '*' ? <DoorRef value={resource} /> : null}
@@ -1341,8 +1640,23 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                   </label>
                                 ))}
                               </div>
+                              {resourceOption ? (
+                                <DelegatedResourceCatalog
+                                  resource={resourceOption}
+                                  selectedGrants={editedGrants}
+                                  selectedOperations={editNamedServiceOperations[resource] || {}}
+                                  onOperationChange={(namespace, operation, operationGrants, checked) => (
+                                    toggleEditNamedServiceOperation(
+                                      resource, namespace, operation, operationGrants, checked,
+                                    )
+                                  )}
+                                  providers={providers}
+                                  accounts={accounts}
+                                />
+                              ) : null}
                             </div>
-                          )) : (
+                            );
+                          }) : (
                             <div className="card-fields">
                               {/* Door and Access are paired per door, so which claims
                                   belong to which door survives on a multi-door grant.
@@ -1362,14 +1676,25 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                   </Field>
                                 </Fragment>
                               ))}
-                              {item.named_service_operations && Object.keys(item.named_service_operations).length ? (
+                              {namedServiceRows(item).length ? (
                                 <Field label="Services">
-                                  <CountFold
-                                    entries={Object.values(item.named_service_operations)
-                                      .flatMap((namespaces) => Object.entries(namespaces))
-                                      .map(([namespace, operations]) => `${namespace} (${operations.join(', ')})`)}
-                                    noun="service"
-                                  />
+                                  <CountFold entries={namedServiceRows(item)} noun="service" />
+                                  {isWildcardNamedServices(item.named_service_operations) ? (
+                                    <small>
+                                      Every operation these services offered when this card was
+                                      last saved. Operations added since are not included.
+                                    </small>
+                                  ) : null}
+                                </Field>
+                              ) : cardOffersNamedServices(item, resources) ? (
+                                // The door offers named services and none were
+                                // selected: an empty selection reaches nothing,
+                                // so this may not read as "not narrowed".
+                                <Field label="Services">
+                                  <small>
+                                    None selected - this card reaches no named-service
+                                    operation on this door.
+                                  </small>
                                 </Field>
                               ) : (
                                 <Field label="Operations">
@@ -1500,6 +1825,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                       ) : null}
                     </div>
                   ) : null}
+                  <CatalogDriftNotice drift={item.catalog_drift} />
                   {editing ? (
                     <label className="rename-row">
                       <span className="card-field-label">Name</span>
@@ -1514,7 +1840,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                   {item.resource_grants && Object.keys(item.resource_grants).length ? (
                     editing ? (
                       Object.keys(item.resource_grants).map((resource) => {
-                        const resourceOption = resources.find((candidate) => candidate.resource === resource);
+                        const resourceOption = catalogRowFor(
+                          resources, resource, (key) => (item.catalog_row_by_resource || {})[key] || key,
+                        );
                         const editedGrants = editableClaimsFor(item, resource)
                           .filter((claim) => editPicks[`${resource}:${claim}`] === true);
                         return (
@@ -1522,21 +1850,34 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                             <div className="account-title">{resource === '*' ? 'all resources' : (doorAlias(resource) || resourceLabelFor(resource) || resource)}</div>
                             {resource !== '*' ? <DoorRef value={resource} /> : null}
                             <div className="resource-grants">
-                              {editableClaimsFor(item, resource).map((claim) => (
-                                <label className="grant-chip" key={`${resource}:${claim}`} title={grantOptionByName.get(claim)?.label || undefined}>
-                                  <input
-                                    type="checkbox"
-                                    checked={editPicks[`${resource}:${claim}`] === true}
-                                    onChange={(event) => toggleEditClaim(resource, claim, event.target.checked)}
-                                  />
-                                  <span>{claim}</span>
-                                </label>
-                              ))}
+                              {editableClaimsFor(item, resource).map((claim) => {
+                                const stale = withdrawnClaims(item, resource).has(claim);
+                                return (
+                                  <label
+                                    className={stale ? 'grant-chip grant-chip-stale' : 'grant-chip'}
+                                    key={`${resource}:${claim}`}
+                                    title={
+                                      stale
+                                        ? 'No longer offered by the service catalog — already ineffective, removed when you save'
+                                        : grantOptionByName.get(claim)?.label || undefined
+                                    }
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={editPicks[`${resource}:${claim}`] === true}
+                                      disabled={stale}
+                                      onChange={(event) => toggleEditClaim(resource, claim, event.target.checked)}
+                                    />
+                                    <span>{claim}</span>
+                                    {stale ? <span className="badge badge-warn">withdrawn</span> : null}
+                                  </label>
+                                );
+                              })}
                             </div>
-                            {/* Namespace operations are stored per card and derived
-                                per request only for manual automations; the OAuth
-                                edit op does not accept them. */}
-                            {item.source === 'manual' && resourceOption ? (
+                            {/* Every family: the card type decides how the
+                                credential is managed, not whether its grantor
+                                may change authority. */}
+                            {resourceOption ? (
                               <DelegatedResourceCatalog
                                 resource={resourceOption}
                                 selectedGrants={editedGrants}
@@ -1582,14 +1923,19 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         <Field label="Operations"><CountFold entries={item.operations} noun="operation" /></Field>
                       ) : null}
                       {(() => {
-                        // A grant can carry an EMPTY namespace map; render the
-                        // row only when it actually names services.
-                        const services = Object.values(item.named_service_operations || {})
-                          .flatMap((namespaces) => Object.entries(namespaces))
-                          .map(([namespace, operations]) => `${namespace} (${operations.join(', ')})`);
-                        return services.length ? (
-                          <Field label="Services"><CountFold entries={services} noun="service" /></Field>
-                        ) : null;
+                        const services = namedServiceRows(item);
+                        if (services.length) {
+                          return <Field label="Services"><CountFold entries={services} noun="service" /></Field>;
+                        }
+                        if (!cardOffersNamedServices(item, resources)) return null;
+                        return (
+                          <Field label="Services">
+                            <small>
+                              None selected — this card reaches no named-service
+                              operation on this door.
+                            </small>
+                          </Field>
+                        );
                       })()}
                       {Object.keys(item.account_scope || {}).length ? (
                         <Field label="Accounts">
