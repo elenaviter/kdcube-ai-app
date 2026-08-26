@@ -4,14 +4,14 @@ title: "Auth"
 summary: "Authentication providers and token transport across REST/SSE/Socket.IO."
 tags: ["service", "auth", "security", "tokens"]
 keywords: ["delegated auth", "cookie auth", "JWT", "SSE auth", "Socket.IO"]
-updated_at: 2026-07-30
+updated_at: 2026-08-26
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/auth/auth-selector-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/request-authenticators/request-authenticators-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/service/auth/bundle-session-auth-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/service/auth/bundle-simple-idp-bridge-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/auth/app-hosted-platform-login-and-session-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/auth/app-simple-idp-bridge-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/comm/README-comm.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/architecture-long.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/README-monitoring-observability.md
@@ -118,16 +118,16 @@ That authority projection is documented in
 - Implementation: [SimpleIDP](../../../src/kdcube-ai-app/kdcube_ai_app/apps/middleware/simple_idp.py)
 - Token-to-user mapping stored in `idp_users.json` (or `IDP_DB_PATH`).
 - Bundle-owned sign-in flows can register users through the cached registry
-  utility documented in [Bundle SimpleIDP Bridge](bundle-simple-idp-bridge-README.md).
+  utility documented in [App SimpleIDP Bridge](app-simple-idp-bridge-README.md).
 
-4) Bundle session auth
-- Implementation: [Bundle session auth](../../../src/kdcube-ai-app/kdcube_ai_app/auth/bundle/sessions.py)
+4) Application-hosted platform login and session
+- Implementation: [platform session implementation (technical bundle package)](../../../src/kdcube-ai-app/kdcube_ai_app/auth/bundle/sessions.py)
 - `auth.idp: session`.
-- A bundle/front shell validates an external identity and calls the async
+- An application/front shell validates an external identity and calls the async
   platform session authority to register/login/logout/delete/invalidate users.
 - Session cookies carry a signed `kst1.*` token. Redis stores the active
   session record, user record, and revocation/version state.
-- Details: [Bundle Session Auth](bundle-session-auth-README.md).
+- Details: [Application-Hosted Platform Login And Session](app-hosted-platform-login-and-session-README.md).
 
 5) Delegated auth (proxy login service)
 - Proxy service build: [ProxyLogin Dockerfile](../../../deployment/docker/custom-ui-managed-infra/Dockerfile_ProxyLogin)
@@ -215,8 +215,8 @@ service; Connection Hub remains their configuration owner.
 | Goal | Read |
 |---|---|
 | Understand how requests choose Cognito/session/Connection Hub authenticators | [Auth Selector](auth-selector-README.md) |
-| Bundle/front shell performs login and browser should become a platform user | [Bundle Session Auth](bundle-session-auth-README.md) |
-| Bundle writes a SimpleIDP token for local/embedded simple auth | [Bundle SimpleIDP Bridge](bundle-simple-idp-bridge-README.md) |
+| Application/front shell performs login and browser should become a platform user | [Application-Hosted Platform Login And Session](app-hosted-platform-login-and-session-README.md) |
+| App writes a SimpleIDP token for local/embedded simple auth | [App SimpleIDP Bridge](app-simple-idp-bridge-README.md) |
 | External tool should access a narrow MCP integration surface after descriptor-governed user/admin consent | [OAuth delegated credential Protocol Adapter](../../sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md) |
 | Public mini app needs Socket.IO Data Bus publish rights | [Bundle Federated Auth](../../sdk/bundle/auth-bundle-federated-README.md) |
 | Bundle endpoint should be public or role-protected | [Bundle Firewall](../../sdk/bundle/bundle-firewall-README.md) |
@@ -249,8 +249,9 @@ support:
 Notes:
 - For SSE, query param tokens are injected into headers in
   [chat web app](../../../src/kdcube-ai-app/kdcube_ai_app/apps/chat/ingress/web_app.py) before gateway processing.
-- For Socket.IO, the gateway session upgrade uses auth payload first, then cookies
-  in [ingress chat core](../../../src/kdcube-ai-app/kdcube_ai_app/apps/chat/ingress/chat_core.py).
+- For Socket.IO, the gateway session upgrade uses auth payload first, then
+  cookies in the
+  [Socket.IO chat handler](../../../src/kdcube-ai-app/kdcube_ai_app/apps/chat/ingress/socketio/chat.py).
 - If cookies are present, they are treated as valid credentials (same as headers).
 
 ## Delegated proxy cookie flows
@@ -283,7 +284,7 @@ Common environment variables:
 - `AUTH_TOKEN_COOKIE_NAME` (default `__Secure-LATC`)
 - `ID_TOKEN_COOKIE_NAME` (default `__Secure-LITC`)
 - `IDP_DB_PATH` (SimpleIDP user token map)
-- `services.session_token.secret` (descriptor secret used by bundle session auth)
+- `services.session_token.secret` (descriptor secret used to sign `kst1` platform sessions)
 
 In descriptor-driven deployments these values come from the selected platform
 authority provider in Connection Hub:
@@ -322,7 +323,7 @@ Central platform-auth rule:
   returns no roles, platform auth normalizes that user to
   `kdcube:role:registered`;
 - this applies to platform authorities such as Cognito, SimpleIDP, and
-  configured bundle-session platform providers;
+  configured application-hosted platform-session providers;
 - this does not apply to raw external channel proofs such as Telegram initData
   until they resolve/project to a platform authority.
 
@@ -333,4 +334,4 @@ Central platform-auth rule:
 - SSE + Socket.IO ingress:
   [SSE chat](../../../src/kdcube-ai-app/kdcube_ai_app/apps/chat/ingress/sse/chat.py),
   [Socket.IO chat](../../../src/kdcube-ai-app/kdcube_ai_app/apps/chat/ingress/socketio/chat.py),
-  [ingress chat core](../../../src/kdcube-ai-app/kdcube_ai_app/apps/chat/ingress/chat_core.py)
+  [Socket.IO chat handler](../../../src/kdcube-ai-app/kdcube_ai_app/apps/chat/ingress/socketio/chat.py)

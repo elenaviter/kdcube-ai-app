@@ -5,7 +5,7 @@ summary: "Storage map for Connection Hub data: descriptors, secrets, request-aut
 status: active
 tags: ["sdk", "connections", "connection-hub", "storage", "postgres", "secrets", "connection-edges"]
 keywords: ["connection hub storage", "delegated grant records", "live grant authority", "bundle operation csrf", "redis authorization state"]
-updated_at: 2026-08-01
+updated_at: 2026-08-26
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-token-storage-README.md
@@ -35,7 +35,7 @@ bundle-local filesystem state today
 
 Redis/cache
   discovery, event delivery, runtime caches
-  bundle-session records
+  KDCube session records (technical bundle-session keys)
   delegated credential grant records
 
 user-scoped secrets
@@ -60,7 +60,7 @@ user-scoped secrets
 | Delegated OAuth refresh token / dynamic client registration | Redis `GrantStore`, keys `{tenant}:{project}:kdcube:oauth:{refresh,client}:...` | yes, auth token | Current implementation is Redis-backed; durable production backing is a strengthening target. |
 | Delegated automation access listing | Redis, keys `{tenant}:{project}:kdcube:delegated-access:automation:*` | sensitive metadata | UI-visible records contain label, expiry, last four chars, session id, `resource_grants`, and selected named-service operations when applicable; raw token is shown only at creation. Provider tokens stay in user-scoped connected-account secrets. |
 | Bundle operation CSRF token | Redis, key `{tenant}:{project}:kdcube:bundle-operation-csrf:<sha256(token)>` | short-lived request proof | One-time record binds the authenticated subject and exact bundle operation context. The raw token is returned only to the authenticated browser and is never used as delegated authority. |
-| Bundle-session record | Redis, keys `{tenant}:{project}:kdcube:auth:bundle-session:*` | sensitive auth state | Backs `kst1` platform/bundle-session tokens and delegated-client access tokens. |
+| KDCube `kst1` session record | Redis, technical keys `{tenant}:{project}:kdcube:auth:bundle-session:*` | sensitive auth state | Backs application-hosted platform sessions and delegated-client access tokens. |
 | Live link update | Data Bus / event delivery | no | Signals original iframe after browser claim completes. |
 
 ## Bundle Storage Root Is Filesystem
@@ -172,7 +172,7 @@ connection-hub@1-0:
                 client_id: <google-client-id>.apps.googleusercontent.com
 ```
 
-The provider instance may reference a bundle-hosted operation, but roles,
+The provider instance may reference an application-hosted operation, but roles,
 permissions, TTL, authority id, and `platform` flag belong to Connection Hub.
 The hosting bundle does not keep a separate platform-session policy branch; it
 is resolved by `host.bundle_id`, `host.route`, and `host.operation`.
@@ -181,7 +181,7 @@ Verifier secrets still stay outside this registry and are reached by
 `secret_ref` through the secrets lifecycle.
 
 Descriptor-backed authority grants are a bootstrap/demo policy for
-bundle-session platform subjects. They do not make a raw Telegram or Google
+application-hosted platform-session subjects. They do not make a raw Telegram or Google
 proof a platform user by themselves; they are applied only inside a registered
 platform login provider flow that issues a platform session.
 
@@ -236,7 +236,7 @@ Creation mints a `kst1` delegated-client access token and writes two server-side
 records:
 
 ```text
-Bundle-session authority record:
+KDCube `kst1` authority record (technical bundle-session key):
   Redis
   {tenant}:{project}:kdcube:auth:bundle-session:session:<session_id>
   validates the opaque kst1 token and integration subject

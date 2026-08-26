@@ -5,7 +5,7 @@ summary: "Connection Hub role for consented connections where a credential/proof
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "delegated-connections", "oauth", "mcp", "consent", "grants"]
 keywords: ["delegated connections", "Delegated by KDCube", "delegated access cards", "OAuth client grant", "manual automation token", "registry_access_id", "grant revocation"]
-updated_at: 2026-08-11
+updated_at: 2026-08-26
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authority-providers/authority-provider-runtime-README.md
@@ -266,7 +266,7 @@ the Connection Hub authentication surface:
 Connection Hub SDK RequestAuthResolver
   |
   +-- Cognito / platform browser session
-  +-- platform bundle-session
+  +-- application-hosted platform session
   +-- ConnectionHubAuthenticationSurface
         |
         +-- role-providing authenticator
@@ -322,8 +322,9 @@ Works without extra patching:
 
 - Cognito or multi-Cognito platform auth.
 - Simple/dev auth.
-- Platform bundle-session auth where the browser token is a platform
-  `BundleSessionAuthManager` token backed by the bundle-session authority.
+- Application-hosted platform login where the browser carries a KDCube
+  platform session verified by the technically named
+  `BundleSessionAuthManager` and its Redis-backed authority.
 
 Requires a matching auth resolver:
 

@@ -1,29 +1,31 @@
 ---
-id: repo:kdcube-ai-app/app/ai-app/docs/service/auth/bundle-simple-idp-bridge-README.md
-title: "Bundle SimpleIDP Bridge"
-summary: "How a bundle can validate an external sign-in flow and issue platform-recognized SimpleIDP cookies."
-tags: ["service", "auth", "simple-idp", "bundle", "sso"]
-keywords: ["SimpleIDP", "bundle auth", "external identity", "SSO bridge", "cookie auth", "idp_users.json"]
+id: repo:kdcube-ai-app/app/ai-app/docs/service/auth/app-simple-idp-bridge-README.md
+title: "App SimpleIDP Bridge"
+summary: "How an app can validate an external sign-in flow and issue platform-recognized SimpleIDP cookies."
+tags: ["service", "auth", "simple-idp", "app", "sso"]
+keywords: ["SimpleIDP", "app auth", "external identity", "SSO bridge", "cookie auth", "idp_users.json"]
+updated_at: 2026-08-26
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/auth/auth-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/service/auth/bundle-session-auth-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/auth/app-hosted-platform-login-and-session-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-platform-integration-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-firewall-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/comm/data-bus-README.md
 ---
-# Bundle SimpleIDP Bridge
+# App SimpleIDP Bridge
 
 SimpleIDP can be used as a platform-level identity bridge in local and embedded
-deployments. In this pattern, a bundle owns one or more external sign-in flows,
+deployments. In this pattern, an app owns one or more external sign-in flows,
 validates the external identity, registers a platform token in the SimpleIDP
 registry, and sets the platform auth cookies for the browser.
 
-For new bundle-owned browser login sessions that need logout, delete, and
-cluster-wide invalidation, use [Bundle Session Auth](bundle-session-auth-README.md).
+For new application-hosted browser login sessions that need logout, delete, and
+cluster-wide invalidation, use
+[Application-Hosted Platform Login And Session](app-hosted-platform-login-and-session-README.md).
 This bridge remains the SimpleIDP-specific path.
 
 The browser then reaches platform routes as a normal authenticated platform
-session. The gateway still performs platform authentication; the bundle only
+session. The gateway still performs platform authentication; the app only
 creates the SimpleIDP registry record and cookie handoff.
 
 ## Runtime Shape
@@ -33,13 +35,13 @@ Browser / front shell
   |
   | POST /api/integrations/bundles/{tenant}/{project}/{bundle}/public/auth_<provider>
   v
-Bundle public auth endpoint
+App public auth endpoint
   |
   | validate external credential
   |   - Telegram initData
   |   - Google credential
   |   - OAuth/OIDC code exchange
-  |   - another bundle-owned provider
+  |   - another app-owned provider
   v
 External identity is accepted
   |
@@ -90,7 +92,7 @@ simple:
 
 ## User Store
 
-The store is `/config/idp_users.json` for every service and every bundle runtime
+The store is `/config/idp_users.json` for every service and every app runtime
 that registers SimpleIDP users. The path is pinned by the runtime: neither the
 Connection Hub provider nor `platform.services.<service>.idp.idp_db_path`
 configures it, and the CLI removes the latter when it is present.
@@ -111,9 +113,10 @@ provider:
 | `authenticator.cookie.auth_token_cookie_name` | Access/auth token cookie consumed by the gateway. |
 | `authenticator.cookie.id_token_cookie_name` | Identity token cookie consumed by the gateway. |
 
-## Bundle Endpoint
+## App Endpoint
 
-Expose the bundle sign-in endpoint on the public bundle route:
+Expose the app sign-in endpoint on the public app route, technically declared
+as an app operation over the technical bundle route:
 
 ```python
 from kdcube_ai_app.infra.plugin.bundle_loader import api
@@ -231,7 +234,7 @@ profile and role set:
 
 ## Verification
 
-After the bundle sign-in response sets cookies, these platform routes should see
+After the app sign-in response sets cookies, these platform routes should see
 the authenticated user:
 
 ```bash

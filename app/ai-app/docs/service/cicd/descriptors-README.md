@@ -4,6 +4,7 @@ title: "Deployment Descriptors Overview"
 summary: "Overview of the deployment descriptor set, what each file owns, and how descriptor authority differs between current local CLI runs, direct local service runs, and AWS deployment."
 tags: ["service", "cicd", "descriptors", "configuration"]
 keywords: ["deployment descriptors", "platform descriptor ownership", "local versus aws authority", "assembly bundles gateway secrets files", "descriptor-driven deployment contract", "runtime configuration entry files"]
+updated_at: 2026-08-26
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/cli-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/runtime-read-write-contract-README.md
@@ -181,11 +182,11 @@ selects the platform authority/provider. Provider details live under
 | `simple` | n/a | SimpleIDP token registry. |
 | `cognito` | `cognito` | Cognito or multi-Cognito JWT validation using the selected Connection Hub provider. |
 | `delegated` | `cognito` | Proxy-login/delegated deployment shape with Cognito backend validation from the selected provider. |
-| `bundle` | bundle-session provider id | Bundle/front shell validates external identity and issues platform-recognized bundle session cookies. |
+| `bundle` | application-hosted session provider id | Application/front shell validates external identity and KDCube issues platform-recognized session cookies. Technical provider type: `bundle_session_login`. |
 
-Bundle session auth requires the platform/global secret
+Application-hosted platform sessions require the platform/global secret
 `services.session_token.secret` in `secrets.yaml` or the configured secret
-provider. See [Bundle Session Auth](../auth/bundle-session-auth-README.md).
+provider. See [Application-Hosted Platform Login And Session](../auth/app-hosted-platform-login-and-session-README.md).
 
 For mixed runtime scenes, keep the selector in `assembly.yaml` and place the
 Cognito trust list in `bundles.yaml`:

@@ -4,7 +4,7 @@ title: "Service Runtime Configuration Mapping"
 summary: "Cross-descriptor runtime mapping for the platform: which file or env owns which runtime values across CLI compose, direct local runs, and AWS deployment."
 tags: ["service", "configuration", "env", "descriptors"]
 keywords: ["descriptor to runtime mapping", "compose versus direct run versus aws", "descriptor file locations", "runtime env translation", "application preparation mapping", "bundle descriptor provider mapping", "secrets provider mapping", "workspace backend mapping", "mode specific configuration contract", "local mount variables", "deployment runtime configuration overview"]
-updated_at: 2026-08-18
+updated_at: 2026-08-26
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/descriptors-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/runtime-read-write-contract-README.md
@@ -106,8 +106,9 @@ Notes:
   from that selected provider and emitted as
   `auth.oidcConfig.end_session_endpoint`; it has no separate process-setting
   knob.
-- `auth.idp: session` is the bundle session auth provider. It requires the
-  platform secret `services.session_token.secret`.
+- `auth.idp: session` selects application-hosted platform login and session.
+  It requires the platform secret `services.session_token.secret`; the
+  technical provider type is `bundle_session_login`.
 
 ### Secrets provider and secrets-file inputs
 
@@ -122,7 +123,7 @@ Common platform service secrets:
 | Secret path | Purpose |
 |---|---|
 | `services.federated_token.secret` | Short-lived bundle-federated Data Bus token signing. |
-| `services.session_token.secret` | Bundle session auth cookie signing. |
+| `services.session_token.secret` | KDCube `kst1` platform-session cookie signing. |
 
 ### Gateway config source
 

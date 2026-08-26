@@ -1,17 +1,18 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/platform-authority/setup-platform-authority-README.md
 title: "Set Up A Platform Authority Provider"
-summary: "Recipe for selecting and configuring the KDCube platform authority provider: Cognito/multi-Cognito, SimpleIDP, or a bundle-hosted platform session."
+summary: "Recipe for selecting and configuring the KDCube platform authority provider: Cognito/multi-Cognito, SimpleIDP, or application-hosted login with a KDCube platform session."
 status: draft
 tags: ["recipes", "connections", "connection-hub", "platform-authority", "cognito", "multi-cognito", "simple-idp", "bundle-session"]
-updated_at: 2026-07-30
+keywords: ["platform authority", "application-hosted platform login", "Cognito", "SimpleIDP", "bundle_session_login"]
+updated_at: 2026-08-26
 see_also:
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/platform-authority/host-platform-authority-in-bundle-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/platform-authority/host-platform-login-in-app-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authority-providers/authority-provider-runtime-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authority-providers/credential-envelope-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/auth/auth-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/auth/auth-selector-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/service/auth/bundle-session-auth-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/auth/app-hosted-platform-login-and-session-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/assembly-descriptor-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/bundles-descriptor-README.md
 ---
@@ -41,7 +42,7 @@ provider internals.
 | Cognito | One Cognito pool/client is the platform login provider. | OIDC authorization-code flow. | Access token in `AUTH_TOKEN_COOKIE_NAME`, ID token in `ID_TOKEN_COOKIE_NAME`. |
 | Multi-Cognito | A runtime trusts more than one Cognito pool/client pair. | Browser still logs into one configured OIDC provider. | Access token + ID token; server verifies both against the trusted provider list. |
 | SimpleIDP | Local/dev or controlled test deployment needs simple users without an external IdP. | Simple token issue/login flow. | Simple platform token in `AUTH_TOKEN_COOKIE_NAME` or Authorization header. |
-| Bundle-hosted session | An app bundle owns the login UI/upstream proof and KDCube should accept the result as a platform session. | Browser follows `auth.loginUrl`. | KDCube bundle-session token in `AUTH_TOKEN_COOKIE_NAME`; ID token cookie is not required. |
+| Application-hosted platform login | An application bundle owns the login UI/upstream proof and KDCube owns the resulting platform session. | Browser follows `auth.loginUrl`. | KDCube `kst1` platform-session token in `AUTH_TOKEN_COOKIE_NAME`; ID token cookie is not required. |
 
 All methods should produce a `kdcube.platform` subject for normal platform
 surfaces.
@@ -60,7 +61,7 @@ auth:
     provider_id: cognito
 ```
 
-For a bundle-hosted platform session:
+For application-hosted platform login and session:
 
 ```yaml
 auth:
@@ -215,10 +216,11 @@ simple login/token issue
 SimpleIDP does not use a browser OIDC callback and does not require an ID token
 cookie.
 
-## Register Bundle-Hosted Session
+## Register Application-Hosted Platform Login
 
-Use this when a bundle hosts the login page and upstream proof flow, but
-Connection Hub owns platform authority registration and policy.
+Use this when an application bundle hosts the login page and upstream proof
+flow, while Connection Hub owns platform authority registration and policy and
+KDCube owns the resulting session.
 
 ```yaml
 items:
@@ -293,19 +295,19 @@ Expected browser flow:
 
 ```text
 browser -> auth.loginUrl
-        -> bundle login page
+        -> application-hosted login page
         -> upstream proof, for example Google ID token
-        -> bundle operation calls Connection Hub SDK runtime
+        -> application operation calls Connection Hub SDK runtime
         -> runtime verifies upstream proof and resolves grants
-        -> runtime issues KDCube bundle-session token
+        -> runtime issues KDCube kst1 platform-session token
         -> server sets LATC
         -> /profile verifies a non-anonymous platform user
 ```
 
-The bundle-hosted flow does not require `ID_TOKEN_COOKIE_NAME`; that cookie is
+The application-hosted flow does not require `ID_TOKEN_COOKIE_NAME`; that cookie is
 for Cognito/OIDC browser auth. See
-[Host A Platform Authority Flow In A Bundle](host-platform-authority-in-bundle-README.md)
-for the full bundle-side recipe.
+[Host A Platform Login Flow In An App](host-platform-login-in-app-README.md)
+for the full application-side recipe.
 
 ## Secrets
 
@@ -314,12 +316,12 @@ Keep sensitive values in the secrets lifecycle, not in public descriptors.
 | Secret | Used by |
 | --- | --- |
 | Cognito app/client secret, if applicable | Cognito provider/runtime. |
-| `services.session_token.secret` | Bundle-session token signing and verification. |
-| Upstream provider secrets | Bundle-hosted login operations or request authenticators. |
+| `services.session_token.secret` | KDCube `kst1` platform-session signing and verification. |
+| Upstream provider secrets | Application-hosted login operations or request authenticators. |
 | Bot/webhook/OAuth client secrets | Connection Hub authenticators and integration providers. |
 
-Every ingress/proc worker that validates bundle-session tokens must read the
-same `services.session_token.secret`.
+Every ingress/proc worker that validates `kst1` platform-session tokens must
+read the same `services.session_token.secret`.
 
 ## Switching Providers
 
@@ -346,7 +348,7 @@ Expected cookie state after login:
 | --- | --- |
 | Cognito / multi-Cognito | `AUTH_TOKEN_COOKIE_NAME` with access token and `ID_TOKEN_COOKIE_NAME` with ID token. |
 | SimpleIDP | `AUTH_TOKEN_COOKIE_NAME` or Authorization header with simple token. |
-| Bundle-hosted session | `AUTH_TOKEN_COOKIE_NAME` with KDCube bundle-session token. `ID_TOKEN_COOKIE_NAME` is not required. |
+| Application-hosted platform login | `AUTH_TOKEN_COOKIE_NAME` with a KDCube `kst1` platform-session token. `ID_TOKEN_COOKIE_NAME` is not required. |
 
 If `/profile` remains anonymous, do not trust visual login state in the client.
 Debug from the server contract:
@@ -357,7 +359,7 @@ Debug from the server contract:
 - expected cookies are present for the selected provider;
 - stale cookies from another provider are not still present on the same origin;
 - Cognito callback completed before `getUser()` fallback;
-- bundle-session provider wrote the platform auth/session cookie.
+- the application-hosted session provider wrote the platform auth/session cookie.
 
 ## Minimal Verification Checklist
 

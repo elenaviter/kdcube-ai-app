@@ -14,8 +14,8 @@ see_also:
   - "repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/interface/README.md"
   - "repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/interface/connection-hub.openapi.yaml"
   - "repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/config/bundles.template.yaml"
-  - "ks:docs/service/auth/bundle-session-auth-README.md"
-  - "ks:docs/service/auth/bundle-simple-idp-bridge-README.md"
+  - "ks:docs/service/auth/app-hosted-platform-login-and-session-README.md"
+  - "ks:docs/service/auth/app-simple-idp-bridge-README.md"
   - "ks:docs/sdk/solutions/ecosystem-component/components-ecosystem-README.md"
   - "ks:docs/sdk/namespace-services/README.md"
 ---
@@ -83,8 +83,8 @@ Start with these app-local files:
 
 When changing auth/session behavior, also read the platform docs:
 
-- `ks:docs/service/auth/bundle-session-auth-README.md`
-- `ks:docs/service/auth/bundle-simple-idp-bridge-README.md`
+- `ks:docs/service/auth/app-hosted-platform-login-and-session-README.md`
+- `ks:docs/service/auth/app-simple-idp-bridge-README.md`
 
 Read the journal before changing behavior. Add a dated journal entry for every
 implementation round that changes API contracts, auth semantics, storage shape,

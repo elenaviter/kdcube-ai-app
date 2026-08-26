@@ -4,7 +4,7 @@ title: "Platform Assembly Descriptor"
 summary: "Platform-level non-secret deployment configuration in assembly.yaml: tenant/project identity, auth, ports, storage backends, local runtime paths, and frontend/runtime wiring."
 tags: ["service", "configuration", "platform", "deployment", "assembly", "descriptor"]
 keywords: ["platform deployment identity", "tenant and project scope", "auth and cognito settings", "service port layout", "storage and workspace backends", "runtime path wiring", "application preparation concurrency", "application preparation retry", "bundle descriptor provider", "frontend build metadata", "local compose topology", "aws deployment mapping"]
-updated_at: 2026-08-18
+updated_at: 2026-08-26
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/descriptors-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/service-runtime-configuration-mapping-README.md
@@ -159,11 +159,12 @@ validate tokens using the configured auth provider.
 `auth.proxy_login.enforce_mfa` maps to Proxy Login `COGNITO_ENFORCEMFA`. When
 enabled, Proxy Login enforces MFA during the Cognito login flow.
 
-`auth.idp: session` selects bundle session auth, where a bundle/front shell
-validates an external identity and calls the async platform session authority to
-issue platform-recognized `kst1.*` cookies. It requires
+`auth.idp: session` selects application-hosted platform login and session,
+where an application/front shell validates an external identity and calls the
+async platform session authority to issue platform-recognized `kst1.*`
+cookies. It requires
 `services.session_token.secret` in `secrets.yaml`. See
-[Bundle Session Auth](../service/auth/bundle-session-auth-README.md).
+[Application-Hosted Platform Login And Session](../service/auth/app-hosted-platform-login-and-session-README.md).
 
 `auth.authenticators` configures request-auth surfaces. The platform
 authenticator itself is derived from the selected Connection Hub platform

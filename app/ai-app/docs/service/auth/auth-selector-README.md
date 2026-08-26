@@ -4,7 +4,8 @@ title: "Auth Selector And Connection Hub Surface"
 summary: "Gateway request-authentication boundary: platform auth first, then the Connection Hub authentication surface, complete UserSession out."
 status: active
 tags: ["service", "auth", "gateway", "connections", "authenticators", "sessions"]
-updated_at: 2026-06-28
+keywords: ["auth selector", "platform authenticator", "Connection Hub authentication surface", "platform session", "UserSession"]
+updated_at: 2026-08-26
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/auth/auth-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
@@ -86,7 +87,7 @@ After this point, normal gateway code handles:
 
 KDCube has more than one way a user can arrive:
 
-- browser session with Cognito or bundle-session cookies;
+- browser session with Cognito or an application-hosted KDCube platform-session cookie;
 - Telegram Mini App `initData`;
 - Telegram webhook signed by a bot;
 - Slack request signature;
@@ -209,6 +210,7 @@ authenticator: kdcube.multi-cognito
 authenticator: kdcube.bundle-session
   input: kst1 session cookie
   output: identity under kdcube.platform
+  note: technical id for application-hosted platform sessions
 
 authentication surface: connection-hub
   input: raw request envelope

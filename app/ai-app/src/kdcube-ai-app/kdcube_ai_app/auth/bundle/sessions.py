@@ -5,7 +5,7 @@
 Bundle-owned platform session auth.
 
 Docs:
-- repo:./app/ai-app/docs/service/auth/bundle-session-auth-README.md
+- repo:./app/ai-app/docs/service/auth/app-hosted-platform-login-and-session-README.md
 - repo:./app/ai-app/docs/service/auth/auth-README.md
 """
 

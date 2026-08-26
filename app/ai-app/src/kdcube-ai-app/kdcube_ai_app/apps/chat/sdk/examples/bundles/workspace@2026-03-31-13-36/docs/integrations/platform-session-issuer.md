@@ -1,14 +1,26 @@
-# Platform Session Issuer Demo
+---
+id: repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/workspace@2026-03-31-13-36/docs/integrations/platform-session-issuer.md
+title: "Application-Hosted Platform Login Demo"
+summary: "Workspace example for hosting Google sign-in in an application while KDCube owns the resulting platform session."
+status: active
+tags: ["example", "workspace", "auth", "application-hosted-login", "platform-session"]
+keywords: ["Google sign-in", "platform session", "bundle_session_login", "kst1", "Workspace app"]
+updated_at: 2026-08-26
+see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/service/auth/app-hosted-platform-login-and-session-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/platform-authority/host-platform-login-in-app-README.md
+---
+# Application-Hosted Platform Login Demo
 
-Workspace can demonstrate a bundle-owned login authority without making that
-behavior a built-in default.
+Workspace demonstrates application-hosted platform login: the application owns
+the login experience, while KDCube owns the resulting platform session.
 
-The bundle hosts the user-facing operation/UI for an upstream proof, currently a
-Google ID token, then calls the Connection Hub SDK bundle-session provider
-runtime. The SDK runtime resolves the registered provider, verifies or delegates
-verification of the upstream proof, resolves roles/provisioning policy, and
-calls the platform bundle-session authority. This is a deliberate platform login
-provider flow.
+The application bundle hosts the user-facing operation/UI for an upstream
+proof, currently a Google ID token, then calls the technically named Connection
+Hub SDK `bundle_session_login` provider runtime. The SDK runtime resolves the
+registered provider, verifies or delegates verification of the upstream proof,
+resolves roles/provisioning policy, and calls the KDCube platform-session
+authority.
 
 Plain Telegram channel identity remains an external actor until it is explicitly
 linked to an existing platform identity through a Connection Hub connection edge.
@@ -48,7 +60,7 @@ On success, the response sets the descriptor-configured platform auth cookies.
 
 ## Platform Descriptor
 
-`assembly.yaml` must select bundle-session auth:
+`assembly.yaml` must select application-hosted platform login and session:
 
 ```yaml
 auth:
@@ -185,8 +197,8 @@ bootstrap rule may match verified login claims such as Google
 claim matcher used to discover the subject.
 
 In Cognito, equivalent role data comes from Cognito groups/claims. In a
-production bundle-session authority this should become a Connection Hub
-UI-managed authority user/role store. The roles are still roles of the platform
+production application-hosted platform authority this should become a
+Connection Hub UI-managed authority user/role store. The roles are still roles of the platform
 subject, not roles of the raw Telegram channel identity or an email attribute.
 
 If authority-level grants ask for a role/permission outside
@@ -238,8 +250,8 @@ items:
 | Register platform authority and provider instance | Connection Hub `authority_registry` |
 | Default/assignable grants this provider may issue | Connection Hub provider instance |
 | Per-subject grants | Platform authority grants / future user-role store |
-| Issue `kst1` platform session token | SDK `bundle_session_login` runtime via platform bundle-session authority |
-| Verify future requests | ingress/proc bundle-session auth manager |
+| Issue `kst1` platform session token | SDK `bundle_session_login` runtime via the KDCube platform-session authority |
+| Verify future requests | ingress/proc `BundleSessionAuthManager` (technical implementation name) |
 | Store active sessions and users | platform Redis session registry |
 
 The bundle code must not hardcode issuer roles, permissions, bot identity, or
@@ -267,11 +279,12 @@ Browser opens the normal platform UI route
   -> SDK runtime computes platform subject google:<sub>
   -> SDK runtime resolves grants.subjects or grants.bootstrap_rules
      from Connection Hub authority registry
-  -> bundle-session authority writes/updates that platform subject
-  -> bundle-session authority issues kst1
+  -> KDCube session authority writes/updates that platform subject
+  -> KDCube session authority issues kst1
   -> response sets platform auth cookies
 ```
 
-This is the clean replacement for app-local `AUTH_PROVIDER=session`
-monkeypatching: the platform verifier is standard bundle-session auth, while
-the bundle only hosts a registered provider flow.
+This is the descriptor-owned replacement for app-local
+`AUTH_PROVIDER=session` monkeypatching: the platform verifier uses the shared
+KDCube session authority, while the application only hosts a registered
+provider flow.

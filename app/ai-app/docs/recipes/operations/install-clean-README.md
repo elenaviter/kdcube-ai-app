@@ -4,7 +4,8 @@ title: "Install KDCube: Clean Bootstrap"
 summary: "Stand up a fresh KDCube runtime with one init: application-hosted login, the configured base complectation, the optional Telegram companion, the first-run checklist, start, and honest verification."
 status: active
 tags: ["operations", "install", "bootstrap", "cli", "kdcube-cli", "auth"]
-updated_at: 2026-07-17
+keywords: ["kdcube init", "clean install", "Google sign-in", "application-hosted platform login", "local runtime"]
+updated_at: 2026-08-26
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/operations/operate-runtime-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/operations/install-from-descriptors-README.md
@@ -132,10 +133,10 @@ user-memories@2026-06-26    the mem provider + memories widget
 workspace@2026-03-31-13-36  showcase scene + chat wired to everything
 ```
 
-Default identity is the bundle-session flavor: Google sign-in validated by
-the workspace app, KDCube session issued by Connection Hub — no external
-IdP. `--bootstrap-admin-email` is the super-admin bootstrap rule in the
-Connection Hub authority registry.
+Default identity uses application-hosted platform login: the Workspace app
+hosts Google sign-in, KDCube validates the Google proof through Connection Hub,
+and KDCube issues the platform session. `--bootstrap-admin-email` is the
+super-admin bootstrap rule in the Connection Hub authority registry.
 
 ### The first-run checklist
 

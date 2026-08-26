@@ -5,7 +5,7 @@ summary: "Canonical map of Connection Hub roles: connection edges, identity-fami
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "identity", "auth", "authority", "delegated-connections"]
 keywords: ["Connection Hub", "delegated access cards", "connected accounts", "authority registry", "request authenticators", "connection edges", "OAuth MCP"]
-updated_at: 2026-08-11
+updated_at: 2026-08-26
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/tenant-project-user-and-execution-boundaries-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-edges/connection-edges-README.md
@@ -200,7 +200,7 @@ authority_registry:
   SDK to issue the configured KDCube session credential.
 
 `entrypoints.consent`
-: Optional bundle-hosted delegated credential consent renderer for this
+: Optional application-hosted delegated credential consent renderer for this
   authority provider. Connection Hub still owns CSRF validation, grant
   narrowing, authorization-code creation, and token issuance.
 
@@ -266,8 +266,8 @@ example `cognito_admin` and `cognito_customer`. A provider instance may have:
   through authority-level subject grants.
 
 For example, `workspace_google_session` consumes a Google ID token verified by
-`google.accounts.providers.google_oidc`, then issues a KDCube bundle-session
-token for subject `google:<sub>`. The hosted UI may live in Workspace, but
+`google.accounts.providers.google_oidc`, then issues a KDCube `kst1`
+platform-session token for subject `google:<sub>`. The hosted UI may live in Workspace, but
 authority ids, grants, TTL, and subject assignments remain in Connection Hub.
 
 Telegram Mini App `initData` remains a channel/request authenticator in this
@@ -354,7 +354,8 @@ authority_registry:
                 - kdcube:*:*:*
 ```
 
-The role policy for bundle-session subjects stays in the platform authority:
+The role policy for application-hosted platform-session subjects stays in the
+platform authority:
 
 ```yaml
 kdcube.platform:

@@ -4,7 +4,8 @@ title: "Authority Credential Envelope"
 summary: "Canonical kdcube.credential.v1 shape used to route tokens and proofs to reachable authority providers."
 status: active
 tags: ["sdk", "solutions", "connections", "authority-provider", "credential", "delegated-connections", "data-bus", "oauth"]
-updated_at: 2026-07-03
+keywords: ["credential envelope", "platform session", "kst1", "delegated credential", "application-hosted platform login"]
+updated_at: 2026-08-26
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authority-providers/authority-provider-runtime-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-connections/delegated-connections-README.md
@@ -102,7 +103,7 @@ by the selected platform provider.
 | --- | --- | --- |
 | Cognito / multi-Cognito | Cognito/OIDC access token in `AUTH_TOKEN_COOKIE_NAME`; Cognito/OIDC ID token in `ID_TOKEN_COOKIE_NAME`. | External JWTs. They are not rewritten into a KDCube envelope in the browser. The selected Connection Hub provider tells the runtime which Cognito verifier/trust list to use. |
 | SimpleIDP | Simple platform token in `AUTH_TOKEN_COOKIE_NAME` or Authorization header. | Local/simple platform credential. It does not require an envelope unless a future issuer explicitly adds one. |
-| Bundle-hosted platform session | KDCube `kst1` bundle-session token in `AUTH_TOKEN_COOKIE_NAME`. | KDCube-issued session credential. The bundle-session authority/runtime may include envelope metadata for routing and diagnostics, but browser clients treat it as the platform auth/session token. |
+| Application-hosted platform login | KDCube `kst1` platform-session token in `AUTH_TOKEN_COOKIE_NAME`. | KDCube-issued session credential. The technically named bundle-session authority/runtime may include envelope metadata for routing and diagnostics, but browser clients treat it as the platform auth/session token. |
 | Delegated external client | KDCube `kst1` delegated-client token in Authorization bearer. | KDCube-issued delegated credential with explicit `delegated_client_access` envelope/grant metadata. |
 
 The browser-facing contract comes from `/api/cp-frontend-config`. Clients should
@@ -115,8 +116,8 @@ switch:
 
 - Cognito/multi-Cognito: access token cookie and ID token cookie;
 - SimpleIDP: simple platform token cookie or Authorization header;
-- bundle-session: platform auth/session cookie only; ID token cookie is not
-  required.
+- application-hosted platform login: platform auth/session cookie only; ID
+  token cookie is not required.
 
 ## Current Credential Kinds
 
@@ -143,8 +144,9 @@ authority code.
 
 ### Delegated Client Access
 
-The delegated client access token is a `kst1` bundle-session token for an integration
-representative. Its session claim and grant record include:
+The delegated client access token is a `kst1` token for an integration
+representative, backed by the shared technically named bundle-session
+authority. Its session claim and grant record include:
 
 ```json
 {

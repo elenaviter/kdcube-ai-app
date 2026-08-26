@@ -4,10 +4,10 @@ title: "OAuth Delegated Credential Protocol Adapter"
 summary: "How the OAuth2 protocol adapter resolves pre-registered, Client ID Metadata Document, and DCR clients, then issues and verifies least-privilege Connection Hub credentials."
 tags: ["sdk", "solutions", "connections", "delegated-credentials", "oauth", "mcp", "descriptor"]
 keywords: ["OAuth2 authorization server", "MCP protected resource", "Claude Code", "PKCE", "Client ID Metadata Document", "CIMD", "dynamic client registration", "tool consent", "live grant lookup", "operation csrf protection", "descriptor configuration"]
-updated_at: 2026-08-07
+updated_at: 2026-08-26
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/auth/auth-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/service/auth/bundle-session-auth-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/auth/app-hosted-platform-login-and-session-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authority-providers/credential-envelope-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-connections/delegated-connections-README.md
@@ -226,7 +226,7 @@ requiring product code to decode grantor facts from the token body:
 }
 ```
 
-See [Authority Credential Envelope](../../sdk/solutions/connections/authority-providers/credential-envelope-README.md).
+See [Authority Credential Envelope](../authority-providers/credential-envelope-README.md).
 For the relationship between the delegate and the approving user, see
 [Delegation Edges](delegation-edges-README.md).
 
@@ -715,7 +715,7 @@ store, normally Redis.
 | Authorization code | Stores client, redirect URI, PKCE challenge, grantor subject, resource, final scopes, selected operations, delegation edges, and grantor authority facts captured at consent. | Short TTL, single use. |
 | Access grant | Binds an access token to selected operations, the `delegated_client` credential envelope, delegation edges, and server-side grantor authority facts. | Same TTL as access token. |
 | Refresh token | Stores client, grantor subject, resource, scopes, selected operations, credential envelope, delegation edges, grantor authority facts, and rotation state. | Long-lived, rotating. |
-| Bundle session record | The issued access token is a `kst1` session for the integration identity. | Access-token TTL. |
+| KDCube `kst1` session record | The issued access token is a session for the integration identity, stored through the technically named bundle-session authority. | Access-token TTL. |
 
 Redis loss is safe but product-visible: missing records fail closed, but
 long-lived connectors can require re-consent if dynamic client or refresh-token
@@ -731,7 +731,7 @@ the local CLI derives the `chat-proc` connection from descriptor-owned
 through Secrets Manager. `REDIS_URL` is internal service wiring, not an
 operator configuration surface. No separate descriptor field or
 deployment-specific store is required. The solution-level durability design note is
-[Grant Storage Durability](../../sdk/solutions/connections/delegated-connections/design/grant-storage-durability-README.md).
+[Grant Storage Durability](../delegated-connections/design/grant-storage-durability-README.md).
 
 ## Failure Modes
 

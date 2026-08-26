@@ -1,22 +1,28 @@
 ---
-id: repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/platform-authority/host-platform-authority-in-bundle-README.md
-title: "Host A Platform Authority Flow In A Bundle"
-summary: "Recipe for deployments that do not want Cognito as the only platform login path: Connection Hub owns authority registration and policy, while a bundle hosts the login UI/operation and issues standard KDCube bundle-session credentials."
+id: repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/platform-authority/host-platform-login-in-app-README.md
+title: "Host A Platform Login Flow In An App"
+summary: "Recipe for an application-hosted login flow: Connection Hub owns authority registration and policy, an app hosts the login UI/operation, and KDCube issues the platform session."
 status: draft
 tags: ["recipes", "connections", "connection-hub", "authority-registry", "bundle-session", "platform-auth", "custom-authority"]
-updated_at: 2026-07-03
+keywords: ["application-hosted platform login", "platform session", "bundle_session_login", "Google sign-in", "kst1"]
+updated_at: 2026-08-26
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/platform-authority/setup-platform-authority-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authority-providers/authority-provider-runtime-README.md
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/workspace@2026-03-31-13-36/docs/integrations/platform-session-issuer.md
-  - repo:kdcube-ai-app/app/ai-app/docs/service/auth/bundle-session-auth-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/auth/app-hosted-platform-login-and-session-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/auth/auth-README.md
 ---
-# Host A Platform Authority Flow In A Bundle
+# Host A Platform Login Flow In An App
 
-Use this recipe when a deployment wants a bundle to host the user-facing login
-flow while KDCube still treats the result as a normal platform session.
+Use this recipe when a deployment wants an app to host the
+user-facing login flow while KDCube owns the resulting platform session.
+
+The SDK and descriptors retain `bundle`, `bundle_id`, and `/bundles/` as
+technical/configuration aliases for an app. This recipe uses **app** for the
+product concept and preserves those literals only where configuration or code
+requires them.
 
 Examples:
 
@@ -29,12 +35,12 @@ The important rule:
 
 ```text
 Connection Hub owns authority registration and policy.
-The bundle owns only the hosted login UI/operation.
-The platform verifies the issued session through standard bundle-session auth.
+The app owns only the hosted login UI/operation.
+KDCube issues and verifies the platform session.
 ```
 
 Do not put platform role policy, issuer TTL, cookie policy, or platform-ness in
-bundle-local config. Register it in Connection Hub.
+app-local config. Register it in Connection Hub.
 
 ## Mental Model
 
@@ -43,14 +49,14 @@ Browser opens KDCube
   no platform session
       |
       v
-frontend config says auth.loginUrl = bundle hosted login page
+frontend config says auth.loginUrl = application-hosted login page
       |
       v
-Bundle login page
+Application login page
   Google button / custom login / Telegram session flow
       |
       v
-Bundle public operation calls Connection Hub SDK runtime
+Application public operation calls Connection Hub SDK runtime
       |
       v
 Connection Hub registry resolves:
@@ -64,7 +70,7 @@ Connection Hub registry resolves:
 SDK runtime verifies upstream proof
       |
       v
-SDK runtime issues standard kst1 bundle-session token
+SDK runtime issues standard kst1 platform-session token
       |
       v
 Browser receives platform auth/session cookie
@@ -80,7 +86,7 @@ Telegram initData verified by itself
   -> external actor
   -> no platform role
 
-Bundle-hosted platform login succeeds
+Application-hosted platform login succeeds
   -> platform subject
   -> kdcube:role:registered if no stronger role exists
 ```
@@ -94,17 +100,18 @@ normalized centrally to:
 kdcube:role:registered
 ```
 
-This applies to Cognito, SimpleIDP, bundle-session platform providers, and
-future platform authorities.
+This applies to Cognito, SimpleIDP, application-hosted platform-session
+providers, and future platform authorities.
 
 It does not apply to raw external proofs such as Telegram initData unless that
 proof is consumed by a configured platform login provider.
 
 ## Assembly Descriptor
 
-Configure the platform to use bundle-session auth. The canonical login endpoint
-is declared on the authority provider as `entrypoints.login`. `assembly.yaml`
-only selects the Connection Hub provider that owns that entrypoint.
+Configure the platform to use application-hosted login and the KDCube platform
+session. The canonical login endpoint is declared on the authority provider as
+`entrypoints.login`. `assembly.yaml` only selects the Connection Hub provider
+that owns that entrypoint.
 
 ```yaml
 auth:
@@ -127,12 +134,12 @@ auth:
 ```
 
 The browser app asks the Connection Hub SDK client to resolve
-`entrypoints.login` into the tenant/project-specific bundle URL when it needs a
+`entrypoints.login` into the tenant/project-specific app-operation URL when it needs a
 platform session. Descriptors should not materialize `auth.login_url`.
 
-The browser app should not know whether this provider is bundle-session,
-Cognito, or another platform authority. It should use the auth URLs returned by
-`/api/cp-frontend-config`:
+The browser app should not know whether this provider is technically
+`bundle_session_login`, Cognito, or another platform authority. It should use
+the auth URLs returned by `/api/cp-frontend-config`:
 
 ```json
 {
@@ -145,15 +152,16 @@ Cognito, or another platform authority. It should use the auth URLs returned by
 ```
 
 `profileUrl` is the canonical server-side "am I logged in?" check. `logoutUrl`
-is the canonical browser logout endpoint. For bundle-session providers,
-`/api/platform/logout` invalidates the active bundle-session record and clears
-the platform auth/session cookie. The hosting bundle does not need a logout
+is the canonical browser logout endpoint. For `bundle_session_login`
+providers, `/api/platform/logout` invalidates the active platform-session
+record and clears the platform auth/session cookie. The hosting app does not need a logout
 operation for the normal browser shell, but the deployment proxy must route the
 configured `logoutUrl` to ingress if the shell exposes it.
 
 ## Platform Secret
 
-Every ingress/proc worker must share the same bundle-session verifier secret.
+Every ingress/proc worker must share the same KDCube platform-session signing
+secret.
 
 ```yaml
 services:
@@ -163,7 +171,7 @@ services:
 
 ## Connection Hub Authority Registry
 
-Register the platform authority and the provider instance hosted by the bundle.
+Register the platform authority and the provider instance hosted by the app.
 
 ```yaml
 items:
@@ -255,17 +263,17 @@ items:
 
 `providers.workspace_google_session.type: bundle_session_login`
 : This provider instance is implemented by the Connection Hub SDK
-  bundle-session login runtime.
+  application-hosted platform-login runtime.
 
 `entrypoints.login`
-: The bundle-hosted browser page for this provider's sign-in UX.
+: The application-hosted browser page for this provider's sign-in UX.
 
 `entrypoints.session_issue`
-: The bundle action/callback that verifies the upstream proof and asks the
+: The app action/callback that verifies the upstream proof and asks the
   Connection Hub SDK to issue the platform session.
 
 `entrypoints.consent`
-: Optional bundle-hosted delegated credential consent renderer. Use this when
+: Optional application-hosted delegated credential consent renderer. Use this when
   the product wants its own complete consent layout. The approve/deny POST
   still targets Connection Hub so CSRF, grant narrowing, authorization-code
   creation, and token issuance remain central.
@@ -299,7 +307,8 @@ depend on that fallback.
 
 `issuer`
 : The KDCube credential issued after upstream proof verification succeeds. This
-  is a standard bundle-session token, not a bundle-local private token format.
+  is the standard `kst1` platform-session token, not an application-local
+  private token format.
 
 `grants.default`
 : Access every successful session from this provider receives.
@@ -317,10 +326,11 @@ depend on that fallback.
   yet. Email can be used only as a verified claim matcher, for example Google
   `email + email_verified`.
 
-## Bundle Descriptor
+## App Descriptor
 
-The bundle descriptor should not repeat platform-session policy. It only needs
-what the hosted operation needs to run, plus the Connection Hub pointer.
+The app descriptor, technically `bundles.yaml`, should not repeat
+platform-session policy. It only needs what the hosted operation needs to run,
+plus the Connection Hub pointer.
 
 ```yaml
 items:
@@ -333,7 +343,7 @@ items:
 
 ## Frontend Auth Descriptor
 
-The platform frontend should not hardcode the bundle login URL. It should name
+The platform frontend should not hardcode the app login URL. It should name
 the Connection Hub authority provider. The control-plane frontend-config
 endpoint resolves the provider's `login` entrypoint through the Connection Hub
 SDK client and returns the concrete `auth.loginUrl` to the browser.
@@ -365,13 +375,13 @@ entrypoint, for example:
 This keeps route construction under the Connection Hub SDK boundary and keeps
 descriptors focused on the authority/provider contract.
 
-For Telegram-hosted login flows, the bundle also needs the Telegram integration
+For Telegram-hosted login flows, the app also needs the Telegram integration
 secret refs. Those secrets verify the upstream Telegram proof; they do not
 define platform grants.
 
-## Bundle Code
+## App Code
 
-The bundle operation should be thin. It hosts UI and delegates runtime logic to
+The app operation should be thin. It hosts UI and delegates runtime logic to
 the SDK.
 
 ```python
@@ -406,7 +416,7 @@ The Workspace example wrapper lives in:
 kdcube_ai_app.apps.chat.sdk.examples.bundles.workspace@2026-03-31-13-36.services.platform_session_issuer
 ```
 
-The bundle must not hardcode:
+The app must not hardcode:
 
 - platform roles;
 - admin subjects;
@@ -492,7 +502,7 @@ fields.
 
 ## Login Page
 
-The login page is bundle-owned UI and is registered at
+The login page is app-owned UI and is registered at
 `authority_registry.authorities.<platform-authority>.providers.<provider>.entrypoints.login`.
 In the Workspace example, it renders Google Identity Services, posts the
 credential to `auth_google_session`, and relies on the SDK runtime to set the
@@ -515,7 +525,7 @@ Connection Hub.
 
 5. Confirm the response sets the configured platform auth/session cookie
    (`AUTH_TOKEN_COOKIE_NAME`, commonly `__Secure-LATC`). A Cognito-style ID
-   token cookie is not required for bundle-session auth.
+   token cookie is not required for this platform-session method.
 
 6. Reload the platform frontend.
 
@@ -539,7 +549,7 @@ The hosted operation must fail closed if:
 - Connection Hub provider registration is missing;
 - provider registration is disabled;
 - registered authority is not `platform: true`;
-- hosted operation does not match the current bundle/operation;
+- hosted operation does not match the current app/operation;
 - upstream authenticator is missing or rejects the proof;
 - subject/bootstrap grants ask for roles or permissions outside
   `grants.assignable`;

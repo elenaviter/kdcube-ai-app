@@ -1,10 +1,11 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-consent-branding-README.md
 title: "Branding the MCP Authorization Screen"
-summary: "How to configure the product name shown on the current OAuth delegated credential delegated-credential consent screen through the Connection Hub bundle config."
+summary: "How to configure the product name and application-hosted layout for the OAuth delegated-credential consent screen through Connection Hub app configuration."
 status: active
 tags: ["service", "auth", "oauth", "mcp", "branding", "descriptor"]
-updated_at: 2026-06-27
+keywords: ["OAuth consent branding", "application-hosted consent", "delegated credential", "Connection Hub", "MCP authorization"]
+updated_at: 2026-08-26
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-credentials/delegated-credential-protocol-adapters-README.md
@@ -49,7 +50,7 @@ The other `connections.delegated_credentials.oauth` settings (`issuer`,
 `public_clients`, `dynamic_client_registration`, `consent_ui`, ...) are documented in
 [`oauth-delegated-credential-protocol-adapter-README.md`](./oauth-delegated-credential-protocol-adapter-README.md).
 
-## Bundle-Hosted Custom Consent
+## Application-Hosted Custom Consent
 
 If a product needs a fully custom consent layout, configure the platform
 authority provider with a consent entrypoint and point the OAuth adapter at it:
@@ -150,7 +151,7 @@ Setting `brand` updates the operator-visible branding on the consent page:
   your deployment brand.
 - It does not affect any security behavior: the client id, redirect URL, scopes,
   pre-registered/newly-registered badges, and tool selection are unchanged.
-- A bundle-hosted custom consent layout may change the presentation, but not the
+- An application-hosted custom consent layout may change the presentation, but not the
   final authorization decision contract.
 
 ## Default behavior

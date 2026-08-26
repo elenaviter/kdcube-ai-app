@@ -4,7 +4,7 @@ title: "Connection Hub Token Storage"
 summary: "One-page answer for where Connection Hub stores Claude Code delegated OAuth tokens, manual Delegated by KDCube tokens, connected-account provider tokens, and deployment secrets."
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "tokens", "storage", "oauth", "delegated-credentials", "secrets", "redis"]
-updated_at: 2026-08-11
+updated_at: 2026-08-26
 keywords: ["Connection Hub token storage", "manual automation token", "live grant card", "named_service_operations", "account_scope", "credential isolation"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
@@ -12,7 +12,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/storage-model/storage-model-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-connections/design/grant-storage-durability-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/service/auth/bundle-session-auth-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/auth/app-hosted-platform-login-and-session-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/runtime-configuration-and-secrets-store-README.md
 ---
 # Connection Hub Token Storage
@@ -42,7 +42,7 @@ runtime enforcement, read [Delegated Access Cards](delegated-cards/delegated-car
        +-----+-----------------------------------+-----+
              |                                   |
              v                                   v
-   Redis GrantStore + bundle-session records     Redis listing metadata
+   Redis GrantStore + kst1 session records       Redis listing metadata
 
 
 +--------------------------+       +----------------------------+
@@ -64,10 +64,10 @@ Another compact way to read the same model:
 token question
   |
   +-- "Claude Code got a token from /oauth/token"
-  |       -> Redis OAuth GrantStore + Redis bundle-session authority
+  |       -> Redis OAuth GrantStore + Redis kst1 session authority
   |
   +-- "I copied a manual Delegated by KDCube token"
-  |       -> Redis bundle-session + Redis access grant + Redis listing row
+  |       -> Redis kst1 session + Redis access grant + Redis listing row
   |
   +-- "User connected Gmail/Slack/iCloud/provider"
   |       -> ConnectionStore metadata on filesystem
@@ -84,10 +84,10 @@ lifetimes, revocation paths, and authority boundaries.
 
 | Token or credential | Example | Storage | Raw token exposed later? | Notes |
 | --- | --- | --- | ---: | --- |
-| Claude Code delegated OAuth access token | `kst1...` returned by `/public/oauth/token` | Redis bundle-session record plus Redis access-grant record | no | Client holds the bearer. Server verifies Redis session + grant record. |
+| Claude Code delegated OAuth access token | `kst1...` returned by `/public/oauth/token` | Redis `kst1` session record plus Redis access-grant record | no | Client holds the bearer. Server verifies Redis session + grant record. The session keys retain the technical `bundle-session` name. |
 | Claude Code delegated OAuth refresh token | token returned by `/public/oauth/token` | Redis `GrantStore` refresh record | no | Rotated on refresh. Redis loss fails closed and can require reconnect. |
 | Claude Code dynamic client registration | `client_id=dcr-...` | Redis `GrantStore` client record | n/a | Long-lived but currently Redis-backed. |
-| Manual Delegated by KDCube token | token copied from the Delegated Access UI | Redis bundle-session record plus Redis access-grant record | no, shown once | Listing stores metadata and last four chars, not the raw bearer. |
+| Manual Delegated by KDCube token | token copied from the Delegated Access UI | Redis `kst1` session record plus Redis access-grant record | no, shown once | Listing stores metadata and last four chars, not the raw bearer. The session keys retain the technical `bundle-session` name. |
 | OAuth-flow Delegated Access listing row | grant visible in Connection Hub UI after OAuth consent | Redis delegated-access registry | no public exposure | Internal row stores current token handles so revoke can kill refresh/access grants. |
 | Connected provider token | Gmail/Slack access + refresh token | user-scoped secrets | no | `ConnectionStore` stores metadata in filesystem, raw provider tokens in secrets. |
 | OAuth state for connected provider account | Google/Gmail callback `state` | app filesystem storage | n/a | Single-use anti-CSRF state, no raw provider token. |
@@ -127,7 +127,7 @@ KDCube MCP/resource through Connection Hub OAuth.
                                                    |
                                                    v
                                       +------------+-------------+
-                                      | Redis bundle session     |
+                                      | Redis kst1 session       |
                                       | kst1 session id          |
                                       | token_sha256             |
                                       | integration subject      |
@@ -160,8 +160,9 @@ Redis:
 {tenant}:{project}:kdcube:oauth:agrant:<sha256(access_token)>
 ```
 
-The access token itself is a `kst1` bundle-session token. Its active session is
-also backed by Redis:
+The access token itself is a `kst1` delegated-client token. Its active session
+uses the shared `BundleSessionAuthority` implementation and technically named
+Redis keys:
 
 ```text
 {tenant}:{project}:kdcube:auth:bundle-session:user:<sub>
@@ -218,7 +219,7 @@ external automation.
              |                    |
              v                    v
 +------------+-----------+   +----+------------------------+
-| Redis bundle session   |   | Redis access grant          |
+| Redis kst1 session     |   | Redis access grant          |
 | session:<session_id>   |   | oauth:agrant:<sha256(tok)> |
 +------------+-----------+   +----+------------------------+
              |                    |
@@ -256,7 +257,7 @@ source=manual
 
 Manual listing rows do not store the raw access token for later display.
 Revocation uses the stored `session_id` and grant metadata to remove the active
-bundle-session record and access-grant binding.
+`kst1` session record and access-grant binding.
 
 ### Editing a manual token in place
 
@@ -445,7 +446,7 @@ canonical secret key. Request-authenticator metadata in Postgres stores only
 
 | Misconception | Correct boundary |
 | --- | --- |
-| Claude Code OAuth token is stored in `ConnectionStore`. | No. Claude Code delegated OAuth uses Redis `GrantStore` + Redis bundle sessions. |
+| Claude Code OAuth token is stored in `ConnectionStore`. | No. Claude Code delegated OAuth uses Redis `GrantStore` plus Redis `kst1` sessions. |
 | Gmail/Slack provider tokens are stored in Redis. | No. Provider account tokens use user-scoped secrets. |
 | Provider tokens are in `accounts.json`. | No. `accounts.json` is metadata only. |
 | Manual Delegated by KDCube token can be displayed again later. | No. It is returned once; later listing shows metadata and `last_four`. |
@@ -462,16 +463,17 @@ canonical secret key. Request-authenticator metadata in Postgres stores only
 | OAuth delegated credential grant store | `kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.store.GrantStore` |
 | OAuth `/authorize` and `/token` routes | `kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.http.routes` |
 | Manual Delegated by KDCube token service | `kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.automation_access.AutomationAccessService` |
-| `kst1` bundle-session authority | `kdcube_ai_app.auth.bundle.sessions.BundleSessionAuthority` |
+| `kst1` session authority (technical bundle-session name) | `kdcube_ai_app.auth.bundle.sessions.BundleSessionAuthority` |
 
 ## Operational Checks
 
 To identify which storage family you are looking at, ask:
 
 1. Is this a Claude Code or MCP client OAuth access/refresh token?
-   - Check Redis OAuth and bundle-session keys.
+   - Check Redis OAuth and the technical `bundle-session` session keys.
 2. Is this a manual token copied from Delegated by KDCube?
-   - Check Redis delegated-access registry plus bundle-session keys.
+   - Check Redis delegated-access registry plus the technical
+     `bundle-session` session keys.
 3. Is this a Gmail/Slack/iCloud/custom provider account token?
    - Check `ConnectionStore` metadata under app storage and user-scoped secrets.
 4. Is this an OAuth client secret, bot token, or signing secret?

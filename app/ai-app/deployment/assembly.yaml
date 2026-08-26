@@ -9,8 +9,8 @@ context:
 # Authentication
 # auth.type controls request routing / deployment shape.
 # auth.idp controls backend AUTH_PROVIDER and must be "simple", "cognito", or
-# "session". Use "session" only when a bundle/front shell validates external
-# identity and issues platform-recognized bundle session cookies.
+# "session". Use "session" only when an application/front shell validates
+# external identity and KDCube issues platform-recognized session cookies.
 # If auth.idp is omitted, older descriptors still fall back from auth.type:
 # simple -> simple; bundle -> session; cognito/delegated -> cognito.
 # ---------------------------------------------------------------------------
