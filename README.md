@@ -16,8 +16,8 @@
 </p>
 
 Keep the agent and product code you already have. Run LangGraph, CrewAI,
-Claude Agent SDK, your own loop, or KDCube's built-in ReAct agent. KDCube
-handles the production work around it: multi-user serving, ordered
+Claude Agent SDK, Claude Code, your own loop, or KDCube's native ReAct Agent.
+KDCube handles the production work around it: multi-user serving, ordered
 conversation delivery, streaming, files, identity, isolated code execution,
 cost controls, configuration, secrets, and deployment from Git.
 
@@ -61,25 +61,35 @@ and the repository [security policy](SECURITY.md) before production use.
 ## Quick start
 
 ```bash
-pip install kdcube-cli
+python3 -m pip install --upgrade kdcube-cli
+kdcube init --tenant acme --project local
+kdcube start --tenant acme --project local
 ```
 
-Then create or connect an app, start the local runtime, and reload changes
-without rebuilding the platform image. Follow the
-[Quick Start](app/ai-app/docs/quick-start-README.md).
+The `kdcube init` wizard uses the latest published release, offers Google
+login by default, and lets you skip optional model and private-Git credentials.
+`init` prepares the tenant/project workdir; `start` launches its local Docker
+Compose runtime. See the [Quick Start](app/ai-app/docs/quick-start-README.md)
+for prerequisites, Google OAuth setup, source/version choices, and the generated
+workdir layout.
 
 Working with a coding agent? Point it at [AGENTS.md](AGENTS.md) — it routes
 contributor rules and the operator/builder path (install, configure, build an
 app) and names the docs to read first.
 
+Claude Code users can install the [KDCube plugin](https://github.com/kdcube/agent-plugins/tree/main/plugins/claude/kdcube).
+It equips the agent as both a KDCube app engineer and runtime DevOps operator:
+it can bootstrap and operate runtimes, scaffold and configure apps, inspect
+status and logs, test integrations, and run approved release workflows.
+
 ## Choose your starting point
 
 | You already have | Add with KDCube |
 | --- | --- |
-| A LangGraph, CrewAI, Claude Agent SDK, or custom agent | A small execution adapter, ordered multi-user delivery, streaming, persistence hooks, budgets, and deployment |
+| A LangGraph, CrewAI, Claude Agent SDK, Claude Code, or custom agent | A small execution adapter, ordered multi-user delivery, streaming, persistence hooks, budgets, and deployment |
 | A website or product UI | The configurable chat widget, or native integration through streaming and operations APIs |
 | Tools and provider integrations | Trackable tools, scoped credentials, user consent, REST/MCP boundaries, and isolated execution |
-| A new AI feature to build quickly | Ready chat, ReAct, web search, files, conversation storage, user memory, knowledge access, and configurable tools and skills |
+| A new AI feature to build quickly | Ready chat, ReAct Agent, web search, files, conversation storage, user memory, knowledge access, and configurable tools and skills |
 | Several AI services or frontends | Independently deployable apps that provide and consume APIs, tools, MCP services, events, and UI surfaces |
 
 Each app can be as small as one backend service or as broad as a workspace.
@@ -108,7 +118,7 @@ Apps may have no UI and no agent, or may host several agents and frontends.
   scenes, canvases, app-hosted websites, APIs, jobs, and domain services.
 
 <p align="center">
-  <img src="assets/runtime-path.svg" alt="What KDCube adds around your agent: people, systems, and live events reach your agent or graph — LangGraph, CrewAI, Claude Agent SDK, custom code, or KDCube ReAct. It perceives chat, files, events, memory, and knowledge; it acts through a trusted broker on tools, named services, MCP, connected accounts, and isolated code; responses and artifacts stream back — all standing on the production foundation of ordered delivery, identity, persistence, streaming, isolation, budgets, configuration, and recovery" width="900">
+  <img src="assets/runtime-path.svg" alt="What KDCube adds around your agent: people, systems, and live events reach your agent or graph, including LangGraph, CrewAI, Claude Agent SDK, Claude Code, custom code, or the native KDCube ReAct Agent. It perceives chat, files, events, memory, and knowledge; it acts through a trusted broker on tools, named services, MCP, connected accounts, and isolated code; responses and artifacts stream back, all standing on the production foundation of ordered delivery, identity, persistence, streaming, isolation, budgets, configuration, and recovery" width="900">
 </p>
 
 A KDCube deployment is bound to one tenant/project scope and serves many
@@ -116,15 +126,22 @@ concurrent users. Shared infrastructure may be namespaced rather than
 dedicated, while request identity and policy travel across process, thread,
 subprocess, and isolated-runtime boundaries.
 
-## Bring your agent, or use KDCube ReAct Agent
+## Bring your agent, or use the native ReAct Agent
 
 Existing agent frameworks remain responsible for their own graph or loop.
-KDCube supplies the surrounding runtime: multi-user serving, ordered delivery,
-streaming, shared state, guarded tools, and deployment. In scaled serving, a
-graph is built for the current turn and then discarded; durable state belongs
-in its checkpointer or storage, not in a process-local graph object.
+KDCube hosts framework-owned runtimes through adapters over its shared
+[Agent Harness Runtime](app/ai-app/docs/runtime/harness/README.md). The
+architecture calls this the hosted foreign-runtime path; LangGraph and Claude
+Code are worked adapters, not the limits of the host layer. Each adapter binds
+the event, timeline, workspace, tool, and control contracts its agent needs.
+Direct app-owned Claude Code execution can remain outside the conversational
+harness. KDCube supplies the surrounding runtime: multi-user serving, ordered
+delivery, streaming, shared state, guarded tools, and deployment. In scaled
+serving, a graph is built for the current turn and then discarded; durable
+state belongs in its checkpointer or storage, not in a process-local graph
+object.
 
-The optional built-in ReAct agent uses an event-aware timeline and semantic
+The native ReAct Agent uses an event-aware timeline and semantic
 streaming channels rather than requiring a provider-native tool-calling
 protocol. It can react to user input, tool results, application events,
 followups, steering, and current runtime conditions. With the reference split
@@ -132,8 +149,8 @@ isolation profile, model-written code runs in a separate, networkless executor
 and reaches privileged capabilities through trusted supervisor tools.
 
 [Settle an existing solution in KDCube](app/ai-app/docs/recipes/apps/settle-your-solution-in-kdcube-README.md) ·
-[ReAct runtime](app/ai-app/docs/sdk/agents/react/flow-README.md) ·
-[Why ReAct is not simply tool calling](app/ai-app/docs/sdk/agents/react/why/why-not-simply-tool-calling-README.md) ·
+[ReAct Agent runtime](app/ai-app/docs/sdk/agents/react/flow-README.md) ·
+[Why the ReAct Agent is not simply tool calling](app/ai-app/docs/sdk/agents/react/why/why-not-simply-tool-calling-README.md) ·
 [Isolated execution](app/ai-app/docs/exec/README-iso-runtime.md)
 
 ## Apps provide and consume surfaces

@@ -746,6 +746,99 @@ def _resolve_namespaced_runtime_target(
     )
 
 
+def _init_interactive_mode(
+    *,
+    explicit_interactive: bool,
+    explicit_noninteractive: bool,
+    stdin_is_tty: bool | None = None,
+    stdout_is_tty: bool | None = None,
+) -> bool:
+    """Select the init prompt mode without making automation interactive."""
+    if explicit_interactive and explicit_noninteractive:
+        raise SystemExit("Choose only one of --interactive or --non-interactive.")
+    if explicit_interactive:
+        return True
+    if explicit_noninteractive:
+        return False
+    stdin_tty = sys.stdin.isatty() if stdin_is_tty is None else bool(stdin_is_tty)
+    stdout_tty = sys.stdout.isatty() if stdout_is_tty is None else bool(stdout_is_tty)
+    return stdin_tty and stdout_tty
+
+
+def _collect_init_target_inputs(
+    console: Console,
+    *,
+    interactive: bool,
+    workdir_arg: str,
+    workdir_base_arg: str,
+    tenant_arg: str,
+    project_arg: str,
+    cli_defaults: dict,
+) -> tuple[str, str]:
+    """Collect only target fields that cannot be derived from another input."""
+    tenant = str(tenant_arg or "").strip()
+    project = str(project_arg or "").strip()
+    if not interactive or str(workdir_arg or "").strip():
+        return tenant, project
+
+    # A fully qualified CLI default already identifies the target. Bare init
+    # should respect it rather than asking for a second namespace.
+    if (
+        not str(workdir_base_arg or "").strip()
+        and not tenant
+        and not project
+        and str(cli_defaults.get("default_workdir", "") or "").strip()
+    ):
+        return tenant, project
+
+    if not tenant:
+        tenant = installer_mod.ask(
+            console,
+            "Tenant ID",
+            default=str(cli_defaults.get("default_tenant", "") or "default"),
+        ).strip()
+    if not project:
+        project = installer_mod.ask(
+            console,
+            "Project name",
+            default=str(cli_defaults.get("default_project", "") or "default"),
+        ).strip()
+    return tenant, project
+
+
+def _collect_default_init_auth_type(
+    console: Console,
+    *,
+    interactive: bool,
+    explicit_auth_type: str,
+    descriptor_auth_type: str,
+) -> str:
+    """Collect the auth method for the shipped first-run descriptor set."""
+    explicit = str(explicit_auth_type or "").strip().lower()
+    if explicit or not interactive:
+        return explicit
+
+    choices = [
+        ("Google login (recommended)", "bundle"),
+        ("SimpleIDP development login", "simple"),
+        ("Amazon Cognito", "cognito"),
+    ]
+    default_type = str(descriptor_auth_type or "").strip().lower()
+    if default_type not in {value for _, value in choices}:
+        default_type = "bundle"
+    labels = [label for label, _ in choices]
+    default_index = next(
+        index for index, (_, value) in enumerate(choices) if value == default_type
+    )
+    selected = installer_mod.select_option(
+        console,
+        "Authentication method",
+        options=labels,
+        default_index=default_index,
+    )
+    return next(value for label, value in choices if label == selected)
+
+
 def _repo_path_from_install_meta(workdir: Path) -> Path | None:
     meta = _read_install_meta_raw(workdir)
     if not isinstance(meta, dict):
@@ -3189,6 +3282,33 @@ def _checkout_repo_upstream(console: Console, repo_root: Path) -> str:
     return value
 
 
+def _prepare_default_init_source(
+    console: Console,
+    repo_root: Path,
+    *,
+    latest: bool,
+    upstream: bool,
+    release: str,
+    build: bool,
+) -> tuple[str, str]:
+    """Select source before staging the default descriptors from that source."""
+    if upstream:
+        resolved_ref = _checkout_repo_upstream(console, repo_root)
+        return resolved_ref, "upstream"
+
+    resolved_ref = str(release or "").strip()
+    if latest:
+        resolved_ref = _read_remote_ref(repo_root) or _read_local_ref(repo_root) or ""
+    if not resolved_ref:
+        raise SystemExit(
+            "Could not resolve the platform release. Check platform.repo or pass "
+            "--release with a ref that exists in the platform repository."
+        )
+
+    _checkout_repo_ref(console, repo_root, resolved_ref)
+    return resolved_ref, "skip" if build else "release"
+
+
 def _read_install_meta(workdir: Path) -> dict | None:
     workdir = _resolve_cli_workdir(workdir)
     return _read_install_meta_raw(workdir)
@@ -4029,7 +4149,18 @@ def main() -> None:
         "-i",
         "--interactive",
         action="store_true",
-        help="Prompt for required fields missing in the assembly instead of failing",
+        help=(
+            "Run the first-time setup prompts. This is the default when stdin and "
+            "stdout are attached to a terminal."
+        ),
+    )
+    _sp.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help=(
+            "Disable first-time prompts. Required auth/provider inputs must then be "
+            "supplied as flags or in the descriptor set."
+        ),
     )
     _sp.add_argument(
         "--auth-type",
@@ -4038,7 +4169,7 @@ def main() -> None:
         help=(
             "Platform authentication method. 'bundle' is application-hosted login "
             "(the app hosts the login page; KDCube accepts the result as a platform "
-            "session). Non-interactive installs must pass this to select the method."
+            "session). Overrides the auth method selected by the staged descriptor."
         ),
     )
     _sp.add_argument(
@@ -4142,6 +4273,12 @@ def main() -> None:
 
     def _arg_provided(name: str) -> bool:
         return any(arg == name or arg.startswith(f"{name}=") for arg in sys.argv[1:])
+
+    if args.command == "init":
+        args.interactive = _init_interactive_mode(
+            explicit_interactive=bool(args.interactive),
+            explicit_noninteractive=bool(args.non_interactive),
+        )
 
     if args.dry_run and (args.secrets_set or args.secrets_prompt):
         console.print("[yellow]Dry run ignores --secrets-set/--secrets-prompt (env generation only).[/yellow]")
@@ -5079,6 +5216,8 @@ def main() -> None:
             _init_path_provided = bool(_arg_provided("--path"))
             _init_repo = Path(os.path.expanduser(args.path)).resolve()
             _init_descriptors_location: Path | None = None
+            _init_prepared_source: tuple[str, str] | None = None
+            _init_uses_default_descriptors = not bool(str(args.descriptors_location or "").strip())
             _init_version_selector = bool(args.upstream or args.latest or str(args.release or "").strip())
             if sum([bool(args.latest), bool(args.upstream), bool(str(args.release or "").strip())]) > 1:
                 raise SystemExit("Choose only one of --latest, --upstream, or --release.")
@@ -5103,12 +5242,23 @@ def main() -> None:
             # pointing the user at `kdcube refresh`. This prevents the
             # silent-clobber bug where `init` would reseed descriptors on top
             # of a working runtime.
+            _init_tenant, _init_project = _collect_init_target_inputs(
+                console,
+                interactive=bool(args.interactive),
+                workdir_arg=args.workdir or "",
+                workdir_base_arg=getattr(args, "workdir_base", "") or "",
+                tenant_arg=args.tenant or "",
+                project_arg=args.project or "",
+                cli_defaults=cli_defaults,
+            )
+            args.tenant = _init_tenant
+            args.project = _init_project
             _init_resolved, _init_preset_tenant, _init_preset_project = (
                 _resolve_namespaced_runtime_target(
                     workdir_arg=args.workdir or "",
                     workdir_base_arg=getattr(args, "workdir_base", "") or "",
-                    tenant_arg=args.tenant or "",
-                    project_arg=args.project or "",
+                    tenant_arg=_init_tenant,
+                    project_arg=_init_project,
                     cli_defaults=cli_defaults,
                 )
             )
@@ -5139,6 +5289,7 @@ def main() -> None:
                 _init_descriptors_location = Path(
                     os.path.expanduser(args.descriptors_location)
                 ).resolve()
+                os.environ.pop("KDCUBE_DEFAULT_DESCRIPTOR_BOOTSTRAP", None)
             else:
                 # Fresh init without descriptors: bootstrap the platform repo
                 # under <workdir>/repo and use its deployment/ directory as the
@@ -5158,21 +5309,20 @@ def main() -> None:
                 if not _init_version_selector:
                     # No explicit version selector: default to latest release.
                     args.latest = True
-
-            # For --interactive: prompt tenant/project BEFORE resolving/creating the workdir
-            # so the directory is created with the correct namespace from the start.
-            # Skipped when tenant/project were already collected in the no-descriptors path above.
-            if args.interactive and _init_preset_tenant is None:
-                _src_assembly = installer_mod.load_release_descriptor_soft(
-                    _init_descriptors_location / "assembly.yaml"
-                ) or {}
-                _t_default, _p_default = installer_mod.descriptor_context_from_assembly(_src_assembly)
-                _init_preset_tenant = installer_mod.ask(
-                    console, "Tenant ID", default=_t_default or "default"
-                )
-                _init_preset_project = installer_mod.ask(
-                    console, "Project name", default=_p_default or "default"
-                )
+                if not _init_local_source_copy and not _init_path_provided:
+                    # The default descriptors belong to the selected source.
+                    # Check out the CLI-managed repo before config/ is staged so
+                    # config/ and repo/ cannot come from different revisions.
+                    # Never detach a caller-owned explicit --path checkout here.
+                    _init_prepared_source = _prepare_default_init_source(
+                        console,
+                        _init_repo,
+                        latest=bool(args.latest),
+                        upstream=bool(args.upstream),
+                        release=str(args.release or ""),
+                        build=bool(args.build),
+                    )
+                os.environ["KDCUBE_DEFAULT_DESCRIPTOR_BOOTSTRAP"] = "1"
 
             if _init_resolved is None:
                 if _init_preset_tenant and _init_preset_project:
@@ -5217,6 +5367,15 @@ def main() -> None:
                     "[dim]Added CORS origins to config/assembly.yaml:[/dim] "
                     + ", ".join(_added_cors_origins)
                 )
+            if _init_uses_default_descriptors:
+                args.auth_type = _collect_default_init_auth_type(
+                    console,
+                    interactive=bool(args.interactive),
+                    explicit_auth_type=str(getattr(args, "auth_type", "") or ""),
+                    descriptor_auth_type=str(
+                        _get_nested(_descriptor_bootstrap["assembly"], "auth", "type") or ""
+                    ),
+                )
             if _apply_auth_flags(console, _descriptor_bootstrap["assembly"], args):
                 installer_mod.save_release_descriptor(
                     _descriptor_bootstrap["assembly_path"],
@@ -5251,9 +5410,7 @@ def main() -> None:
             os.environ["KDCUBE_DESCRIPTORS_LOCATION"] = str((_init_resolved / "config").resolve())
             os.environ["KDCUBE_ASSEMBLY_DESCRIPTOR_PATH"] = str(_descriptor_bootstrap["assembly_path"])
             os.environ["KDCUBE_ASSEMBLY_USER_SUPPLIED"] = (
-                "0"
-                if _init_descriptors_location.resolve() == (_init_resolved / "config").resolve()
-                else "1"
+                "0" if _init_uses_default_descriptors else "1"
             )
             # Recommend application-hosted login as the interactive default only when the
             # auth type was not chosen explicitly: no user-supplied descriptor set and no
@@ -5302,38 +5459,41 @@ def main() -> None:
                     f"Remove {_init_repo} and re-run, or use --path to point to a git repo."
                 )
 
-            _init_release_ref: str | None = None
-            _init_mode = "release"
-            if args.upstream:
-                _init_release_ref = _checkout_repo_upstream(console, _init_repo)
-                _init_mode = "upstream"
-            elif args.latest:
-                _init_release_ref = _read_remote_ref(_init_repo) or _read_local_ref(_init_repo)
-                if not _init_release_ref:
-                    raise SystemExit(
-                        "Could not resolve the latest platform release. "
-                        "Check platform.repo or pass a repo that contains release.yaml."
-                    )
-            elif str(args.release or "").strip():
-                _init_release_ref = str(args.release).strip()
+            if _init_prepared_source is not None:
+                _init_release_ref, _init_mode = _init_prepared_source
             else:
-                _init_release_ref = (
-                    str(_get_nested(_init_assembly, "platform", "ref") or "").strip() or None
-                )
-                if not _init_release_ref:
-                    raise SystemExit(
-                        "assembly platform.ref is required unless --latest, --upstream, or --release is used."
+                _init_release_ref: str | None = None
+                _init_mode = "release"
+                if args.upstream:
+                    _init_release_ref = _checkout_repo_upstream(console, _init_repo)
+                    _init_mode = "upstream"
+                elif args.latest:
+                    _init_release_ref = _read_remote_ref(_init_repo) or _read_local_ref(_init_repo)
+                    if not _init_release_ref:
+                        raise SystemExit(
+                            "Could not resolve the latest platform release. "
+                            "Check platform.repo or pass a repo that contains release.yaml."
+                        )
+                elif str(args.release or "").strip():
+                    _init_release_ref = str(args.release).strip()
+                else:
+                    _init_release_ref = (
+                        str(_get_nested(_init_assembly, "platform", "ref") or "").strip() or None
                     )
+                    if not _init_release_ref:
+                        raise SystemExit(
+                            "assembly platform.ref is required unless --latest, --upstream, or --release is used."
+                        )
 
-            if _init_local_source_copy:
-                _init_mode = "skip"
-            if args.build:
-                if not args.upstream and not _init_local_source_copy:
-                    _checkout_repo_ref(console, _init_repo, _init_release_ref)
-                if _init_mode != "upstream":
+                if _init_local_source_copy:
                     _init_mode = "skip"
-            elif not _init_path_provided and not args.upstream and not _init_local_source_copy:
-                _checkout_repo_ref(console, _init_repo, _init_release_ref)
+                if args.build:
+                    if not args.upstream and not _init_local_source_copy:
+                        _checkout_repo_ref(console, _init_repo, _init_release_ref)
+                    if _init_mode != "upstream":
+                        _init_mode = "skip"
+                elif not _init_path_provided and not args.upstream and not _init_local_source_copy:
+                    _checkout_repo_ref(console, _init_repo, _init_release_ref)
 
             if args.reset_config or args.reset:
                 os.environ["KDCUBE_RESET_CONFIG"] = "1"

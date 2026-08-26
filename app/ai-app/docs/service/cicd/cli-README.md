@@ -1,20 +1,20 @@
 ---
-id: repo:kdcube-ai-app/app/ai-app/docs/service/cicd/cli-README.md
+id: repo:kdcube/app/ai-app/docs/service/cicd/cli-README.md
 title: "Current KDCube CLI"
 summary: "Current implemented CLI surface for local environment bootstrapping, workdir preparation, Docker Compose startup, descriptor validation, bundle config and secret patching, and the practical rule that multiple namespaced runtime snapshots may exist on one machine while local compose-backed execution remains one active deployment at a time."
 tags: ["service", "cicd", "cli", "env", "deployment", "bundle"]
 keywords: ["kdcube cli", "local environment bootstrap", "workdir setup", "docker compose control", "descriptor validation", "current cli contract", "local deployment tooling", "multiple local runtime snapshots", "single active local deployment", "tenant project workdir namespace", "bundle config patch", "bundle secret patch", "kdcube bundle command", "bundle reload internals", "reload-authority"]
 see_also:
-  - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/release-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/descriptors-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/design/cli--as-control-plane-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/configuration/assembly-descriptor-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/configuration/secrets-descriptor-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/configuration/bundles-descriptor-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/configuration/service-runtime-configuration-mapping-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/configuration/gateway-descriptor-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/service/environment/setup-dev-env-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/service/environment/setup-for-dockercompose-README.md
+  - repo:kdcube/app/ai-app/docs/service/cicd/release-README.md
+  - repo:kdcube/app/ai-app/docs/service/cicd/descriptors-README.md
+  - repo:kdcube/app/ai-app/docs/service/cicd/design/cli--as-control-plane-README.md
+  - repo:kdcube/app/ai-app/docs/configuration/assembly-descriptor-README.md
+  - repo:kdcube/app/ai-app/docs/configuration/secrets-descriptor-README.md
+  - repo:kdcube/app/ai-app/docs/configuration/bundles-descriptor-README.md
+  - repo:kdcube/app/ai-app/docs/configuration/service-runtime-configuration-mapping-README.md
+  - repo:kdcube/app/ai-app/docs/configuration/gateway-descriptor-README.md
+  - repo:kdcube/app/ai-app/docs/service/environment/setup-dev-env-README.md
+  - repo:kdcube/app/ai-app/docs/service/environment/setup-for-dockercompose-README.md
 ---
 # KDCube CLI (Design)
 
@@ -27,10 +27,10 @@ This document defines the **initial CLI surface** and behavior. The CLI is for:
 CLI root (code): `src/kdcube-ai-app/kdcube_cli`
 
 Task-shaped recipes (install clean, install from descriptors, daily
-operations): `docs/recipes/operations/`. A plain `kdcube init` stages the
-configured base complectation (Connection Hub, KDCube Services, User
-Memories, workspace) with the bundle-session identity flavor and ends with
-a first-run checklist of unfilled placeholder slots.
+operations): `docs/recipes/operations/`. In a terminal, a plain `kdcube init`
+collects tenant/project, defaults to the latest platform release, offers Google
+login by default, stages Connection Hub, KDCube Services, User Memories, and
+workspace, and ends with a first-run checklist of unfilled placeholder slots.
 
 ---
 
@@ -252,11 +252,16 @@ the platform default base `~/.kdcube/kdcube-runtime/<tenant>__<project>/`:
 kdcube init --tenant acme --project prod
 ```
 
-`-i` enables interactive prompting for fields missing from the assembly:
+Interactive prompting is the default when stdin and stdout are attached to a
+terminal. Bare init first collects tenant/project:
 
 ```bash
-kdcube init --tenant acme --project prod -i
+kdcube init
 ```
+
+`-i` forces prompts when terminal detection is unavailable. `--non-interactive`
+disables prompts for scripts and requires target/auth inputs to be supplied by
+flags or descriptors.
 
 To stage common local service secrets without editing YAML:
 
@@ -275,13 +280,14 @@ kdcube init --tenant acme --project prod \
 `--cors-origin` is repeatable and accepts either a full origin or a hostname.
 If the scheme is omitted, the CLI assumes `https://`.
 
-To provide known secret values non-interactively, use dotted descriptor keys:
+To provide known secret values from an automation secret store, use dotted
+descriptor keys:
 
 ```bash
-kdcube init --tenant acme --project prod \
-  --set-secret services.openai.api_key "sk-..." \
-  --set-secret services.anthropic.api_key "sk-ant-..." \
-  --set-secret services.git.http_token "ghp_..."
+kdcube init --tenant acme --project prod --non-interactive \
+  --set-secret services.openai.api_key "$OPENAI_API_KEY" \
+  --set-secret services.anthropic.api_key "$ANTHROPIC_API_KEY" \
+  --set-secret services.git.http_token "$GIT_HTTP_TOKEN"
 ```
 
 These values are written to the staged runtime `config/secrets.yaml`; they are
@@ -293,13 +299,21 @@ persists them to `config/secrets.yaml`, including:
 - `services.federated_token.secret`
 - `services.session_token.secret`
 
-All version selectors work the same way without `--descriptors-location`:
+Without `--descriptors-location`, omitting a source selector means `--latest`.
+On the normal CLI-managed repository path, the CLI checks out the selected
+source before staging its default `deployment/*.yaml` files. The runtime's
+`repo/` and `config/` snapshots therefore come from the same revision. An
+operator-supplied descriptor folder remains an independent configuration
+source, and init does not detach a caller-owned explicit `--path` checkout in
+this early staging step.
+
+The explicit source forms are:
 
 ```bash
 kdcube init --tenant acme --project prod --latest
 kdcube init --tenant acme --project prod --upstream
-kdcube init --tenant acme --project prod --release 2026.4.30.317
-kdcube init --tenant acme --project prod --build
+kdcube init --tenant acme --project prod --release <release-ref>
+kdcube init --tenant acme --project prod --upstream --build
 ```
 
 `--latest`, `--upstream`, and `--release` are mutually exclusive — combining
@@ -405,22 +419,27 @@ kdcube init --tenant <t> --project <p> \
 
 ### 2.3e Authentication<a id="auth-flags"></a>
 
-`kdcube init` selects a platform authentication method. Without `--auth-type` the
-interactive wizard prompts for it; the picker lists `simple`, `cognito`, and `bundle`
-(application-hosted login) with `bundle` preselected. `delegated` is listed only when it
-is already the configured mode, and is otherwise set with `--auth-type delegated`.
+`kdcube init` selects a platform authentication method. For the shipped default
+descriptor, the terminal wizard offers Google login, SimpleIDP development
+login, and Amazon Cognito, with Google preselected. Its literal CLI value is
+`bundle` because the application hosts login and Connection Hub issues the
+platform session. A supplied descriptor remains authoritative unless
+`--auth-type` overrides it. `delegated` is an explicit advanced value and is
+also preserved when already configured by a descriptor.
 
 Non-interactive installs pass the method and its fields as flags:
 
 ```bash
 # Application-hosted (Google) login — the default identity
 kdcube init --tenant <t> --project <p> \
+  --non-interactive \
   --auth-type bundle \
   --client-id "<google-web-oauth-client-id>" \
   --bootstrap-admin-email admin@example.com
 
 # Cognito (or delegated)
 kdcube init --tenant <t> --project <p> \
+  --non-interactive \
   --auth-type cognito \
   --cognito-region eu-west-1 \
   --cognito-user-pool-id <pool-id> \
@@ -944,7 +963,7 @@ Local bundle root contract:
 - `assembly.paths.host_bundle_storage_path` becomes `HOST_BUNDLE_STORAGE_PATH`; if it is `null` or omitted, init uses `<workdir>/data/bundle-storage`
 - `assembly.paths.host_exec_workspace_path` becomes `HOST_EXEC_WORKSPACE_PATH`; if it is `null` or omitted, init uses `<workdir>/data/exec-workspace`
 - `assembly.paths.host_react_debug_path` becomes `HOST_REACT_DEBUG_PATH`; if it is `null` or omitted, init uses `<workdir>/data/react-debug`; proc mounts it as `/react-debug` and keeps only the latest `REACT_DEBUG_KEEP_FILES` timeline render dumps
-- `assembly.ai.react.debug_timeline: false` mutes rendered ReAct prompt snapshots for normal runs; set it to `true` only while diagnosing prompt rendering
+- `assembly.ai.react.debug_timeline: false` mutes rendered ReAct Agent prompt snapshots for normal runs; set it to `true` only while diagnosing prompt rendering
 - `assembly.platform.services.proc.tools.web_search.web_favicon_enrich_enabled: false` disables favicon enrichment for web search/fetch results; favicon cache keys are domain-scoped, `web_favicon_enrich_timeout_s` caps lookup time, and `web_favicon_failure_cache_ttl_s` controls the short negative-cache TTL for failed domains
 - if `assembly.storage.kdcube` is `null` or omitted, init uses the CLI-managed tenant/project local storage root and rewrites the staged runtime descriptor to `file:///kdcube-storage`
 - if `assembly.storage.bundles` is `null` or omitted, init uses the CLI-managed tenant/project local bundle storage root and rewrites the staged runtime descriptor to `file:///bundle-storage`

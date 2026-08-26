@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import posixpath
 import re
+import shlex
 import shutil
 import json
 import subprocess
@@ -5601,7 +5602,9 @@ def run_setup(
     use_descriptor_platform = _env_flag("KDCUBE_ASSEMBLY_USE_PLATFORM")
     use_bundles_descriptor = _env_flag("KDCUBE_USE_BUNDLES_DESCRIPTOR")
     use_bundles_secrets = _env_flag("KDCUBE_USE_BUNDLES_SECRETS")
-    default_descriptor_bootstrap = False
+    default_descriptor_bootstrap = os.getenv(
+        "KDCUBE_DEFAULT_DESCRIPTOR_BOOTSTRAP", ""
+    ).lower() in {"1", "true", "yes", "on"}
     if env_descriptors_location:
         staged_descriptors = stage_descriptor_directory(
             config_dir,
@@ -5921,6 +5924,14 @@ def run_setup(
         prepare_only = parse_bool(os.getenv("KDCUBE_INIT_PREPARE_ONLY", "")) is True
         if prepare_only:
             console.print(f"[bold]Init prepared runtime:[/bold] Docker start was not executed. Workdir: {workdir}")
+            if install_tenant and install_project:
+                console.print(
+                    "[bold]Next:[/bold] "
+                    f"kdcube start --tenant {shlex.quote(install_tenant)} "
+                    f"--project {shlex.quote(install_project)}"
+                )
+            else:
+                console.print(f"[bold]Next:[/bold] kdcube start --workdir {shlex.quote(str(workdir))}")
         else:
             console.print(f"[bold]Dry run:[/bold] no Docker actions will be executed. Workdir: {workdir}")
         console.print("\n[bold]Env files:[/bold]")

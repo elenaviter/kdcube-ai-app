@@ -21,11 +21,11 @@ pipx install kdcube-cli
 
 ## What You Build
 
-With KDCube, you author **portable AI application bundles**.
+With KDCube, you author **portable application bundles**.
 
-A bundle can be a full AI application, an internal tool, a workflow backend,
-a UI-backed product surface, an MCP server, a scheduled automation, or a mix of
-these. It can use KDCube's built-in agent harnesses when agentic behavior is
+A bundle can be a full application, an internal tool, a workflow backend, a
+UI-backed product surface, an MCP server, a scheduled automation, an agent, or
+a mix of these. It can use KDCube's agent facilities when agentic behavior is
 needed, or it can be ordinary application code.
 
 You focus on product behavior:
@@ -34,19 +34,24 @@ You focus on product behavior:
 - which APIs, screens, jobs, tools, MCP servers, or webhooks it exposes
 - what state it reads and writes
 - how users interact through chat, UI, messages, or external events
-- which agent/runtime blocks it wants to use, if any
+- which optional agent capabilities or framework adapters it uses, if any
 - how many conversations, tasks, or long-running threads it maintains
 
 KDCube provides the hosting runtime around it: tenant/project isolation, auth,
 routing, streaming, storage, conversation/message handling, service discovery,
-hot reload, deployment wiring, and reusable AI runtime blocks.
+hot reload, deployment wiring, and reusable application services.
 
-Those AI runtime blocks can include ReAct-style agents, tool and skill
-execution, isolated code execution, Claude Code integration, MCP access,
-streaming progress, artifacts, and memory/search facilities.
+When an app needs an agent workflow, its optional agent capabilities can
+include the native KDCube ReAct Agent, adapters for framework-owned runtimes
+such as LangGraph and Claude Code, configurable tool and skill execution,
+isolated code execution, MCP access, streaming progress, artifacts, and
+memory/search facilities. KDCube calls this adapter path the hosted
+foreign-runtime path; the host layer is runtime-agnostic and each adapter binds
+the shared harness contracts its agent needs. An app can also run Claude Code
+directly for app-owned work without binding it to the conversational harness.
 
 In other words: you author the application module; KDCube hosts it and gives it
-access to the platform and agent harnesses it needs.
+access to the platform services and optional agent facilities it needs.
 
 ---
 
@@ -67,8 +72,10 @@ A bundle can expose any combination of:
 - **Scheduled jobs** — cron-driven background automation
 - **Message handlers** — conversation/message workflows with attachments,
 external events, `steer`, and `followup`
-- **Agent workflows** — ReAct, tool/skill execution, code execution, or other
-runtime blocks provided by KDCube
+- **Agent workflows:** the native ReAct Agent plus LangGraph, Claude Code, and
+other framework-owned agent runtimes hosted through KDCube adapters, each with
+the tools, skills, MCP connections, and code-execution facilities its adapter
+binds
 
 ---
 
@@ -143,10 +150,11 @@ the target workdir is already initialized (i.e. has `install-meta.json`).
 To pick up platform code changes or rebuild images on an existing workdir,
 use [`kdcube refresh`](#kdcube-refresh) instead.
 
-### Plain init
+### Interactive first run
 
-The fastest way to get a local KDCube stack running — pick a tenant and a
-project; the CLI creates the runtime under the platform default base
+The fastest way to get a local KDCube stack running is to pick a tenant and a
+project. In a terminal, `init` opens the first-run prompts and creates the
+runtime under the platform default base
 `~/.kdcube/kdcube-runtime/<tenant>__<project>/`:
 
 ```bash
@@ -154,18 +162,18 @@ kdcube init --tenant acme --project staging
 kdcube start --tenant acme --project staging
 ```
 
-A plain init stages the **configured base complectation**: Connection Hub
+With no source selector, init uses the latest published platform release. It
+offers Google login by default, then optional model-provider and private-Git
+credentials. Bare `kdcube init` also works in a terminal: it first asks for the
+tenant and project. Piped and CI invocations do not prompt; use
+`--non-interactive` and supply all required inputs as flags or descriptors.
+
+The default init stages the **configured base set**: Connection Hub
 (identity, consent, delegated credentials), KDCube Services (managed MCP +
 named services), User Memories, and the workspace showcase app — as a pure
 config overlay on the bundles shipped in the image. Default identity is the
-bundle-session flavor (Google sign-in validated by the workspace app,
-KDCube session issued by Connection Hub). Two env inputs are substituted
-into the staged defaults when set:
-
-```bash
-export KDCUBE_PUBLIC_HOST="kdcube.example.com"   # OAuth redirects, webhooks
-export KDCUBE_ADMIN_EMAIL="admin@example.com"    # bootstrapped as super-admin
-```
+application-hosted Google path: the workspace app validates Google identity
+and Connection Hub issues the KDCube session.
 
 Init ends with a **first-run checklist** of placeholders still unfilled;
 features backed by an unfilled slot stay inactive, everything else runs.
@@ -173,7 +181,7 @@ Step-by-step recipes: [clean install](../../../docs/recipes/operations/install-c
 [from a descriptor set](../../../docs/recipes/operations/install-from-descriptors-README.md) ·
 [daily operations](../../../docs/recipes/operations/operate-runtime-README.md).
 
-To fill common service secrets during init:
+To request the standard secret prompts explicitly:
 
 ```bash
 kdcube init --tenant acme --project staging --prompt-secrets
@@ -207,18 +215,21 @@ kdcube init --tenant acme --project staging \
 
 ### Authentication
 
-The default identity is bundle-session (application-hosted login). Select a
-different method with `--auth-type {simple,cognito,delegated,bundle}`:
+The default identity is application-hosted Google login (the literal CLI value
+is `bundle`). Select a method in the prompt or pass
+`--auth-type {simple,cognito,delegated,bundle}`:
 
 ```bash
 # Application-hosted (Google) login
 kdcube init --tenant acme --project staging \
+  --non-interactive \
   --auth-type bundle \
   --client-id "<google-web-oauth-client-id>" \
   --bootstrap-admin-email admin@example.com
 
 # Cognito
 kdcube init --tenant acme --project staging \
+  --non-interactive \
   --auth-type cognito \
   --cognito-region eu-west-1 \
   --cognito-user-pool-id <pool-id> \

@@ -22,11 +22,15 @@ from kdcube_cli.cli import (
     _compose_running_services,
     _descriptor_fast_path_reasons,
     _apply_auth_flags,
+    _collect_default_init_auth_type,
+    _collect_init_target_inputs,
+    _init_interactive_mode,
     _bundle_session_client_id,
     _compose_logs_dir_from_env,
     _load_bundle_ids_from_descriptor,
     _load_cli_defaults,
     _parse_init_secret_pairs,
+    _prepare_default_init_source,
     _copy_dirty_local_source,
     _print_json,
     _repo_path_from_install_meta,
@@ -119,6 +123,194 @@ def test_ui_entry_path_uses_routes_prefix():
 def test_build_ui_url_uses_routes_prefix():
     assert build_ui_url("5174", "/chatbot/demo") == "http://localhost:5174/chatbot/demo/chat"
     assert build_ui_url("80", None) == "http://localhost/platform/chat"
+
+
+def test_init_prompt_mode_defaults_to_terminal_and_preserves_automation():
+    assert _init_interactive_mode(
+        explicit_interactive=False,
+        explicit_noninteractive=False,
+        stdin_is_tty=True,
+        stdout_is_tty=True,
+    ) is True
+    assert _init_interactive_mode(
+        explicit_interactive=False,
+        explicit_noninteractive=False,
+        stdin_is_tty=True,
+        stdout_is_tty=False,
+    ) is False
+    assert _init_interactive_mode(
+        explicit_interactive=False,
+        explicit_noninteractive=True,
+        stdin_is_tty=True,
+        stdout_is_tty=True,
+    ) is False
+
+
+def test_init_prompt_mode_rejects_conflicting_flags():
+    with pytest.raises(SystemExit, match="Choose only one"):
+        _init_interactive_mode(
+            explicit_interactive=True,
+            explicit_noninteractive=True,
+            stdin_is_tty=True,
+            stdout_is_tty=True,
+        )
+
+
+def test_collect_init_target_inputs_prompts_only_for_missing_values(monkeypatch):
+    prompts: list[tuple[str, str | None]] = []
+
+    def _ask(_console, label, default=None, secret=False):
+        prompts.append((label, default))
+        return {"Tenant ID": "acme", "Project name": "local"}[label]
+
+    monkeypatch.setattr(cli_mod.installer_mod, "ask", _ask)
+
+    tenant, project = _collect_init_target_inputs(
+        Console(file=None),
+        interactive=True,
+        workdir_arg="",
+        workdir_base_arg="",
+        tenant_arg="",
+        project_arg="",
+        cli_defaults={"default_tenant": "default-t", "default_project": "default-p"},
+    )
+
+    assert (tenant, project) == ("acme", "local")
+    assert prompts == [
+        ("Tenant ID", "default-t"),
+        ("Project name", "default-p"),
+    ]
+
+
+def test_collect_init_target_inputs_respects_explicit_or_default_workdir(monkeypatch):
+    monkeypatch.setattr(
+        cli_mod.installer_mod,
+        "ask",
+        lambda *_args, **_kwargs: pytest.fail("target prompt was not expected"),
+    )
+
+    assert _collect_init_target_inputs(
+        Console(file=None),
+        interactive=True,
+        workdir_arg="/tmp/acme__local",
+        workdir_base_arg="",
+        tenant_arg="",
+        project_arg="",
+        cli_defaults={},
+    ) == ("", "")
+    assert _collect_init_target_inputs(
+        Console(file=None),
+        interactive=True,
+        workdir_arg="",
+        workdir_base_arg="",
+        tenant_arg="",
+        project_arg="",
+        cli_defaults={"default_workdir": "/tmp/acme__local"},
+    ) == ("", "")
+
+
+def test_default_init_auth_picker_uses_google_default(monkeypatch):
+    seen: dict[str, object] = {}
+
+    def _select(_console, title, options, default_index=0):
+        seen.update(title=title, options=options, default_index=default_index)
+        return options[default_index]
+
+    monkeypatch.setattr(cli_mod.installer_mod, "select_option", _select)
+
+    selected = _collect_default_init_auth_type(
+        Console(file=None),
+        interactive=True,
+        explicit_auth_type="",
+        descriptor_auth_type="bundle",
+    )
+
+    assert selected == "bundle"
+    assert seen == {
+        "title": "Authentication method",
+        "options": [
+            "Google login (recommended)",
+            "SimpleIDP development login",
+            "Amazon Cognito",
+        ],
+        "default_index": 0,
+    }
+
+
+def test_default_init_auth_picker_preserves_explicit_noninteractive_choice(monkeypatch):
+    monkeypatch.setattr(
+        cli_mod.installer_mod,
+        "select_option",
+        lambda *_args, **_kwargs: pytest.fail("auth prompt was not expected"),
+    )
+
+    assert _collect_default_init_auth_type(
+        Console(file=None),
+        interactive=True,
+        explicit_auth_type="simple",
+        descriptor_auth_type="bundle",
+    ) == "simple"
+    assert _collect_default_init_auth_type(
+        Console(file=None),
+        interactive=False,
+        explicit_auth_type="",
+        descriptor_auth_type="bundle",
+    ) == ""
+
+
+def test_prepare_default_init_source_checks_out_latest_before_descriptor_staging(monkeypatch, tmp_path: Path):
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(cli_mod, "_read_remote_ref", lambda _repo: "2026.08.26.101")
+    monkeypatch.setattr(cli_mod, "_read_local_ref", lambda _repo: None)
+    monkeypatch.setattr(
+        cli_mod,
+        "_checkout_repo_ref",
+        lambda _console, _repo, ref: calls.append(("release", ref)),
+    )
+
+    result = _prepare_default_init_source(
+        Console(file=None),
+        tmp_path,
+        latest=True,
+        upstream=False,
+        release="",
+        build=False,
+    )
+
+    assert result == ("2026.08.26.101", "release")
+    assert calls == [("release", "2026.08.26.101")]
+
+
+def test_prepare_default_init_source_preserves_upstream_and_build_modes(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(
+        cli_mod,
+        "_checkout_repo_upstream",
+        lambda _console, _repo: "upstream-sha",
+    )
+    assert _prepare_default_init_source(
+        Console(file=None),
+        tmp_path,
+        latest=False,
+        upstream=True,
+        release="",
+        build=True,
+    ) == ("upstream-sha", "upstream")
+
+    seen: list[str] = []
+    monkeypatch.setattr(
+        cli_mod,
+        "_checkout_repo_ref",
+        lambda _console, _repo, ref: seen.append(ref),
+    )
+    assert _prepare_default_init_source(
+        Console(file=None),
+        tmp_path,
+        latest=False,
+        upstream=False,
+        release="2026.08.26.202",
+        build=True,
+    ) == ("2026.08.26.202", "skip")
+    assert seen == ["2026.08.26.202"]
 
 
 def test_parse_init_secret_pairs_accepts_dotted_keys_and_aliases():

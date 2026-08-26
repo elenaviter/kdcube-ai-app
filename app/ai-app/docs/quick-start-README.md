@@ -1,330 +1,230 @@
 ---
-id: repo:kdcube-ai-app/app/ai-app/docs/quick-start-README.md
-title: "Quick Start: Local KDCube"
-summary: "Current local-start guide for booting KDCube with the CLI, descriptor sets, Docker Compose runtime, app registry, refresh flow, and app release loop."
-tags: ["docs", "quickstart", "local", "docker-compose", "cli", "descriptors", "app"]
-keywords: ["local quick start", "kdcube init start app reload", "docker compose startup", "descriptor driven install", "oss cli descriptors", "local app development", "run kdcube locally", "app config apply", "app release", "demo environment bootstrap", "kdcube copilot local"]
-updated_at: 2026-06-23
+id: repo:kdcube/app/ai-app/docs/quick-start-README.md
+title: "Quick Start: Run KDCube Locally"
+summary: "Install the published KDCube CLI, initialize a tenant/project from the latest release with Google-backed login by default, start the local Docker Compose runtime, and understand the generated workdir."
+status: active
+tags: [docs, quickstart, local, docker-compose, cli, authentication]
+keywords: [install kdcube, kdcube init, local runtime, latest release, Google login, tenant project, runtime workdir]
+updated_at: 2026-08-26
 see_also:
-  - repo:kdcube-ai-app/app/ai-app/docs/what-you-can-do-with-kdcube-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/cli-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/service/environment/setup-for-dockercompose-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/configuration/assembly-descriptor-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/configuration/bundles-descriptor-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/configuration/secrets-descriptor-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-configure-and-run-bundle-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-write-bundle-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-release-bundle-content-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/workspace-reference-bundle-README.md
+  - repo:kdcube/app/ai-app/docs/what-you-can-do-with-kdcube-README.md
+  - repo:kdcube/app/ai-app/docs/recipes/operations/install-clean-README.md
+  - repo:kdcube/app/ai-app/docs/recipes/operations/install-from-descriptors-README.md
+  - repo:kdcube/app/ai-app/docs/recipes/operations/operate-runtime-README.md
+  - repo:kdcube/app/ai-app/docs/service/cicd/cli-README.md
+  - repo:kdcube/app/ai-app/docs/runtime/harness/README.md
+  - repo:kdcube/app/ai-app/docs/sdk/bundle/build/how-to-write-bundle-README.md
 ---
-# Quick Start: Local KDCube
 
-This is the shortest current path to run KDCube locally and begin iterating on
-apps.
+# Quick Start: Run KDCube Locally
 
-Use this page when you need to:
+This path installs a released KDCube platform and starts it locally with Docker
+Compose. It does not require a KDCube source checkout or a CLI development
+environment.
 
-- start a local KDCube runtime from descriptors
-- test reference apps
-- update app declarations and reload them
-- rebuild or refresh the platform runtime
-- understand where app release fits into the local loop
+## Prerequisites
 
-For the product overview, read
-[What You Can Do With KDCube](what-you-can-do-with-kdcube-README.md).
+- Docker Engine or Docker Desktop with Docker Compose running
+- Python 3.9 or newer and `pip`
+- Git
+- About 20 GB of free disk for images and local runtime data
 
-## 1. Runtime Flow
-
-```text
-seed descriptors                         platform source/ref
-assembly.yaml / bundles.yaml / ...       --path / --release / --latest
-              |                                |
-              +---------------+----------------+
-                              v
-            kdcube init --descriptors-location <dir> --build
-                              |
-                              v
-       workdir/config/*.yaml + workdir/repo + generated compose/env files
-                              |
-                              v
-                         kdcube start
-                              |
-                              v
-                  browser UI + chat/API/widgets/MCP/jobs
-```
-
-The important boundaries:
-
-- one running deployment is bound to one `tenant/project` scope; backing
-  services may be dedicated or shared through namespacing.
-- descriptors configure the environment and app registry.
-- `kdcube init` creates or reseeds a runtime workdir.
-- `kdcube start` starts the Docker Compose stack.
-- `kdcube refresh` rebuilds or moves the platform runtime while preserving
-  staged descriptors.
-- `kdcube bundle config apply` updates staged app descriptors from a seed.
-- `kdcube bundle reload <app_id>` refreshes app code/config in the running proc
-  without rebuilding platform images.
-
-Compatibility note: the current CLI and descriptor files still use the legacy
-term `bundle` in commands and filenames. This guide uses **app** for the
-deployable product unit and keeps literal command/config names unchanged.
-
-## 2. Local Paths
-
-Use generic paths like this:
-
-```shell
-export REPO="/abs/path/to/kdcube-ai-app"
-export CLI_VENV="$REPO/app/venvs/ai-app/kdcube-cli"
-export KDCUBE="$CLI_VENV/bin/kdcube"
-export DESCRIPTORS="$REPO/app/ai-app/deployment/cicd/kdcube/descriptors/local/oss-cli"
-
-export TENANT="demo-tenant"
-export PROJECT="demo-project"
-export WORKDIR="$HOME/.kdcube/kdcube-runtime/${TENANT}__${PROJECT}"
-```
-
-The `oss-cli` descriptor seed is the default local demo/development set:
+KDCube uses Google login by default. For that path, create a Google OAuth
+client of type **Web application** and add this authorized JavaScript origin:
 
 ```text
-app/ai-app/deployment/cicd/kdcube/descriptors/local/oss-cli
+http://localhost:5173
 ```
 
-The main descriptor files are:
+Keep its client ID ready. A browser OAuth client ID is public configuration;
+this login path does not use a Google client secret.
+
+## 1. Install The CLI
+
+```bash
+python3 -m pip install --upgrade kdcube-cli
+kdcube --help
+```
+
+## 2. Initialize A Runtime
+
+Choose names for the deployment's tenant/project scope:
+
+```bash
+kdcube init --tenant acme --project local
+```
+
+In a terminal, `init` opens the first-run prompts. It:
+
+1. uses the latest published KDCube release by default;
+2. offers an authentication method, with Google login selected by default;
+3. asks for the Google Web client ID and an optional bootstrap administrator
+   email when Google is selected;
+4. offers optional OpenAI, Anthropic, and private-Git credentials;
+5. stages the platform and descriptors under the tenant/project workdir.
+
+Press Enter to keep a default. Optional credentials can be left blank and
+added later. KDCube stores provided service credentials in its server-side
+secrets configuration, not in an app prompt or browser configuration.
+
+`init` prepares the runtime and does not start containers. It is a first-time
+operation and refuses to overwrite an initialized workdir.
+
+### What bare `kdcube init` does
+
+When run directly in a terminal, this also starts the first-run prompts:
+
+```bash
+kdcube init
+```
+
+It first asks for tenant and project, defaulting both to `default`, then follows
+the same source, auth, and optional-secret flow above. When stdin/stdout are not
+attached to a terminal, `init` does not prompt; automation must pass the target
+and required auth fields explicitly.
+
+### Select The Platform Version
+
+No source flag means the latest published release. Use one of these only when
+you want a different source:
+
+```bash
+# Make the default explicit.
+kdcube init --tenant acme --project local --latest
+
+# Install one exact release.
+kdcube init --tenant acme --project local --release <release-ref>
+
+# Build current upstream source instead of a release.
+kdcube init --tenant acme --project local --upstream --build
+```
+
+### Select A Different Auth Method
+
+The prompt offers these first-run choices:
+
+| Choice | CLI value | Intended use |
+| --- | --- | --- |
+| Google login (default) | `bundle` | The workspace app verifies Google identity and Connection Hub issues the KDCube session. |
+| SimpleIDP development login | `simple` | Local development and demos only. |
+| Amazon Cognito | `cognito` | A deployment using an existing Cognito user pool. |
+
+You can select a method without the prompt:
+
+```bash
+kdcube init --tenant acme --project local \
+  --auth-type bundle \
+  --client-id "$GOOGLE_CLIENT_ID" \
+  --bootstrap-admin-email "admin@example.com"
+```
+
+For a scripted install, add `--non-interactive` and supply every required
+provider value as a flag or in a descriptor set:
+
+```bash
+kdcube init --tenant acme --project local \
+  --non-interactive --latest \
+  --auth-type bundle \
+  --client-id "$GOOGLE_CLIENT_ID" \
+  --bootstrap-admin-email "admin@example.com"
+```
+
+For Cognito fields and descriptor-driven automation, use the
+[CLI reference](service/cicd/cli-README.md) and
+[Install From Descriptors](recipes/operations/install-from-descriptors-README.md).
+
+## 3. Start KDCube
+
+Use the same tenant/project values:
+
+```bash
+kdcube start --tenant acme --project local
+```
+
+The first start may pull platform images and initialize local services. The CLI
+prints the actual UI URL; with the shipped local descriptor it is:
+
+```text
+http://localhost:5173/platform/chat
+```
+
+The base installation includes the workspace app, Connection Hub, managed
+KDCube services, and user memory. From there you can use the native ReAct
+Agent, connect an existing agent, or add ordinary application surfaces without
+an agent.
+
+## What `init` Creates
+
+The runtime lives here:
+
+```text
+~/.kdcube/kdcube-runtime/<tenant>__<project>/
+```
+
+For the example above:
+
+```text
+~/.kdcube/kdcube-runtime/acme__local/
+|-- config/   # authoritative descriptors, generated runtime env, install metadata
+|-- repo/     # exact staged KDCube platform source used by this runtime
+|-- data/     # tenant/project-scoped local service and application data
+`-- logs/     # local runtime logs
+```
+
+The important configuration files are under `config/`:
 
 | File | Owns |
 | --- | --- |
-| `assembly.yaml` | tenant/project, platform ref, auth, ports, infra, storage, ReAct/runtime settings |
-| `secrets.yaml` | platform secrets such as model keys, infra passwords, git tokens |
-| `gateway.yaml` | gateway capacity, throttling, process limits |
-| `economics.yaml` | quota policies, budgets, plan catalog, price table |
-| `bundles.yaml` | app registry, source refs, app props, non-secret config |
-| `bundles.secrets.yaml` | app-level secrets |
+| `assembly.yaml` | deployment scope, auth, ports, infrastructure, storage, and platform version |
+| `bundles.yaml` | installed apps (`bundle` is the CLI/config alias), app properties, and provided/consumed surfaces |
+| `secrets.yaml` | platform and provider secret values or references |
+| `bundles.secrets.yaml` | app-owned secret values or references |
+| `economics.yaml` | plans, prices, budgets, and usage policy |
+| `gateway.yaml` | gateway capacity and process limits |
 
-## 3. Install Or Refresh The CLI
+Configuration is descriptor-owned. Edit or apply these descriptors; generated
+Redis state and container files are derived views.
 
-Only do this when the CLI package changed or the venv is missing:
+## Normal Local Operations
 
-```shell
-cd "$REPO"
-mkdir -p app/venvs/ai-app
+```bash
+# Inspect the selected release, paths, and running services.
+kdcube info --tenant acme --project local
 
-python3 -m venv "$CLI_VENV"
-source "$CLI_VENV/bin/activate"
-python -m pip install --upgrade pip setuptools wheel
-pip install -e "$REPO/app/ai-app/src/kdcube-ai-app/kdcube_cli"
+# Stop and start the same deployment.
+kdcube stop --tenant acme --project local
+kdcube start --tenant acme --project local
 
-"$KDCUBE" --help
-deactivate
+# Move an initialized runtime to the latest release and restart it.
+kdcube refresh --tenant acme --project local --latest
 ```
 
-## 4. Init Once
+Use `refresh`, not `init`, after the workdir exists. `refresh` preserves the
+staged descriptors. See [Operate A KDCube Runtime](recipes/operations/operate-runtime-README.md)
+for configuration updates, app reloads, logs, and cleanup.
 
-Use `init` for first-time runtime creation or intentional reseeding. It stages
-descriptors into `$WORKDIR/config`, stages the platform source, and optionally
-builds images. It does not start containers.
+## Build Or Connect An App
 
-```shell
-"$KDCUBE" init \
-  --path "$REPO" \
-  --descriptors-location "$DESCRIPTORS" \
-  --workdir "$WORKDIR" \
-  --build
-```
+An app can expose any combination of REST, MCP, chat, UI, event, and job
+surfaces, and it can consume tools, named services, connected accounts, or
+external MCP servers. The literal CLI and descriptor term for the deployable
+app package is `bundle`.
 
-Add `--cors-origin https://<stable-public-origin>` when local provider
-callbacks, webhooks, or Mini Apps must call your local runtime through public
-HTTPS.
+An app can use the native ReAct Agent or host LangGraph, Claude Code, and other
+framework-owned agent runtimes through KDCube adapters. Each adapter binds the
+[Agent Harness Runtime](runtime/harness/README.md) facilities that workflow
+needs. The architecture calls this the hosted foreign-runtime path; the host
+layer is runtime-agnostic, while LangGraph and Claude Code are worked adapters.
+Direct app-owned Claude Code execution is also supported without requiring the
+conversational harness binding.
 
-Use `--set-secret` only when you intentionally want CLI-provided values to
-override descriptor secrets during init. Keep actual values in your shell or
-secret store, not in docs:
+Start with:
 
-```shell
-"$KDCUBE" init \
-  --path "$REPO" \
-  --descriptors-location "$DESCRIPTORS" \
-  --workdir "$WORKDIR" \
-  --build \
-  --set-secret services.openai.api_key "$OPENAI_API_KEY" \
-  --set-secret services.anthropic.api_key "$ANTHROPIC_API_KEY" \
-  --set-secret services.git.http_token "$GIT_HTTP_TOKEN"
-```
+- [What You Can Do With KDCube](what-you-can-do-with-kdcube-README.md)
+- [How To Write An App](sdk/bundle/build/how-to-write-bundle-README.md)
+- [How To Configure And Run An App](sdk/bundle/build/how-to-configure-and-run-bundle-README.md)
 
-## 5. Start, Inspect, Stop
-
-```shell
-"$KDCUBE" start --workdir "$WORKDIR"
-
-"$KDCUBE" info --workdir "$WORKDIR"
-
-"$KDCUBE" bundle status <app_id> \
-  --workdir "$WORKDIR" \
-  --json
-
-"$KDCUBE" stop --workdir "$WORKDIR"
-```
-
-Open the UI URL printed by `start` or `info`.
-
-## 6. Refresh Platform Runtime
-
-Use `refresh` after platform code changes or when moving the runtime to another
-platform ref. `refresh` preserves staged descriptors under `$WORKDIR/config`.
-
-```shell
-# Rebuild and restart from the platform source already recorded in the runtime.
-"$KDCUBE" refresh --workdir "$WORKDIR" --build
-
-# Copy the current checkout into the runtime first, then rebuild and restart.
-"$KDCUBE" refresh --workdir "$WORKDIR" --path "$REPO" --build
-
-# Move to a released platform ref, then rebuild and restart.
-"$KDCUBE" refresh --workdir "$WORKDIR" --release <platform-ref> --build
-```
-
-Use `refresh --path "$REPO" --build` when your dirty local checkout should be
-copied into `$WORKDIR/repo` before images are rebuilt.
-
-## 7. Configure Apps
-
-When the seed descriptor files are the source of truth for app declarations,
-props, or secrets, apply them to the active runtime:
-
-```shell
-"$KDCUBE" bundle config apply \
-  --workdir "$WORKDIR" \
-  --descriptors-location "$DESCRIPTORS" \
-  --dry-run
-
-"$KDCUBE" bundle config apply \
-  --workdir "$WORKDIR" \
-  --descriptors-location "$DESCRIPTORS" \
-  --reload
-```
-
-`--dry-run` previews the staged changes. `--reload` asks the running proc to
-reload changed app ids after staging.
-
-Use a direct reload when the staged descriptor is already correct and only proc
-cache/code visibility needs refreshing:
-
-```shell
-"$KDCUBE" bundle reload <app_id> --workdir "$WORKDIR"
-```
-
-Local-path app registration:
-
-```shell
-"$KDCUBE" bundle my.app@1-0 \
-  --workdir "$WORKDIR" \
-  --local-path "/abs/path/to/my.app@1-0" \
-  --module entrypoint \
-  --no-singleton
-
-"$KDCUBE" bundle reload my.app@1-0 --workdir "$WORKDIR"
-```
-
-Git-backed app registration:
-
-```shell
-"$KDCUBE" bundle my.app@1-0 \
-  --workdir "$WORKDIR" \
-  --git-repo "https://github.com/org/repo.git" \
-  --git-ref "<app-release-ref>" \
-  --git-subdir "src/my.app@1-0" \
-  --module entrypoint \
-  --no-singleton
-
-"$KDCUBE" bundle reload my.app@1-0 --workdir "$WORKDIR"
-```
-
-For local-path apps, the CLI normalizes host paths to the container-visible
-`/bundles/...` mount using `assembly.yaml -> paths.host_bundles_path`.
-
-## 8. Release App Content
-
-The local runtime loop ends by releasing app content and patching descriptors
-to the released ref.
-
-Use the release guide:
-
-[How To Release App Content](sdk/bundle/build/how-to-release-bundle-content-README.md)
-
-Usual flow:
-
-```text
-develop/test app locally
-  -> update app docs, interface docs, config templates, release.yaml
-  -> run app validation/tests
-  -> commit/tag/push the app/content repo
-  -> update deployment descriptors to the released git ref
-  -> apply descriptors and reload, or deploy the target environment
-```
-
-## 9. What To Verify
-
-Use the UI/admin surfaces and CLI to check:
-
-- active tenant/project and platform ref
-- registered apps and default app
-- app props and app secrets
-- chat route loads the expected app
-- widget routes build and serve static assets
-- public APIs/webhooks are reachable when configured
-- MCP endpoints are listed and callable when the app exposes them
-- generated files and timeline artifacts appear with expected visibility
-
-For `workspace`, check that the chat route loads, configured widgets build, and
-any enabled namespace-service or MCP surfaces are listed and callable.
-
-## 10. Coding-Agent Bootstrap Prompt
-
-Use this as a compact instruction when asking a coding agent to build or wrap an
-app locally:
-
-```text
-You are building a KDCube app. First read:
-- docs/what-you-can-do-with-kdcube-README.md
-- docs/quick-start-README.md
-- docs/sdk/bundle/build/how-to-navigate-kdcube-docs-README.md
-- docs/sdk/bundle/build/how-to-test-bundle-README.md
-- docs/sdk/bundle/build/how-to-assemble-bundle-with-sdk-building-blocks-README.md
-- docs/sdk/bundle/build/how-to-write-bundle-README.md
-- docs/sdk/bundle/build/how-to-configure-and-run-bundle-README.md
-
-Use the workspace reference app for patterns. Keep product logic separate
-from the KDCube adapter. Expose surfaces through entrypoint.py decorators.
-Map config to bundles.yaml and secrets to bundles.secrets.yaml. Test locally
-with kdcube init/start and the current compatibility command `kdcube bundle reload`
-using the active descriptor set.
-```
-
-## 11. Where To Go Next
-
-| Need | Read |
-| --- | --- |
-| product overview | [what-you-can-do-with-kdcube-README.md](what-you-can-do-with-kdcube-README.md) |
-| CLI details | [service/cicd/cli-README.md](service/cicd/cli-README.md) |
-| descriptor semantics | [configuration/assembly-descriptor-README.md](configuration/assembly-descriptor-README.md), [configuration/bundles-descriptor-README.md](configuration/bundles-descriptor-README.md) |
-| app authoring | [sdk/bundle/build/how-to-navigate-kdcube-docs-README.md](sdk/bundle/build/how-to-navigate-kdcube-docs-README.md) |
-| release app content | [sdk/bundle/build/how-to-release-bundle-content-README.md](sdk/bundle/build/how-to-release-bundle-content-README.md) |
-| reference implementation | [sdk/bundle/workspace-reference-bundle-README.md](sdk/bundle/workspace-reference-bundle-README.md) |
-| public HTTPS callbacks | [service/cicd/ngrok-README.md](service/cicd/ngrok-README.md) |
-
-## 12. Common Pitfalls
-
-- Running `start` before `init`; initialize first.
-- Rerunning `init` just to rebuild an existing runtime; use `refresh`.
-- Forgetting `refresh --path "$REPO" --build` when testing dirty local platform
-  source in an existing runtime.
-- Expecting descriptor changes to affect a running proc without
-  `bundle config apply --reload`, `bundle reload`, or restart.
-- Writing app secrets into non-secret config.
-- Using a host filesystem path inside runtime config where a container path is
-  required; let the CLI normalize local app paths.
-- Using browser/top-page origins in widgets instead of the KDCube frame/runtime
-  origin.
-- Expecting public provider callbacks to call `localhost`; use a stable HTTPS
-  origin during local testing.
+For Claude Code, the published
+[KDCube plugin](https://github.com/kdcube/agent-plugins/tree/main/plugins/claude/kdcube)
+packages runtime bootstrap, app scaffolding, configuration, testing, release,
+and an offline documentation set.
