@@ -997,6 +997,22 @@ class AutomationAccessService:
             raise CatalogUnavailable("catalog_resolver_not_configured")
         return await self._catalog_resolver.resolve_active()
 
+    @staticmethod
+    def _catalog_config(active: Any) -> Any:
+        """The delegable config a save decides against: the registered catalog,
+        read with the same parser request paths use. Effective props are an
+        input to publication, not to a card write."""
+        return oauth_delegated_config_from_connections(
+            getattr(active, "connections", None) or {}
+        )
+
+    @staticmethod
+    def _version_of(active: Any) -> str:
+        version = _clean(getattr(active, "version", ""))
+        if not version:
+            raise CatalogUnavailable("active_catalog_version_missing")
+        return version
+
     async def _active_catalog_version(self) -> str:
         """The generation a save is stamped with.
 
@@ -1017,15 +1033,28 @@ class AutomationAccessService:
         user: Mapping[str, Any],
         *,
         requested_grants: Iterable[str] = (),
+        config: Any = None,
     ) -> AuthorityGrantInventory:
-        provider = PlatformAuthorityInventoryProvider(self._config.capabilities)
+        provider = PlatformAuthorityInventoryProvider((config or self._config).capabilities)
         return await provider.list_delegable_grants(
             platform_identity_from_user(user),
             requested_grants=requested_grants,
         )
 
+    async def _offer_config(self) -> Any | None:
+        """The catalog a form may offer from, or ``None`` when it cannot be
+        established. Offering from effective props would promise what a save,
+        which reads the catalog, then refuses."""
+        try:
+            return self._catalog_config(await self._active_catalog())
+        except CatalogUnavailable:
+            return None
+
     async def grant_options(self, user: Mapping[str, Any]) -> list[dict[str, Any]]:
-        inventory = await self._available_inventory(user)
+        offer = await self._offer_config()
+        if offer is None:
+            return []
+        inventory = await self._available_inventory(user, config=offer)
         return [item.to_dict() for item in inventory.grants]
 
     async def _named_service_options(
@@ -1099,12 +1128,19 @@ class AutomationAccessService:
 
         A card can never carry more than its grantor holds, so a claim outside
         their delegable set is not offered — the same rule the admin-only row
-        above already applies to whole resources.
+        above already applies to whole resources. The rows come from the
+        registered catalog, which is what a save decides against; an
+        unestablished catalog offers nothing rather than offering props.
         """
+        offer = await self._offer_config()
+        if offer is None:
+            return []
         platform_admin = _is_platform_admin(user)
-        delegable = set((await self._available_inventory(user)).grant_names())
+        delegable = set(
+            (await self._available_inventory(user, config=offer)).grant_names()
+        )
         out: list[dict[str, Any]] = []
-        for resource in self._config.resources:
+        for resource in offer.resources:
             if resource.admin_only and not platform_admin:
                 continue
             option = {
@@ -1136,16 +1172,19 @@ class AutomationAccessService:
             out.append(option)
         return out
 
-    def _configured_resource(self, resource: str) -> Any | None:
+    def _configured_resource(
+        self, resource: str, *, config: Any = None
+    ) -> Any | None:
         """The catalog row governing a card resource. Matched, not compared:
-        a card key is the row's pattern or a concrete URL."""
+        a card key is the row's pattern or a concrete URL. ``config`` defaults
+        to the process descriptor; a save passes the registered catalog."""
         text = _clean(resource)
         if not text:
             return None
-        return self._config.card_selector_config(text)
+        return (config or self._config).card_selector_config(text)
 
     def _configured_resource_pairs(
-        self, resources: Iterable[str]
+        self, resources: Iterable[str], *, config: Any = None
     ) -> tuple[tuple[str, Any], ...]:
         """``(card resource, governing row)``. Grants and the selection are
         keyed by the card resource, the descriptor subtree by the row."""
@@ -1153,7 +1192,7 @@ class AutomationAccessService:
         pairs: list[tuple[str, Any]] = []
         missing: list[str] = []
         for resource in selected:
-            cfg = self._configured_resource(resource)
+            cfg = self._configured_resource(resource, config=config)
             if cfg is None:
                 missing.append(resource)
             else:
@@ -1242,6 +1281,8 @@ class AutomationAccessService:
             active = await self._active_catalog()
         except CatalogUnavailable:
             active = None
+        # Without a catalog a card cannot be explained, only listed and revoked.
+        listing_config = self._catalog_config(active) if active is not None else None
         records = []
         for record in records_found:
             item = record.to_public_dict()
@@ -1253,7 +1294,11 @@ class AutomationAccessService:
                     resource
                     for resource in record.resource_grants
                     if isinstance(
-                        getattr(self._configured_resource(resource), "named_services", None),
+                        getattr(
+                            self._configured_resource(resource, config=listing_config),
+                            "named_services",
+                            None,
+                        ),
                         Mapping,
                     )
                 ],
@@ -1269,7 +1314,7 @@ class AutomationAccessService:
             # not re-derive this: the match is the resolver's, not a comparison.
             rows = {}
             for resource in record.resource_grants:
-                cfg = self._configured_resource(resource)
+                cfg = self._configured_resource(resource, config=listing_config)
                 if cfg is not None:
                     rows[resource] = str(getattr(cfg, "resource", "") or "")
             if rows:
@@ -1285,10 +1330,18 @@ class AutomationAccessService:
             "items": records,
         }
 
-    def _resolve_operations(self, *, grants: list[str], operations: list[str], resources: list[str]) -> list[str]:
+    def _resolve_operations(
+        self,
+        *,
+        grants: list[str],
+        operations: list[str],
+        resources: list[str],
+        config: Any = None,
+    ) -> list[str]:
+        source = config or self._config
         available_by_name: dict[str, Any] = {}
         for resource in resources:
-            for operation in self._config.tools_for_scopes(grants, resource=resource or None):
+            for operation in source.tools_for_scopes(grants, resource=resource or None):
                 available_by_name.setdefault(operation.name, operation)
         available_names = set(available_by_name)
         if operations:
@@ -1330,6 +1383,21 @@ class AutomationAccessService:
         if refusal is not None:
             return refusal
 
+        # Resolved before anything is decided: a card is written against the
+        # registered catalog, never against effective props.
+        try:
+            active = await self._active_catalog()
+            catalog_version = self._version_of(active)
+        except CatalogUnavailable as exc:
+            return {
+                "ok": False,
+                "error": "delegated_catalog_unavailable",
+                "reason": exc.reason,
+                "retryable": True,
+                "status": 503,
+            }
+        catalog_config = self._catalog_config(active)
+
         selected_resource_grants = self._resource_grants(resource_grants)
         try:
             selected_named_service_operations = self._named_service_operation_selection(
@@ -1342,7 +1410,7 @@ class AutomationAccessService:
                 "message": str(exc),
             }
         selected_resources = list(selected_resource_grants)
-        if self._config.resources and not selected_resources:
+        if catalog_config.resources and not selected_resources:
             return {"ok": False, "error": "delegated_access_requires_resource_grants"}
 
         selected_grants = _as_list([
@@ -1361,8 +1429,8 @@ class AutomationAccessService:
         # of that may be asked for here, and until it says so the answer is no.
         try:
             resource_pairs = (
-                self._configured_resource_pairs(selected_resources)
-                if self._config.resources else ()
+                self._configured_resource_pairs(selected_resources, config=catalog_config)
+                if catalog_config.resources else ()
             )
         except ValueError:
             return {
@@ -1377,7 +1445,9 @@ class AutomationAccessService:
             }
         resource_configs = tuple(cfg for _, cfg in resource_pairs)
 
-        inventory = await self._available_inventory(user, requested_grants=selected_grants)
+        inventory = await self._available_inventory(
+            user, requested_grants=selected_grants, config=catalog_config
+        )
         available = set(inventory.grant_names())
         denied = [grant for grant in selected_grants if grant not in available]
         if denied:
@@ -1415,7 +1485,7 @@ class AutomationAccessService:
             cfg = cfg_by_resource.get(resource_value)
             if cfg is None:
                 continue
-            allowed_for_resource = set(self._config.supported_scopes(resource_value))
+            allowed_for_resource = set(catalog_config.supported_scopes(resource_value))
             disallowed = [grant for grant in grants_for_resource if grant not in allowed_for_resource]
             if disallowed:
                 return {
@@ -1548,17 +1618,6 @@ class AutomationAccessService:
                 else NamedServiceSelection.none()
             )
         try:
-            catalog_version = await self._active_catalog_version()
-        except CatalogUnavailable as exc:
-            return {
-                "ok": False,
-                "error": "delegated_catalog_unavailable",
-                "reason": exc.reason,
-                "retryable": True,
-                "status": 503,
-            }
-
-        try:
             committed_revision = await self._committed_revision(
                 access_id, grantor_subject=grantor_subject
             )
@@ -1595,6 +1654,7 @@ class AutomationAccessService:
             grants=selected_grants,
             operations=_as_list(list(operations)),
             resources=selected_resources,
+            config=catalog_config,
         )
 
         ttl = _bounded_ttl(ttl_seconds)
@@ -1715,6 +1775,9 @@ class AutomationAccessService:
         credential fields their family carries.
         """
         selected_resource_grants = self._resource_grants(resource_grants)
+        # Every decision below reads the registered catalog. Effective props are
+        # an input to publication, not to a card write.
+        catalog_config = self._catalog_config(active)
         try:
             selected_named_service_operations = self._named_service_operation_selection(
                 named_service_operations
@@ -1732,7 +1795,11 @@ class AutomationAccessService:
                     resource
                     for resource in selected_resource_grants
                     if isinstance(
-                        getattr(self._configured_resource(resource), "named_services", None),
+                        getattr(
+                            self._configured_resource(resource, config=catalog_config),
+                            "named_services",
+                            None,
+                        ),
                         Mapping,
                     )
                 ],
@@ -1777,7 +1844,7 @@ class AutomationAccessService:
         selected_resource_grants = reconciled.resource_grants
         selected_named_service_operations = reconciled.named_service_operations
         selected_resources = list(selected_resource_grants)
-        if self._config.resources and not selected_resources:
+        if catalog_config.resources and not selected_resources:
             return ResolvedCardAuthority(error={
                 "ok": False, "error": "delegated_access_requires_resource_grants",
             })
@@ -1795,8 +1862,8 @@ class AutomationAccessService:
         # delegable is a different answer from a permission it will not delegate.
         try:
             resource_pairs = (
-                self._configured_resource_pairs(selected_resources)
-                if self._config.resources else ()
+                self._configured_resource_pairs(selected_resources, config=catalog_config)
+                if catalog_config.resources else ()
             )
         except ValueError:
             return ResolvedCardAuthority(error={
@@ -1810,7 +1877,9 @@ class AutomationAccessService:
                 ),
             })
         resource_configs = tuple(cfg for _, cfg in resource_pairs)
-        inventory = await self._available_inventory(user, requested_grants=selected_grants)
+        inventory = await self._available_inventory(
+            user, requested_grants=selected_grants, config=catalog_config
+        )
         denied = [grant for grant in selected_grants if grant not in set(inventory.grant_names())]
         if denied:
             return ResolvedCardAuthority(error={
@@ -1847,7 +1916,7 @@ class AutomationAccessService:
             cfg = cfg_by_resource.get(resource_value)
             if cfg is None:
                 continue
-            allowed_for_resource = set(self._config.supported_scopes(resource_value))
+            allowed_for_resource = set(catalog_config.supported_scopes(resource_value))
             disallowed = [grant for grant in grants_for_resource if grant not in allowed_for_resource]
             if disallowed:
                 return ResolvedCardAuthority(error={
@@ -1909,6 +1978,7 @@ class AutomationAccessService:
             resource_grants=selected_resource_grants,
             operations=self._resolve_operations(
                 grants=selected_grants, operations=(), resources=selected_resources,
+                config=catalog_config,
             ),
             named_service_operations=selected_named_service_operations,
             named_services=named_services,
@@ -2343,9 +2413,11 @@ class AutomationAccessService:
         selection: NamedServiceSelection,
         resource: str,
         grants: Iterable[str],
+        config: Any = None,
     ) -> dict[str, Any]:
         """The boundary tree a selection expands to for one resource."""
-        cfg = self._config.resource_config(resource) if resource else None
+        source = config or self._config
+        cfg = source.resource_config(resource) if resource else None
         if cfg is None or not isinstance(getattr(cfg, "named_services", None), Mapping):
             return {}
         try:
@@ -2435,21 +2507,29 @@ class AutomationAccessService:
         # Initial consent (not a refresh rotation): absorb superseded sibling
         # cards BEFORE composing this card, so their binding carries over.
         is_initial_consent = existing_card is None
-        if is_initial_consent:
-            # Born from what the consent screen submitted, stamped with the
-            # catalog it was chosen against. An absent selection is `{}`.
-            try:
-                selection = self._named_service_operation_selection(
-                    named_service_operations
-                )
-            except ValueError:
-                selection = None
-            existing_selection = selection or NamedServiceSelection.none()
+        # A submitted selection is a consent-screen choice and REPLACES what the
+        # card held: only the newest consent counts, even if an earlier one said
+        # `"*"`. Its absence is a refresh rotation, which carries the selection
+        # forward untouched. The grant type already separates the two:
+        # authorization_code passes both fields, refresh_token passes neither.
+        try:
+            submitted_selection = self._named_service_operation_selection(
+                named_service_operations
+            )
+        except ValueError:
+            submitted_selection = None
+        if submitted_selection is not None or is_initial_consent:
+            existing_selection = submitted_selection or NamedServiceSelection.none()
             existing_catalog_version = _clean(catalog_version)
+            try:
+                consent_config = self._catalog_config(await self._active_catalog())
+            except CatalogUnavailable:
+                consent_config = None
             existing_named_services = self._materialized_boundary_for(
                 selection=existing_selection,
                 resource=resource_value,
                 grants=_as_list(list(scopes)),
+                config=consent_config,
             )
         inherited_account_scope: dict[str, dict[str, list[str]]] = {}
         superseded: list[AutomationAccessRecord] = []
@@ -2572,6 +2652,44 @@ class AutomationAccessService:
                         if claim not in held:
                             held.append(str(claim))
         return seed
+
+    async def oauth_seed_named_service_operations(
+        self,
+        *,
+        grantor_subject: str,
+        client_id: str,
+        resource: str,
+    ) -> dict[str, list[str]]:
+        """The named-service operations a consent screen should pre-check.
+
+        Read from the card's MATERIALIZED boundary, not its selection: a
+        wildcard means "everything the acknowledged catalog offered", and the
+        boundary is that expansion under the version the card is pinned to. So
+        the pre-check reproduces exactly what the card grants today.
+
+        Only the client's own card. A superseded DCR sibling donates its
+        account binding at issuance and nothing else, so seeding this dimension
+        from one would promise what the writer does not keep.
+        """
+        grantor = _clean(grantor_subject)
+        client = _clean(client_id)
+        if not grantor or not client:
+            return {}
+        try:
+            record = await self._load_record(
+                oauth_access_id(grantor, client, _clean(resource)),
+                grantor_subject=grantor,
+            )
+        except CardUnavailable:
+            return {}
+        if record is None:
+            return {}
+        offered = configured_named_service_operations(record.named_services)
+        return {
+            namespace: sorted(operations)
+            for namespace, operations in offered.items()
+            if operations
+        }
 
     async def _collect_oauth_siblings(
         self,
@@ -2767,7 +2885,17 @@ class AutomationAccessService:
                     "message": "This client has no existing grant to extend; it connects via its own consent flow first."}
         # Claims must stay inside the deployment's delegable ceiling for the
         # resource when the catalog knows it.
-        cfg = self._config.resource_config(resource_value) if resource_value else None
+        try:
+            extend_config = self._catalog_config(await self._active_catalog())
+        except CatalogUnavailable as exc:
+            return {
+                "ok": False,
+                "error": "delegated_catalog_unavailable",
+                "reason": exc.reason,
+                "retryable": True,
+                "status": 503,
+            }
+        cfg = extend_config.resource_config(resource_value) if resource_value else None
         ceiling = set(_as_list(list(getattr(cfg, "grants", ()) or ()))) if cfg is not None else set()
         if ceiling:
             outside = sorted(set(claim_list) - ceiling)

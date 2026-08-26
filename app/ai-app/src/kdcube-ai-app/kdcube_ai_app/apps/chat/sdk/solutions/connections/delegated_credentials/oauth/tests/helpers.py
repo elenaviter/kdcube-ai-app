@@ -47,6 +47,24 @@ def enable_delegated_client(app: FastAPI, *, issuer: str = "https://connector.ex
             },
         ],
     }
+    # A deployment serves what publication registered, and the consent page and
+    # the card writer both read that. Binding the same content puts the fixture
+    # in the state a live deployment is in.
+    bind_delegated_catalog(
+        app, {"delegated_credentials": {"oauth": app.state.oauth_delegated_config}}
+    )
+
+
+
+def publish_delegated_config(app, config: dict) -> None:
+    """Set the deployment's delegable config AND register it as the catalog.
+
+    A consent page offers, and a card write decides, from the registered
+    catalog. A test that only sets props describes a deployment whose edit was
+    never published, which is a different scenario.
+    """
+    app.state.oauth_delegated_config = config
+    bind_delegated_catalog(app, {"delegated_credentials": {"oauth": config}})
 
 
 class _FixedCatalogResolver:

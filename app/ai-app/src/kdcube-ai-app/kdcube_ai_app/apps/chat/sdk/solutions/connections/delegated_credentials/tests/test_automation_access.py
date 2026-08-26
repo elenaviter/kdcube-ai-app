@@ -2484,3 +2484,53 @@ async def test_mixed_identity_scopes_are_refused_with_their_reason(card_persiste
     assert refused["identity_scopes"] == ["grantor", "grantor_identity_family"]
     assert "identity_scope" in refused["message"]
     assert "separate cards" in refused["message"]
+
+
+async def test_a_save_decides_against_the_catalog_not_the_descriptor(card_persistence):
+    """Effective props are an input to publication, not to a card write.
+
+    The descriptor here offers a door the registered catalog does not, which is
+    the window between editing props and `on_app_deploy`. A create that read
+    props would write a card the catalog cannot serve: it commits cleanly and
+    every call fails closed.
+    """
+    ahead = copy.deepcopy(NAMED_SERVICES_OAUTH)
+    ahead["resources"] = list(ahead["resources"]) + [{
+        "resource": "https://example.test/mcp/unpublished",
+        "label": "Added to props, not yet published",
+        "tools": {"call": {"label": "Call", "grants": ["named_services:use"]}},
+    }]
+    service = AutomationAccessService(
+        # The catalog is the one WITHOUT the new door.
+        catalog_resolver=_CatalogResolver(connections=_named_services_connections()),
+        card_persistence=card_persistence,
+        redis=_Redis(), tenant="demo-tenant", project="demo-project",
+        # The descriptor is ahead of it.
+        config=oauth_delegated_config(
+            SimpleNamespace(state=SimpleNamespace(oauth_delegated_config=ahead))
+        ),
+        grant_store=_OAuthStore(), authority=_Authority(), minter=_minter,
+    )
+    user = {"sub": "platform-user-1", "roles": ["kdcube:role:registered"], "permissions": []}
+
+    refused = await service.create_access(
+        user,
+        label="Unpublished door",
+        resource_grants={"https://example.test/mcp/unpublished": ["named_services:use"]},
+        named_service_operations={},
+    )
+    assert refused["ok"] is False
+    assert refused["error"] == "delegated_access_unknown_resources", refused
+
+    # The form must not offer it either, or the refusal is a surprise.
+    offered = {row["resource"] for row in await service.resource_options(user)}
+    assert "https://example.test/mcp/unpublished" not in offered, offered
+
+    # A door the catalog does publish still saves.
+    ok = await service.create_access(
+        user,
+        label="Published door",
+        resource_grants={"https://example.test/mcp/named-services": ["named_services:use"]},
+        named_service_operations={},
+    )
+    assert ok["ok"] is True, ok

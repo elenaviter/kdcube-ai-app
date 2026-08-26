@@ -19,6 +19,10 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.cat
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.catalog.resolver import (
     CatalogUnavailable,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.named_service_policy import (
+    boundary_permits_operation,
+    configured_named_service_operations,
+)
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.serving import (
     delegated_serving_resolvers,
 )
@@ -211,6 +215,39 @@ def _runtime_trace_context() -> dict[str, Any]:
     }
 
 
+def _narrow_public_services(
+    services: list[dict[str, Any]], offered: Mapping[str, set[str]]
+) -> list[dict[str, Any]]:
+    """Drop operations the active catalog no longer offers, then the tools and
+    namespaces left with nothing."""
+    kept: list[dict[str, Any]] = []
+    for namespace in services:
+        name = str(namespace.get("namespace") or "")
+        allowed = set(offered.get(name) or ())
+        if not allowed:
+            continue
+        tools: dict[str, Any] = {}
+        for tool_name, raw in dict(namespace.get("tools") or {}).items():
+            tool = dict(raw) if isinstance(raw, Mapping) else {}
+            nested = tool.get("operations")
+            if isinstance(nested, Mapping) and nested:
+                surviving = {
+                    op: policy for op, policy in nested.items() if str(op) in allowed
+                }
+                if not surviving:
+                    continue
+                tool["operations"] = surviving
+            elif str(tool.get("operation") or tool_name) not in allowed:
+                continue
+            tools[str(tool_name)] = tool
+        if not tools:
+            continue
+        narrowed = dict(namespace)
+        narrowed["tools"] = tools
+        kept.append(narrowed)
+    return kept
+
+
 class NamedServicesMcpBridge:
     """MCP-facing adapter for configured KDCube named-service namespaces."""
 
@@ -260,6 +297,11 @@ class NamedServicesMcpBridge:
             if isinstance(catalog_config, Mapping) else None
         )
         self._catalog = NamedServiceBoundaryCatalog(catalog_config)
+        # The card's materialized tree, raw: the shared predicate reads it.
+        # None for a caller with no card.
+        self._card_named_services = (
+            catalog_config if view.named_services_present else None
+        )
 
     def _bind_delegated_request_scope(self):
         # Bind the calling agent's per-provider account scope so the shared
@@ -288,11 +330,58 @@ class NamedServicesMcpBridge:
         )
         return view
 
-    def list_services(self) -> dict[str, Any]:
+    async def _delegated_catalog_operations(
+        self,
+    ) -> tuple[dict[str, set[str]] | None, dict[str, Any] | None]:
+        """``(namespace -> operations the active catalog offers, denial)``.
+
+        Both ``None`` for a caller with no delegated credential: the descriptor
+        is that caller's only boundary. Resolved for the door the request
+        arrived at, because a card may hold several.
+        """
+        view = delegated_credential_view(self._request)
+        if not view.present:
+            return None, None
+        resolvers = delegated_serving_resolvers(self._request)
+        if resolvers is None:
+            return None, catalog_unavailable_denial("delegated_serving_resolvers_absent")
+        try:
+            document = await resolvers.catalog.resolve_active()
+        except CatalogUnavailable as exc:
+            return None, catalog_unavailable_denial(exc.reason)
+        except Exception:
+            LOGGER.warning(
+                "[kdcube-services.named_services_mcp] active catalog unreadable", exc_info=True
+            )
+            return None, catalog_unavailable_denial("catalog_unavailable")
+        resource_cfg = ActiveCatalogCapabilities(document).resource_config(
+            CapabilityRequest(
+                kind=CAPABILITY_NAMED_SERVICE_OPERATION,
+                resource=view.resource,
+                surface="named_service",
+            )
+        )
+        named_services = getattr(resource_cfg, "named_services", None)
+        if not isinstance(named_services, Mapping) or not named_services:
+            return {}, None
+        return configured_named_service_operations(named_services), None
+
+    async def list_services(self) -> dict[str, Any]:
         self._bind_delegated_request_scope()
+        # The listing is bounded by the card's materialized tree, which is what
+        # the catalog offered when the card was saved. Execution intersects that
+        # with the catalog as it is now, so without the same intersection here a
+        # withdrawn operation stays advertised - and the removal denial's own
+        # recovery, "refresh discovery", confirms the wrong answer.
+        offered, denial = await self._delegated_catalog_operations()
+        if denial is not None:
+            return denial
+        services = self._catalog.list_public()
+        if offered is not None:
+            services = _narrow_public_services(services, offered)
         return {
             "ok": True,
-            "services": self._catalog.list_public(),
+            "services": services,
             "note": (
                 "This MCP surface exposes configured named-service namespaces. "
                 "Each namespace operation may require additional delegated grants."
@@ -367,8 +456,51 @@ class NamedServicesMcpBridge:
             ),
         )
 
+    def _card_boundary_denial(
+        self, *, namespace: str, operation: str, tool_name: str
+    ) -> dict[str, Any] | None:
+        """The card-side refusal, or ``None`` for a caller with no card.
+
+        The active catalog was consulted before this, so reaching here means the
+        deployment offers the capability and only the card does not cover it —
+        a remedy its grantor owns. Both the missing-tool and missing-operation
+        branches are that same condition.
+        """
+        view = delegated_credential_view(self._request)
+        if not view.present:
+            return None
+        return card_boundary_denial(
+            provenance=CardProvenance(
+                access_id=view.registry_access_id,
+                card_revision=view.card_revision,
+                catalog_version=view.catalog_version,
+            ),
+            request=CapabilityRequest(
+                kind=CAPABILITY_NAMED_SERVICE_OPERATION,
+                resource=view.resource,
+                surface="named_service",
+                outer_operation=tool_name,
+                namespace=namespace,
+                operation=operation,
+            ),
+        )
+
     async def _authorize(self, policy: NamespaceBoundaryPolicy, operation: str, tool_name: str) -> dict[str, Any] | None:
-        if not policy.tool_configured(tool_name):
+        if self._card_named_services is not None:
+            # The card-side question, answered by the predicate the native
+            # agent gate uses. The tool name is this surface's routing; the
+            # card grants operations.
+            if not boundary_permits_operation(
+                self._card_named_services,
+                namespace=policy.namespace,
+                operation=operation,
+            ):
+                denial = self._card_boundary_denial(
+                    namespace=policy.namespace, operation=operation, tool_name=tool_name
+                )
+                if denial is not None:
+                    return denial
+        elif not policy.tool_configured(tool_name):
             return {
                 "ok": False,
                 "error": "named_service_tool_not_configured",
@@ -380,29 +512,7 @@ class NamedServicesMcpBridge:
                 "tool": tool_name,
                 "operation": operation,
             }
-        if not policy.operation_configured(tool_name=tool_name, operation=operation):
-            # For a delegated caller the boundary IS the card, and the active
-            # catalog was already consulted above — so reaching here means the
-            # deployment offers this and only the card does not cover it. That
-            # has a remedy its grantor owns, and the denial has to say so:
-            # the mirror of the removal denial, not an anonymous "not allowed".
-            view = delegated_credential_view(self._request)
-            if view.present:
-                return card_boundary_denial(
-                    provenance=CardProvenance(
-                        access_id=view.registry_access_id,
-                        card_revision=view.card_revision,
-                        catalog_version=view.catalog_version,
-                    ),
-                    request=CapabilityRequest(
-                        kind=CAPABILITY_NAMED_SERVICE_OPERATION,
-                        resource=view.resource,
-                        surface="named_service",
-                        outer_operation=tool_name,
-                        namespace=policy.namespace,
-                        operation=operation,
-                    ),
-                )
+        elif not policy.operation_configured(tool_name=tool_name, operation=operation):
             return {
                 "ok": False,
                 "error": "named_service_operation_not_configured",

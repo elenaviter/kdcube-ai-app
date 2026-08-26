@@ -462,11 +462,21 @@ consent_contract.version
 catalog_version
 platform_grants
 tools                       (outer operations)
-named_service_operations    (namespace, operation, required claims)
+named_service_operations    (namespace, operation, required claims, held)
 connected_accounts
 seeded_account_scope
+seeded_named_service_operations
 request / oauth_request     (client and PKCE metadata)
 ```
+
+`seeded_named_service_operations` is what the client's card covers today, read
+from its materialized boundary — so a wildcard card seeds the expansion it is
+pinned to, not the current catalog. Each `named_service_operations` row carries
+`held` for the same fact per row. A submission REPLACES the card's selection,
+so a renderer that cannot tell a held operation from a newly offered one cannot
+offer an informed choice: it would present an empty picker whose quiet
+submission removes the whole grant. The built-in page checks held operations and
+lists the rest under "added since this client was last approved".
 
 A renderer returns the contract version it implements alongside its HTML. An
 absent or mismatched version is refused with `consent_ui_contract_mismatch`
@@ -480,7 +490,7 @@ The submitted form carries `consent_contract_version`,
 | --- | --- |
 | Every offered operation selected | `"*"`, bound to the catalog version shown on the page. |
 | Some operations selected | That exact selection, re-validated against the catalog. |
-| None selected | `{}`. The connection is created without named-service access and can be widened later in Connection Hub. |
+| None selected | `{}`. On a first consent the connection is created without named-service access; on a re-consent this REMOVES every operation the card held. Both can be widened later in Connection Hub. |
 | `consent_contract_version` absent | No authorization code and no card. |
 | `expected_catalog_version` no longer active | `consent_catalog_changed`; authorization restarts rather than reinterpreting the selection. |
 

@@ -42,6 +42,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oau
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.config import (
     OAuthDelegatedClientConfig,
     oauth_delegated_config,
+    oauth_delegated_config_from_connections,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.consent import (
     CONSENT_CONTRACT_VERSION,
@@ -210,6 +211,7 @@ def _consent_payload(
     catalog_version: str = "",
     connected_accounts: list | None = None,
     seeded_account_scope: Mapping[str, Any] | None = None,
+    seeded_named_service_operations: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     authorize_request = {
         "client_id": req.client_id,
@@ -253,10 +255,19 @@ def _consent_payload(
             for tool in cfg.tools_for_scopes(req.scopes, resource=req.resource)
         ],
         "named_service_operations": named_service_selection_rows(
-            req.scopes, config=cfg, resource=req.resource,
+            req.scopes,
+            config=cfg,
+            resource=req.resource,
+            seeded=seeded_named_service_operations,
         ),
         "connected_accounts": list(connected_accounts or []),
         "seeded_account_scope": dict(seeded_account_scope or {}),
+        # What the client's card covers today. A submission replaces it, so a
+        # renderer that cannot see it cannot offer an informed choice.
+        "seeded_named_service_operations": {
+            str(namespace): [str(op) for op in (operations or ())]
+            for namespace, operations in dict(seeded_named_service_operations or {}).items()
+        },
     }
 
 
@@ -321,6 +332,7 @@ async def _render_custom_consent_if_configured(
     catalog_version: str = "",
     connected_accounts: list | None = None,
     seeded_account_scope: Mapping[str, Any] | None = None,
+    seeded_named_service_operations: Mapping[str, Any] | None = None,
 ) -> Response | None:
     endpoint = _custom_consent_endpoint(request, cfg)
     if not endpoint:
@@ -362,6 +374,7 @@ async def _render_custom_consent_if_configured(
         catalog_version=catalog_version,
         connected_accounts=connected_accounts,
         seeded_account_scope=seeded_account_scope,
+        seeded_named_service_operations=seeded_named_service_operations,
     )
     try:
         result = await call_bundle_operation(
@@ -451,19 +464,57 @@ def _selected_named_service_operations(
         operations = picked.setdefault(key[0], [])
         if key[1] not in operations:
             operations.append(key[1])
-    return {resource or "*": picked} if picked else {}
+    if not picked:
+        return {}
+    # Ticking every offered box is the same choice the "select all" control
+    # makes, and the panel already encodes it that way. One user action must
+    # not store two different things depending on which surface took it.
+    chosen = {(namespace, op) for namespace, ops in picked.items() for op in ops}
+    if allowed and chosen >= allowed:
+        return "*"
+    return {resource or "*": picked}
+
+
+async def _active_catalog_document(request: Request) -> Any | None:
+    resolvers = delegated_serving_resolvers(request)
+    if resolvers is None:
+        return None
+    try:
+        return await resolvers.catalog.resolve_active()
+    except Exception:
+        LOGGER.warning("[connection-hub.oauth] active catalog unreadable for consent", exc_info=True)
+        return None
 
 
 async def _active_catalog_version_for_consent(request: Request) -> str:
-    resolvers = delegated_serving_resolvers(request)
-    if resolvers is None:
-        return ""
-    try:
-        document = await resolvers.catalog.resolve_active()
-    except Exception:
-        LOGGER.warning("[connection-hub.oauth] active catalog unreadable for consent", exc_info=True)
-        return ""
+    document = await _active_catalog_document(request)
     return str(getattr(document, "version", "") or "")
+
+
+async def _consent_config(request: Request) -> OAuthDelegatedClientConfig | None:
+    """What the consent page may offer: the registered catalog, the same
+    document the card writer decides against. ``None`` when no catalog can be
+    established — a card cannot be written then either, so offering the
+    descriptor would promise what token exchange refuses."""
+    document = await _active_catalog_document(request)
+    if document is None:
+        return None
+    return oauth_delegated_config_from_connections(
+        getattr(document, "connections", None) or {}
+    )
+
+
+def _catalog_unavailable_response() -> JSONResponse:
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": "delegated_catalog_unavailable",
+            "error_description": (
+                "The delegated catalog is not established, so this deployment "
+                "cannot say what may be granted. Retry once it is published."
+            ),
+        },
+    )
 
 
 def _logout_action(request: Request) -> str:
@@ -779,7 +830,11 @@ async def register_client(request: Request) -> Response:
 async def authorize(request: Request) -> Response:
     issuer = resolve_issuer(request)
     params = dict(request.query_params)
-    cfg = oauth_delegated_config(request)
+    # The page offers from the registered catalog, the same document the card
+    # writer decides against.
+    cfg = await _consent_config(request)
+    if cfg is None:
+        return _catalog_unavailable_response()
     try:
         resolver = await _dynamic_client_resolver(request, params.get("client_id"))
     except ClientMetadataError as error:
@@ -863,6 +918,9 @@ async def authorize(request: Request) -> Response:
     seeded_account_scope = await _seed_account_scope_for_consent(
         request, subject=subject, client_id=req.client_id, resource=req.resource, cfg=cfg,
     )
+    seeded_named_service_operations = await _seed_named_service_operations_for_consent(
+        request, subject=subject, client_id=req.client_id, resource=req.resource,
+    )
     catalog_version = await _active_catalog_version_for_consent(request)
     custom = await _render_custom_consent_if_configured(
         request,
@@ -876,6 +934,7 @@ async def authorize(request: Request) -> Response:
         catalog_version=catalog_version,
         connected_accounts=connected_accounts,
         seeded_account_scope=seeded_account_scope,
+        seeded_named_service_operations=seeded_named_service_operations,
     )
     if custom is not None:
         return custom
@@ -896,6 +955,7 @@ async def authorize(request: Request) -> Response:
             return_to=_return_to(request),
             connected_accounts=connected_accounts,
             seeded_account_scope=seeded_account_scope,
+            seeded_named_service_operations=seeded_named_service_operations,
             accounts_needed=accounts_needed,
             catalog_version=catalog_version,
         )
@@ -1027,13 +1087,34 @@ async def _seed_account_scope_for_consent(
         return {}
 
 
+async def _seed_named_service_operations_for_consent(
+    request, *, subject: str, client_id: str, resource: str
+) -> dict:
+    """Pre-check the operations picker from the client's existing card.
+
+    Without it a re-consent renders an empty picker while a submission
+    replaces, so leaving the section alone silently drops every operation the
+    card holds.
+    """
+    try:
+        service = get_automation_access(request)
+        return await service.oauth_seed_named_service_operations(
+            grantor_subject=subject, client_id=client_id, resource=str(resource or ""),
+        )
+    except Exception:
+        LOGGER.exception("[connection-hub.oauth] consent named-service seed failed")
+        return {}
+
+
 @router.post("/oauth/authorize/consent", include_in_schema=False)
 @_normalize_grant_store_unavailable
 async def authorize_consent(request: Request) -> Response:
     issuer = resolve_issuer(request)
     form = await request.form()
     params = _consent_authorize_params(request, form)
-    cfg = oauth_delegated_config(request)
+    cfg = await _consent_config(request)
+    if cfg is None:
+        return _catalog_unavailable_response()
     try:
         resolver = await _dynamic_client_resolver(request, params.get("client_id"))
     except ClientMetadataError as error:

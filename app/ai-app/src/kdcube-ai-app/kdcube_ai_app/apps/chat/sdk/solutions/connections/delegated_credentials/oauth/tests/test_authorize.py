@@ -16,7 +16,10 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.tests.helpers import mount_test_oauth_adapter
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.tests.helpers import (
+    mount_test_oauth_adapter,
+    publish_delegated_config,
+)
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.flow import (
     AuthorizeError,
     build_redirect,
@@ -24,6 +27,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oau
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.consent import (
     CONSENT_CONTRACT_VERSION,
+    named_service_selection_rows,
     render_consent_html,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.config import oauth_delegated_config
@@ -175,7 +179,7 @@ def test_consent_html_shows_platform_account_and_logout():
 def test_consent_html_shows_named_service_namespace_operation_labels():
     app = FastAPI()
     resource = "https://runtime.example.test/public/mcp/named_services"
-    app.state.oauth_delegated_config = {
+    publish_delegated_config(app, {
         "enabled": True,
         "capabilities": [
             {"grant": "named_services:use", "label": "Use named services"},
@@ -213,7 +217,7 @@ def test_consent_html_shows_named_service_namespace_operation_labels():
                 },
             },
         ],
-    }
+    })
     req = parse_authorize_request(
         _params(scope="named_services:use memories:read memories:write", resource=resource),
         supported_scopes=oauth_delegated_config(app).supported_scopes(resource),
@@ -227,6 +231,117 @@ def test_consent_html_shows_named_service_namespace_operation_labels():
     assert "Write memory" in html
     assert "Create or update a memory note." in html
 
+
+
+
+def _seeding_config(resource: str) -> dict:
+    return {
+        "enabled": True,
+        "capabilities": [
+            {"grant": "named_services:use", "label": "Use named services"},
+            {"grant": "memories:read", "label": "Read memories"},
+            {"grant": "memories:write", "label": "Write memories"},
+        ],
+        "resources": [
+            {
+                "resource": resource,
+                "tools": {"named_services_call": {"grants": ["named_services:use"]}},
+                "named_services": {
+                    "namespaces": {
+                        "mem": {
+                            "label": "User memories",
+                            "authority_id": "delegated_client",
+                            "tools": {
+                                "search": {
+                                    "operation": "object.search",
+                                    "label": "Search memories",
+                                    "grants": ["memories:read"],
+                                },
+                                "upsert": {
+                                    "operation": "object.upsert",
+                                    "label": "Write memory",
+                                    "grants": ["memories:write"],
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        ],
+    }
+
+
+def _seeding_request(app, resource: str):
+    return parse_authorize_request(
+        _params(scope="named_services:use memories:read memories:write", resource=resource),
+        supported_scopes=oauth_delegated_config(app).supported_scopes(resource),
+    )
+
+
+def _checkbox(html: str, operation: str) -> str:
+    """The one input tag for this operation, so `checked` can be asserted on it."""
+    marker = f'value="mem:{operation}"'
+    start = html.index(marker)
+    return html[html.rindex("<input", 0, start) : html.index(">", start) + 1]
+
+
+def test_a_first_consent_seeds_nothing():
+    app = FastAPI()
+    resource = "https://runtime.example.test/public/mcp/named_services"
+    publish_delegated_config(app, _seeding_config(resource))
+
+    html = render_consent_html(
+        _seeding_request(app, resource),
+        issuer=ISSUER,
+        config=oauth_delegated_config(app),
+    )
+
+    assert "Nothing is selected by default" in html
+    assert "checked" not in _checkbox(html, "object.search")
+    assert "checked" not in _checkbox(html, "object.upsert")
+
+
+def test_a_re_consent_seeds_what_the_card_holds_and_separates_what_is_new():
+    """A submission REPLACES, so an unseeded picker would drop the grant.
+
+    The operation the card covers comes back checked; the one the catalog
+    added since is offered apart and unchecked, because widening is a decision
+    and not a default.
+    """
+    app = FastAPI()
+    resource = "https://runtime.example.test/public/mcp/named_services"
+    publish_delegated_config(app, _seeding_config(resource))
+
+    html = render_consent_html(
+        _seeding_request(app, resource),
+        issuer=ISSUER,
+        config=oauth_delegated_config(app),
+        seeded_named_service_operations={"mem": ["object.search"]},
+    )
+
+    assert "checked" in _checkbox(html, "object.search")
+    assert "checked" not in _checkbox(html, "object.upsert")
+    assert "Named-service operations this client has now" in html
+    assert "REPLACES" in html
+    assert "Added since this client was last approved" in html
+    assert "Nothing is selected by default" not in html
+
+
+def test_the_view_model_carries_what_the_card_holds():
+    """A custom renderer must be able to tell held from newly offered."""
+    app = FastAPI()
+    resource = "https://runtime.example.test/public/mcp/named_services"
+    publish_delegated_config(app, _seeding_config(resource))
+
+    rows = named_service_selection_rows(
+        ["named_services:use", "memories:read", "memories:write"],
+        config=oauth_delegated_config(app),
+        resource=resource,
+        seeded={"mem": ["object.search"]},
+    )
+
+    held = {row["operation"]: row["held"] for row in rows}
+    assert held == {"object.search": True, "object.upsert": False}
 
 # ----------------------------------- routes -----------------------------------
 
@@ -273,7 +388,7 @@ def test_authorize_rejects_user_without_delegable_grant(client):
 
 def test_authorize_can_render_bundle_hosted_consent(client, monkeypatch):
     captured = {}
-    client.app.state.oauth_delegated_config = {
+    publish_delegated_config(client.app, {
         "enabled": True,
         "issuer": ISSUER,
         "capabilities": [
@@ -309,7 +424,7 @@ def test_authorize_can_render_bundle_hosted_consent(client, monkeypatch):
                 "operation": "delegated_consent",
             },
         },
-    }
+    })
 
     async def fake_call_bundle_operation(**kwargs):
         captured.update(kwargs)
@@ -354,7 +469,7 @@ def test_a_renderer_that_does_not_state_the_contract_is_not_shown(client, monkey
     implements; an absent or older version is refused before the user can
     approve, instead of producing a card whose selection was never asked for.
     """
-    client.app.state.oauth_delegated_config = {
+    publish_delegated_config(client.app, {
         "enabled": True,
         "issuer": ISSUER,
         "capabilities": [
@@ -372,7 +487,7 @@ def test_a_renderer_that_does_not_state_the_contract_is_not_shown(client, monkey
                 "operation": "delegated_consent",
             },
         },
-    }
+    })
 
     async def stale_renderer(**kwargs):
         return {"delegated_consent": {"html": "<html><body>Stale consent</body></html>"}}
@@ -391,7 +506,7 @@ def test_a_renderer_that_does_not_state_the_contract_is_not_shown(client, monkey
 
 
 def test_authorize_renders_consent_for_regular_user_when_grant_is_delegable(client):
-    client.app.state.oauth_delegated_config = {
+    publish_delegated_config(client.app, {
         "enabled": True,
         "issuer": ISSUER,
         "capabilities": [
@@ -412,7 +527,7 @@ def test_authorize_renders_consent_for_regular_user_when_grant_is_delegable(clie
                 },
             },
         ],
-    }
+    })
     r = client.get(
         "/oauth/authorize",
         params=_params(
@@ -563,7 +678,7 @@ def test_consent_recovers_blank_authorize_fields_from_same_origin_referrer(clien
 
 
 def test_consent_uses_platform_user_id_as_grantor_when_available(client):
-    client.app.state.oauth_delegated_config = {
+    publish_delegated_config(client.app, {
         "enabled": True,
         "issuer": ISSUER,
         "capabilities": [
@@ -584,7 +699,7 @@ def test_consent_uses_platform_user_id_as_grantor_when_available(client):
                 },
             },
         ],
-    }
+    })
     store = client.app.state.oauth_grant_store
     form = _params(
         scope="memories:read",

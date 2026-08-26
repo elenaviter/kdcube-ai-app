@@ -404,3 +404,44 @@ async def test_account_scope_claim_satisfies_provider_backed_bridge_gate(monkeyp
 
     assert result["ok"] is True
     assert captured["request"].operation == "object.list"
+
+
+async def test_a_tool_the_card_does_not_carry_denies_like_a_missing_operation():
+    """Narrowing a card can drop a whole tool, not only an operation.
+
+    Narrowing a card drops whole tools as readily as single operations, and
+    both are the same condition: the catalog offers it, the card does not. One
+    predicate over the card's tree answers both, so neither can report a
+    deployment misconfiguration and send the caller to wait for a fix nobody is
+    going to make.
+    """
+    m = _bridge_module()
+    request = _request("dcr-claude")
+    # A card whose tree covers nothing in this namespace.
+    request.state.delegated_credential["grant_record"]["named_services"] = {
+        "namespaces": {"mail": {"tools": {}}}
+    }
+
+    bridge = _bridge(m, request)
+    denial = await bridge._authorize(_Policy(), "object.search", tool_name="search")
+
+    assert denial is not None
+    assert (denial.get("error") or {}).get("code") == "delegated_capability_not_granted", denial
+    recovery = (denial.get("ret") or {}).get("recovery") or {}
+    assert recovery.get("request_user_consent") is True, denial
+    assert recovery.get("action") == "grant_capability_in_delegated_access", denial
+
+
+async def test_a_caller_with_no_card_still_reads_it_as_a_configuration_gap():
+    """Without a card the boundary IS the descriptor, so the old wording holds."""
+    m = _bridge_module()
+
+    class _NoTool(_Policy):
+        def tool_configured(self, tool_name):
+            return False
+
+    bridge = _bridge(m, SimpleNamespace(state=SimpleNamespace()))
+    denial = await bridge._authorize(_NoTool(), "object.search", tool_name="search")
+
+    assert denial is not None
+    assert denial.get("error") == "named_service_tool_not_configured", denial

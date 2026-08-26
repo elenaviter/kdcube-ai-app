@@ -261,10 +261,16 @@ async def test_an_operation_the_card_does_not_cover_names_its_remedy():
     on in the one case where a remedy exists.
     """
     module = _bridge_module()
-    bridge = _bridge(module, _request())
+    # The card's own tree is the boundary, so narrowing it is how this happens.
+    request = _request()
+    tools = request.state.delegated_credential["grant_record"]["named_services"]
+    tools["namespaces"]["mail"]["tools"].pop("search")
+    bridge = _bridge(module, request)
 
     denial = await bridge._authorize(
-        _NarrowedPolicy(), "object.search", tool_name="named_services_search"
+        bridge._catalog.policy_for("mail"),
+        "object.search",
+        tool_name="named_services_search",
     )
 
     assert denial is not None
@@ -300,3 +306,56 @@ async def test_a_non_delegated_caller_still_gets_the_descriptor_answer():
     )
 
     assert denial["error"] == "named_service_operation_not_configured"
+
+
+async def test_the_listing_hides_an_operation_the_catalog_withdrew():
+    """Discovery is bounded by the card's tree; execution intersects it with the
+    catalog as it is now. Without the same intersection here a withdrawn
+    operation stays advertised, and the removal denial's own recovery -
+    "refresh discovery" - confirms the wrong answer."""
+    module = _bridge_module()
+
+    listed = await _bridge(module, _request()).list_services()
+    mail = next(ns for ns in listed["services"] if ns["namespace"] == "mail")
+    assert "search" in mail["tools"]
+
+    # The card keeps its materialized tree; only the catalog loses the tool.
+    withdrawn = await _bridge(
+        module, _request(connections=_without(operation_tool="search"))
+    ).list_services()
+    mail = next(ns for ns in withdrawn["services"] if ns["namespace"] == "mail")
+    assert "search" not in mail["tools"], mail["tools"]
+    assert "schema" in mail["tools"]
+
+    # And execution agrees with the listing.
+    denial = await _bridge(
+        module, _request(connections=_without(operation_tool="search"))
+    )._current_catalog_denial(
+        namespace="mail", operation="object.search", tool_name="named_services_search"
+    )
+    assert denial is not None
+
+
+async def test_a_namespace_the_catalog_dropped_leaves_the_listing():
+    module = _bridge_module()
+    listed = await _bridge(
+        module, _request(connections=_without(namespace="mail"))
+    ).list_services()
+    assert [ns["namespace"] for ns in listed["services"]] == []
+
+
+async def test_the_listing_fails_closed_when_the_catalog_is_unavailable():
+    """Falling back to the card's tree here would reopen the gap on every cache
+    miss."""
+    module = _bridge_module()
+    listed = await _bridge(module, _request(unavailable="catalog_unavailable")).list_services()
+    assert listed.get("ok") is False
+
+
+async def test_a_caller_with_no_delegated_credential_lists_the_descriptor():
+    module = _bridge_module()
+    bridge = _bridge(
+        module, _request(delegated=False), config=copy.deepcopy(NAMED_SERVICES)
+    )
+    listed = await bridge.list_services()
+    assert [ns["namespace"] for ns in listed["services"]] == ["mail"]

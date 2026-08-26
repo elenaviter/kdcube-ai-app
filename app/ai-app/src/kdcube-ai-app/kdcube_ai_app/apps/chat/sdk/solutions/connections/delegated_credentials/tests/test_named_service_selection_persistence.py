@@ -818,9 +818,7 @@ async def test_an_oauth_card_is_born_with_a_selection_and_a_catalog_version(card
 
 
 @pytest.mark.asyncio
-async def test_a_refresh_rotation_writes_no_authority(card_persistence):
-    """Rotation updates credential handles only."""
-    service = _service(card_persistence)
+async def _first_consent(service, *, selection, version):
     await service.record_oauth_grant(
         grantor_subject=USER["user_id"],
         client_id="claude",
@@ -828,10 +826,25 @@ async def test_a_refresh_rotation_writes_no_authority(card_persistence):
         resource=RESOURCE,
         access_token="at-1",
         refresh_token="rt-1",
-        named_service_operations={RESOURCE: {"slack": ["object.search"]}},
-        catalog_version="delegated_catalog_2026-08-20-00-00-00-000_aaaaaaaaaaaa",
+        named_service_operations=selection,
+        catalog_version=version,
     )
-    card_id = oauth_access_id(USER["user_id"], "claude", RESOURCE)
+    return oauth_access_id(USER["user_id"], "claude", RESOURCE)
+
+
+async def test_a_refresh_rotation_writes_no_authority(card_persistence):
+    """Rotation updates credential handles only.
+
+    The token endpoint separates the two: `authorization_code` carries the
+    selection and the catalog version, `refresh_token` carries neither. So a
+    rotation is an absent selection, not a resubmitted one.
+    """
+    service = _service(card_persistence)
+    card_id = await _first_consent(
+        service,
+        selection={RESOURCE: {"slack": ["object.search"]}},
+        version="delegated_catalog_2026-08-20-00-00-00-000_aaaaaaaaaaaa",
+    )
 
     await service.record_oauth_grant(
         grantor_subject=USER["user_id"],
@@ -840,8 +853,6 @@ async def test_a_refresh_rotation_writes_no_authority(card_persistence):
         resource=RESOURCE,
         access_token="at-2",
         refresh_token="rt-2",
-        named_service_operations="*",
-        catalog_version="delegated_catalog_2026-08-20-11-11-11-111_bbbbbbbbbbbb",
     )
 
     record = await service._load_record(card_id, grantor_subject=USER["user_id"])
@@ -851,6 +862,39 @@ async def test_a_refresh_rotation_writes_no_authority(card_persistence):
     assert record.catalog_version == "delegated_catalog_2026-08-20-00-00-00-000_aaaaaaaaaaaa"
     assert record.access_token == "at-2"
     assert record.refresh_token == "rt-2"
+
+
+@pytest.mark.asyncio
+async def test_a_second_consent_replaces_what_the_card_held(card_persistence):
+    """Only the newest consent counts, even when an earlier one said `"*"`.
+
+    The screen shows what is being granted, so the card must end up with what
+    was submitted; carrying the wider earlier choice forward would hand the
+    client more than the user just chose.
+    """
+    service = _service(card_persistence)
+    card_id = await _first_consent(
+        service,
+        selection="*",
+        version="delegated_catalog_2026-08-20-00-00-00-000_aaaaaaaaaaaa",
+    )
+
+    await service.record_oauth_grant(
+        grantor_subject=USER["user_id"],
+        client_id="claude",
+        scopes=GRANTS,
+        resource=RESOURCE,
+        access_token="at-2",
+        refresh_token="rt-2",
+        named_service_operations={RESOURCE: {"slack": ["object.search"]}},
+        catalog_version="delegated_catalog_2026-08-20-11-11-11-111_bbbbbbbbbbbb",
+    )
+
+    record = await service._load_record(card_id, grantor_subject=USER["user_id"])
+    assert record.named_service_operations.to_stored() == {
+        RESOURCE: {"slack": ["object.search"]}
+    }
+    assert record.catalog_version == "delegated_catalog_2026-08-20-11-11-11-111_bbbbbbbbbbbb"
 
 
 @pytest.mark.asyncio
