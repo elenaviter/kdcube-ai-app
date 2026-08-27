@@ -5,14 +5,16 @@ summary: "Canonical lifecycle of Connection Hub Delegated by KDCube cards: what 
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "delegated-access", "cards", "grants", "mcp", "named-services"]
 keywords: ["Delegated by KDCube", "AutomationAccessRecord", "resource_grants", "named_service_operations", "account_scope", "registry_access_id", "card authority", "descriptor drift", "grant lifecycle"]
-updated_at: 2026-08-26
+updated_at: 2026-08-27
 see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/arch/delegated-authority-and-admission-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-connections/delegated-connections-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-token-storage-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/configuring-agent-service-access/configuring-agent-service-access-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-accounts/delegated-accounts-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/kdcube-services/named-services-from-isolated-runtime-README.md
 ---
 # Delegated Access Cards
 
@@ -602,9 +604,16 @@ widens one.
 
 ## Runtime Enforcement Lifecycle
 
+The cross-surface flow from a card and active catalog through managed REST/MCP,
+plain account-backed tools, named-service admission, direct dispatch, and Data
+Bus relay is owned by
+[Delegated Authority And Admission](../../../../arch/delegated-authority-and-admission-README.md).
+This section continues with the card-specific pointer resolution performed by
+the managed guard.
+
 Pointer-backed credentials carry `registry_access_id` in the access-grant
 binding. The managed guard treats that id as a pointer, not as authority by
-itself:
+itself. Its concrete delegated path is:
 
 ```text
 request bearer
@@ -626,9 +635,11 @@ request bearer
 ```
 
 Missing, expired, malformed, unavailable, or identity-mismatched pointer
-authority fails closed. Revocation deletes the card and invalidates the
-source-specific session/token records, so an in-flight bearer cannot recover
-authority from its older embedded snapshot.
+authority fails closed. Revocation commits a durable revoked revision, replaces
+the live serving state, and invalidates the source-specific session/token
+records. An already-issued bearer therefore sees revoked current state on its
+next invocation. An invocation that already received its singular admission
+decision completes under that decision.
 
 Legacy bindings without `registry_access_id` retain embedded-snapshot semantics
 for the card's own facts; the active-catalog intersection still applies to them.

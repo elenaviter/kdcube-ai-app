@@ -4,9 +4,10 @@ title: "Named-Service Calls From Isolated Runtimes: The Data Bus Relay"
 summary: "How an isolated runtime carries caller identity plus a typed admission selector to a target worker, resolves current authority there, and executes one named-service invocation."
 status: current
 tags: ["kdcube-services", "named-services", "data-bus", "isolated-runtime", "exec", "identity", "relay", "admission"]
-updated_at: 2026-08-26
+updated_at: 2026-08-27
 keywords: ["named-service relay", "NamedServiceAdmission", "delegated card", "access_id", "Data Bus", "isolated runtime"]
 see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/arch/delegated-authority-and-admission-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/cross-runtime-context-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-cards/delegated-cards-README.md

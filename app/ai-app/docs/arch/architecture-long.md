@@ -4,10 +4,11 @@ title: "Architecture Long"
 summary: "Detailed current KDCube architecture: deployment scope, app catalogs and surfaces, ingress, ordered conversation lanes, Data Bus and relay, identity and delegation, cross-runtime context, isolated execution, storage, scaling, sites, and economics."
 status: current
 tags: ["arch", "architecture", "runtime", "apps", "events", "identity", "execution", "storage"]
-updated_at: 2026-08-18
+updated_at: 2026-08-27
 keywords: ["KDCube architecture", "tenant project", "app provider consumer", "conversation event bus", "data bus", "isolated execution", "Connection Hub", "site catalog"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/arch/delegated-authority-and-admission-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/control-plane-web-app-README.md
   - repo:kdcube/app/ai-app/docs/arch/application-hosted-websites-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/architecture-of-what-we-built-README.md
@@ -449,6 +450,8 @@ Tokens remain server-side credential handles. Trusted guards resolve grant and
 session records; application handlers do not infer authority by decoding token
 bodies. Provider credentials live in user-scoped secrets and are resolved by
 trusted SDK/tool code, not exposed to the model or generated-code executor.
+The complete reusable managed-surface and nested named-service path is
+[Delegated Authority And Admission](delegated-authority-and-admission-README.md).
 
 ## 12. Cross-Runtime Context
 
@@ -680,6 +683,7 @@ matching namespace, durability, IAM, TLS, DNS, backup, and recovery policy.
 - [Conversation Event Lane State](../sdk/events/conversation-event-lane-state-README.md)
 - [Conversation Event Bus And Data Bus](../service/comm/conversation-event-bus-and-data-bus-README.md)
 - [Connection Hub](../sdk/solutions/connections/connection-hub-solution-README.md)
+- [Delegated Authority And Admission](delegated-authority-and-admission-README.md)
 - [Named-Service Providers](../sdk/namespace-services/providers-README.md)
 - [Application-Hosted Sites](../sdk/solutions/sites/application-sites-README.md)
 - [Application-Hosted Website Architecture](application-hosted-websites-README.md)

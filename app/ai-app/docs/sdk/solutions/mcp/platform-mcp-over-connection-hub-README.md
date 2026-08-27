@@ -4,9 +4,10 @@ title: "Platform MCP over Connection Hub"
 summary: "How a KDCube app exposes its services as an MCP door that Connection Hub guards underneath, so ONE governed endpoint serves both an external app (Claude Code, over OAuth) and a resident agent (a ReAct/LangGraph agent, over a per-agent grant). The built-in kdcube-services app is the worked example: it publishes the named_services and conversations doors, and every caller reaches them as the signed-in user under a delegated credential the guard authorizes per call."
 status: active
 tags: ["sdk", "mcp", "connection-hub", "delegated-credentials", "named-services", "governance", "agents", "external-app", "kdcube-services"]
-updated_at: 2026-07-19
+updated_at: 2026-08-27
 keywords: ["platform MCP", "public MCP door", "managed auth", "delegated_client", "named_services door", "kdcube-services", "external app", "resident agent"]
 see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/arch/delegated-authority-and-admission-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/agent-acting-for-user/agent-acting-for-user-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/configuring-agent-service-access/configuring-agent-service-access-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/quickstart/explore-how-agents-connect-to-kdcube-README.md
@@ -132,3 +133,6 @@ Exposing a door and consuming one are their own recipes:
 and [Connect an MCP Service to a KDCube Agent](../../../recipes/apps/consume-mcp-service-README.md).
 The whole Connection Hub picture is
 [Connection Hub Solution](../connections/connection-hub-solution-README.md).
+The reusable card, catalog, managed-surface, connected-account, and nested
+named-service decision path is
+[Delegated Authority And Admission](../../../arch/delegated-authority-and-admission-README.md).

@@ -4,10 +4,11 @@ title: "Architecture Short"
 summary: "Concise current architecture of KDCube: one tenant/project deployment, directional app surfaces, ordered conversation eventing, app Data Bus, authority, storage, isolation, and accounting."
 status: current
 tags: ["arch", "architecture", "overview", "apps", "runtime"]
-updated_at: 2026-08-18
+updated_at: 2026-08-27
 keywords: ["KDCube architecture", "app surfaces", "as provider", "as consumer", "conversation event lane", "isolated execution"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/arch/delegated-authority-and-admission-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/control-plane-web-app-README.md
   - repo:kdcube/app/ai-app/docs/arch/application-hosted-websites-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/architecture-of-what-we-built-README.md
@@ -164,6 +165,10 @@ KDCube -> external operator
 These directions are separate. Raw channel proof is not platform login, and a
 bearer token is a handle to server-side grant/session state rather than the
 authority source itself.
+
+The complete card, catalog, managed REST/MCP guard, connected-account, and
+nested named-service flow is
+[Delegated Authority And Admission](delegated-authority-and-admission-README.md).
 
 ## Cross-Runtime And Isolated Execution
 

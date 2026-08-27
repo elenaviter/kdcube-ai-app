@@ -5,8 +5,9 @@ summary: "Canonical map of Connection Hub roles: connection edges, identity-fami
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "identity", "auth", "authority", "delegated-connections"]
 keywords: ["Connection Hub", "delegated access cards", "connected accounts", "authority registry", "request authenticators", "connection edges", "OAuth MCP"]
-updated_at: 2026-08-26
+updated_at: 2026-08-27
 see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/arch/delegated-authority-and-admission-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/tenant-project-user-and-execution-boundaries-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-edges/connection-edges-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/identity-family-resolver/identity-family-resolver-README.md
@@ -525,6 +526,7 @@ grantor's full platform session.
 | Configure authenticated MCP from zero - every layer, the provider connected-accounts contract, both consent gates, and all three scenarios (hosted agent, external MCP connection, automation token) | [Authenticated MCP: The Full Configuration Chain](authenticated-mcp/authenticated-mcp-README.md) |
 | Understand delegated representatives, manual automation selection, and OAuth grants | [Delegated Connections](delegated-connections/delegated-connections-README.md) |
 | Understand Delegated by KDCube card storage, rendering, edit semantics, runtime enforcement, and catalog drift | [Delegated Access Cards](delegated-cards/delegated-cards-README.md) |
+| Understand the complete card/catalog decision across managed REST/MCP, plain account-backed tools, and nested named services | [Delegated Authority And Admission](../../../arch/delegated-authority-and-admission-README.md) |
 | See and revoke access a user granted to automations and external clients | [Delegated Connections](delegated-connections/delegated-connections-README.md) |
 | Build an app that exposes a governed service over MCP (uses Gmail + your own OAuth server) | [Expose a Governed Service over MCP](../../../recipes/quickstart/expose-governed-service-mcp-README.md) |
 | See every place config lives to wire providers → an MCP service → a consumer, end to end | [The Connected-Services Config Chain](connected-services-config-chain/connected-services-config-chain-README.md) |

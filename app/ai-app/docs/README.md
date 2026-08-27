@@ -4,9 +4,10 @@ title: "Platform Documentation Index"
 summary: "Curated top-level map of the KDCube documentation tree for app builders, integrators, operators, and agents."
 tags: ["docs", "index", "sdk", "service", "ops", "architecture"]
 keywords: ["documentation index", "platform architecture", "configuration guides", "service runtime docs", "app sdk docs", "execution docs", "deployment and operations docs", "app builder docs", "client widgets", "streaming", "memory", "claude code"]
-updated_at: 2026-08-18
+updated_at: 2026-08-27
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/arch/delegated-authority-and-admission-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/what-you-can-do-with-kdcube-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/use-cases-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/how-to-integrate-with-kdcube-apps-README.md
@@ -36,6 +37,7 @@ Curated index of platform, service, and SDK documentation.
 * How To Integrate With KDCube Apps: [how-to-integrate-with-kdcube-apps-README.md](how-to-integrate-with-kdcube-apps-README.md)
 * Quick Start: [quick-start-README.md](quick-start-README.md)
 * Security And Trust Model: [security-and-trust-model-README.md](arch/security-and-trust-model-README.md)
+* Delegated Authority And Admission: [delegated-authority-and-admission-README.md](arch/delegated-authority-and-admission-README.md)
 * Architecture Of What We Built: [architecture-of-what-we-built-README.md](arch/architecture-of-what-we-built-README.md)
 * Architecture Of What You Build: [architecture-of-what-you-build-README.md](arch/architecture-of-what-you-build-README.md)
 * Control Plane Web App: [control-plane-web-app-README.md](arch/control-plane-web-app-README.md)

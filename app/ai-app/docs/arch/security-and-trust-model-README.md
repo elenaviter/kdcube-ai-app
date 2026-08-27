@@ -4,10 +4,11 @@ title: "Security And Trust Model"
 summary: "Canonical KDCube security model: one tenant/project runtime, trusted applications, request-scoped users, profile-dependent generated-code isolation, server-side credentials, and guarded REST/MCP surfaces."
 status: current
 tags: ["arch", "security", "trust", "tenancy", "apps", "execution", "credentials", "mcp"]
-updated_at: 2026-08-26
+updated_at: 2026-08-27
 keywords: ["KDCube security model", "tenant/project deployment scope", "multi-user runtime", "trusted application", "generated-code isolation", "MCP security", "secret isolation"]
 see_also:
   - repo:kdcube-ai-app/SECURITY.md
+  - repo:kdcube-ai-app/app/ai-app/docs/arch/delegated-authority-and-admission-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/tenant-project-user-and-execution-boundaries-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/exec/README-iso-runtime.md
   - repo:kdcube-ai-app/app/ai-app/docs/exec/README-runtime-modes-builtin-tools.md
@@ -248,8 +249,10 @@ selector. The destination validates it against the restored actor, resolves
 current Connection Hub state, binds the resulting account scope for the
 provider invocation, and restores the prior scope afterward. Provider tokens,
 raw cards, catalog documents, and account scopes stay in trusted services.
-See [Named-Service Calls From Isolated Runtimes](../sdk/solutions/kdcube-services/named-services-from-isolated-runtime-README.md)
-for the complete direct and relayed sequence.
+See [Delegated Authority And Admission](delegated-authority-and-admission-README.md)
+for the whole managed-surface and nested named-service authority path. See
+[Named-Service Calls From Isolated Runtimes](../sdk/solutions/kdcube-services/named-services-from-isolated-runtime-README.md)
+for the detailed relay sequence.
 
 This is a supervisor/tool-side guarantee, not a property of every execution
 profile. The local subprocess implementation inherits the host process
