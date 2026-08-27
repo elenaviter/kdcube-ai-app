@@ -10,6 +10,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.cre
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.named_service_admission import (
     managed_named_service_admission,
     managed_named_service_catalog_operations,
+    managed_named_service_dispatch_config,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.comm_ctx import (
     get_current_request_context,
@@ -256,10 +257,15 @@ class NamedServicesMcpBridge:
             sorted(view.grants),
             _account_scope_summary(view.account_scope),
         )
-        # Descriptor policy owns provider routing. The request-bound admission
-        # snapshot independently narrows that inventory to the exact card and
-        # active catalog accepted by the managed MCP guard.
-        catalog_config = self._config
+        # Connection Hub materializes the selected namespace boundary on the
+        # card. The active catalog independently narrows that boundary at each
+        # invocation, preserving precise catalog-drift denials.
+        try:
+            catalog_config = managed_named_service_dispatch_config(request)
+        except ValueError:
+            # Keep the bridge usable in direct/non-managed SDK composition;
+            # managed MCP requests always carry the guard snapshot.
+            catalog_config = self._config
         # The guarded service decides which connector app serves each provider
         # in auth scenarios (never a user pick): bind its declaration so realm
         # integrations and consent composers resolve it for this request.

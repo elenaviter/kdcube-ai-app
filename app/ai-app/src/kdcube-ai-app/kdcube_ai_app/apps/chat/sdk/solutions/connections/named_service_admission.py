@@ -425,6 +425,46 @@ def managed_named_service_catalog_operations(
     }
 
 
+def _merge_dispatch_policy(
+    fallback: Mapping[str, Any],
+    current: Mapping[str, Any],
+) -> dict[str, Any]:
+    merged = copy.deepcopy(dict(fallback or {}))
+    for key, value in dict(current or {}).items():
+        existing = merged.get(key)
+        if isinstance(existing, Mapping) and isinstance(value, Mapping):
+            merged[key] = _merge_dispatch_policy(existing, value)
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
+def managed_named_service_dispatch_config(request: Any) -> dict[str, Any]:
+    """Build the policy envelope used before authoritative admission."""
+    snapshot = getattr(
+        getattr(request, "state", None), MANAGED_ADMISSION_STATE_ATTR, None
+    )
+    if not isinstance(snapshot, ManagedNamedServiceAdmissionSnapshot):
+        raise ValueError("Managed named-service admission snapshot is unavailable")
+    resource_cfg = snapshot.catalog.resource_config(
+        CapabilityRequest(
+            kind=CAPABILITY_NAMED_SERVICE_OPERATION,
+            resource=snapshot.resource,
+            request_resource=snapshot.request_resource,
+            surface="named_service",
+            namespace="-",
+            operation="-",
+        )
+    )
+    active = getattr(resource_cfg, "named_services", None)
+    active = active if isinstance(active, Mapping) else {}
+    # The union lets a removed path reach the admission decision that explains
+    # whether the card or current catalog withdrew it. Current descriptor
+    # policy wins for paths that still exist; no provider executes before the
+    # admission authorizer intersects both boundaries.
+    return _merge_dispatch_policy(snapshot.named_services, active)
+
+
 def delegated_card_binding_from_request(request: Any) -> dict[str, Any]:
     snapshot = getattr(getattr(request, "state", None), MANAGED_ADMISSION_STATE_ATTR, None)
     if not isinstance(snapshot, ManagedNamedServiceAdmissionSnapshot):
@@ -540,6 +580,7 @@ __all__ = [
     "delegated_card_binding_from_request",
     "managed_named_service_admission",
     "managed_named_service_catalog_operations",
+    "managed_named_service_dispatch_config",
     "native_agent_admission_from_state",
     "native_agent_admission_selector",
     "store_managed_named_service_admission_snapshot",

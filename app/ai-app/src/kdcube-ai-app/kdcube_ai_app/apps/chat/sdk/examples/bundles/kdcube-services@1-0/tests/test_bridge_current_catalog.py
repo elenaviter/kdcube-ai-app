@@ -253,6 +253,34 @@ async def test_the_listing_intersects_card_and_active_catalog():
     assert empty_card["services"] == []
 
 
+async def test_managed_bridge_uses_the_card_boundary_when_host_config_is_empty(monkeypatch):
+    module = _bridge_module()
+    bridge = _bridge(module, _request(), config={})
+    called = {}
+
+    async def _call(endpoint, request, *, admission):
+        decision = await admission.authorize(request)
+        assert decision.allowed is True
+        called["namespace"] = endpoint.namespace
+        called["operation"] = request.operation
+        return module.NamedServiceResponse.ok_response(
+            object={"namespace": request.namespace},
+        )
+
+    monkeypatch.setattr(module, "call_named_service_endpoint", _call)
+
+    listed = await bridge.list_services()
+    payload = await bridge.call(
+        tool_name="search",
+        operation="object.search",
+        namespace="mail",
+    )
+
+    assert [service["namespace"] for service in listed["services"]] == ["mail"]
+    assert payload["ok"] is True
+    assert called == {"namespace": "mail", "operation": "object.search"}
+
+
 async def test_a_namespace_the_catalog_dropped_leaves_the_listing():
     module = _bridge_module()
     listed = await _bridge(
