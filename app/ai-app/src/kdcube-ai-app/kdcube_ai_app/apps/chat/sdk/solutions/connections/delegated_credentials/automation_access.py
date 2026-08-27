@@ -83,6 +83,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.car
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.cards.service import (
     CardCommitFailed,
     CardConflict,
+    CardServingUnavailable,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.catalog.resolver import (
     CatalogUnavailable,
@@ -462,6 +463,23 @@ async def read_agent_grant_record(
     if record.expires_at and record.expires_at <= int(time.time()):
         return None
     return record
+
+
+def _serving_state_unavailable(exc: CardServingUnavailable) -> dict[str, Any]:
+    """The revision is committed; its serving state is not.
+
+    Names the card so a caller that minted credential material it never
+    received can point at it. Retrying creates a second card when the id is
+    random, so the answer says which one already exists.
+    """
+    return {
+        "ok": False,
+        "error": "delegated_card_serving_state_unavailable",
+        "reason": exc.reason,
+        "access_id": exc.access_id,
+        "retryable": True,
+        "status": 503,
+    }
 
 
 def _selection_policy_argument(
@@ -1740,6 +1758,8 @@ class AutomationAccessService:
         )
         try:
             await self._persist_record(record, expected_revision=committed_revision)
+        except CardServingUnavailable as exc:
+            return _serving_state_unavailable(exc)
         except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
             return {
                 "ok": False,
@@ -1942,8 +1962,9 @@ class AutomationAccessService:
                     "endpoints that differ on separate cards."
                 ),
             })
-        # Recompute the boundary tree here: the descriptor is available in this
-        # process, the guard's is not.
+        # Materialize the boundary tree from the same active catalog the rows
+        # came from, so the stored tree and the version stamped on the card
+        # describe one generation.
         named_services: dict[str, Any] = {}
         for resource_value, cfg in resource_pairs:
             if not isinstance(cfg.named_services, Mapping):
@@ -2130,6 +2151,8 @@ class AutomationAccessService:
         del remaining
         try:
             await self._persist_record(updated, expected_revision=existing.card_revision)
+        except CardServingUnavailable as exc:
+            return _serving_state_unavailable(exc)
         except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
             return {
                 "ok": False,
@@ -3053,6 +3076,8 @@ class AutomationAccessService:
         )
         try:
             await self._persist_record(updated, expected_revision=record.card_revision)
+        except CardServingUnavailable as exc:
+            return _serving_state_unavailable(exc)
         except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
             return {
                 "ok": False,

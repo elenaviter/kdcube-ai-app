@@ -29,6 +29,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.car
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.cards.service import (
     CardCommitFailed,
     CardConflict,
+    CardServingUnavailable,
     DelegatedCardService,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.cards.store import (
@@ -448,10 +449,14 @@ async def test_a_committed_revision_is_restored_after_the_projection_write_fails
         raise ConnectionError("projection write failed")
 
     monkeypatch.setattr(cache, "commit_projection", _boom)
-    with pytest.raises(ConnectionError):
+    with pytest.raises(CardServingUnavailable) as exc:
         await service.commit(
             _authority(revision=2), subject_hash=SUBJECT_HASH, expected_revision=1, now=NOW
         )
+    # Typed so the caller can answer with the card it committed; the transport
+    # failure stays as the cause.
+    assert exc.value.access_id == ACCESS_ID
+    assert isinstance(exc.value.__cause__, ConnectionError)
     monkeypatch.undo()
 
     current = await store.read_current_authority(

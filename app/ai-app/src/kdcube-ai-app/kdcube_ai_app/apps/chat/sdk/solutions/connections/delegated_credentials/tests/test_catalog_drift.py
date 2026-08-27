@@ -239,13 +239,25 @@ def test_a_card_that_selected_nothing_reports_no_inner_removals():
     assert drift["removed"]["named_service_operations"] == []
 
 
-def test_a_resource_that_enumerates_no_named_services_reports_no_inner_removals():
-    without_block = copy.deepcopy(CONNECTIONS)
-    without_block["delegated_credentials"]["oauth"]["resources"][0].pop("named_services")
+@pytest.mark.parametrize(
+    "withdraw",
+    [
+        pytest.param(lambda r: r.pop("named_services"), id="block-deleted"),
+        pytest.param(lambda r: r.__setitem__("named_services", {}), id="block-emptied"),
+    ],
+)
+def test_a_resource_that_publishes_no_named_services_reports_every_selection_removed(withdraw):
+    # The guard denies these operations, so the owner has to see what to repair.
+    withdrawn = copy.deepcopy(CONNECTIONS)
+    withdraw(withdrawn["delegated_credentials"]["oauth"]["resources"][0])
 
-    drift = card_drift(card=_card(), active=_document(without_block), baseline=_document())
+    drift = card_drift(card=_card(), active=_document(withdrawn), baseline=_document())
 
-    assert drift["removed"]["named_service_operations"] == []
+    assert drift["status"] == DRIFT_CHANGED
+    assert [
+        (row["namespace"], row["operation"])
+        for row in drift["removed"]["named_service_operations"]
+    ] == [("mail", "object.schema"), ("mail", "object.search")]
 
 
 # -- additions ------------------------------------------------------------------

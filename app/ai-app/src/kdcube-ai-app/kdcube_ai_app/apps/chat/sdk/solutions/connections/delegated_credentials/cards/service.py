@@ -69,6 +69,20 @@ class CardCommitFailed(RuntimeError):
         self.reason = reason
 
 
+class CardServingUnavailable(RuntimeError):
+    """The revision committed durably; its serving state did not.
+
+    The committed revision is the authority; a read that misses the projection
+    reloads it. Carries ``access_id`` so the caller can name the card it holds
+    no credential for.
+    """
+
+    def __init__(self, reason: str, *, access_id: str = "") -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.access_id = access_id
+
+
 class DelegatedCardService:
     def __init__(
         self,
@@ -123,14 +137,25 @@ class DelegatedCardService:
                 pointer = await self._commit_durable(
                     authority=authority, subject_hash=subject_hash, mutation_id=mutation_id
                 )
-                await self._cache.commit_projection(
-                    authority,
-                    mutation_id=mutation_id,
-                    ttl_seconds=max(0, authority.expires_at - moment),
-                )
-                await self._index(
-                    authority=authority, subject_hash=subject_hash, moment=moment
-                )
+                try:
+                    installed = await self._cache.commit_projection(
+                        authority,
+                        mutation_id=mutation_id,
+                        ttl_seconds=max(0, authority.expires_at - moment),
+                    )
+                    if not installed:
+                        self._report_uninstalled(
+                            access_id=authority.access_id,
+                            card_revision=authority.card_revision,
+                            transition="projection",
+                        )
+                    await self._index(
+                        authority=authority, subject_hash=subject_hash, moment=moment
+                    )
+                except Exception as exc:
+                    raise CardServingUnavailable(
+                        "serving_state_unavailable", access_id=authority.access_id
+                    ) from exc
                 return pointer
         except ObservedFileLockTimeout as exc:
             raise CardConflict("card_mutation_lock_timeout") from exc
@@ -177,15 +202,26 @@ class DelegatedCardService:
                 pointer = await self._commit_durable(
                     authority=revoked, subject_hash=subject_hash, mutation_id=mutation_id
                 )
-                await self._cache.commit_tombstone(
-                    access_id,
-                    card_revision=revoked.card_revision,
-                    mutation_id=mutation_id,
-                    ttl_seconds=self._settings.revoked_tombstone_seconds,
-                )
-                await self._cache.index_remove(
-                    subject_hash=subject_hash, access_id=access_id
-                )
+                try:
+                    installed = await self._cache.commit_tombstone(
+                        access_id,
+                        card_revision=revoked.card_revision,
+                        mutation_id=mutation_id,
+                        ttl_seconds=self._settings.revoked_tombstone_seconds,
+                    )
+                    if not installed:
+                        self._report_uninstalled(
+                            access_id=access_id,
+                            card_revision=revoked.card_revision,
+                            transition="tombstone",
+                        )
+                    await self._cache.index_remove(
+                        subject_hash=subject_hash, access_id=access_id
+                    )
+                except Exception as exc:
+                    raise CardServingUnavailable(
+                        "serving_state_unavailable", access_id=access_id
+                    ) from exc
                 return pointer
         except ObservedFileLockTimeout as exc:
             raise CardConflict("card_mutation_lock_timeout") from exc
@@ -245,6 +281,25 @@ class DelegatedCardService:
             raise CardCommitFailed("durable_commit_failed") from exc
         return pointer
 
+    @staticmethod
+    def _report_uninstalled(
+        *, access_id: str, card_revision: int, transition: str
+    ) -> None:
+        """The durable revision committed; the serving projection refused it.
+
+        Every surviving refusal leaves a live entry that is not stale-permissive
+        — an equal or newer revision, a revoked tombstone, another mutation's
+        marker, or an unusable value that denies and reloads from durable.
+        Logged because the return value is otherwise unobserved.
+        """
+        _LOGGER.warning(
+            "[connection-hub.delegated-cards] %s not installed card=%s revision=%s; "
+            "live projection is equal or newer",
+            transition,
+            access_id,
+            card_revision,
+        )
+
     async def _release(self, access_id: str, *, mutation_id: str) -> None:
         try:
             await self._cache.finalize_removal(access_id, mutation_id=mutation_id)
@@ -299,6 +354,7 @@ __all__ = [
     "CARD_LOCK_WAIT_SECONDS",
     "CardCommitFailed",
     "CardConflict",
+    "CardServingUnavailable",
     "DelegatedCardService",
     "replace_state",
 ]

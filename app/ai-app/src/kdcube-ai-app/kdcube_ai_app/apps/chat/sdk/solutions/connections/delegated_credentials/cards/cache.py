@@ -15,7 +15,8 @@ short residency and never act as authority.
 
 Every install is a compare-and-transition: a delayed read-through may not
 displace a newer revision, an updating marker, or a revoked tombstone, and a
-mutation finalizer may replace only the marker carrying its own mutation id.
+mutation finalizer may replace only the marker carrying its own mutation id or
+an ordinary projection whose revision it strictly supersedes.
 """
 
 from __future__ import annotations
@@ -67,8 +68,12 @@ redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[3])
 return 1
 """
 
-# Finalize a mutation. Replaces only this mutation's own marker, or an absent
-# key left behind when that marker expired.
+# Finalize a mutation. Replaces this mutation's own marker, an absent key, or —
+# when ARGV[4] carries a revision — an ordinary projection strictly older than
+# it: a read-through refills the key with the superseded revision when the
+# marker expires before finalization. Refuses another mutation's marker, a
+# revoked tombstone, and an equal or newer revision, so a stale finalizer
+# carrying an older number does not install.
 _FINALIZE_LUA = """
 local existing = redis.call('GET', KEYS[1])
 if existing then
@@ -76,8 +81,14 @@ if existing then
   if not ok or type(decoded) ~= 'table' then
     return 0
   end
-  if decoded['kind'] ~= 'updating' or decoded['mutation_id'] ~= ARGV[2] then
-    return 0
+  local owned = decoded['kind'] == 'updating'
+            and decoded['mutation_id'] == ARGV[2]
+  if not owned then
+    local incoming = tonumber(ARGV[4]) or 0
+    local live = tonumber(decoded['card_revision']) or 0
+    if incoming <= 0 or decoded['kind'] ~= 'card' or live >= incoming then
+      return 0
+    end
   end
 end
 if ARGV[1] == '' then
@@ -222,7 +233,8 @@ class DelegatedCardRuntimeCache:
         mutation_id: str,
         ttl_seconds: int,
     ) -> bool:
-        """Replace this mutation's marker with the committed live projection."""
+        """Install the committed live projection over this mutation's marker, or
+        over the revision it supersedes if a read-through refilled the key."""
         if ttl_seconds <= 0:
             return await self.finalize_removal(
                 authority.access_id, mutation_id=mutation_id
@@ -238,6 +250,7 @@ class DelegatedCardRuntimeCache:
             encode_cache_value(payload),
             str(mutation_id),
             str(max(1, int(ttl_seconds))),
+            str(int(authority.card_revision)),
         )
 
     async def commit_tombstone(
@@ -248,7 +261,8 @@ class DelegatedCardRuntimeCache:
         mutation_id: str,
         ttl_seconds: int,
     ) -> bool:
-        """Replace this mutation's marker with the short revoked tombstone."""
+        """Install the short revoked tombstone over this mutation's marker, or
+        over the revision it supersedes if a read-through refilled the key."""
         payload = {
             "kind": CARD_CACHE_KIND_REVOKED,
             "card_revision": int(card_revision),
@@ -259,11 +273,18 @@ class DelegatedCardRuntimeCache:
             encode_cache_value(payload),
             str(mutation_id),
             str(max(1, int(ttl_seconds))),
+            str(int(card_revision)),
         )
 
     async def finalize_removal(self, access_id: str, *, mutation_id: str) -> bool:
-        """Drop this mutation's marker without leaving a live projection."""
-        return await self._eval_bool(_FINALIZE_LUA, access_id, "", str(mutation_id), "1")
+        """Drop this mutation's marker without leaving a live projection.
+
+        Passes no revision: the caller's durable commit failed, so a projection
+        refilled meanwhile carries the revision that still stands.
+        """
+        return await self._eval_bool(
+            _FINALIZE_LUA, access_id, "", str(mutation_id), "1", "0"
+        )
 
     async def restore_projection(
         self, authority: CardAuthority, *, ttl_seconds: int

@@ -100,6 +100,8 @@ export function agentGrantConsentOpen(args: {
   agentClientId: string
   resource: string
   claims: string[]
+  namespace?: string
+  operation?: string
   accountId?: string
   accountClaim?: string
   url?: string
@@ -111,6 +113,12 @@ export function agentGrantConsentOpen(args: {
   if (resource) params.resource = resource
   const claims = (args.claims || []).map((item) => String(item || '').trim()).filter(Boolean)
   if (claims.length) params.claims = claims.join(',')
+  // The demand names one inner operation; the panel seeds its picker from these
+  // two, so omitting them opens the grant with nothing selected.
+  const namespace = String(args.namespace || '').trim()
+  if (namespace) params.namespace = namespace
+  const operation = String(args.operation || '').trim()
+  if (operation) params.operation = operation
   const accountId = String(args.accountId || '').trim()
   if (accountId) params.account_id = accountId
   const accountClaim = String(args.accountClaim || '').trim()

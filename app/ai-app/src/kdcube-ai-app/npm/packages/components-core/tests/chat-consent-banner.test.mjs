@@ -314,3 +314,39 @@ test('one agent, two pending resources -> TWO coexisting banners (surfaced live:
   const again = applyChatStep(state, agentDemand('*/user-memories@2026-06-26/public/mcp/memories*', ['memories:read'], 'memories'))
   assert.equal(again.banners.length, 2)
 })
+
+// A named-service demand names ONE inner operation. The panel seeds its picker
+// from namespace/operation, so a banner that drops them opens the grant with
+// nothing selected and the user has to find the operation themselves.
+test('a named-service grant demand carries its namespace and operation to the panel', () => {
+  const env = {
+    type: 'chat.step',
+    timestamp: '2026-07-07T12:00:00.000Z',
+    service: { request_id: 'req:turn-1' },
+    conversation: { session_id: 'session-1', conversation_id: 'conv-1', turn_id: 'turn-1' },
+    event: { step: 'delegated_to_kdcube.consent', status: 'completed', title: 'Consent', agent: null },
+    data: {
+      error: { code: 'delegated_consent_required', message: 'named_services_search needs consent.' },
+      consent: {
+        kind: 'delegated_agent_grant',
+        claims: ['named_services:use'],
+        resource: 'https://h/api/mcp/named_services',
+        agent_client_id: 'kdcube-agent:app:lg-react',
+        namespace: 'task',
+        operation: 'object.search',
+        grant: {
+          operation: 'delegated_agent_grant_create',
+          payload: {
+            client_id: 'kdcube-agent:app:lg-react',
+            resource: 'https://h/api/mcp/named_services',
+            claims: ['named_services:use'],
+            named_service_operations: { task: ['object.search'] },
+          },
+        },
+      },
+    },
+  }
+  const banner = applyChatStep(baseState(), env).banners[0]
+  assert.equal(banner.consent.params.namespace, 'task')
+  assert.equal(banner.consent.params.operation, 'object.search')
+})

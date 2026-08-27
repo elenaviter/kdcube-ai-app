@@ -308,10 +308,11 @@ The relay selector contains identifiers and provenance. The target owns the
 card/catalog lookup and account binding. Raw cards, catalogs, account scopes,
 and credentials stay in their owning trusted services.
 
-The Connection Hub lookup is Redis-first. Durable storage participates when a
-validated serving projection must be restored. Relay retries use one message
-id; the target records the completed outcome, redelivery returns that outcome,
-and the provider executes once per message id.
+The Connection Hub lookup for one card by `access_id` is Redis-first. Durable
+storage participates when a validated serving projection must be restored, and
+decides membership when a grantor's cards are listed. Relay retries use one
+message id; the target records the completed outcome, redelivery returns that
+outcome, and the provider executes once per message id.
 
 ## Invocation Boundaries
 

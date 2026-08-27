@@ -10,7 +10,7 @@ import inspect
 import json
 import pathlib
 from datetime import datetime, timezone
-from typing import Any, Mapping
+from typing import Any, Awaitable, Callable, Mapping
 
 from kdcube_ai_app.apps.chat.proc.app_deployment.models import (
     AppStaticSurfaceManifest,
@@ -192,6 +192,7 @@ async def _invoke_on_app_deploy(
     pg_pool: Any,
     redis: Any,
     logger: AgentLogger,
+    reread_props: Callable[[], Awaitable[dict[str, Any]]] | None = None,
 ) -> None:
     hook = getattr(workflow, "on_app_deploy", None)
     if not callable(hook):
@@ -210,6 +211,7 @@ async def _invoke_on_app_deploy(
         "pg_pool": pg_pool,
         "redis": redis,
         "logger": logger,
+        "reread_props": reread_props,
     }
     await hook(**_select_hook_kwargs(hook, kwargs))
 
@@ -323,6 +325,20 @@ async def deploy_loaded_bundle_app_resources(
         int(settings.PLATFORM.APPLICATIONS.BUNDLES_PRELOAD_BUNDLE_LOCK_TTL_SECONDS),
     )
 
+    async def _reread_effective_props() -> dict[str, Any]:
+        """The effective props as the authority holds them right now.
+
+        Offered to hooks that publish shared state under a lock: the props may
+        have moved between this reconcile reading them and the hook acquiring
+        that lock.
+        """
+        fresh = await get_bundle_props_from_authority(
+            tenant=tenant,
+            project=project,
+            bundle_id=bundle_id,
+        ) or {}
+        return _apply_effective_props(workflow, fresh)
+
     async def _deploy_app_resources() -> None:
         await _invoke_on_app_deploy(
             workflow=workflow,
@@ -336,6 +352,7 @@ async def deploy_loaded_bundle_app_resources(
             pg_pool=pg_pool,
             redis=redis,
             logger=logger,
+            reread_props=_reread_effective_props,
         )
 
     await run_once_for_shared_bundle_storage(

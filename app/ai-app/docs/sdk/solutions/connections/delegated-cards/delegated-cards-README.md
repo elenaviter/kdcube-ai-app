@@ -135,16 +135,23 @@ installs the new Redis projection. A cache miss loads the durable current
 revision and repopulates Redis only when the card is active and unexpired. The
 conditional Redis installer compares `card_revision`: delayed recovery cannot
 overwrite a newer revision, an updating marker, or a revoked tombstone. The
-mutation finalizer may replace only the marker carrying its own mutation id.
+mutation finalizer may replace the marker carrying its own mutation id, or an
+ordinary projection whose revision it strictly supersedes — a read-through
+refills the key when the marker's residency lapses before the commit completes.
+It never displaces another mutation's marker, a revoked tombstone, or an equal
+or newer revision.
 
 Expiration deletes only the Redis projection. The durable revision remains and
 `expires_at` prevents cache restoration or use. Revocation commits a new
 durable `revoked` revision before live credential cleanup; it does not delete
-history. Normal active list/open is Redis-first: it reads the expiry-scored
-grantor index and current live-card projections, then computes drift against
-Redis-cached `active.json`. The grantor index has no fixed seven-day expiry;
-expired members are pruned by score. If the index or a projection is missing,
-Connection Hub rebuilds it from durable `current.json` and the referenced
+history. Open is Redis-first: it reads the live-card projection by `access_id`
+and computes drift against Redis-cached `active.json`. List decides membership
+from durable storage on every call, because a partially lost index cannot be
+detected without reading it; the grantor index accelerates discovery and carries
+the expiry scores. It has no fixed seven-day expiry; expired members are pruned
+by score. Every candidate is resolved through the card cache/store: one that no
+longer resolves is pruned, and a durable member the index lost is re-admitted.
+A missing projection is rebuilt from durable `current.json` and the referenced
 timestamped revision, repopulating only active, unexpired cards. Retention of
 card history is an explicit administrative policy separate from authorization
 TTL.
@@ -762,10 +769,13 @@ Redis serving projection
 ```
 
 There is no process catalog cache. `on_app_deploy` already owns the effective
-`connections` object in memory. It writes the durable version and complete
-`active.json`, caches the immutable version in Redis, and atomically caches the
-complete active document. A matching durable version is not enough to declare
-deployment ready: the Redis active document must also be present. If a cache
+`connections` object in memory, and re-reads it inside the shared critical
+section before publishing, so a publisher that captured an earlier generation
+registers what is current rather than its own snapshot under a later version
+stamp. It writes the durable version and complete `active.json`, caches the
+immutable version in Redis, and atomically caches the complete active document.
+A matching durable version is not enough to declare deployment ready: the Redis
+active document must also be present. If a cache
 entry later expires, the relevant request uses the validated durable
 read-through and stores it again with the configured TTL.
 
@@ -872,6 +882,13 @@ if either the card or catalog changed after the editor loaded. Otherwise the
 server prunes stale selections, validates every survivor against the active
 catalog, rebuilds `operations` and `named_services`, increments
 `card_revision`, and stamps the active `catalog_version` atomically.
+
+Create and Save write the durable revision before the projection, the grantor
+index, and the credential handles. A failure in any of those three returns
+`503 delegated_card_serving_state_unavailable` and names the `access_id`: the
+committed revision is the authority and a read that misses its projection
+reloads it, but the caller's own step did not complete, so a client holding
+credential material it never received can name the card that exists without it.
 
 Runtime applies the same ceiling before Save:
 

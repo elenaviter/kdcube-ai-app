@@ -13,6 +13,7 @@ import copy
 import hashlib
 import os
 import uuid
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -320,6 +321,74 @@ async def test_restore_installs_over_a_strictly_older_projection(card_cache):
     assert (await card_cache.read(ACCESS_ID)).card_revision == 8
 
 
+# -- finalizing after the marker's residency lapsed ---------------------------
+#
+# A read-through refills the key with the superseded revision once the marker
+# expires. Without a revision comparison the committed revision never reaches
+# the projection, and the old card serves for its full remaining lifetime.
+
+
+@pytest.mark.asyncio
+async def test_commit_installs_over_the_revision_it_supersedes(card_cache, redis_client):
+    await card_cache.claim_transition(
+        ACCESS_ID, mutation_id="m1", expected_revision=7, ttl_seconds=15
+    )
+    await redis_client.delete(card_cache.card_key(ACCESS_ID))  # marker TTL lapses
+    assert await card_cache.restore_projection(_authority(revision=7), ttl_seconds=300) is True
+
+    assert await card_cache.commit_projection(
+        _authority(revision=8), mutation_id="m1", ttl_seconds=300
+    ) is True
+    assert (await card_cache.read(ACCESS_ID)).card_revision == 8
+
+
+@pytest.mark.asyncio
+async def test_tombstone_installs_over_the_revision_it_supersedes(card_cache):
+    await card_cache.restore_projection(_authority(revision=7), ttl_seconds=300)
+
+    assert await card_cache.commit_tombstone(
+        ACCESS_ID, card_revision=8, mutation_id="m1", ttl_seconds=60
+    ) is True
+    assert (await card_cache.read(ACCESS_ID)).is_revoked
+
+
+@pytest.mark.asyncio
+async def test_a_stale_finalizer_does_not_install_over_a_newer_projection(card_cache):
+    await card_cache.restore_projection(_authority(revision=9), ttl_seconds=300)
+
+    assert await card_cache.commit_projection(
+        _authority(revision=8), mutation_id="m1", ttl_seconds=300
+    ) is False
+    assert await card_cache.commit_projection(
+        _authority(revision=9), mutation_id="m1", ttl_seconds=300
+    ) is False
+    assert (await card_cache.read(ACCESS_ID)).card_revision == 9
+
+
+@pytest.mark.asyncio
+async def test_finalizing_never_displaces_a_tombstone(card_cache):
+    await card_cache.commit_tombstone(
+        ACCESS_ID, card_revision=8, mutation_id="m1", ttl_seconds=60
+    )
+    assert await card_cache.commit_projection(
+        _authority(revision=9), mutation_id="m2", ttl_seconds=300
+    ) is False
+    assert (await card_cache.read(ACCESS_ID)).is_revoked
+
+
+@pytest.mark.asyncio
+async def test_release_leaves_a_refilled_projection_alone(card_cache, redis_client):
+    await card_cache.claim_transition(
+        ACCESS_ID, mutation_id="m1", expected_revision=7, ttl_seconds=15
+    )
+    await redis_client.delete(card_cache.card_key(ACCESS_ID))  # marker TTL lapses
+    await card_cache.restore_projection(_authority(revision=7), ttl_seconds=300)
+
+    # The durable commit failed, so revision 7 still stands.
+    assert await card_cache.finalize_removal(ACCESS_ID, mutation_id="m1") is False
+    assert (await card_cache.read(ACCESS_ID)).card_revision == 7
+
+
 # -- per-grantor index --------------------------------------------------------
 
 
@@ -419,3 +488,91 @@ async def test_list_rebuilds_an_evicted_index_from_durable_records(card_cache, t
 
     assert [item.access_id for item in listed] == [ACCESS_ID]
     assert await card_cache.index_members(subject_hash=SUBJECT_HASH, now=now) == [ACCESS_ID]
+
+
+@pytest.mark.asyncio
+async def test_list_readmits_one_card_the_index_lost(card_cache, tmp_path):
+    # The index write is the last step of a commit. When it alone fails, the
+    # card serves while its grantor cannot see or revoke it, and the whole-index
+    # rebuild never runs because other members are present.
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    now = 1_780_000_000
+    resolver = DelegatedCardResolver(cache=card_cache, store=store)
+
+    for access_id in ("aut_alpha", "aut_bravo"):
+        authority = _authority(revision=1, expires_at=now + 180 * 24 * 3600)
+        authority = replace(authority, access_id=access_id)
+        pointer = await store.write_revision(
+            subject_hash=SUBJECT_HASH, authority=authority, updated_at=datetime.now(timezone.utc)
+        )
+        await store.advance_current(subject_hash=SUBJECT_HASH, pointer=pointer)
+        await card_cache.index_add(
+            subject_hash=SUBJECT_HASH, access_id=access_id, expires_at=authority.expires_at
+        )
+
+    await card_cache.index_remove(subject_hash=SUBJECT_HASH, access_id="aut_bravo")
+
+    listed = await resolver.list_active(subject_hash=SUBJECT_HASH, now=now)
+
+    assert sorted(item.access_id for item in listed) == ["aut_alpha", "aut_bravo"]
+    assert sorted(
+        await card_cache.index_members(subject_hash=SUBJECT_HASH, now=now)
+    ) == ["aut_alpha", "aut_bravo"]
+
+
+@pytest.mark.asyncio
+async def test_list_does_not_readmit_a_revoked_card_present_only_in_durable(card_cache, tmp_path):
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    now = 1_780_000_000
+    resolver = DelegatedCardResolver(cache=card_cache, store=store)
+
+    for revision, state in ((1, CARD_STATE_ACTIVE), (2, CARD_STATE_REVOKED)):
+        authority = _authority(revision=revision, expires_at=now + 3600, state=state)
+        pointer = await store.write_revision(
+            subject_hash=SUBJECT_HASH, authority=authority, updated_at=datetime.now(timezone.utc)
+        )
+        await store.advance_current(subject_hash=SUBJECT_HASH, pointer=pointer)
+
+    listed = await resolver.list_active(subject_hash=SUBJECT_HASH, now=now)
+
+    assert listed == []
+    assert await card_cache.index_members(subject_hash=SUBJECT_HASH, now=now) == []
+
+
+# -- serving state that fails after the durable commit ------------------------
+
+
+class _IndexBlip(DelegatedCardRuntimeCache):
+    """Redis serves the commit and fails on its last step."""
+
+    async def index_add(self, **kwargs):
+        raise ConnectionError("redis went away")
+
+
+@pytest.mark.asyncio
+async def test_a_serving_failure_after_commit_is_typed_and_names_the_card(
+    redis_client, namespace, tmp_path
+):
+    from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.cards.service import (
+        CardServingUnavailable,
+        DelegatedCardService,
+    )
+
+    tenant, project = namespace
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    service = DelegatedCardService(
+        cache=_IndexBlip(redis_client, tenant=tenant, project=project), store=store
+    )
+    authority = _authority(revision=1, expires_at=1_780_003_600)
+
+    with pytest.raises(CardServingUnavailable) as exc:
+        await service.commit(
+            authority, subject_hash=SUBJECT_HASH, expected_revision=0, now=1_780_000_000
+        )
+
+    assert exc.value.access_id == ACCESS_ID
+    # The revision is the authority; only its serving state is missing.
+    current = await store.read_current_authority(
+        subject_hash=SUBJECT_HASH, access_id=ACCESS_ID
+    )
+    assert current is not None and current[1].card_revision == 1

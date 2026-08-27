@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Awaitable, Callable, Mapping
 
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.cache_settings import (
     DelegatedCacheSettings,
@@ -61,6 +61,7 @@ async def ensure_delegated_catalog(
     connections: Mapping[str, Any],
     store: BundleStorageDelegatedCatalogStore,
     cache: DelegatedCatalogRuntimeCache,
+    reread: Callable[[], Awaitable[Mapping[str, Any]]] | None = None,
     reason: str = "",
     settings: DelegatedCacheSettings | None = None,
     logger: Any = None,
@@ -70,6 +71,14 @@ async def ensure_delegated_catalog(
     ``reason`` is audit metadata only; it does not affect hashing, comparison,
     or control flow. The critical section serializes concurrent publishers onto
     one immutable version.
+
+    ``reread`` re-derives the effective connections inside the critical section.
+    A publisher that captured its input before another generation was published
+    would otherwise register that older content under a later version stamp,
+    which no version comparison can refuse: the stamp is minted at publication,
+    not carried by the content. With it, a document stamped later never holds
+    older content, which is what the serving-entry comparison assumes. Without
+    it the captured value is published as-is.
     """
     residency = (settings or DelegatedCacheSettings()).catalog
     try:
@@ -78,9 +87,29 @@ async def ensure_delegated_catalog(
         raise CatalogPublicationError("connections_not_hashable") from exc
 
     outcome: dict[str, Any] = {}
+    # Both closures read this: `_publish` may replace it, and the readiness
+    # check that follows the action must judge what was published, not what
+    # was captured.
+    registered = {"connections": connections, "hash": expected_hash}
 
     async def _publish() -> None:
-        document = CatalogDocument.build(connections)
+        if reread is not None:
+            fresh = await reread()
+            try:
+                fresh_hash = connections_content_hash(fresh)
+            except (TypeError, ValueError) as exc:
+                raise CatalogPublicationError("connections_not_hashable") from exc
+            if fresh_hash != registered["hash"]:
+                _LOGGER.info(
+                    "[connection-hub.delegated-catalog] effective connections moved "
+                    "while entering the section: captured=%s current=%s reason=%s",
+                    registered["hash"][:12],
+                    fresh_hash[:12],
+                    reason,
+                )
+            registered["connections"] = fresh
+            registered["hash"] = fresh_hash
+        document = CatalogDocument.build(registered["connections"])
         active = await store.read_active()
         created = True
         if active is not None and active.content_hash == document.content_hash:
@@ -114,7 +143,7 @@ async def ensure_delegated_catalog(
 
     async def _ready() -> bool:
         active = await store.read_active()
-        if active is None or active.content_hash != expected_hash:
+        if active is None or active.content_hash != registered["hash"]:
             return False
         if not await store.version_exists(active.version):
             return False

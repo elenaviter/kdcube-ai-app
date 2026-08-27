@@ -168,9 +168,9 @@ class ActiveCatalogCapabilities:
     def permits(self, request: CapabilityRequest) -> bool:
         """Whether the active catalog still offers this capability.
 
-        A dimension the resource does not enumerate carries no ceiling and is
-        not a denial. A dimension it enumerates is authoritative even when what
-        it enumerates is empty — that is a removal, not an absent section.
+        Claims and outer operations: an unenumerated dimension carries no
+        ceiling. Named services: membership in the published namespaces
+        decides, and an absent or empty block publishes nothing.
         """
         resource_cfg = self.resource_config(request)
         if resource_cfg is None:
@@ -189,10 +189,7 @@ class ActiveCatalogCapabilities:
             if not configured:
                 return True
             return _clean(request.outer_operation) in configured
-        named_services = resource_cfg.named_services
-        if not isinstance(named_services, Mapping) or not named_services:
-            return True
-        namespaces = configured_named_service_operations(named_services)
+        namespaces = configured_named_service_operations(resource_cfg.named_services)
         namespace = _clean(request.namespace).lower().rstrip(":")
         if request.kind == CAPABILITY_NAMED_SERVICE_NAMESPACE:
             return bool(namespace) and namespace in namespaces

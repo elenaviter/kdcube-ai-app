@@ -1453,10 +1453,16 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             tenant, project = _runtime_tenant_project(self)
 
         connections = connections_from_props(props)
+        reread_props = kwargs.get("reread_props")
+
+        async def _reread_connections() -> Mapping[str, Any]:
+            return connections_from_props(await reread_props())
+
         result = await ensure_delegated_catalog(
             connections=connections,
             store=BundleStorageDelegatedCatalogStore(storage_root),
             cache=DelegatedCatalogRuntimeCache(redis, tenant=tenant, project=project),
+            reread=_reread_connections if callable(reread_props) else None,
             settings=DelegatedCacheSettings.from_connections(connections),
             reason=str(kwargs.get("reason") or "app_deploy"),
         )

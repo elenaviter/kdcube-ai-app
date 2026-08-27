@@ -176,3 +176,94 @@ async def test_published_catalog_is_resolvable_for_request_serving(tmp_path, cac
     active = await resolver.resolve_active()
     assert active.version == published.version
     assert (await resolver.resolve_version(published.version)).connections == CONNECTIONS
+
+
+# -- publishing what is current, not what was captured ------------------------
+#
+# A publisher that read its props before another generation was published would
+# otherwise register that older content under a later version stamp. No version
+# comparison can refuse it: the stamp is minted at publication, so the stale
+# document looks newer on both the durable and the serving side.
+
+
+def _changed(**resource_overrides) -> dict:
+    body = copy.deepcopy(CONNECTIONS)
+    body["delegated_credentials"]["oauth"]["resources"][0].update(resource_overrides)
+    return body
+
+
+@pytest.mark.asyncio
+async def test_a_stale_publisher_registers_current_connections(tmp_path, cache):
+    store = BundleStorageDelegatedCatalogStore(tmp_path)
+    current = _changed(grants=["named_services:use", "slack:read", "slack:write"])
+    published = await _ensure(current, store, cache)
+
+    async def _reread():
+        return current
+
+    # This publisher captured CONNECTIONS before `current` was published.
+    stale = await _ensure(CONNECTIONS, store, cache, reread=_reread)
+
+    assert stale.version == published.version
+    assert stale.created is False
+    assert (await store.read_active()).connections == current
+    assert (await cache.read_active()).connections == current
+
+
+@pytest.mark.asyncio
+async def test_the_reread_value_is_published_not_the_captured_one(tmp_path, cache):
+    store = BundleStorageDelegatedCatalogStore(tmp_path)
+    await _ensure(CONNECTIONS, store, cache)
+    captured = _changed(grants=["named_services:use"])
+    moved = _changed(grants=["named_services:use", "slack:read", "mail:read"])
+
+    async def _reread():
+        return moved
+
+    # `captured` differs from what is registered, so the publisher enters the
+    # section rather than taking the signature fast path.
+    result = await _ensure(captured, store, cache, reread=_reread)
+
+    active = await store.read_active()
+    assert result.created is True
+    assert active.connections == moved
+    assert result.content_hash == active.content_hash
+
+
+@pytest.mark.asyncio
+async def test_a_publisher_whose_capture_is_registered_skips_before_the_section(tmp_path, cache):
+    store = BundleStorageDelegatedCatalogStore(tmp_path)
+    first = await _ensure(CONNECTIONS, store, cache)
+    reread_calls = 0
+
+    async def _reread():
+        nonlocal reread_calls
+        reread_calls += 1
+        return CONNECTIONS
+
+    second = await _ensure(CONNECTIONS, store, cache, reread=_reread)
+
+    assert second.version == first.version
+    assert reread_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_without_a_reread_the_captured_value_is_published(tmp_path, cache):
+    store = BundleStorageDelegatedCatalogStore(tmp_path)
+    result = await _ensure(CONNECTIONS, store, cache)
+
+    assert (await store.read_active()).connections == CONNECTIONS
+    assert result.created is True
+
+
+@pytest.mark.asyncio
+async def test_an_unhashable_reread_is_a_publication_error(tmp_path, cache):
+    store = BundleStorageDelegatedCatalogStore(tmp_path)
+
+    async def _reread():
+        return {"resources": {object()}}
+
+    with pytest.raises(CatalogPublicationError) as exc:
+        await _ensure(CONNECTIONS, store, cache, reread=_reread)
+    assert exc.value.reason == "connections_not_hashable"
+    assert await store.read_active() is None

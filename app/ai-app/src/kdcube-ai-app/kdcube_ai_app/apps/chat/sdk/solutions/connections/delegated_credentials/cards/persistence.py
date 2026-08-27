@@ -40,6 +40,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.car
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.cards.service import (
     CardConflict,
+    CardServingUnavailable,
     DelegatedCardService,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.cards.store import (
@@ -120,7 +121,15 @@ class DurableCardPersistence:
             expected_revision=expected_revision,
             now=now,
         )
-        await self._handles.write(handles, ttl_seconds=max(0, authority.expires_at - now))
+        try:
+            await self._handles.write(
+                handles, ttl_seconds=max(0, authority.expires_at - now)
+            )
+        except Exception as exc:
+            # The revision is committed; the handles it references are not.
+            raise CardServingUnavailable(
+                "credential_handles_unavailable", access_id=authority.access_id
+            ) from exc
 
     async def forget(self, authority: CardAuthority, *, subject_hash: str) -> None:
         await self._cards.revoke(

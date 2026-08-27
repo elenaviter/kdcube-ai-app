@@ -296,9 +296,19 @@ def test_a_namespace_block_emptied_of_namespaces_is_a_removal_not_an_absent_sect
     assert _authorize(request_, connections=emptied) is not None
 
 
-def test_a_resource_that_enumerates_no_named_services_carries_no_inner_ceiling():
-    without_block = copy.deepcopy(CONNECTIONS)
-    without_block["delegated_credentials"]["oauth"]["resources"][0].pop("named_services")
+@pytest.mark.parametrize(
+    "withdraw",
+    [
+        pytest.param(lambda r: r.pop("named_services"), id="block-deleted"),
+        pytest.param(lambda r: r.__setitem__("named_services", {}), id="block-emptied"),
+    ],
+)
+def test_a_resource_that_publishes_no_named_services_offers_no_inner_operation(withdraw):
+    # The named-service dimension is the offer itself: a row that publishes no
+    # namespace offers no inner operation. Claims and outer operations keep
+    # reading an unenumerated dimension as no ceiling.
+    withdrawn = copy.deepcopy(CONNECTIONS)
+    withdraw(withdrawn["delegated_credentials"]["oauth"]["resources"][0])
 
     request_ = CapabilityRequest(
         kind=CAPABILITY_NAMED_SERVICE_OPERATION,
@@ -308,7 +318,7 @@ def test_a_resource_that_enumerates_no_named_services_carries_no_inner_ceiling()
         namespace="mail",
         operation="object.schema",
     )
-    assert _authorize(request_, connections=without_block) is None
+    assert _authorize(request_, connections=withdrawn) is not None
 
 
 def test_a_resource_that_enumerates_no_tools_carries_no_outer_ceiling():
