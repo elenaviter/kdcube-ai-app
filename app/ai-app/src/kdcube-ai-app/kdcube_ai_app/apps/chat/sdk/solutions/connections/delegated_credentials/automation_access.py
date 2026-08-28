@@ -102,6 +102,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.car
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.catalog.authorization import (
     CAPABILITY_NAMED_SERVICE_OPERATION,
+    CAPABILITY_RESOURCE_CLAIM,
     ActiveCatalogCapabilities,
     CapabilityRequest,
     CardProvenance,
@@ -806,6 +807,48 @@ def record_from_card(
         access_token=held.access_token,
         last_issued_at=authority.last_issued_at,
     )
+
+
+def _card_holds_resource(record: Any, configured_resource: str) -> bool:
+    """Whether a card's stored resources reach a configured row."""
+    grants = getattr(record, "resource_grants", None) or {}
+    if configured_resource in grants:
+        return True
+    from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.credential_view import (
+        resource_matches,
+    )
+
+    return any(
+        resource_matches(configured_resource, str(stored or ""))
+        or resource_matches(str(stored or ""), configured_resource)
+        for stored in grants
+    )
+
+
+def _card_claims_for_resource(record: Any, configured_resource: str) -> set[str]:
+    """The card's claims that apply to a configured resource row.
+
+    A card keys `resource_grants` by what its issuance saw: an agent or manual
+    card by the configured selector, an OAuth card by the concrete request URL.
+    An exact lookup by the row's selector therefore reads empty for the URL
+    shape and reports every required claim as missing. Matching is the same
+    wildcard match the guard uses to decide which row governs the request.
+    """
+    from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.credential_view import (
+        resource_matches,
+    )
+
+    grants = getattr(record, "resource_grants", None) or {}
+    exact = grants.get(configured_resource)
+    if exact is not None:
+        return {_clean(item) for item in exact if _clean(item)}
+    out: set[str] = set()
+    for stored, held in grants.items():
+        if resource_matches(configured_resource, str(stored or "")) or resource_matches(
+            str(stored or ""), configured_resource
+        ):
+            out.update(_clean(item) for item in (held or ()) if _clean(item))
+    return out
 
 
 class AutomationAccessService:
@@ -2263,9 +2306,11 @@ class AutomationAccessService:
         active = await self._active_catalog()
         catalog = ActiveCatalogCapabilities(active)
         for cfg in oauth_delegated_config_from_connections(active.connections).resources:
-            if (
-                exact_record is not None
-                and cfg.resource not in exact_record.resource_grants
+            # Which row an exact card reaches. Membership by key alone reads
+            # empty for a card whose grants are keyed by the request URL, so the
+            # row that governs it is found the same way the guard finds it.
+            if exact_record is not None and not _card_holds_resource(
+                exact_record, cfg.resource
             ):
                 continue
             named = cfg.named_services if isinstance(cfg.named_services, Mapping) else None
@@ -2331,11 +2376,33 @@ class AutomationAccessService:
             )
             if removed is not None:
                 return {"governed": True, "granted": False, "removed": removed}
+            # The claim the operation costs is subject to the same ceiling as the
+            # operation itself. A claim the card holds and the catalog no longer
+            # publishes is a removal, not a missing grant: it answers `removed`
+            # rather than `missing_claims`, or the caller is told to ask for
+            # consent that nobody can give.
+            for claim in sorted(required):
+                removed = authorize_current_capability(
+                    catalog=catalog,
+                    provenance=CardProvenance(
+                        access_id=record.access_id if record is not None else "",
+                        card_revision=record.card_revision if record is not None else 0,
+                        catalog_version=record.catalog_version if record is not None else "",
+                    ),
+                    request=CapabilityRequest(
+                        kind=CAPABILITY_RESOURCE_CLAIM,
+                        resource=cfg.resource,
+                        surface="named_service",
+                        claim=claim,
+                    ),
+                )
+                if removed is not None:
+                    return {"governed": True, "granted": False, "removed": removed}
             granted = False
             missing_claims: list[str] = sorted(required)
             not_granted: dict[str, Any] | None = None
             if record is not None:
-                held = set(record.resource_grants.get(cfg.resource, ()))
+                held = _card_claims_for_resource(record, cfg.resource)
                 missing_claims = sorted(required - held)
                 granted = not missing_claims
                 if granted:

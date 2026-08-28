@@ -1053,50 +1053,53 @@ async def test_agent_regrant_with_merge_existing_false_REPLACES_the_record(card_
     assert len((await service.list_access(writer))["items"]) == 1
 
 
-def _named_services_agent_service(card_persistence):
-    from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.config import (
-        oauth_delegated_config,
-    )
-    state = SimpleNamespace(
-        oauth_delegated_config={
-            "enabled": True,
-            "tenant": "demo-tenant",
-            "project": "demo-project",
-            "capabilities": [
-                {"grant": g, "label": g, "delegable_roles": ["kdcube:role:registered"]}
-                for g in ("named_services:use", "mail:read", "mail:send")
-            ],
-            "resources": [
-                {
-                    "resource": "*/kdcube-services@1-0/public/mcp/named_services*",
-                    "label": "Named services MCP",
-                    # The resource's scope ceiling: the entry grant AND every
-                    # namespace grant it publishes (the deployment contract).
-                    "grants": ["named_services:use", "mail:read", "mail:send"],
-                    # The generic entry tools carry the common MCP entry grant.
-                    "tools": {
-                        "named_services_call": {"label": "Named service call", "grants": ["named_services:use"]},
-                    },
-                    "named_services": {
-                        "namespaces": {
-                            "mail": {
-                                "label": "Mail",
-                                "tools": {
-                                    "search": {"operation": "object.search", "grants": ["mail:read"]},
-                                    "action": {
-                                        "operation": "object.action",
-                                        "operations": {
-                                            "object.action": {"grants": ["mail:read", "mail:send"]},
-                                        },
-                                    },
+_AGENT_NS_OAUTH = {
+    "enabled": True,
+    "tenant": "demo-tenant",
+    "project": "demo-project",
+    "capabilities": [
+        {"grant": g, "label": g, "delegable_roles": ["kdcube:role:registered"]}
+        for g in ("named_services:use", "mail:read", "mail:send")
+    ],
+    "resources": [
+        {
+            "resource": "*/kdcube-services@1-0/public/mcp/named_services*",
+            "label": "Named services MCP",
+            # The resource's scope ceiling: the entry grant AND every
+            # namespace grant it publishes (the deployment contract).
+            "grants": ["named_services:use", "mail:read", "mail:send"],
+            # The generic entry tools carry the common MCP entry grant.
+            "tools": {
+                "named_services_call": {"label": "Named service call", "grants": ["named_services:use"]},
+            },
+            "named_services": {
+                "namespaces": {
+                    "mail": {
+                        "label": "Mail",
+                        "tools": {
+                            "search": {"operation": "object.search", "grants": ["mail:read"]},
+                            "action": {
+                                "operation": "object.action",
+                                "operations": {
+                                    "object.action": {"grants": ["mail:read", "mail:send"]},
                                 },
                             },
                         },
                     },
                 },
-            ],
-        }
+            },
+        },
+    ],
+}
+
+
+def _named_services_agent_service(card_persistence):
+    import copy as _copy
+
+    from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.config import (
+        oauth_delegated_config,
     )
+    state = SimpleNamespace(oauth_delegated_config=_copy.deepcopy(_AGENT_NS_OAUTH))
     # The native gate reads the registered catalog, so the fixture publishes the
     # same block it configures.
     connections = {"delegated_credentials": {"oauth": state.oauth_delegated_config}}
@@ -1152,6 +1155,111 @@ async def test_agent_namespace_grant_state_governs_and_grants(card_persistence):
         grantor_subject="platform-user-1", client_id=_AGENT_CLIENT,
         namespace="calendar", operation="object.search",
     )) == {"governed": False}
+
+
+# -- the claim ceiling reaches the named-service path too ----------------------
+#
+# The managed door reduces stored claims through the catalog before checking a
+# tool's cost. The native/relayed path compared the operation's required claims
+# against the card alone, so a claim the deployment had withdrawn still paid for
+# the operation. A withdrawal answers `removed`, not `missing_claims`: consent
+# cannot restore what the catalog no longer publishes.
+
+
+def _agent_service_with_row_grants(card_persistence, grants):
+    """The same deployment, with the resource row's claim ceiling replaced."""
+    import copy as _copy
+
+    from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.config import (
+        oauth_delegated_config,
+    )
+
+    raw = _copy.deepcopy(_AGENT_NS_OAUTH)
+    raw["resources"][0]["grants"] = list(grants)
+    state = SimpleNamespace(oauth_delegated_config=raw)
+    return AutomationAccessService(
+        catalog_resolver=_CatalogResolver(
+            connections={"delegated_credentials": {"oauth": raw}}
+        ),
+        card_persistence=card_persistence,
+        redis=_Redis(), tenant="demo-tenant", project="demo-project",
+        config=oauth_delegated_config(state),
+        grant_store=_Store(), authority=_Authority(), minter=_minter,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_claim_the_catalog_withdrew_answers_removed_not_missing(card_persistence):
+    service = _named_services_agent_service(card_persistence)
+    ns_resource = "*/kdcube-services@1-0/public/mcp/named_services*"
+    created = await service.create_access(
+        _AGENT_USER, label="agent", client_id=_AGENT_CLIENT,
+        resource_grants={ns_resource: ["named_services:use", "mail:read"]},
+        named_service_operations={ns_resource: {"mail": ["object.search"]}},
+    )
+    assert created["ok"] is True
+
+    withdrawn = _agent_service_with_row_grants(
+        card_persistence, ["named_services:use"]
+    )
+    state = await withdrawn.agent_namespace_grant_state(
+        grantor_subject="platform-user-1", client_id=_AGENT_CLIENT,
+        namespace="mail", operation="object.search",
+    )
+
+    assert state["granted"] is False
+    removed = state.get("removed")
+    assert removed is not None, "a withdrawn claim must answer removed"
+    assert removed["error"]["code"] == "delegated_capability_no_longer_available"
+    path = removed["ret"]["requested_capability"]
+    assert path["kind"] == "resource_claim"
+    assert path["claim"] == "mail:read"
+
+
+@pytest.mark.asyncio
+async def test_a_claim_the_card_lacks_is_still_reported_as_missing(card_persistence):
+    """The other side of the refusal keeps its own answer: the catalog offers
+    the claim, the card does not hold it, so consent is the remedy."""
+    service = _named_services_agent_service(card_persistence)
+    ns_resource = "*/kdcube-services@1-0/public/mcp/named_services*"
+    created = await service.create_access(
+        _AGENT_USER, label="agent", client_id=_AGENT_CLIENT,
+        resource_grants={ns_resource: ["named_services:use"]},
+    )
+    assert created["ok"] is True
+
+    state = await service.agent_namespace_grant_state(
+        grantor_subject="platform-user-1", client_id=_AGENT_CLIENT,
+        namespace="mail", operation="object.search",
+    )
+
+    assert state["granted"] is False
+    assert state.get("removed") is None
+    assert state["missing_claims"] == ["mail:read"]
+
+
+@pytest.mark.asyncio
+async def test_a_card_keyed_by_the_request_url_reports_its_claims(card_persistence):
+    """An OAuth card keys `resource_grants` by the concrete request URL. Reading
+    them by the row's selector alone would report every claim missing."""
+    service = _named_services_agent_service(card_persistence)
+    ns_resource = "*/kdcube-services@1-0/public/mcp/named_services*"
+    url = "https://kdcube.example/kdcube-services@1-0/public/mcp/named_services"
+    created = await service.create_access(
+        _AGENT_USER, label="agent", client_id=_AGENT_CLIENT,
+        resource_grants={url: ["named_services:use", "mail:read"]},
+        named_service_operations={url: {"mail": ["object.search"]}},
+    )
+    assert created["ok"] is True
+
+    state = await service.agent_namespace_grant_state(
+        grantor_subject="platform-user-1", client_id=_AGENT_CLIENT,
+        access_id=created["access"]["access_id"],
+        namespace="mail", operation="object.search",
+    )
+
+    assert state["missing_claims"] == []
+    assert state["granted"] is True
 
 
 @pytest.mark.asyncio
