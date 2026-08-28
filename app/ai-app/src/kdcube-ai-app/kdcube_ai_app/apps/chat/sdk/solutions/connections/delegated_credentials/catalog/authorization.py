@@ -168,9 +168,20 @@ class ActiveCatalogCapabilities:
     def permits(self, request: CapabilityRequest) -> bool:
         """Whether the active catalog still offers this capability.
 
-        Claims and outer operations: an unenumerated dimension carries no
-        ceiling. Named services: membership in the published namespaces
-        decides, and an absent or empty block publishes nothing.
+        Each dimension is read as the code reads it, not as a general rule:
+
+        - claims: bounded by the row's ``grants``, which the parser derives from
+          its tools and namespaces when they are not written. A row that
+          publishes no claim publishes none, and ``resource_claims`` — the other
+          reader of this ceiling, which the guard reduces stored claims through
+          — must agree with this branch;
+        - outer operations: the all-resource row ``*`` carries no ceiling,
+          because its operations come from endpoint policy rather than the
+          catalog. Every other row is bounded by the tools it publishes, and a
+          block that was emptied or deleted publishes none;
+        - named services: bounded by the published namespaces always. An absent
+          or empty block publishes nothing; unlike outer tools there is no
+          second source for an inner operation.
         """
         resource_cfg = self.resource_config(request)
         if resource_cfg is None:
@@ -179,15 +190,13 @@ class ActiveCatalogCapabilities:
             return True
         if request.kind == CAPABILITY_RESOURCE_CLAIM:
             configured = {_clean(grant) for grant in (resource_cfg.grants or ())}
-            if not configured:
-                return True
             return _clean(request.claim) in configured
         if request.kind == CAPABILITY_OUTER_OPERATION:
+            if _clean(getattr(resource_cfg, "resource", "")).rstrip("/") == "*":
+                return True
             configured = {
                 _clean(getattr(tool, "name", "")) for tool in (resource_cfg.tools or ())
             }
-            if not configured:
-                return True
             return _clean(request.outer_operation) in configured
         namespaces = configured_named_service_operations(resource_cfg.named_services)
         namespace = _clean(request.namespace).lower().rstrip(":")

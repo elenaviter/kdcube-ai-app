@@ -899,6 +899,19 @@ effective named operations      = stored selections intersect active namespace o
 effective account-backed access = stored account_scope checked against current requirements
 ```
 
+What each row bounds, when its block is empty or absent:
+
+| Dimension | Rule |
+| --- | --- |
+| Resource claims | Bounded by the row's `grants`, which the parser derives from its tools and namespace operations when they are not written. A row that publishes no claim publishes none. |
+| Outer operations | The all-resource row `*` carries no ceiling: its operations come from endpoint policy, not the catalog, and it answers only a card whose own selector is `*`. Every other row is bounded by the tools it publishes, and a block that was emptied or deleted publishes none. |
+| Named-service operations | Bounded by the published namespaces always. An absent or empty block publishes nothing; unlike outer tools there is no second source for an inner operation. |
+
+Emptying a block and deleting it are one withdrawal written two ways, and the
+guard answers them identically. Drift reads each dimension the same way the
+guard does, so a capability the deployment withdrew is both refused at the call
+and shown on the card as repairable.
+
 A governed request returns different structured outcomes for policy change and
 catalog failure:
 

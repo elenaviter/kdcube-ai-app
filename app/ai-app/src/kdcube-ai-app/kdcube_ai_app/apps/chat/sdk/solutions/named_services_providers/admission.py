@@ -212,7 +212,16 @@ class NamedServiceAdmission:
 
     def validate(self, request: NamedServiceRequest) -> None:
         if not isinstance(request, NamedServiceRequest):
-            raise TypeError("Named-service admission validates a decoded NamedServiceRequest")
+            # A caller loaded by path holds its own generation of this package,
+            # so its decoded request is a different class object with the same
+            # shape. `coerce` accepts that and still refuses anything it cannot
+            # decode, which is what the type check is for.
+            try:
+                request = NamedServiceRequest.coerce(request)
+            except TypeError as exc:
+                raise TypeError(
+                    "Named-service admission validates a decoded NamedServiceRequest"
+                ) from exc
         if not _clean(request.namespace):
             raise ValueError("Named-service admission requires a request namespace")
         if not effective_named_service_operation(request):

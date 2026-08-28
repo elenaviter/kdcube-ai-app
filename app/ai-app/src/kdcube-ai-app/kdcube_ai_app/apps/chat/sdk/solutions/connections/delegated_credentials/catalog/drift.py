@@ -64,13 +64,21 @@ class _CatalogView:
         return configured or None
 
     def outer_operations(self, resource: str) -> set[str] | None:
+        """What the resource publishes; ``None`` only for the all-resource row.
+
+        The all-resource row takes its operations from endpoint policy, not from
+        the catalog, so it carries no ceiling and nothing about it drifts. Every
+        other row is bounded by what it publishes, and an emptied or deleted
+        block publishes nothing — which the guard answers the same way.
+        """
         cfg = self.resource(resource)
         if cfg is None:
             return set()
-        configured = {
+        if _clean(getattr(cfg, "resource", "")).rstrip("/") == "*":
+            return None
+        return {
             _clean(getattr(tool, "name", "")) for tool in (cfg.tools or ())
         } - {""}
-        return configured or None
 
     def named_service_operations(self, resource: str) -> dict[str, set[str]]:
         """What the resource publishes; empty when it publishes nothing.

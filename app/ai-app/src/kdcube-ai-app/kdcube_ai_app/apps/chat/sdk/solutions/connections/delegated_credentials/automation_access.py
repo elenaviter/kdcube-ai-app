@@ -2498,7 +2498,14 @@ class AutomationAccessService:
         grants: Iterable[str],
         config: Any = None,
     ) -> dict[str, Any]:
-        """The boundary tree a selection expands to for one resource."""
+        """The boundary tree a selection expands to for one resource.
+
+        The selection is looked up under the caller's ``resource``, which is the
+        key the card stores it under. The configured row is still resolved by
+        pattern, but its selector is not that key: an OAuth consent records the
+        concrete request URL, so looking up under ``cfg.resource`` misses and
+        narrows the boundary to nothing.
+        """
         source = config or self._config
         cfg = source.resource_config(resource) if resource else None
         if cfg is None or not isinstance(getattr(cfg, "named_services", None), Mapping):
@@ -2506,7 +2513,7 @@ class AutomationAccessService:
         try:
             return named_service_policy_for_resource(
                 named_services=cfg.named_services,
-                resource=cfg.resource,
+                resource=resource,
                 selection=_selection_policy_argument(selection),
                 grants=list(grants),
             )

@@ -9,8 +9,11 @@ import uuid
 
 import pytest
 
+from types import SimpleNamespace
+
 from test_automation_access import (
     AutomationAccessService,
+    NAMED_SERVICES_OAUTH,
     _CatalogResolver,
     _Authority,
     _minter,
@@ -19,6 +22,10 @@ from test_automation_access import (
     _NamedServiceDiscovery,
     _Redis,
     _Store,
+)
+
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.config import (
+    oauth_delegated_config,
 )
 
 from dataclasses import replace
@@ -1022,3 +1029,89 @@ async def test_a_delegate_cannot_change_the_card_that_issued_it(card_persistence
 
     stored = await service._load_record(access_id, grantor_subject=USER["user_id"])
     assert stored is not None and stored.card_revision == 1
+
+
+# -- the selection is read under the key it was written with --------------------
+#
+# An OAuth consent records its selection under the CONCRETE request URL, while a
+# catalog row is normally a pattern. Materializing the boundary under the row's
+# selector instead of the card's own key misses, and "resource absent" means
+# "narrowed to nothing" — so every OAuth card silently carried an empty
+# named-service boundary while its stored selection said otherwise. The manual
+# create and save paths already materialize under the card's key.
+
+
+def _patterned_catalog() -> dict:
+    """The same deployment, with its resource row written as a pattern."""
+    import copy as _copy
+
+    oauth = _copy.deepcopy(NAMED_SERVICES_OAUTH)
+    for row in oauth["resources"]:
+        if row.get("resource") == RESOURCE:
+            row["resource"] = "*/mcp/named-services"
+    return oauth
+
+
+def _service_with_patterned_row(card_persistence) -> AutomationAccessService:
+    oauth = _patterned_catalog()
+    return AutomationAccessService(
+        catalog_resolver=_CatalogResolver(
+            connections={"delegated_credentials": {"oauth": oauth}}
+        ),
+        card_persistence=card_persistence,
+        redis=_Redis(),
+        tenant="demo-tenant",
+        project="demo-project",
+        config=oauth_delegated_config(
+            SimpleNamespace(state=SimpleNamespace(oauth_delegated_config=oauth))
+        ),
+        grant_store=_Store(),
+        authority=_Authority(),
+        minter=_minter,
+        named_service_discovery=_NamedServiceDiscovery({}),
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_oauth_consent_materializes_under_a_patterned_row(card_persistence):
+    service = _service_with_patterned_row(card_persistence)
+
+    await service.record_oauth_grant(
+        grantor_subject=USER["user_id"],
+        client_id="claude",
+        scopes=GRANTS,
+        resource=RESOURCE,
+        access_token="at",
+        refresh_token="rt",
+        named_service_operations={RESOURCE: {"slack": ["object.search"]}},
+        catalog_version="delegated_catalog_2026-08-28-00-00-00-000_aaaabbbbcccc",
+    )
+
+    card_id = oauth_access_id(USER["user_id"], "claude", RESOURCE)
+    selection, namespaces = await _stored(service, card_id)
+
+    assert selection == {RESOURCE: {"slack": ["object.search"]}}
+    assert namespaces == ["slack"]
+
+
+@pytest.mark.asyncio
+async def test_an_oauth_consent_still_materializes_under_a_literal_row(card_persistence):
+    """The mirror: when the row is written as the URL itself, nothing changes."""
+    service = _service(card_persistence)
+
+    await service.record_oauth_grant(
+        grantor_subject=USER["user_id"],
+        client_id="claude",
+        scopes=GRANTS,
+        resource=RESOURCE,
+        access_token="at",
+        refresh_token="rt",
+        named_service_operations={RESOURCE: {"slack": ["object.search"]}},
+        catalog_version="delegated_catalog_2026-08-28-00-00-00-000_aaaabbbbcccc",
+    )
+
+    card_id = oauth_access_id(USER["user_id"], "claude", RESOURCE)
+    selection, namespaces = await _stored(service, card_id)
+
+    assert selection == {RESOURCE: {"slack": ["object.search"]}}
+    assert namespaces == ["slack"]
