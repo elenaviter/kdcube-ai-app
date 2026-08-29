@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass, field
 from typing import Any, Dict, Mapping, Optional
 
 from fastapi import Request
@@ -25,6 +26,7 @@ from prokura.delegated_credentials.oauth.surface_policy import (
     ManagedRestAuthPolicy,
     ManagedRestOperationPolicy,
     SurfacePolicyDenial,
+    SurfacePolicyDecision,
     as_list as _as_list,
     auth_mode,
     authorize_credential_boundary,
@@ -81,6 +83,27 @@ from kdcube_ai_app.apps.chat.sdk.integrations.prokura.named_service_admission im
 MANAGED_MCP_AUTH_MODE = MANAGED_AUTH_MODE
 LOGGER = logging.getLogger("kdcube.connection_hub.oauth.mcp_guard")
 REST_LOGGER = logging.getLogger("kdcube.connection_hub.oauth.rest_guard")
+
+
+@dataclass(frozen=True)
+class DelegatedRestAdmissionResult:
+    """Live managed-REST decision and the authority facts that produced it.
+
+    Hosted REST dispatch only needs ``denial``. Trusted host adapters, such as
+    Connection Hub's protected-service admission endpoint, also need the
+    resolved card/catalog provenance and bounded runtime projection. Keeping
+    those facts in one result prevents a second authorization implementation.
+    """
+
+    denial: Response | None = None
+    runtime: Mapping[str, Any] | None = None
+    user: Mapping[str, Any] | None = None
+    envelope: CredentialEnvelope = field(default_factory=CredentialEnvelope)
+    grant_record: Mapping[str, Any] | None = None
+    decision: SurfacePolicyDecision | None = None
+    catalog: ActiveCatalogCapabilities | None = None
+    request_resource: str = ""
+    operation: str = ""
 
 
 def mcp_auth_mode(auth: Mapping[str, Any] | None) -> str:
@@ -237,13 +260,19 @@ def delegated_request_resource(request: Request) -> str:
     return _request_resource(request)
 
 
-def _connection_hub_rest_operation_policies(request: Request) -> dict[str, ManagedRestOperationPolicy]:
+def _connection_hub_rest_operation_policies(
+    request: Request,
+    *,
+    request_resource: str = "",
+) -> dict[str, ManagedRestOperationPolicy]:
     from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_credentials.oauth.config import (
         oauth_delegated_config,
     )
 
     cfg = oauth_delegated_config(request)
-    operations = cfg.resource_operation_catalog(_request_resource(request))
+    operations = cfg.resource_operation_catalog(
+        request_resource or _request_resource(request)
+    )
     out: dict[str, ManagedRestOperationPolicy] = {}
     for operation in operations:
         name = str(getattr(operation, "name", "") or "").strip()
@@ -340,6 +369,7 @@ async def _access_grant_record(
     token: str,
     logger: logging.Logger,
     surface_label: str,
+    request_resource: str = "",
 ) -> tuple[Optional[Dict[str, Any]], JSONResponse | None]:
     try:
         grant_store = await _default_grant_store(request)
@@ -349,7 +379,7 @@ async def _access_grant_record(
             "[connection-hub.oauth.%s_guard] unavailable operation=%s resource=%s",
             surface_label,
             exc.operation,
-            _request_resource(request),
+            request_resource or _request_resource(request),
         )
         return None, _json_response(
             503,
@@ -476,7 +506,12 @@ def _grant_record_credential(grant_record: Mapping[str, Any] | None) -> Credenti
     return CredentialEnvelope()
 
 
-def _delegated_runtime_projection(request: Request, *, surface: str) -> dict[str, Any]:
+def _delegated_runtime_projection(
+    request: Request,
+    *,
+    surface: str,
+    request_resource: str = "",
+) -> dict[str, Any]:
     """Return request-local runtime identity facts for an accepted delegated token.
 
     Managed surface guards authenticate a delegated-client bearer after the
@@ -510,8 +545,8 @@ def _delegated_runtime_projection(request: Request, *, surface: str) -> dict[str
     resource_grants = dict(attrs.get("resource_grants") or {})
     user = delegated.get("user")
     user = user if isinstance(user, Mapping) else {}
-    request_resource = _request_resource(request)
-    grants = sorted(_credential_grants_for_resource(envelope, request_resource))
+    effective_resource = request_resource or _request_resource(request)
+    grants = sorted(_credential_grants_for_resource(envelope, effective_resource))
     operations = _as_list(grant_record.get("operations")) or _as_list(attrs.get("operations"))
     grantor_user_id = str(projection.get("grantor_user_id") or delegated_primary_user_id(envelope)).strip()
     delegate_identity = str(projection.get("delegate_identity") or envelope.subject or "").strip()
@@ -582,8 +617,16 @@ def delegated_mcp_runtime_projection(request: Request) -> dict[str, Any]:
     return _delegated_runtime_projection(request, surface="mcp")
 
 
-def delegated_rest_runtime_projection(request: Request) -> dict[str, Any]:
-    return _delegated_runtime_projection(request, surface="rest")
+def delegated_rest_runtime_projection(
+    request: Request,
+    *,
+    request_resource: str = "",
+) -> dict[str, Any]:
+    return _delegated_runtime_projection(
+        request,
+        surface="rest",
+        request_resource=request_resource,
+    )
 
 
 async def delegated_platform_admin_runtime_projection(
@@ -684,13 +727,16 @@ async def _authorize_delegated_managed_request(
     permissions: tuple[str, ...],
     logger: logging.Logger,
     surface_label: str,
+    token: str = "",
+    request_resource: str = "",
 ) -> tuple[JSONResponse | None, dict[str, Any], CredentialEnvelope, Mapping[str, Any]]:
-    token = _extract_bearer(request)
-    if not token:
+    effective_token = token or _extract_bearer(request)
+    effective_resource = request_resource or _request_resource(request)
+    if not effective_token:
         logger.info(
             "[connection-hub.oauth.%s_guard] denied reason=missing_bearer resource=%s",
             surface_label,
-            _request_resource(request),
+            effective_resource,
         )
         return (
             _json_response(
@@ -704,12 +750,12 @@ async def _authorize_delegated_managed_request(
             {},
         )
 
-    user = await _authenticate_delegated_client_access_token(token)
+    user = await _authenticate_delegated_client_access_token(effective_token)
     if user is None:
         logger.info(
             "[connection-hub.oauth.%s_guard] denied reason=invalid_bearer resource=%s",
             surface_label,
-            _request_resource(request),
+            effective_resource,
         )
         return (
             _json_response(
@@ -735,7 +781,7 @@ async def _authorize_delegated_managed_request(
             "[connection-hub.oauth.%s_guard] denied reason=%s resource=%s",
             surface_label,
             principal.denial.reason,
-            _request_resource(request),
+            effective_resource,
         )
         return (
             _surface_policy_denial_response(principal.denial),
@@ -746,9 +792,10 @@ async def _authorize_delegated_managed_request(
 
     grant_record, unavailable = await _access_grant_record(
         request=request,
-        token=token,
+        token=effective_token,
         logger=logger,
         surface_label=surface_label,
+        request_resource=effective_resource,
     )
     if unavailable is not None:
         return unavailable, user, CredentialEnvelope(), {}
@@ -759,7 +806,7 @@ async def _authorize_delegated_managed_request(
             "[connection-hub.oauth.%s_guard] denied reason=live_grant_%s resource=%s",
             surface_label,
             exc.reason,
-            _request_resource(request),
+            effective_resource,
         )
         return (
             _json_response(
@@ -781,7 +828,6 @@ async def _authorize_delegated_managed_request(
     except Exception:
         pass
 
-    request_resource = _request_resource(request)
     boundary = authorize_credential_boundary(
         authority_id=authority_id,
         required_roles=(),
@@ -790,7 +836,7 @@ async def _authorize_delegated_managed_request(
         user_permissions=user.get("permissions") or (),
         envelope=envelope,
         grant_record=grant_record,
-        request_resource=request_resource,
+        request_resource=effective_resource,
     )
     if not boundary.allowed:
         assert boundary.denial is not None
@@ -798,7 +844,7 @@ async def _authorize_delegated_managed_request(
             "[connection-hub.oauth.%s_guard] denied reason=%s request_resource=%s",
             surface_label,
             boundary.denial.reason,
-            request_resource,
+            effective_resource,
         )
         return (
             _surface_policy_denial_response(boundary.denial),
@@ -918,18 +964,29 @@ async def authorize_delegated_mcp_request(
     return None
 
 
-async def authorize_delegated_rest_request(
+async def evaluate_delegated_rest_admission(
     *,
     request: Request,
     auth: Mapping[str, Any] | None,
     operation: str,
     method: str = "",
-) -> Response | None:
-    """Return a denial response or None when the REST operation may run."""
+    token: str = "",
+    request_resource: str = "",
+    log_identity_details: bool = True,
+) -> DelegatedRestAdmissionResult:
+    """Evaluate one managed REST operation against live card/catalog state.
+
+    ``request_resource`` is normally derived from the hosted door URL. A
+    trusted adapter may supply an external protected resource after separately
+    authenticating and resource-binding that service.
+    """
 
     policy = managed_rest_auth_policy(auth)
     if policy is None:
-        return None
+        return DelegatedRestAdmissionResult()
+
+    effective_resource = request_resource or _request_resource(request)
+    operation_name = str(operation or "").strip()
 
     denial, user, envelope, grant_record = await _authorize_delegated_managed_request(
         request=request,
@@ -939,21 +996,35 @@ async def authorize_delegated_rest_request(
         permissions=policy.permissions,
         logger=REST_LOGGER,
         surface_label="rest",
+        token=token,
+        request_resource=effective_resource,
     )
     if denial is not None:
-        return denial
+        return DelegatedRestAdmissionResult(
+            denial=denial,
+            user=user,
+            envelope=envelope,
+            grant_record=grant_record,
+            request_resource=effective_resource,
+            operation=operation_name,
+        )
 
-    request_resource = _request_resource(request)
-    operation_name = str(operation or "").strip()
     catalog, unavailable = await _active_catalog(request)
     if catalog is None:
         REST_LOGGER.warning(
             "[connection-hub.oauth.rest_guard] denied reason=catalog_%s resource=%s operation=%s",
             unavailable,
-            request_resource,
+            effective_resource,
             operation_name,
         )
-        return _catalog_unavailable_response(unavailable)
+        return DelegatedRestAdmissionResult(
+            denial=_catalog_unavailable_response(unavailable),
+            user=user,
+            envelope=envelope,
+            grant_record=grant_record,
+            request_resource=effective_resource,
+            operation=operation_name,
+        )
 
     boundary = authorize_credential_boundary(
         authority_id=policy.authority_id,
@@ -963,46 +1034,100 @@ async def authorize_delegated_rest_request(
         user_permissions=user.get("permissions") or (),
         envelope=envelope,
         grant_record=grant_record,
-        request_resource=request_resource,
+        request_resource=effective_resource,
     )
     decision = authorize_rest_capabilities(
         boundary=boundary,
         policy=policy,
         catalog=catalog,
         grant_record=grant_record,
-        request_resource=request_resource,
+        request_resource=effective_resource,
         operation=operation_name,
         user_roles=user.get("roles") or (),
         user_permissions=user.get("permissions") or (),
-        operation_policies=_connection_hub_rest_operation_policies(request),
+        operation_policies=_connection_hub_rest_operation_policies(
+            request,
+            request_resource=effective_resource,
+        ),
     )
     if not decision.allowed:
         assert decision.denial is not None
         REST_LOGGER.info(
             "[connection-hub.oauth.rest_guard] denied reason=%s resource=%s operation=%s",
             decision.denial.reason,
-            request_resource,
+            effective_resource,
             operation_name,
         )
-        return _surface_policy_denial_response(decision.denial)
+        return DelegatedRestAdmissionResult(
+            denial=_surface_policy_denial_response(decision.denial),
+            user=user,
+            envelope=envelope,
+            grant_record=grant_record,
+            decision=decision,
+            catalog=catalog,
+            request_resource=effective_resource,
+            operation=operation_name,
+        )
 
-    runtime = delegated_rest_runtime_projection(request)
-    REST_LOGGER.info(
-        "[connection-hub.oauth.rest_guard] accepted resource=%s method=%s operation=%s "
-        "subject=%s grantor=%s delegate=%s authority=%s scopes=%s operations=%s "
-        "identity_scope=%s",
-        request_resource,
-        method,
-        operation_name,
-        user.get("sub") or "",
-        runtime.get("grantor_user_id") or "",
-        runtime.get("delegate_identity") or "",
-        envelope.issuer_authority_id,
-        sorted(decision.available_grants),
-        sorted(decision.granted_operations),
-        runtime.get("identity_scope") or "",
+    runtime = delegated_rest_runtime_projection(
+        request,
+        request_resource=effective_resource,
     )
-    return None
+    if log_identity_details:
+        REST_LOGGER.info(
+            "[connection-hub.oauth.rest_guard] accepted resource=%s method=%s operation=%s "
+            "subject=%s grantor=%s delegate=%s authority=%s scopes=%s operations=%s "
+            "identity_scope=%s",
+            effective_resource,
+            method,
+            operation_name,
+            user.get("sub") or "",
+            runtime.get("grantor_user_id") or "",
+            runtime.get("delegate_identity") or "",
+            envelope.issuer_authority_id,
+            sorted(decision.available_grants),
+            sorted(decision.granted_operations),
+            runtime.get("identity_scope") or "",
+        )
+    else:
+        REST_LOGGER.info(
+            "[connection-hub.oauth.rest_guard] accepted resource=%s method=%s operation=%s "
+            "authority=%s scopes=%s operations=%s identity_details=suppressed",
+            effective_resource,
+            method,
+            operation_name,
+            envelope.issuer_authority_id,
+            sorted(decision.available_grants),
+            sorted(decision.granted_operations),
+        )
+    return DelegatedRestAdmissionResult(
+        runtime=runtime,
+        user=user,
+        envelope=envelope,
+        grant_record=grant_record,
+        decision=decision,
+        catalog=catalog,
+        request_resource=effective_resource,
+        operation=operation_name,
+    )
+
+
+async def authorize_delegated_rest_request(
+    *,
+    request: Request,
+    auth: Mapping[str, Any] | None,
+    operation: str,
+    method: str = "",
+) -> Response | None:
+    """Return a denial response or None when the REST operation may run."""
+
+    result = await evaluate_delegated_rest_admission(
+        request=request,
+        auth=auth,
+        operation=operation,
+        method=method,
+    )
+    return result.denial
 
 
 __all__ = [
@@ -1011,6 +1136,7 @@ __all__ = [
     "ManagedMcpToolPolicy",
     "ManagedRestAuthPolicy",
     "ManagedRestOperationPolicy",
+    "DelegatedRestAdmissionResult",
     "authorize_delegated_mcp_request",
     "authorize_delegated_rest_request",
     "delegated_request_resource",
@@ -1018,6 +1144,7 @@ __all__ = [
     "delegated_mcp_runtime_projection",
     "delegated_rest_runtime_projection",
     "extract_mcp_tool_calls",
+    "evaluate_delegated_rest_admission",
     "managed_mcp_auth_policy",
     "managed_rest_auth_policy",
     "mcp_auth_mode",

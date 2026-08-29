@@ -578,6 +578,96 @@ def test_managed_rest_guard_accepts_consented_operation(monkeypatch):
     assert payload["projection"]["grantor_user_id"] == "a1b2c3d4-5e6f-7a8b-9c0d-1e2f3a4b5c6d"
 
 
+def test_rest_admission_can_evaluate_an_explicit_external_resource(
+    monkeypatch,
+    caplog,
+):
+    external_resource = "https://service.example/customers"
+    connections = {
+        "delegated_credentials": {
+            "oauth": {
+                "enabled": True,
+                "resources": [
+                    {
+                        "resource": external_resource,
+                        "grants": ["records:read"],
+                        "tools": {
+                            "customers.search": {"grants": ["records:read"]},
+                        },
+                    }
+                ],
+            }
+        }
+    }
+
+    async def fake_authenticate(token: str):
+        assert token == "reader"
+        return {
+            "sub": "integration:automation:user",
+            "roles": ["kdcube:role:delegated-client"],
+            "permissions": ["records:read"],
+        }
+
+    monkeypatch.setattr(
+        surface_guard,
+        "_authenticate_delegated_client_access_token",
+        fake_authenticate,
+    )
+    app = FastAPI()
+    app.state.oauth_grant_store = _GrantStore(
+        {
+            "operations": ["customers.search"],
+            "credential": _authority(resource=external_resource),
+        }
+    )
+    app.state.oauth_delegated_config = {"tenant": "home", "project": "demo"}
+    bind_delegated_catalog(app, connections)
+    caplog.set_level("INFO", logger="kdcube.connection_hub.oauth.rest_guard")
+
+    @app.post("/admission")
+    async def admission(request: Request):
+        result = await surface_guard.evaluate_delegated_rest_admission(
+            request=request,
+            auth={
+                "mode": "managed",
+                "authority_id": "delegated_client",
+                "selected_operation_grants": True,
+            },
+            operation="customers.search",
+            method="POST",
+            token="reader",
+            request_resource=external_resource,
+            log_identity_details=False,
+        )
+        return result.denial or JSONResponse(
+            {
+                "resource": result.request_resource,
+                "grants": sorted(result.decision.available_grants),
+                "projected_grants": result.runtime["grants"],
+                "catalog_version": result.catalog.version,
+            }
+        )
+
+    response = TestClient(app).post("/admission")
+
+    assert response.status_code == 200
+    assert response.json()["resource"] == external_resource
+    assert response.json()["grants"] == ["records:read"]
+    assert response.json()["projected_grants"] == ["records:read"]
+    assert response.json()["catalog_version"]
+    accepted_logs = [
+        record.getMessage()
+        for record in caplog.records
+        if "accepted resource=" in record.getMessage()
+    ]
+    assert any("identity_details=suppressed" in message for message in accepted_logs)
+    assert all("integration:automation:user" not in message for message in accepted_logs)
+    assert all(
+        "a1b2c3d4-5e6f-7a8b-9c0d-1e2f3a4b5c6d" not in message
+        for message in accepted_logs
+    )
+
+
 def test_managed_rest_guard_accepts_configured_resource_pattern(monkeypatch):
     client = _rest_client(
         monkeypatch,
