@@ -207,7 +207,7 @@ async def handle_named_service_relay(ctx: Any, message: Any) -> dict[str, Any]:
     Idempotent per message id: bus redelivery returns the recorded response.
     """
     from kdcube_ai_app.apps.chat.sdk.infra.auth_context import AuthContext
-    from kdcube_ai_app.apps.chat.sdk.solutions.connections.named_service_admission import (
+    from kdcube_ai_app.apps.chat.sdk.integrations.prokura.named_service_admission import (
         NamedServiceAdmissionResolutionError,
         admission_from_relay_selector,
     )

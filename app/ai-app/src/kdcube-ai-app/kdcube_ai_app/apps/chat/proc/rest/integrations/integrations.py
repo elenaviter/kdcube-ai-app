@@ -139,7 +139,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.sites import (
     SiteRegistryError,
     application_site_catalog_runtime,
 )
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.surface_guard import (
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_credentials.oauth.surface_guard import (
     authorize_delegated_mcp_request,
     authorize_delegated_rest_request,
     delegated_mcp_runtime_projection,

@@ -24,7 +24,7 @@ from fastapi import HTTPException
 
 from kdcube_ai_app.auth.AuthManager import AuthenticationError
 from kdcube_ai_app.auth.sessions import UserSession, UserType, RequestContext
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.federated_tokens.data_bus import (
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.federated_tokens.data_bus import (
     FederatedTokenError,
     verify_federated_data_bus_token,
 )

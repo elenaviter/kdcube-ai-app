@@ -29,7 +29,7 @@ from kdcube_ai_app.apps.chat.sdk.context.memory import (
     MemorySearchResult,
     UserMemoryStore,
 )
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.mcp_metadata import (
+from prokura.mcp_metadata import (
     kdcube_mcp_icons,
     kdcube_website_url,
     read_only_annotations,

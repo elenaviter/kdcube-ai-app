@@ -139,8 +139,10 @@ That authority projection is documented in
   present on the request.
 
 6) OAuth delegated credential protocol adapter for delegated credentials
-- Implementation: `kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth`,
-  mounted by the `connection-hub@1-0` bundle public `oauth` operation.
+- Portable protocol and policy: `prokura.delegated_credentials.oauth`.
+- KDCube HTTP/session bindings:
+  `kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_credentials.oauth`,
+  mounted by the `connection-hub@1-0` app public `oauth` operation.
 - Connection Hub hosts an OAuth2 authorization server for external integration
   clients such as Claude Code. MCP protected resources remain concrete
   bundle/proc MCP endpoints.

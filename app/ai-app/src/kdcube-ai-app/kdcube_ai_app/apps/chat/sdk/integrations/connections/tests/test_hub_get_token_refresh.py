@@ -13,7 +13,7 @@ import pytest
 
 # Importing the package registers the built-in providers (slack, google).
 import kdcube_ai_app.apps.chat.sdk.integrations.connections  # noqa: F401
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.hub import provider_impl
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.hub import provider_impl
 
 
 class _FakeStore:

@@ -50,13 +50,13 @@ from kdcube_ai_app.apps.chat.sdk.integrations.named_service_consent import (
     resolution_consent_payload,
     tool_error_response,
 )
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.connection_edges import (
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.connection_edges import (
     DEFAULT_CONNECTION_HUB_BUNDLE_ID,
 )
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.connector_app_resolution import (
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.connector_app_resolution import (
     resolve_connector_app_id,
 )
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.models import (
+from prokura.delegated_to_kdcube.models import (
     REASON_CONNECT_REQUIRED,
     ClaimResolution,
     ConnectedAccount,

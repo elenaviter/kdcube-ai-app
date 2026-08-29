@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import contextvars
 
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.mcp_metadata import (
+from prokura.mcp_metadata import (
     _request_public_base_url,
 )
 

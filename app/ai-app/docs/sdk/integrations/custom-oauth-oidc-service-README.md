@@ -327,7 +327,7 @@ from kdcube_ai_app.apps.chat.sdk.integrations.connected_accounts import (
     resolve_connected_account_claim,
     run_with_connected_account_retry,
 )
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.connector_app_resolution import (
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.connector_app_resolution import (
     resolve_connector_app_id,
 )
 

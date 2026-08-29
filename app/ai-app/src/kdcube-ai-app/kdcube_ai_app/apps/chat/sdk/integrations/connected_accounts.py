@@ -16,8 +16,8 @@ from typing import Any, Mapping
 
 from kdcube_ai_app.apps.chat.sdk.runtime.comm_ctx import get_current_user_identity
 from kdcube_ai_app.apps.chat.sdk.runtime.tool_module_bindings import get_bound_context
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.connection_edges import DEFAULT_CONNECTION_HUB_BUNDLE_ID
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube import (
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.connection_edges import DEFAULT_CONNECTION_HUB_BUNDLE_ID
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube import (
     REASON_AGENT_ACCOUNT_BINDING_REQUIRED,
     REASON_AGENT_GRANT_REQUIRED,
     REASON_RECONNECT_REQUIRED,
@@ -190,7 +190,7 @@ async def _announce_consent_demand(
     in ``delegated_to_kdcube/consent_demand.py``; the bound tool communicator
     carries the scoped chat event)."""
     try:
-        from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.consent_demand import (
+        from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube.consent_demand import (
             announce_consent_demand,
         )
 
@@ -248,7 +248,7 @@ async def _announce_agent_grant_demand(
     here — the banner deep-links to the focused card and the user ticks the
     permission on the account. Returns the explainable tool result, or None when
     the agent identity is unknown (caller falls back to the connect payload)."""
-    from kdcube_ai_app.apps.chat.sdk.solutions.connections.agent_account_scope import (
+    from prokura.agent_account_scope import (
         agent_identity,
     )
 
@@ -257,10 +257,10 @@ async def _announce_agent_grant_demand(
     resource = _clean(ident.get("resource"))
     if not client_id or not resource:
         return None
-    from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.consent_denial import (
+    from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_credentials.consent_denial import (
         connection_hub_grant_url,
     )
-    from kdcube_ai_app.apps.chat.sdk.solutions.connections.mcp_consent import (
+    from kdcube_ai_app.apps.chat.sdk.integrations.prokura.mcp_consent import (
         CONSENT_KIND_AGENT_GRANT,
         mcp_consent_from_denial,
     )
@@ -322,7 +322,7 @@ async def _announce_agent_grant_demand(
         comm = None
     announced = False
     try:
-        from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.consent_demand import (
+        from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube.consent_demand import (
             announce_consent_demand,
         )
 
@@ -431,7 +431,7 @@ async def resolve_connected_account_claim(
     # The calling agent's per-provider account binding (if any) restricts which
     # connected account may satisfy this claim. Unset / non-agent → None → no
     # restriction (unchanged).
-    from kdcube_ai_app.apps.chat.sdk.solutions.connections.agent_account_scope import (
+    from prokura.agent_account_scope import (
         account_claim_scope_for,
     )
 
@@ -481,7 +481,7 @@ async def resolve_connected_account_claim(
         # carry the agent identity into the connect deep-link so the connect panel
         # can offer a "continue -> grant it to this agent" hand-off after the
         # provider step, instead of sending the user back to chat to retry blind.
-        from kdcube_ai_app.apps.chat.sdk.solutions.connections.agent_account_scope import (
+        from prokura.agent_account_scope import (
             agent_identity,
         )
         _agent = agent_identity()

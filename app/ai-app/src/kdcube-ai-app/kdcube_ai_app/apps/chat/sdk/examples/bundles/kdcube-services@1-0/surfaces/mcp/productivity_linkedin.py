@@ -21,7 +21,7 @@ from kdcube_ai_app.apps.chat.sdk.integrations.linkedin.tools import (
     LINKEDIN_PROVIDER_ID,
     LinkedInTools,
 )
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.mcp_metadata import (
+from prokura.mcp_metadata import (
     read_only_annotations,
     write_annotations,
 )

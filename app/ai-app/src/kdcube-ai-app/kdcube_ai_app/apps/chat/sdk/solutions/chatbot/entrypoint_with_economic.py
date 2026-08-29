@@ -251,7 +251,7 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
         as authority for admin/budget bypass; bypass must come from projected
         roles, permissions, or explicit Connection Hub authority fields.
         """
-        from kdcube_ai_app.apps.chat.sdk.solutions.connections.authority_projection import (
+        from prokura.authority_projection import (
             project_execution_authority,
         )
 

@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from kdcube_ai_app.auth.sessions import RequestContext, UserSession, UserType
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.request_auth import (
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.request_auth import (
     CONNECTION_HUB_DELEGATED_BEARER_ONLY,
     RequestAuthResolver,
 )
@@ -235,10 +235,10 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 
 from kdcube_ai_app.auth.AuthManager import AuthenticationError, AuthorizationError
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.authentication_surface import (
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.authentication_surface import (
     ConnectionHubAuthenticationSurface,
 )
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.config import (
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_credentials.oauth.config import (
     oauth_delegated_config_from_connections,
 )
 

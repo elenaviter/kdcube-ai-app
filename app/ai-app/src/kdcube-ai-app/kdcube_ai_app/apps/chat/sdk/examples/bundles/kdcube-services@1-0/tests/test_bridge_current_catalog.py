@@ -10,16 +10,16 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from kdcube_ai_app.apps.chat.sdk.runtime.dynamic_module_loader import load_dynamic_module_for_path
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.authority_registry import (
+from prokura.authority_registry import (
     CredentialEnvelope,
 )
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.catalog.authorization import (
+from prokura.delegated_credentials.catalog.authorization import (
     ActiveCatalogCapabilities,
 )
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.catalog.models import (
+from prokura.delegated_credentials.catalog.models import (
     CatalogDocument,
 )
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.named_service_admission import (
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.named_service_admission import (
     managed_named_service_admission,
     store_managed_named_service_admission_snapshot,
 )

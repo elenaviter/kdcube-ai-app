@@ -14,7 +14,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-accounts/delegated-accounts-README.md
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/integrations/connected_accounts.py
-  - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/connections/agent_account_scope.py
+  - repo:app-ecosystem/packages/prokura/src/prokura/agent_account_scope.py
 ---
 # Resolve a Connected Credential in Tool Code
 
@@ -64,7 +64,7 @@ from kdcube_ai_app.apps.chat.sdk.integrations.connected_accounts import (
     connected_account_auth_failure,
     run_with_connected_account_retry,
 )
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.connector_app_resolution import (
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.connector_app_resolution import (
     resolve_connector_app_id,
 )
 

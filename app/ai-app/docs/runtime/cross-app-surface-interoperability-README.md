@@ -531,7 +531,7 @@ For implementation steps and copy-ready SDK examples, follow
 | Conversation submitter | [Servicing Interfaces](../service/servicing-interfaces-README.md) |
 | App REST/MCP routes and auth ownership | [Bundle Transports](../sdk/bundle/bundle-transports-README.md) |
 | MCP client transports | `kdcube_ai_app/apps/chat/sdk/runtime/mcp/client.py` |
-| Per-user MCP connection resolution | `kdcube_ai_app/apps/chat/sdk/solutions/connections/delegated_mcp.py` |
+| Per-user MCP connection resolution | Prokura policy plus `kdcube_ai_app/apps/chat/sdk/integrations/prokura/delegated_mcp.py` |
 | Cross-KDCube implemented baseline and planned delegated client | [Cross-KDCube App Surface Interoperability](cross-kdcube-app-surface-interoperability-README.md) |
 | Scene and widget composition | [Scene Composition](../sdk/solutions/scene/scene-composition-README.md) |
 | Portable fields carried on platform-controlled hops | [Cross-Runtime Context](cross-runtime-context-README.md) |

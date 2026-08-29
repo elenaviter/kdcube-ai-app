@@ -14,7 +14,7 @@ from kdcube_ai_app.apps.chat.sdk.integrations.connected_accounts import (
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.linkedin import rest_api
 from kdcube_ai_app.apps.chat.sdk.integrations.linkedin import tools as linkedin_tools
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.models import (
+from prokura.delegated_to_kdcube.models import (
     ConnectedAccount,
 )
 

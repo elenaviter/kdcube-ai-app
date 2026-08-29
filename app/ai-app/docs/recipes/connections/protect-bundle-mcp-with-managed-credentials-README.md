@@ -289,7 +289,7 @@ returned by the MCP server. The read-only/write/delete grouping comes from MCP
 `ToolAnnotations`, not from Connection Hub consent. KDCube MCP surfaces should
 set `readOnlyHint`, `destructiveHint`, server `icons`, and `website_url` when
 building the MCP server; the SDK helper
-`kdcube_ai_app.apps.chat.sdk.solutions.connections.mcp_metadata` provides the
+`prokura.mcp_metadata` provides the
 standard KDCube favicon and annotation helpers.
 
 With this generic bridge Claude will show tools such as
@@ -656,7 +656,7 @@ suite inside that same container:
 ```bash
 docker exec <proc-container> python -m pytest -q \
   /app/kdcube_ai_app/apps/chat/sdk/runtime/mcp/test_mcp_v2_conformance.py \
-  /app/kdcube_ai_app/apps/chat/sdk/solutions/connections/delegated_credentials/oauth/tests/test_client_metadata.py
+  /app/kdcube_ai_app/apps/chat/sdk/integrations/prokura/delegated_credentials/oauth/tests/test_client_metadata.py
 ```
 
 The Connection Hub app owns its mounted-route discovery test. From an

@@ -37,7 +37,7 @@ by its registered host operation. Runtime mechanics live in the Connection Hub
 SDK module:
 
 ```text
-kdcube_ai_app.apps.chat.sdk.solutions.connections.authority_providers.bundle_session_login
+kdcube_ai_app.apps.chat.sdk.integrations.prokura.authority_providers.bundle_session_login
 ```
 
 ## Surfaces

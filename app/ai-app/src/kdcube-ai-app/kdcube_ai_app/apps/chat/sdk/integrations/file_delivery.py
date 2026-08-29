@@ -32,13 +32,13 @@ from kdcube_ai_app.apps.chat.sdk.integrations.google.gmail_tools import (
     _fetch_gmail_attachment,
     _get_gmail_message,
 )
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube import (
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube import (
     DelegatedToKdcubeClient,
 )
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.models import (
+from prokura.delegated_to_kdcube.models import (
     ClaimResolution,
 )
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.connector_app_resolution import resolve_connector_app_id
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.connector_app_resolution import resolve_connector_app_id
 
 LOGGER = logging.getLogger("kdcube.sdk.integrations.file_delivery")
 
@@ -113,7 +113,7 @@ async def resolve_connected_account_access_token(
     # The calling agent's per-provider account binding (if any) restricts which
     # connected account may satisfy this claim. Unset / non-agent (e.g. a
     # user-initiated download) → None → no restriction (unchanged).
-    from kdcube_ai_app.apps.chat.sdk.solutions.connections.agent_account_scope import (
+    from prokura.agent_account_scope import (
         account_claim_scope_for,
     )
     resolution = await client.ensure_claim(

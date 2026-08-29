@@ -20,8 +20,7 @@ Given this authenticated actor or platform user, which linked runtime user ids
 belong to the same person?
 ```
 
-It is SDK-owned code in
-`kdcube_ai_app.apps.chat.sdk.solutions.connections.hub.resolver`. It is not a
+It is portable Prokura code in `prokura.hub.resolver`. It is not a
 request authenticator. It does not verify Telegram, Slack, OAuth, or webhook
 proof. It runs after the request already has an authenticated actor or a platform
 session and uses Connection Hub edges to return the safe identity family

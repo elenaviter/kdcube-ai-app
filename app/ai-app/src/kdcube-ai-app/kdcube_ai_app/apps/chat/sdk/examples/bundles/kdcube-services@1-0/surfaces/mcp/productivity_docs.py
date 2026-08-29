@@ -17,7 +17,7 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.mcp_metadata import (
+from prokura.mcp_metadata import (
     destructive_annotations,
     read_only_annotations,
     write_annotations,

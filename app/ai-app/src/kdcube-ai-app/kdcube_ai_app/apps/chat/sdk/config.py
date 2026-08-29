@@ -24,7 +24,7 @@ from kdcube_ai_app.apps.chat.sdk.config_scopes import (
     PlatformConfig, IDPLocalConfig, IDPConfig, AuthConfig, CognitoTrustedProviderConfig, ServicesConfig,
     SIMPLE_IDP_STORE_PATH,
 )
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.authority_registry_config import (
+from prokura.authority_registry_config import (
     DEFAULT_PLATFORM_AUTHORITY_ID,
     DEFAULT_PLATFORM_PROVIDER_ID,
     authority_registry_config,

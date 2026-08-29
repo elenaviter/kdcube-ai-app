@@ -193,7 +193,7 @@ email is not stored as the identity key.
 The runtime that applies this descriptor shape lives in the Connection Hub SDK:
 
 ```text
-kdcube_ai_app.apps.chat.sdk.solutions.connections.authority_providers.bundle_session_login
+kdcube_ai_app.apps.chat.sdk.integrations.prokura.authority_providers.bundle_session_login
 ```
 
 ## Delegated Credential Grant State Today

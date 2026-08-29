@@ -3,9 +3,10 @@
 # not supply their own descriptor set; everything here remains editable via
 # the AI Bundles dashboard afterwards (the file stays the authority).
 #
-# Contents: config overlays for the built-in service apps that ship in the
-# image and are auto-discovered (no path/module entries needed):
-#   connection-hub@1-0        identity, consent, delegated credentials, OAuth
+# Contents: one externally sourced application plus config overlays for the
+# built-in service apps that ship in the image and are auto-discovered:
+#   connection-hub@1-0        external app from app-ecosystem; identity,
+#                             consent, delegated credentials, OAuth
 #   kdcube-services@1-0       managed MCP surfaces + named-services bridge
 #   website@2026-07-12        application-hosted site registry example
 #   user-memories@2026-06-26  the mem provider + memories widget

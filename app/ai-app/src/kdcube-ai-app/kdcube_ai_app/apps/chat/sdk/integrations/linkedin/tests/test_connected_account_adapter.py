@@ -10,8 +10,8 @@ import json
 
 import pytest
 
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube import providers  # noqa: F401
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.adapters import (
+from prokura.delegated_to_kdcube import providers  # noqa: F401
+from prokura.delegated_to_kdcube.adapters import (
     resolve_adapter,
 )
 
@@ -159,7 +159,7 @@ async def test_org_token_identity_resolves_through_organization_acls(adapter, mo
     workspace = the organization URN (one connected account per organization)."""
     import httpx
 
-    from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.providers import (
+    from prokura.delegated_to_kdcube.providers import (
         linkedin as adapter_module,
     )
 
@@ -176,7 +176,7 @@ async def test_org_token_identity_resolves_through_organization_acls(adapter, mo
 async def test_member_token_identity_is_unchanged_by_the_org_fallback(adapter, monkeypatch):
     """userinfo answering means the member path resolves exactly as before —
     the org fallback never runs."""
-    from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.providers import (
+    from prokura.delegated_to_kdcube.providers import (
         linkedin as adapter_module,
     )
 

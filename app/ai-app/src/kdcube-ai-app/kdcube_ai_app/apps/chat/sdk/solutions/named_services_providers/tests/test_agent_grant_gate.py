@@ -52,7 +52,7 @@ def _bind_hub(monkeypatch, answer):
 
 
 def _forbid_consent(monkeypatch):
-    from kdcube_ai_app.apps.chat.sdk.solutions.connections import mcp_consent
+    from kdcube_ai_app.apps.chat.sdk.integrations.prokura import mcp_consent
 
     async def _announce(_consent):
         raise AssertionError("a removed capability must not ask for consent")

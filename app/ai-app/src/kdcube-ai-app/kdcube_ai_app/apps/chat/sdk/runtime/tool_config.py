@@ -13,7 +13,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.client_tools
     NAMED_SERVICE_TOOLS_ALIAS,
     named_service_tool_spec,
 )
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube import ToolClaimPolicy
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube import ToolClaimPolicy
 
 
 DEFAULT_AGENT_ID = "default_agent"

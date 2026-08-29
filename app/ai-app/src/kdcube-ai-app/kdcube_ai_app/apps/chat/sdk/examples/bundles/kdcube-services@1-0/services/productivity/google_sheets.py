@@ -20,7 +20,7 @@ from kdcube_ai_app.apps.chat.sdk.integrations.sheets.named_service import (
     make_sheets_named_service_provider,
     parse_sheets_ref,
 )
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.connector_app_resolution import (
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.connector_app_resolution import (
     resolve_connector_app_id,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers import (

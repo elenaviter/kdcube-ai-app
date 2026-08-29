@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-import kdcube_ai_app.apps.chat.sdk.solutions.connections.authority_providers.bundle_session_login as bundle_session_login
+import kdcube_ai_app.apps.chat.sdk.integrations.prokura.authority_providers.bundle_session_login as bundle_session_login
 
 
 def test_grants_can_assign_google_platform_subject_within_provider_bounds():

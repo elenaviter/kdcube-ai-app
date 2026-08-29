@@ -111,7 +111,7 @@ async def load_mcp_tools_from_server_map(
     # Chat-side post-processing, applied once so every MCP consumer inherits
     # consent banners and file-card handling from self-describing results.
     try:
-        from kdcube_ai_app.apps.chat.sdk.solutions.connections.mcp_result import (
+        from kdcube_ai_app.apps.chat.sdk.integrations.prokura.mcp_result import (
             bind_chat_result_handling,
         )
 

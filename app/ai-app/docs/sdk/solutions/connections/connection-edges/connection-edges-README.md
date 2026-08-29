@@ -147,13 +147,13 @@ projection forward.
 
 ## Current SDK Implementation
 
-The SDK owns the edge store contract:
+Prokura owns the portable edge-store contract:
 
 ```text
-kdcube_ai_app.apps.chat.sdk.solutions.connections.hub.edges.ConnectionEdgeStore
+prokura.hub.edges.ConnectionEdgeStore
 ```
 
-The example `connection-hub@1-0` bundle is a thin UI/API shell over that SDK
+The external `connection-hub@1-0` app is a thin UI/API shell over that package
 logic. Its current local development store is JSON-backed:
 
 ```text

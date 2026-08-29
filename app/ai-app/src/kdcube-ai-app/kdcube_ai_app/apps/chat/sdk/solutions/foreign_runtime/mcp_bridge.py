@@ -31,7 +31,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_mcp import (
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_mcp import (
     DROP_CONSENT_PENDING,
     connection_resource,
     delegated_client_id_for_agent,
@@ -95,10 +95,10 @@ def agent_grant_bearer_provider(entrypoint: Any, agent_client_id: str):
             return None
         try:
             from kdcube_ai_app.apps.chat.sdk.infra.bundle_operations import call_bundle_named_service
-            from kdcube_ai_app.apps.chat.sdk.solutions.connections.connection_edges import (
+            from kdcube_ai_app.apps.chat.sdk.integrations.prokura.connection_edges import (
                 connection_hub_bundle_id_from_entrypoint,
             )
-            from kdcube_ai_app.apps.chat.sdk.solutions.connections.contract import (
+            from prokura.contract import (
                 NAMESPACE, AGENT_GRANT_GET_TOKEN,
             )
             from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers import (
@@ -451,10 +451,10 @@ async def announce_connect_required(
     if not pending_ids:
         return []
     try:
-        from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.consent_denial import (
+        from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_credentials.consent_denial import (
             connection_hub_grant_url,
         )
-        from kdcube_ai_app.apps.chat.sdk.solutions.connections.mcp_consent import (
+        from kdcube_ai_app.apps.chat.sdk.integrations.prokura.mcp_consent import (
             announce_agent_consent,
             mcp_consent_from_denial,
         )
@@ -468,7 +468,7 @@ async def announce_connect_required(
     tenant_id, project_id = _turn_scope(entrypoint, tenant, project)
     hub_bundle_id = ""
     try:
-        from kdcube_ai_app.apps.chat.sdk.solutions.connections.connection_edges import (
+        from kdcube_ai_app.apps.chat.sdk.integrations.prokura.connection_edges import (
             connection_hub_bundle_id_from_entrypoint,
         )
 

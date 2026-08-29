@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 from kdcube_ai_app.apps.chat.sdk.config import get_settings
 from kdcube_ai_app.apps.chat.sdk.config_cache import get_plain_cache
 from kdcube_ai_app.apps.chat.sdk.infra.bundle_urls import bundle_operation_url
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.connection_edges import request_origin
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.connection_edges import request_origin
 from kdcube_ai_app.apps.middleware.platform_auth import platform_authenticator_provider
 from kdcube_ai_app.infra.config.frontend_config import build_frontend_config as build_frontend_config_payload
 

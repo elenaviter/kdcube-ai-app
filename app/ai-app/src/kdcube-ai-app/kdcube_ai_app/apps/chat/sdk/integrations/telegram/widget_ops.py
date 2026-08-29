@@ -11,7 +11,7 @@ from kdcube_ai_app.apps.chat.sdk.integrations.telegram.bundle_registry import (
     register_config,
     resolve_config,
 )
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.connection_edges import (
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.connection_edges import (
     ConnectionEdgesClient,
     request_origin,
 )

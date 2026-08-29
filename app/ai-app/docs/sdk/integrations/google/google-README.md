@@ -10,7 +10,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/resolve-connected-credential-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/provider-error-contract-README.md
   - https://github.com/elenaviter/app-ecosystem/blob/main/docs/prokura/frontend/application/integrations/google.md
-  - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/connections/delegated_to_kdcube/providers/google.py
+  - repo:app-ecosystem/packages/prokura/src/prokura/delegated_to_kdcube/providers/google.py
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/integrations/google/sheets_proxy.py
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/integrations/google/docs_proxy.py
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/integrations/google/gmail_tools.py
@@ -35,8 +35,8 @@ per-service API enablement) read the bundle-local
 A `google` provider row selects `adapter: google.oauth`. The adapter lives at:
 
 ```text
-kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.providers.google
-  (.../delegated_to_kdcube/providers/google.py)
+prokura.delegated_to_kdcube.providers.google
+  (repo:app-ecosystem/packages/prokura/src/prokura/delegated_to_kdcube/providers/google.py)
 ```
 
 It owns the Google-specific OAuth mechanics that the generic OAuth/OIDC adapter
@@ -67,7 +67,7 @@ from kdcube_ai_app.apps.chat.sdk.integrations.connected_accounts import (
     connected_account_auth_failure,
     run_with_connected_account_retry,
 )
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.connector_app_resolution import (
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.connector_app_resolution import (
     resolve_connector_app_id,
 )
 

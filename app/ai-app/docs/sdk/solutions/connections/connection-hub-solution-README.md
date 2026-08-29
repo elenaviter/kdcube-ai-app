@@ -35,6 +35,12 @@ Connection Hub is the solution component that lets KDCube connect identities,
 request proofs, platform authority, and delegated connections without
 collapsing those concepts into scattered auth tricks.
 
+The executable app and frontend live in
+`repo:app-ecosystem/apps/connection-hub@1-0`. Portable authority policy lives
+in the `prokura` package in that repository. KDCube imports Prokura directly
+and owns only the host bindings under
+`kdcube_ai_app.apps.chat.sdk.integrations.prokura`.
+
 It has eight roles:
 
 ```text
@@ -395,11 +401,11 @@ Legacy or intermediate descriptors may still keep request authenticators under
 `identity.authenticators` until that branch is migrated into
 `authority_registry.authorities.*.providers.*.authenticator`.
 
-The bundle remains the hosted UI/API surface. The reusable provider runtime is
-SDK-owned:
+The app remains the hosted UI/API surface. The reusable provider runtime is a
+KDCube host binding over Prokura:
 
 ```text
-kdcube_ai_app.apps.chat.sdk.solutions.connections.authority_providers.bundle_session_login
+kdcube_ai_app.apps.chat.sdk.integrations.prokura.authority_providers.bundle_session_login
 ```
 
 Connection Hub remains the registry owner for authority ids, platform-ness,

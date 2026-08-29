@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.models import (
+from prokura.delegated_to_kdcube.models import (
     CREDENTIAL_ACTIVE,
     CREDENTIAL_MISSING,
     CREDENTIAL_REVOKED,
@@ -30,7 +30,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.model
     ConnectedAccount,
     as_str,
 )
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.preflight import (
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube.preflight import (
     CONSENT_NEEDED_CODE,
     connected_account_consent_payload,
 )
@@ -243,7 +243,7 @@ def resolution_consent_payload(
     The calling agent's delegated identity (bound at the door bridge / native
     gate) rides along so an ``agent_grant_required`` denial deep-links THIS
     agent's grant card instead of the provider-connect tab."""
-    from kdcube_ai_app.apps.chat.sdk.solutions.connections.agent_account_scope import (
+    from prokura.agent_account_scope import (
         agent_identity,
     )
 

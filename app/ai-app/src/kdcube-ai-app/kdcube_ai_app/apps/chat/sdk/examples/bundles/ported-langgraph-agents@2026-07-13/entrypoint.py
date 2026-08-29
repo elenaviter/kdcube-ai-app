@@ -95,7 +95,7 @@ from .platform.stop_repair import repair_unanswered_tool_calls
 from .platform.stream_solution import stream_graph_turn
 from .platform.stream_prebuilt import stream_react_turn
 from .platform.tools_mcp import load_mcp_tools_for_connections, consent_request_tools
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_mcp import (
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_mcp import (
     delegated_client_id_for_agent,
 )
 # The shared foreign-runtime seam (SDK): per-agent dispatch, delegated-MCP
@@ -478,7 +478,7 @@ async def _announce_mcp_consent(c: Any) -> None:
     the turn actually needs asks the user. The SDK announcer records the demand
     once per conversation and re-emits the event on later attempts while the
     block is still real (best effort; never raises)."""
-    from kdcube_ai_app.apps.chat.sdk.solutions.connections.mcp_consent import (
+    from kdcube_ai_app.apps.chat.sdk.integrations.prokura.mcp_consent import (
         announce_agent_consent,
     )
 

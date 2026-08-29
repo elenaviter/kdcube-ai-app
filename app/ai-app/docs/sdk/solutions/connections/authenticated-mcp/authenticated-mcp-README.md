@@ -448,7 +448,7 @@ error = delegated_consent_required
 A hosted agent's tool wrap raises this block as the standard scoped chat
 demand; the approval merges into the agent's existing grant record. The
 uniform denial builder is
-[`consent_denial.py`](../../../../../src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/connections/delegated_credentials/consent_denial.py).
+[`consent_denial.py`](../../../../../src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/integrations/prokura/delegated_credentials/consent_denial.py).
 
 **Gate 2 denies with `needs_connected_account_consent`** (status 403) - the
 caller holds the MCP grant, but the user-to-provider side cannot satisfy the
@@ -487,7 +487,7 @@ broker mechanics, credential health, and the refresh-retry-once contract are
 ## Demand ordering: connect leads on zero accounts
 
 Current behavior (in code:
-[`consent_denial.connect_first_denial`](../../../../../src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/connections/delegated_credentials/consent_denial.py)).
+[`consent_denial.connect_first_denial`](../../../../../src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/integrations/prokura/delegated_credentials/consent_denial.py)).
 When an operation is account-backed and the grantor has ZERO connected
 accounts on the backing provider, fixing the gate-1 agent grant first is
 meaningless - granting an agent access to a provider with no accounts binds
@@ -549,7 +549,7 @@ async def _productivity_slack_search(query: str, ...) -> dict:
 The ``claims`` speak the PROVIDER's claim vocabulary - the claims a
 connected account of that Delegated-to-KDCube provider row can hold
 (`slack:search`, `gmail:read`). The enforcement helper
-([`mcp_tool_enforcement.py`](../../../../../src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/connections/mcp_tool_enforcement.py))
+([`mcp_tool_enforcement.py`](../../../../../src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/integrations/prokura/mcp_tool_enforcement.py))
 resolves each declared claim through the same account broker the
 named-services door uses and answers with the SAME demand ordering:
 every claim resolves - the tool body proceeds; zero usable accounts on the

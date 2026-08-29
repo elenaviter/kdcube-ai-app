@@ -18,15 +18,15 @@ from types import SimpleNamespace
 
 import pytest
 
-import kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube as delegated_pkg
+import kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube as delegated_pkg
 from kdcube_ai_app.apps.chat.sdk.runtime.agent_inventory import narrow_agent_tool_config
 from kdcube_ai_app.apps.chat.sdk.runtime.tool_config import AgentToolConfig
 from kdcube_ai_app.apps.chat.sdk.solutions.chatbot.base_workflow import BaseWorkflow
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube import (
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube import (
     connected_account_consent_payload,
     unavailable_tools_message,
 )
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.models import (
+from prokura.delegated_to_kdcube.models import (
     ToolClaimPolicy,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.react.layout import (
@@ -198,7 +198,7 @@ async def test_pending_demand_still_unmet_stays_pending_and_quiet(monkeypatch):
     """A recorded demand whose claims stay unmet keeps waiting: zero announce,
     zero events, the tool set untouched — the banner from the attempt is the
     single ask."""
-    from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.consent_demand import (
+    from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube.consent_demand import (
         record_consent_demand,
     )
 
@@ -254,7 +254,7 @@ async def test_disabled_group_claims_never_resolve(monkeypatch):
     """Selection stays a different door: disabling a group prunes its claim
     policies, so even a pending demand for a now-disabled tool resolves
     nothing and simply clears."""
-    from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.consent_demand import (
+    from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube.consent_demand import (
         record_consent_demand,
     )
 
@@ -336,7 +336,7 @@ async def test_consent_satisfied_mid_conversation_announces_the_transition(monke
     """Surfaced live (log-verified): an attempt raised a consent demand, the
     user connected the account, and the next turn must carry the active-now
     signal — checking only the demanded tools — with no stale blocked note."""
-    from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.consent_demand import (
+    from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube.consent_demand import (
         record_consent_demand,
     )
 
