@@ -1,113 +1,18 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""Resolve a per-user MCP server map for delegated KDCube ``@mcp`` surfaces.
-
-Framework-neutral. Given a bundle's declared ``kind: mcp`` tool connections and
-the current turn's user, this produces the standard MCP server map —
-``{server_id: {url, transport, headers}}`` — that any MCP client consumes
-(KDCube's LangChain binding, the platform's ``runtime/mcp`` adapter, or a raw
-client). It is the ONE place the delegated
-per-user bearer is minted and injected, so every hosted agent (any framework)
-reaches a delegated KDCube ``@mcp`` surface the same way.
-
-Two kinds of connection:
-
-  * **static** — the connection carries fixed ``headers`` (e.g. a shared
-    ``Authorization: Bearer <token>``). Used as-is.
-  * **delegated** — ``delegated: true`` + ``scopes: [<grant>, ...]``. A
-    least-privilege per-user bearer is minted for THIS turn's user via
-    ``mint_delegated_client_access_token`` (the same seam platform ``@mcp``
-    surfaces authenticate; see the delegated-credentials OAuth machinery) and
-    injected as ``Authorization``. The KDCube ``@mcp`` endpoint validates it and
-    serves the user's own resources under the granted scopes. A delegated
-    connection with NO resolvable user is SKIPPED (logged) — never a blind,
-    unauthenticated call.
-
-This module does not import any agent framework. The LangChain binding lives in
-``sdk/frameworks/langchain/mcp.py`` and consumes the map this returns.
-"""
+"""KDCube host bindings for Prokura delegated MCP resolution."""
 
 from __future__ import annotations
 
-import logging
-from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional
-
-logger = logging.getLogger(__name__)
-
-# A minter: (sub, scopes, *, client_id, ttl_seconds) -> {"access_token": str, ...}.
-# Defaults to the delegated-credentials OAuth mint; injectable for tests.
-Minter = Callable[..., Awaitable[Mapping[str, Any]]]
-
-# A bearer provider: (conn, user_sub) -> the CONSENTED bearer for a delegated
-# connection, or None when consent is pending. When injected it REPLACES the mint
-# for delegated connections — the per-turn token is the one the user's grant
-# already bound (so the @mcp guard passes), not a fresh unbound mint. Returning
-# None means the user has not granted THIS agent the connection's claims; the
-# connection is dropped and the caller shapes a consent demand.
-BearerProvider = Callable[[Mapping[str, Any], str], Awaitable[Optional[str]]]
-
-_DEFAULT_CLIENT_ID = "kdcube-agent"
+from importlib import import_module
+from typing import Any, Dict, List, Mapping, Optional
 
 
-def delegated_client_id_for_agent(application: str, agent_id: str) -> str:
-    """The delegated-client identity for one hosted agent — the agent IS a
-    "Delegated By KDCube" client entity (like Claude Code), distinguished by the
-    APPLICATION it is defined in and its AGENT_ID. Consent grants + the minted
-    token are keyed by this, so consent is PER-AGENT and the entity is listable /
-    revocable in Connection Hub. Stable + deterministic (no timestamps)."""
-    app = str(application or "").strip()
-    agent = str(agent_id or "").strip()
-    if app and agent:
-        return f"kdcube-agent:{app}:{agent}"
-    return _DEFAULT_CLIENT_ID
+_core = import_module("prokura.delegated_mcp")
 
 
-def connection_resource(conn: Mapping[str, Any]) -> str:
-    """The delegated resource identifier a connection points at — an explicit
-    ``resource`` if declared, else the ``url`` (the ``@mcp`` surface URL, which is
-    what the grant's ``resource_grants`` is keyed by and what the guard matches the
-    request against)."""
-    return str((conn or {}).get("resource") or (conn or {}).get("url") or "").strip()
-
-
-def agent_bearer_provider(access_service: Any, *, client_id: str) -> "BearerProvider":
-    """A ``bearer_provider`` over an ``AutomationAccessService``: the consented
-    per-agent grant's already-bound token for the connection's resource, or
-    ``None`` when the user has not granted THIS agent (consent pending). The one
-    reusable glue that turns "reuse the consented grant's token" into the resolver
-    hook; any hosted agent injects it via ``resolve_mcp_server_map``."""
-    async def _provider(conn: Mapping[str, Any], user_sub: str) -> Optional[str]:
-        resource = connection_resource(conn)
-        if not resource:
-            return None
-        result = await access_service.agent_access_token(
-            grantor_subject=user_sub, client_id=client_id, resources=[resource],
-        )
-        return str((result or {}).get("access_token") or "").strip() or None if result else None
-    return _provider
-
-
-def is_mcp_connection(conn: Mapping[str, Any]) -> bool:
-    return str((conn or {}).get("kind") or "").strip().lower() == "mcp"
-
-
-def is_delegated_connection(conn: Mapping[str, Any]) -> bool:
-    return bool((conn or {}).get("delegated"))
-
-
-def _server_id(conn: Mapping[str, Any]) -> str:
-    return str(conn.get("server_id") or conn.get("server") or conn.get("name") or "").strip()
-
-
-def _runtime_local_base() -> str:
-    """This process's own address for the surfaces it serves.
-
-    A hosted agent runs INSIDE the runtime that serves the app's `@mcp` path,
-    so the shortest correct route to it is the loopback of that process — the
-    same base the email lane uses. Everywhere: on a laptop, in a container, and
-    on ECS, where the agent's subprocess and the surface it calls are the same
-    task."""
+def _kdcube_runtime_local_base() -> str:
     try:
         from kdcube_ai_app.apps.chat.sdk.config import get_settings
 
@@ -117,52 +22,13 @@ def _runtime_local_base() -> str:
     return f"http://127.0.0.1:{port}"
 
 
-def self_hosted_url(conn: Mapping[str, Any], url: str) -> str:
-    """The address to DIAL for a surface this runtime serves itself.
-
-    A connection's declared `url` is the surface's public address — the one a
-    grant, a catalog resource pattern, and a person all recognise. When the
-    caller is the deployment that HOSTS it, that address sends the call out of
-    the machine and back in: through the public host, its TLS, its proxy, and
-    whatever tunnel or load balancer stands in between — every one of them a hop
-    that can mangle a response the app already produced correctly.
-
-    `self_hosted: true` on the connection says "this is mine": path and query
-    are kept exactly (they carry tenant, project, bundle, alias — and the grant
-    is checked against a host-wildcarded resource pattern, so authorization is
-    unchanged), and only the origin becomes local. `internal_base_url` overrides
-    the local base for a deployment whose agent host and serving process differ.
-    """
-    if not bool(conn.get("self_hosted")):
-        return url
-    raw = str(url or "").strip()
-    if not raw:
-        return url
-    base = str(conn.get("internal_base_url") or "").strip().rstrip("/") or _runtime_local_base()
-    try:
-        from urllib.parse import urlsplit, urlunsplit
-
-        parts = urlsplit(raw)
-        if not parts.scheme or not parts.netloc:
-            return url  # already relative/local — nothing to rewrite
-        base_parts = urlsplit(base)
-        if not base_parts.scheme or not base_parts.netloc:
-            return url
-        return urlunsplit((base_parts.scheme, base_parts.netloc, parts.path, parts.query, ""))
-    except Exception:
-        return url
-
-
-def _scopes(conn: Mapping[str, Any]) -> List[str]:
-    raw = conn.get("scopes") or conn.get("grants") or []
-    if isinstance(raw, str):
-        raw = [raw]
-    return [str(s).strip() for s in raw if str(s).strip()]
-
-
-async def _default_minter(sub: str, scopes: List[str], *, client_id: str, ttl_seconds: Optional[int]) -> Mapping[str, Any]:
-    # Lazy import: keep this module import-light and free of the OAuth stack until
-    # a delegated connection is actually resolved.
+async def _kdcube_default_minter(
+    sub: str,
+    scopes: List[str],
+    *,
+    client_id: str,
+    ttl_seconds: Optional[int],
+) -> Mapping[str, Any]:
     from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.grants import (
         mint_delegated_client_access_token,
     )
@@ -173,141 +39,52 @@ async def _default_minter(sub: str, scopes: List[str], *, client_id: str, ttl_se
     return await mint_delegated_client_access_token(sub, scopes, **kwargs)
 
 
-# Drop reasons recorded in `drop_sink` — WHY a delegated connection was omitted
-# from the server map. `consent_pending` is the caller's cue to raise a consent
-# demand; the others are operational (logged, not consentable).
-DROP_NO_USER = "no_user"
-DROP_CONSENT_PENDING = "consent_pending"
-DROP_PROVIDER_ERROR = "provider_error"
-DROP_MINT_ERROR = "mint_error"
+def self_hosted_url(
+    conn: Mapping[str, Any],
+    url: str,
+    *,
+    runtime_local_base: str = "",
+) -> str:
+    return _core.self_hosted_url(
+        conn,
+        url,
+        runtime_local_base=runtime_local_base or _kdcube_runtime_local_base(),
+    )
 
 
 async def resolve_mcp_server_map(
     connections: List[Dict[str, Any]],
     *,
     user_sub: Optional[str] = None,
-    minter: Optional[Minter] = None,
-    client_id: str = _DEFAULT_CLIENT_ID,
+    minter: Any = None,
+    client_id: str = "kdcube-agent",
     ttl_seconds: Optional[int] = None,
-    consent_gate: Optional[Callable[[List[str]], Awaitable[bool]]] = None,
-    bearer_provider: Optional[BearerProvider] = None,
+    consent_gate: Any = None,
+    bearer_provider: Any = None,
     drop_sink: Optional[Dict[str, str]] = None,
+    runtime_local_base: str = "",
 ) -> Dict[str, Dict[str, Any]]:
-    """Build ``{server_id: {url, transport, headers}}`` for the ``kind: mcp``
-    connections. Delegated connections get a per-user bearer; static connections
-    keep their declared headers. A delegated connection with no ``user_sub`` (or
-    no resolvable bearer) is omitted — no unauthenticated call.
+    return await _core.resolve_mcp_server_map(
+        connections,
+        user_sub=user_sub,
+        minter=minter or _kdcube_default_minter,
+        client_id=client_id,
+        ttl_seconds=ttl_seconds,
+        consent_gate=consent_gate,
+        bearer_provider=bearer_provider,
+        drop_sink=drop_sink,
+        runtime_local_base=runtime_local_base or _kdcube_runtime_local_base(),
+    )
 
-    ``bearer_provider``: optional ``async (conn, user_sub) -> Optional[str]``.
-    When provided it is the delegated bearer source (REPLACING the mint): it
-    returns the token the user's per-agent grant already bound — so the ``@mcp``
-    guard, which validates against the bound grant record, passes. ``None`` means
-    consent is pending (the user has not granted THIS agent the claims); the
-    connection is DROPPED so the caller can shape a consent demand. This is the
-    "reuse the consented grant's token" path.
 
-    ``consent_gate``: optional ``async (scopes) -> bool``, used only on the mint
-    fallback (no ``bearer_provider``). When provided, a delegated connection is
-    minted ONLY if the gate returns True. A False gate DROPS the connection
-    (consent pending). The gate decides its own failure posture; this function
-    honors its verdict.
+def __getattr__(name: str) -> Any:
+    return getattr(_core, name)
 
-    ``drop_sink``: when a dict is passed, every omitted delegated connection is
-    recorded as ``{server_id: reason}`` (the ``DROP_*`` constants). The drop
-    happens BEFORE any server contact, so this — not a transport error — is how
-    a caller learns consent is pending and raises the demand.
-    """
-    mint = minter or _default_minter
 
-    def _drop(server_id: str, reason: str) -> None:
-        if drop_sink is not None:
-            drop_sink[server_id] = reason
-    servers: Dict[str, Dict[str, Any]] = {}
-    for conn in connections or []:
-        if not is_mcp_connection(conn):
-            continue
-        server_id = _server_id(conn)
-        url = conn.get("url")
-        if not server_id or not url:
-            continue
-        dial_url = self_hosted_url(conn, str(url))
-        if dial_url != url:
-            logger.info(
-                "delegated_mcp: connection %s is served by this runtime — dialing %s "
-                "instead of the public address %s", server_id, dial_url, url,
-            )
-        entry: Dict[str, Any] = {
-            "url": dial_url,
-            "transport": conn.get("transport") or "streamable_http",
-        }
-        if conn.get("protocol_mode") is not None:
-            entry["protocol_mode"] = str(conn.get("protocol_mode") or "auto")
-        if conn.get("read_timeout_seconds") is not None:
-            entry["read_timeout_seconds"] = float(conn["read_timeout_seconds"])
-        headers: Dict[str, Any] = dict(conn.get("headers") or {})
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(dir(_core)))
 
-        if is_delegated_connection(conn):
-            scopes = _scopes(conn)
-            if not user_sub:
-                logger.warning(
-                    "delegated_mcp: connection %s is delegated but no user is bound this "
-                    "turn; skipping (no unauthenticated call).", server_id,
-                )
-                _drop(server_id, DROP_NO_USER)
-                continue
-            if bearer_provider is not None:
-                # The consented-grant path: use the token the user's per-agent
-                # grant already bound (guard-valid), or drop when consent pends.
-                try:
-                    token = str(await bearer_provider(conn, user_sub) or "").strip()
-                except Exception:
-                    logger.warning(
-                        "delegated_mcp: bearer provider errored for %s; skipping.", server_id, exc_info=True,
-                    )
-                    _drop(server_id, DROP_PROVIDER_ERROR)
-                    continue
-                if not token:
-                    logger.info(
-                        "delegated_mcp: connection %s not bound — consent pending for scopes %s "
-                        "(user grants it to this agent in Connection Hub).", server_id, scopes,
-                    )
-                    _drop(server_id, DROP_CONSENT_PENDING)
-                    continue
-                headers["Authorization"] = f"Bearer {token}"
-                if headers:
-                    entry["headers"] = headers
-                servers[server_id] = entry
-                continue
-            if consent_gate is not None:
-                try:
-                    consented = bool(await consent_gate(scopes))
-                except Exception:
-                    logger.warning(
-                        "delegated_mcp: consent gate errored for %s; skipping.", server_id, exc_info=True,
-                    )
-                    _drop(server_id, DROP_PROVIDER_ERROR)
-                    continue
-                if not consented:
-                    logger.info(
-                        "delegated_mcp: connection %s not bound — consent pending for scopes %s "
-                        "(user grants it in Connection Hub).", server_id, scopes,
-                    )
-                    _drop(server_id, DROP_CONSENT_PENDING)
-                    continue
-            try:
-                minted = await mint(user_sub, scopes, client_id=client_id, ttl_seconds=ttl_seconds)
-                token = str((minted or {}).get("access_token") or "").strip()
-            except Exception:  # noqa: BLE001 - never fail a build over token minting
-                logger.warning("delegated_mcp: minting the delegated bearer for %s failed; skipping.", server_id, exc_info=True)
-                _drop(server_id, DROP_MINT_ERROR)
-                continue
-            if not token:
-                logger.warning("delegated_mcp: minter returned no access_token for %s; skipping.", server_id)
-                _drop(server_id, DROP_MINT_ERROR)
-                continue
-            headers["Authorization"] = f"Bearer {token}"
 
-        if headers:
-            entry["headers"] = headers
-        servers[server_id] = entry
-    return servers
+__all__ = sorted(
+    name for name in dir(_core) if not name.startswith("_")
+)

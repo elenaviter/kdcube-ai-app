@@ -20,31 +20,30 @@ from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers import (
     TRANSPORT_LOCAL,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.authority_registry_client import AuthorityRegistryClient
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.contract import (
-    NAMESPACE,
-    AGENT_GRANT_CHECK,
-    AGENT_GRANT_GET_TOKEN,
-    CONNECTION_CATALOG,
-    CONNECTION_DISCONNECT,
-    CONNECTION_GET_TOKEN,
-    CONNECTION_STATUS,
-    OAUTH_START,
-    CatalogEntry,
-    Connection,
-    ConnectionToken,
+from prokura.client import (
+    ConnectionsClient as ProkuraConnectionsClient,
+    ConnectionsError,
 )
+from prokura.contract import NAMESPACE, Connection
 
 
-class ConnectionsError(RuntimeError):
-    """Raised when a connections named-service call returns an error."""
+class _NamedServiceTransport:
+    """Adapt KDCube named-service calls to Prokura's operation transport."""
 
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(f"{code}: {message}")
-        self.code = code
-        self.message = message
+    def __init__(self, client: NamedServiceClient) -> None:
+        self._client = client
+
+    async def call(self, operation: str, payload: dict[str, Any]) -> NamedServiceResponse:
+        return await self._client.call(
+            NamedServiceRequest(
+                operation=operation,
+                namespace=NAMESPACE,
+                payload=payload,
+            )
+        )
 
 
-class ConnectionsClient:
+class ConnectionsClient(ProkuraConnectionsClient):
     """Typed client for the `connections` named service.
 
     Construct either from a registry (+ optional transport / auth) or from an
@@ -68,106 +67,7 @@ class ConnectionsClient:
             self._client = NamedServiceClient(registry, transport=transport, **client_kwargs)
         else:
             raise ValueError("ConnectionsClient requires a registry or a NamedServiceClient")
-
-    # ── typed operations ────────────────────────────────────────────────────
-
-    async def catalog(self) -> list[CatalogEntry]:
-        response = await self._call(CONNECTION_CATALOG)
-        return [CatalogEntry.coerce(item) for item in response.items]
-
-    async def status(self, provider: str) -> dict[str, Any]:
-        response = await self._call(CONNECTION_STATUS, provider=provider)
-        return dict(response.object)
-
-    async def get_token(self, provider: str, account_id: str | None = None) -> ConnectionToken | None:
-        payload: dict[str, Any] = {"provider": provider}
-        if account_id:
-            payload["account_id"] = account_id
-        response = await self._call(CONNECTION_GET_TOKEN, **payload)
-        if not response.attrs.get("has_token"):
-            return None
-        obj = dict(response.object)
-        if not obj.get("access_token"):
-            return None
-        return ConnectionToken.coerce(obj)
-
-    async def agent_grant_token(self, client_id: str, resource: str) -> ConnectionToken | None:
-        """The consented bearer of THIS agent's per-agent delegated grant for
-        ``resource``, or ``None`` when the user has not granted it (consent
-        pending). Identity (which user) rides on the named-service call; the agent
-        is identified by ``client_id`` (its ``kdcube-agent:<app>:<agent>``). The
-        one per-turn read a hosted agent makes to reuse its bound token."""
-        response = await self._call(AGENT_GRANT_GET_TOKEN, client_id=client_id, resource=resource)
-        if not response.attrs.get("has_token"):
-            return None
-        obj = dict(response.object)
-        if not obj.get("access_token"):
-            return None
-        return ConnectionToken.coerce(obj)
-
-    async def agent_grant_check(
-        self,
-        client_id: str,
-        namespace: str,
-        operation: str,
-        *,
-        access_id: str = "",
-        delegate_identity: str = "",
-    ) -> dict[str, Any]:
-        """Resolve delegated admission for one named-service invocation.
-
-        ``access_id`` selects an exact bearer-authenticated card. An empty
-        ``access_id`` selects the hosted agent card derived from ``client_id``.
-        """
-        payload = {
-            "client_id": client_id,
-            "namespace": namespace,
-            "operation": operation,
-        }
-        if access_id:
-            payload["access_id"] = access_id
-        if delegate_identity:
-            payload["delegate_identity"] = delegate_identity
-        response = await self._call(AGENT_GRANT_CHECK, **payload)
-        return dict(response.object)
-
-    async def disconnect(self, provider: str, account_id: str) -> dict[str, Any]:
-        response = await self._call(CONNECTION_DISCONNECT, provider=provider, account_id=account_id)
-        return dict(response.object)
-
-    async def start_oauth(
-        self,
-        provider: str,
-        app_id: str | None = None,
-        scopes: list[str] | None = None,
-        return_hint: str = "",
-    ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"provider": provider}
-        if app_id:
-            payload["app_id"] = app_id
-        if scopes:
-            # per-connect subset of the client app's configured scopes (admin ceiling)
-            payload["scopes"] = list(scopes)
-        if return_hint:
-            payload["return_hint"] = return_hint
-        response = await self._call(OAUTH_START, **payload)
-        return dict(response.object)
-
-    # ── internals ────────────────────────────────────────────────────────────
-
-    async def _call(self, operation: str, /, **payload: Any) -> NamedServiceResponse:
-        request = NamedServiceRequest(
-            operation=operation,
-            namespace=NAMESPACE,
-            payload=dict(payload),
-        )
-        response = await self._client.call(request)
-        if not response.ok:
-            error = response.error
-            code = error.code if error else "connections_error"
-            message = error.message if error else "connections request failed"
-            raise ConnectionsError(code, message)
-        return response
+        super().__init__(_NamedServiceTransport(self._client))
 
 
 class ConnectionHubClient:

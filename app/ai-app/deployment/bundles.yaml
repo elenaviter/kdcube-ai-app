@@ -28,6 +28,10 @@ bundles:
   items:
   - id: connection-hub@1-0
     name: Connection Hub
+    repo: https://github.com/elenaviter/app-ecosystem.git
+    ref: main
+    subdir: apps/connection-hub@1-0
+    module: entrypoint
     singleton: false
     config:
       connections:

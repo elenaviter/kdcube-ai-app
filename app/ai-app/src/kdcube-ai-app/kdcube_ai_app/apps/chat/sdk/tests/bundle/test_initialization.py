@@ -21,7 +21,7 @@ class TestBundleInitialization:
         assert bundle.redis is not None
         assert bundle.comm_context is not None
 
-    def test_langgraph_compiles_after_initialization(self, bundle):
+    def test_langgraph_compiles_after_initialization(self, bundle, bundle_graph):
         """LangGraph compiles after initialization."""
         # Bundle should have _build_graph method
         assert hasattr(bundle, "_build_graph")
@@ -30,8 +30,7 @@ class TestBundleInitialization:
         assert callable(bundle._build_graph)
 
         # Try to build graph
-        graph = bundle._build_graph()
-        assert graph is not None
+        assert bundle_graph is not None
 
     def test_configuration_property_returns_dict(self, bundle):
         """configuration property returns the app's declared configuration."""

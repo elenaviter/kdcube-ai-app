@@ -591,7 +591,7 @@ python -m pytest -q tests
 
 Current strong example:
 
-- `connection-hub@1-0/AGENTS.md` demonstrates front matter, read order, concept
+- [Connection Hub `AGENTS.md`](https://github.com/elenaviter/app-ecosystem/blob/main/apps/connection-hub%401-0/AGENTS.md) demonstrates front matter, read order, concept
   separation, a product map, security/storage invariants, SDK ownership, and
   runtime checks
 

@@ -1,30 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""Custom authority provider registration and discovery helpers."""
+"""Compatibility surface; implementation lives in prokura.custom_authorities."""
 
-from ..authority_registry import (
-    AUTHORITY_DISCOVERY_SCHEMA,
-    CREDENTIAL_SCHEMA,
-    AuthorityProvider,
-    AuthorityProviderSpec,
-    AuthorityRegistry,
-    AuthorityResolution,
-    CredentialEnvelope,
-    RedisAuthorityDiscovery,
-    RegisteredAuthorityProvider,
-    authority_provider_spec_from_declaration,
-)
-
-__all__ = [
-    "AUTHORITY_DISCOVERY_SCHEMA",
-    "CREDENTIAL_SCHEMA",
-    "AuthorityProvider",
-    "AuthorityProviderSpec",
-    "AuthorityRegistry",
-    "AuthorityResolution",
-    "CredentialEnvelope",
-    "RedisAuthorityDiscovery",
-    "RegisteredAuthorityProvider",
-    "authority_provider_spec_from_declaration",
-]
+from prokura.custom_authorities import *  # noqa: F401,F403
+from prokura.custom_authorities import __all__

@@ -1,14 +1,25 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""Delegated credential adapters under the Connection Hub model."""
+"""Lazy compatibility surface for delegated credential services."""
 
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.automation_access import (
-    AutomationAccessRecord,
-    AutomationAccessService,
-)
+from __future__ import annotations
 
-__all__ = [
-    "AutomationAccessRecord",
-    "AutomationAccessService",
-]
+from importlib import import_module
+from typing import Any
+
+_EXPORTS = {
+    "AutomationAccessRecord": "kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.automation_access",
+    "AutomationAccessService": "kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.automation_access",
+}
+
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name: str) -> Any:
+    module_name = _EXPORTS.get(name)
+    if not module_name:
+        raise AttributeError(name)
+    value = getattr(import_module(module_name), name)
+    globals()[name] = value
+    return value

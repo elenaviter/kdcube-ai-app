@@ -220,7 +220,7 @@ state. Reference emitter: `postConnectionsCommandAndAwaitAck` /
 The target widget listens for `kdcube.surface.command`, filters by its own
 `target_surface` values, applies the payload at runtime (the same state its
 URL deep-link path produces), and posts the applied ack. Reference receiver:
-`app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/ui/widgets/connections/src/api/surfaceCommand.ts`.
+[Connection Hub surfaceCommand.ts](https://github.com/elenaviter/app-ecosystem/blob/main/apps/connection-hub%401-0/ui/widgets/connections/src/api/surfaceCommand.ts).
 
 ## Reference Implementations
 
@@ -229,7 +229,7 @@ URL deep-link path produces), and posts the applied ack. Reference receiver:
 | Scene runtime routing + readiness queue | `app/ai-app/src/kdcube-ai-app/npm/packages/components-core/src/scene/runtime.ts` (`queueSurfaceCommand`) |
 | Package-host scene declaring a routed component | `app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/workspace@2026-03-31-13-36/ui/scene/src/sceneConfig.ts` |
 | Emitter with ack-wait + standalone fallback | `app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/chat/ui/widget/src/host.ts` |
-| Receiver with runtime apply + applied ack | `app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/ui/widgets/connections/src/api/surfaceCommand.ts` |
+| Receiver with runtime apply + applied ack | [Connection Hub `surfaceCommand.ts`](https://github.com/elenaviter/app-ecosystem/blob/main/apps/connection-hub%401-0/ui/widgets/connections/src/api/surfaceCommand.ts) |
 
 The plain-script host variant (contract map, ack sender, summon/focus) ships in
 the KDCube website scene (`kdcube.config.json` `scene.surfaceCommandContracts`,

@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""Authority-provider runtimes owned by Connection Hub SDK.
+"""Compatibility surface; implementation lives in prokura.authority_providers."""
 
-Provider modules are intentionally not imported here. Some providers depend on
-host/runtime integrations, and importing them eagerly during gateway startup can
-create application-level cycles. Import the concrete provider module directly.
-"""
-
-from __future__ import annotations
-
-__all__: list[str] = []
+from prokura.authority_providers import *  # noqa: F401,F403
+from prokura.authority_providers import __all__

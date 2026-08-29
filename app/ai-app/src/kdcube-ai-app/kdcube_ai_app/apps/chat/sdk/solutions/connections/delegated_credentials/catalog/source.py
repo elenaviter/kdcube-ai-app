@@ -1,26 +1,9 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""The catalog body source: exact effective Connection Hub ``connections`` props.
+"""Compatibility alias; implementation lives in prokura.delegated_credentials.catalog.source."""
 
-Only ``on_app_deploy`` reads this. Request paths consume the registered catalog
-document instead.
-"""
+from importlib import import_module as _import_module
+import sys as _sys
 
-from __future__ import annotations
-
-import copy
-from typing import Any, Mapping
-
-
-def connections_from_props(props: Any) -> dict[str, Any]:
-    """The ``connections`` mapping exactly as it appears in effective props."""
-    if not isinstance(props, Mapping):
-        return {}
-    raw = props.get("connections")
-    if not isinstance(raw, Mapping):
-        return {}
-    return copy.deepcopy(dict(raw))
-
-
-__all__ = ["connections_from_props"]
+_sys.modules[__name__] = _import_module("prokura.delegated_credentials.catalog.source")

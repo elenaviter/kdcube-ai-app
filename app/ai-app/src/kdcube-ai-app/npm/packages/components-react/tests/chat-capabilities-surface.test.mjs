@@ -136,21 +136,15 @@ test('the widget ack echoes the command_id with ok for host diagnostics', () => 
 // A served widget's bundle identity comes from its ROUTE (the bundle URL it
 // is served from), never from a host's defaultAppBundleId — embedded scenes
 // relay CONFIG_REQUEST to the outer host, whose answer names the OUTER app.
-// Letting the handshake win re-pointed every hub operation at a foreign
-// bundle (the empty-hub regression). Pinned at source in both widgets that
-// carry the settings pattern.
-test('widget bundle identity: route wins over the host handshake', () => {
-  const settingsFiles = [
-    '../../../../kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/ui/widgets/connections/src/api/settings.ts',
-    '../../../../kdcube_ai_app/apps/chat/sdk/solutions/chat/ui/widget-capabilities/src/settings.ts',
-  ]
-  for (const file of settingsFiles) {
-    const source = readFileSync(new URL(file, import.meta.url), 'utf8')
-    const start = source.indexOf('getBundleId()')
-    assert.ok(start >= 0, `${file} has getBundleId`)
-    const block = source.slice(start, source.indexOf('}', source.indexOf('return isPlaceholder', start)))
-    assert.match(block, /if \(context\.bundleId\) return context\.bundleId/)
-  }
+// Letting the handshake win re-points operations at the outer app. The
+// capabilities widget therefore keeps its route-owned app identity.
+test('capabilities widget bundle identity: route wins over the host handshake', () => {
+  const file = '../../../../kdcube_ai_app/apps/chat/sdk/solutions/chat/ui/widget-capabilities/src/settings.ts'
+  const source = readFileSync(new URL(file, import.meta.url), 'utf8')
+  const start = source.indexOf('getBundleId()')
+  assert.ok(start >= 0, `${file} has getBundleId`)
+  const block = source.slice(start, source.indexOf('}', source.indexOf('return isPlaceholder', start)))
+  assert.match(block, /if \(context\.bundleId\) return context\.bundleId/)
 })
 
 // ---------------------------------------------------------------------------
@@ -326,76 +320,17 @@ test('the greyed styling exists in both stylesheet twins', () => {
   }
 })
 
-test('the hub access-map admin view is read-only and admin-gated', () => {
-  const base = '../../../../kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/ui/widgets/connections/src'
-  const slice = readFileSync(new URL(`${base}/features/accessMap/accessMapSlice.ts`, import.meta.url), 'utf8')
-  // Read side only: one GET operation, no write op anywhere in the feature.
-  assert.match(slice, /getOp<DelegatedAccessMapResult>\('delegated_access_map'\)/)
-  assert.doesNotMatch(slice, /postOp/)
-  assert.match(slice, /platform_admin_required/)
-  const panel = readFileSync(new URL(`${base}/features/accessMap/AccessMapPanel.tsx`, import.meta.url), 'utf8')
-  assert.doesNotMatch(panel, /postOp|onSubmit|<form/)
-  assert.match(panel, /platform administrators only/)
-  // The tab renders only for admins (same gate as the authenticators tab).
-  const app = readFileSync(new URL(`${base}/App.tsx`, import.meta.url), 'utf8')
-  assert.match(app, /activeTab === 'accessMap' && authenticatorsAllowed/)
-})
-
-test('the hub tab strip is a single-row carousel at every width', () => {
-  const base = '../../../../kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/ui/widgets/connections/src'
-  const css = readFileSync(new URL(`${base}/styles.css`, import.meta.url), 'utf8')
-  // Product ruling: the six tabs NEVER wrap into a second row. One line at
-  // every width, horizontal scroll for overflow.
-  const tabsBlock = css.slice(css.indexOf('.tabs {'), css.indexOf('}', css.indexOf('.tabs {')))
-  assert.match(tabsBlock, /flex-wrap: nowrap/)
-  assert.match(tabsBlock, /overflow-x: auto/)
-  // The overflow affordance is unconditional — no width media-query gate:
-  // edge fades render on exactly the overflowing side(s).
-  assert.doesNotMatch(css, /@media \(max-width: 479px\)/)
-  assert.match(css, /\.tabs-wrap\[data-fade-left\]::before \{ opacity: 1; \}/)
-  assert.match(css, /\.tabs-wrap\[data-fade-right\]::after \{ opacity: 1; \}/)
-  // The collapse trap: an overflow strip has no automatic minimum height, so
-  // inside the viewport-bound page column the wrapper must never shrink.
-  assert.match(css, /\.tabs-wrap \{ position: relative; margin: 0 0 14px; flex: 0 0 auto; \}/)
-  // The shell keeps the ACTIVE tab in view and tracks overflow edges from a
-  // scroll listener + ResizeObserver. The edge predicates guarantee a fully
-  // fitting strip shows NO fades: scrollLeft stays 0 (left false) and
-  // scrollLeft + clientWidth === scrollWidth (right false).
-  const shell = readFileSync(new URL(`${base}/components/AppShell.tsx`, import.meta.url), 'utf8')
-  assert.match(shell, /querySelector\('\.tab\.active'\)/)
-  assert.match(shell, /scrollIntoView\(\{ block: 'nearest', inline: 'nearest' \}\)/)
-  assert.match(shell, /addEventListener\('scroll', updateFade/)
-  assert.match(shell, /new ResizeObserver\(updateFade\)/)
-  assert.match(shell, /el\.scrollLeft > 1/)
-  assert.match(shell, /el\.scrollLeft \+ el\.clientWidth < el\.scrollWidth - 1/)
-  assert.match(shell, /data-fade-left=\{fade\.left \|\| undefined\}/)
-  assert.match(shell, /data-fade-right=\{fade\.right \|\| undefined\}/)
-})
-
 test('scene hosts never clamp the hub frame to a reported content height', () => {
   // The surfaced case: in the workspace scene the platform-injected resize
   // reporter (in the scene page) wrote the hub widget's first kdcube-resize
   // height — measured off its brief "Loading…" page — onto the iframe, and
   // the 100vh-bound app then re-measured exactly that clamp forever: admin
   // tabs, tab guide, and the whole panel rendered but stayed clipped.
-  // Guard 1: the viewport-bound widget opts out of the injected reporter
-  // (its index.html carries the marker the injector checks for).
-  const widgetRoot = '../../../../kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/ui/widgets/connections'
-  const indexHtml = readFileSync(new URL(`${widgetRoot}/index.html`, import.meta.url), 'utf8')
-  assert.match(indexHtml, /data-kdcube-resize-reporter/)
-  // Guard 2: scene-host windows own their frame size — the stylesheet height
+  // Scene-host windows own their frame size. The hosted app independently
+  // tests that its viewport-bound widget opts out of the resize reporter.
+  // The stylesheet height
   // outranks any inline style.height a resize listener writes on the iframe.
   const sceneCss = readFileSync(new URL('../src/scene/sceneHost.css', import.meta.url), 'utf8')
   const frameBlock = sceneCss.slice(sceneCss.indexOf('.kdc-frame {'), sceneCss.indexOf('}', sceneCss.indexOf('.kdc-frame {')))
   assert.match(frameBlock, /height: 100% !important/)
-})
-
-test('the access-map panel body owns its scrolling (viewport-bound page contract)', () => {
-  const base = '../../../../kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/ui/widgets/connections/src'
-  const css = readFileSync(new URL(`${base}/styles.css`, import.meta.url), 'utf8')
-  const block = css.slice(css.indexOf('.access-map-body {'), css.indexOf('}', css.indexOf('.access-map-body {')))
-  assert.match(block, /overflow-y: auto/)
-  assert.match(block, /min-height: 0/)
-  const panel = readFileSync(new URL(`${base}/features/accessMap/AccessMapPanel.tsx`, import.meta.url), 'utf8')
-  assert.match(panel, /className="access-map-body"/)
 })

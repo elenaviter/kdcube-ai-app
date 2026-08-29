@@ -87,7 +87,7 @@ and cache hints. Registration supports descriptor pre-registration and CIMD,
 with DCR retained as an independently configurable compatibility path. The
 exact support boundary and the evidence required before making a broad
 conformance claim are recorded in
-[OAuth Delegated Credential Protocol Adapter](../../sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md#mcp-2026-07-28-support-boundary).
+[OAuth Delegated Credential Protocol Adapter](https://github.com/elenaviter/app-ecosystem/blob/main/docs/prokura/package/oauth-delegated-credential-protocol.md#mcp-2026-07-28-support-boundary).
 
 ## Descriptor Surface
 
@@ -656,8 +656,16 @@ suite inside that same container:
 ```bash
 docker exec <proc-container> python -m pytest -q \
   /app/kdcube_ai_app/apps/chat/sdk/runtime/mcp/test_mcp_v2_conformance.py \
-  /app/kdcube_ai_app/apps/chat/sdk/solutions/connections/delegated_credentials/oauth/tests/test_client_metadata.py \
-  /app/kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/tests/test_oauth_discovery.py
+  /app/kdcube_ai_app/apps/chat/sdk/solutions/connections/delegated_credentials/oauth/tests/test_client_metadata.py
+```
+
+The Connection Hub app owns its mounted-route discovery test. From an
+`app-ecosystem` checkout with the KDCube and Prokura dependencies installed,
+run:
+
+```bash
+python -m pytest -q \
+  apps/connection-hub@1-0/tests/test_oauth_discovery.py
 ```
 
 The wire test records KDCube's actual HTTP exchange; it does not infer protocol

@@ -330,7 +330,9 @@ next agent reads before changing it. It states read order, what the app owns
 (including whether `solution/` is independently maintained and which documented
 source changes are allowed), the isolation and storage
 boundaries, which files must stay synchronized, and the exact validation
-commands. Use `connection-hub@1-0/AGENTS.md` as the structural model.
+commands. Use the public Connection Hub
+[`AGENTS.md`](https://github.com/elenaviter/app-ecosystem/blob/main/apps/connection-hub%401-0/AGENTS.md)
+as the structural model.
 
 ---
 

@@ -13,31 +13,41 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
-from typing import Any, Dict, Iterable, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
+
+from prokura.delegated_credentials.oauth.surface_policy import (
+    MANAGED_AUTH_MODE,
+    ManagedMcpAuthPolicy,
+    ManagedMcpToolPolicy,
+    ManagedRestAuthPolicy,
+    ManagedRestOperationPolicy,
+    SurfacePolicyDenial,
+    as_list as _as_list,
+    auth_mode,
+    authorize_credential_boundary,
+    authorize_mcp_capabilities,
+    authorize_principal_boundary,
+    authorize_rest_capabilities,
+    decode_json_body as _decode_json_body,
+    extract_mcp_tool_calls,
+    managed_mcp_auth_policy,
+    managed_rest_auth_policy,
+)
 
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.authority_registry import CredentialEnvelope
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.credential_view import (
     DelegatedCredentialView,
     normalize_resource,
-    resource_matches,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.live_grant import (
     LiveGrantCardError,
     resolve_live_grant_card,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.catalog.authorization import (
-    CAPABILITY_OUTER_OPERATION,
-    CAPABILITY_RESOURCE,
-    CAPABILITY_RESOURCE_CLAIM,
     ActiveCatalogCapabilities,
-    CapabilityRequest,
-    CardProvenance,
-    authorize_current_capability,
-    card_boundary_denial,
     catalog_unavailable_denial,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.catalog.resolver import (
@@ -68,136 +78,17 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.named_service_admission i
 )
 
 
-MANAGED_MCP_AUTH_MODE = "managed"
+MANAGED_MCP_AUTH_MODE = MANAGED_AUTH_MODE
 LOGGER = logging.getLogger("kdcube.connection_hub.oauth.mcp_guard")
 REST_LOGGER = logging.getLogger("kdcube.connection_hub.oauth.rest_guard")
 
 
-def _as_list(value: Any) -> tuple[str, ...]:
-    if value is None:
-        return ()
-    if isinstance(value, str):
-        return tuple(item.strip() for item in value.replace(",", " ").split() if item.strip())
-    if isinstance(value, (list, tuple, set)):
-        return tuple(str(item).strip() for item in value if str(item).strip())
-    return ()
-
-
 def mcp_auth_mode(auth: Mapping[str, Any] | None) -> str:
-    if not isinstance(auth, Mapping):
-        return ""
-    return str(auth.get("mode") or "").strip().lower()
+    return auth_mode(auth)
 
 
 def rest_auth_mode(auth: Mapping[str, Any] | None) -> str:
-    if not isinstance(auth, Mapping):
-        return ""
-    return str(auth.get("mode") or "").strip().lower()
-
-
-@dataclass(frozen=True)
-class ManagedMcpToolPolicy:
-    grants: tuple[str, ...] = ()
-    roles: tuple[str, ...] = ()
-    permissions: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class ManagedMcpAuthPolicy:
-    authority_id: str = ""
-    roles: tuple[str, ...] = ()
-    permissions: tuple[str, ...] = ()
-    tool_policies: Mapping[str, ManagedMcpToolPolicy] | None = None
-    selected_tool_grants: bool = True
-
-
-@dataclass(frozen=True)
-class ManagedRestOperationPolicy:
-    grants: tuple[str, ...] = ()
-    roles: tuple[str, ...] = ()
-    permissions: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class ManagedRestAuthPolicy:
-    authority_id: str = ""
-    grants: tuple[str, ...] = ()
-    roles: tuple[str, ...] = ()
-    permissions: tuple[str, ...] = ()
-    operation_policies: Mapping[str, ManagedRestOperationPolicy] | None = None
-    selected_operation_grants: bool = False
-
-
-def _parse_tool_policies(value: Any) -> dict[str, ManagedMcpToolPolicy]:
-    if not isinstance(value, Mapping):
-        return {}
-    out: dict[str, ManagedMcpToolPolicy] = {}
-    for raw_name, raw_policy in value.items():
-        name = str(raw_name or "").strip()
-        if not name:
-            continue
-        data = raw_policy if isinstance(raw_policy, Mapping) else {}
-        out[name] = ManagedMcpToolPolicy(
-            grants=_as_list(data.get("grants") or data.get("scopes")),
-            roles=_as_list(data.get("roles")),
-            permissions=_as_list(data.get("permissions")),
-        )
-    return out
-
-
-def _parse_rest_operation_policies(value: Any) -> dict[str, ManagedRestOperationPolicy]:
-    if not isinstance(value, Mapping):
-        return {}
-    out: dict[str, ManagedRestOperationPolicy] = {}
-    for raw_name, raw_policy in value.items():
-        name = str(raw_name or "").strip()
-        if not name:
-            continue
-        data = raw_policy if isinstance(raw_policy, Mapping) else {}
-        out[name] = ManagedRestOperationPolicy(
-            grants=_as_list(data.get("grants") or data.get("scopes") or data.get("required_grants")),
-            roles=_as_list(data.get("roles")),
-            permissions=_as_list(data.get("permissions")),
-        )
-    return out
-
-
-def managed_mcp_auth_policy(auth: Mapping[str, Any] | None) -> ManagedMcpAuthPolicy | None:
-    if mcp_auth_mode(auth) != MANAGED_MCP_AUTH_MODE:
-        return None
-    data = dict(auth or {})
-    return ManagedMcpAuthPolicy(
-        authority_id=str(data.get("authority_id") or data.get("authority") or "").strip(),
-        roles=_as_list(data.get("roles")),
-        permissions=_as_list(data.get("permissions")),
-        tool_policies=_parse_tool_policies(data.get("tools") or data.get("tool_policies")),
-        selected_tool_grants=bool(data.get("selected_tool_grants", True)),
-    )
-
-
-def managed_rest_auth_policy(auth: Mapping[str, Any] | None) -> ManagedRestAuthPolicy | None:
-    if rest_auth_mode(auth) != MANAGED_MCP_AUTH_MODE:
-        return None
-    data = dict(auth or {})
-    operation_policies = _parse_rest_operation_policies(
-        data.get("operations")
-        or data.get("operation_policies")
-        or data.get("tools")
-        or data.get("tool_policies")
-    )
-    selected_operation_grants = data.get("selected_operation_grants")
-    if selected_operation_grants is None:
-        selected_operation_grants = data.get("selected_tool_grants")
-    if selected_operation_grants is None:
-        selected_operation_grants = bool(operation_policies)
-    return ManagedRestAuthPolicy(
-        authority_id=str(data.get("authority_id") or data.get("authority") or "").strip(),
-        grants=_as_list(data.get("grants") or data.get("scopes") or data.get("required_grants")),
-        roles=_as_list(data.get("roles")),
-        permissions=_as_list(data.get("permissions")),
-        operation_policies=operation_policies,
-        selected_operation_grants=bool(selected_operation_grants),
-    )
+    return auth_mode(auth)
 
 
 def _extract_bearer(request: Request) -> str:
@@ -333,37 +224,6 @@ def _rpc_tool_error(rpc_id: Any, message: str) -> JSONResponse:
     )
 
 
-def _decode_json_body(body: bytes) -> Any:
-    if not body:
-        return None
-    try:
-        return json.loads(body.decode("utf-8"))
-    except Exception:
-        return None
-
-
-def extract_mcp_tool_calls(body: bytes) -> list[tuple[Any, str]]:
-    """Return the singular JSON-RPC ``tools/call`` accepted by this transport."""
-
-    message = _decode_json_body(body)
-    if not isinstance(message, Mapping) or message.get("method") != "tools/call":
-        return []
-    params = message.get("params")
-    if not isinstance(params, Mapping):
-        return []
-    name = str(params.get("name") or "").strip()
-    return [(message.get("id"), name)] if name else []
-
-
-def _credential_scopes(envelope: CredentialEnvelope) -> set[str]:
-    attrs = envelope.attrs or {}
-    out: set[str] = set()
-    out.update(_as_list(attrs.get("scopes")))
-    out.update(_as_list(attrs.get("scope")))
-    out.update(_as_list(attrs.get("grants")))
-    return out
-
-
 def _normalize_resource(value: Any) -> str:
     return normalize_resource(value)
 
@@ -375,61 +235,6 @@ def _request_resource(request: Request) -> str:
 def delegated_request_resource(request: Request) -> str:
     """Return the public delegated-credential resource URL for a request."""
     return _request_resource(request)
-
-
-def _catalog_tool_policies(
-    *,
-    catalog: ActiveCatalogCapabilities,
-    resource: str,
-    request_resource: str,
-    declared: Mapping[str, ManagedMcpToolPolicy] | None,
-) -> dict[str, ManagedMcpToolPolicy]:
-    """Per-tool policy for this request, with claims taken from the catalog.
-
-    Effective props are an input to publication, not to governed authorization,
-    so the claim a tool costs is read from the registered catalog rather than
-    from request-local Hub config. That config is bound only by the platform
-    authentication surface and Connection Hub's own routes, so a door served
-    through a bundle route saw an empty map and skipped the whole per-tool
-    block, including both claim checks.
-
-    ``roles`` and ``permissions`` stay with the surface declaration: a catalog
-    row does not carry them, and dropping the declaration would remove a
-    control instead of moving it.
-    """
-    row = catalog.resource_config(
-        CapabilityRequest(
-            kind=CAPABILITY_RESOURCE,
-            resource=resource,
-            request_resource=request_resource,
-        )
-    )
-    declared = dict(declared or {})
-    out: dict[str, ManagedMcpToolPolicy] = {}
-    for tool in (getattr(row, "tools", None) or ()):
-        name = str(getattr(tool, "name", "") or "").strip()
-        if not name:
-            continue
-        surface = declared.get(name)
-        out[name] = ManagedMcpToolPolicy(
-            grants=_as_list(getattr(tool, "grants", ())),
-            roles=getattr(surface, "roles", ()) or (),
-            permissions=getattr(surface, "permissions", ()) or (),
-        )
-    if _normalize_resource(getattr(row, "resource", "")) == "*":
-        # The all-resource administrator row deliberately has no catalog tool
-        # ceiling: its outer operations come from the endpoint declaration.
-        # Preserve that declaration's non-claim controls instead of dropping
-        # the entire policy merely because the catalog has no tool rows.
-        for name, surface in declared.items():
-            clean_name = str(name or "").strip()
-            if not clean_name or clean_name in out:
-                continue
-            out[clean_name] = ManagedMcpToolPolicy(
-                roles=getattr(surface, "roles", ()) or (),
-                permissions=getattr(surface, "permissions", ()) or (),
-            )
-    return out
 
 
 def _connection_hub_rest_operation_policies(request: Request) -> dict[str, ManagedRestOperationPolicy]:
@@ -450,30 +255,8 @@ def _connection_hub_rest_operation_policies(request: Request) -> dict[str, Manag
     return out
 
 
-def _credential_resources(envelope: CredentialEnvelope) -> tuple[str, ...]:
-    return DelegatedCredentialView.from_envelope(envelope).resources
-
-
 def _credential_grants_for_resource(envelope: CredentialEnvelope, request_resource: str) -> set[str]:
     return DelegatedCredentialView.from_envelope(envelope).grants_for_resource(request_resource)
-
-
-def _resource_matches(credential_resource: str, request_resource: str) -> bool:
-    return resource_matches(credential_resource, request_resource)
-
-
-def _any_resource_matches(credential_resources: Iterable[str], request_resource: str) -> bool:
-    return any(_resource_matches(resource, request_resource) for resource in credential_resources)
-
-
-def _matched_credential_resource(
-    credential_resources: Iterable[str], request_resource: str
-) -> str:
-    """The card selector that admitted this request, for the denial path."""
-    for resource in credential_resources:
-        if _resource_matches(resource, request_resource):
-            return str(resource)
-    return ""
 
 
 async def _active_catalog(request: Request) -> tuple[ActiveCatalogCapabilities | None, str]:
@@ -497,50 +280,8 @@ async def _active_catalog(request: Request) -> tuple[ActiveCatalogCapabilities |
     return ActiveCatalogCapabilities(document), ""
 
 
-def _card_provenance(grant_record: Mapping[str, Any] | None) -> CardProvenance:
-    record = grant_record if isinstance(grant_record, Mapping) else {}
-    try:
-        revision = int(record.get("card_revision") or 0)
-    except (TypeError, ValueError):
-        revision = 0
-    return CardProvenance(
-        access_id=str(record.get("registry_access_id") or "").strip(),
-        card_revision=revision,
-        catalog_version=str(record.get("catalog_version") or "").strip(),
-    )
-
-
-def _capability_denial_response(payload: Mapping[str, Any]) -> JSONResponse:
-    return JSONResponse(status_code=403, content=dict(payload))
-
-
 def _catalog_unavailable_response(reason: str) -> JSONResponse:
     return JSONResponse(status_code=503, content=catalog_unavailable_denial(reason))
-
-
-def _capability_denial(
-    *,
-    catalog: ActiveCatalogCapabilities,
-    grant_record: Mapping[str, Any] | None,
-    kind: str,
-    resource: str,
-    request_resource: str,
-    surface: str,
-    claim: str = "",
-    outer_operation: str = "",
-) -> dict[str, Any] | None:
-    return authorize_current_capability(
-        catalog=catalog,
-        provenance=_card_provenance(grant_record),
-        request=CapabilityRequest(
-            kind=kind,
-            resource=resource,
-            request_resource=request_resource,
-            surface=surface,
-            claim=claim,
-            outer_operation=outer_operation,
-        ),
-    )
 
 
 def _rpc_capability_error(rpc_id: Any, payload: Mapping[str, Any]) -> JSONResponse:
@@ -550,6 +291,27 @@ def _rpc_capability_error(rpc_id: Any, payload: Mapping[str, Any]) -> JSONRespon
     which resource, namespace, and operation were refused.
     """
     return _rpc_tool_error(rpc_id, json.dumps(dict(payload), ensure_ascii=False))
+
+
+def _surface_policy_denial_response(
+    denial: SurfacePolicyDenial,
+) -> JSONResponse:
+    """Render a Prokura policy verdict on KDCube's HTTP/MCP transport."""
+
+    if denial.is_rpc:
+        if isinstance(denial.payload, Mapping):
+            return _rpc_capability_error(denial.rpc_id, denial.payload)
+        return _rpc_tool_error(
+            denial.rpc_id,
+            denial.rpc_message or denial.description or "delegated request denied",
+        )
+    if isinstance(denial.payload, Mapping):
+        return JSONResponse(status_code=denial.status, content=dict(denial.payload))
+    return _json_response(
+        denial.status,
+        denial.error,
+        denial.description or "delegated request denied",
+    )
 
 
 async def _default_grant_store(request: Request) -> GrantStore:
@@ -864,12 +626,18 @@ async def delegated_platform_admin_runtime_projection(
         )
         return {}
     envelope = _grant_record_credential(grant_record)
-    if authority_id and envelope.issuer_authority_id != authority_id:
-        return {}
-
-    credential_resources = _credential_resources(envelope)
     request_resource = _request_resource(request)
-    if not _any_resource_matches(credential_resources, request_resource):
+    boundary = authorize_credential_boundary(
+        authority_id=authority_id,
+        required_roles=(),
+        required_permissions=(),
+        user_roles=user.get("roles") or (),
+        user_permissions=user.get("permissions") or (),
+        envelope=envelope,
+        grant_record=grant_record,
+        request_resource=request_resource,
+    )
+    if not boundary.allowed:
         return {}
 
     from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.config import (
@@ -878,7 +646,7 @@ async def delegated_platform_admin_runtime_projection(
 
     resource_cfg = oauth_delegated_config(request).resource_config(request_resource)
     required_grants = set(_as_list(getattr(resource_cfg, "grants", ())))
-    credential_grants = _credential_grants_for_resource(envelope, request_resource)
+    credential_grants = set(boundary.stored_grants)
     if required_grants and not required_grants.issubset(credential_grants):
         return {}
 
@@ -955,27 +723,26 @@ async def _authorize_delegated_managed_request(
             {},
         )
 
-    user_roles = set(user.get("roles") or [])
-    user_permissions = set(user.get("permissions") or [])
-
-    if roles and not user_roles.intersection(roles):
+    principal = authorize_principal_boundary(
+        required_roles=roles,
+        required_permissions=permissions,
+        user_roles=user.get("roles") or (),
+        user_permissions=user.get("permissions") or (),
+    )
+    if not principal.allowed:
+        assert principal.denial is not None
         logger.info(
-            "[connection-hub.oauth.%s_guard] denied reason=missing_role required=%s roles=%s resource=%s",
+            "[connection-hub.oauth.%s_guard] denied reason=%s resource=%s",
             surface_label,
-            list(roles),
-            sorted(user_roles),
+            principal.denial.reason,
             _request_resource(request),
         )
-        return _json_response(403, "forbidden", "required role is missing"), user, CredentialEnvelope(), {}
-    if permissions and not user_permissions.issuperset(permissions):
-        logger.info(
-            "[connection-hub.oauth.%s_guard] denied reason=missing_permission required=%s permissions=%s resource=%s",
-            surface_label,
-            list(permissions),
-            sorted(user_permissions),
-            _request_resource(request),
+        return (
+            _surface_policy_denial_response(principal.denial),
+            user,
+            CredentialEnvelope(),
+            {},
         )
-        return _json_response(403, "forbidden", "required permission is missing"), user, CredentialEnvelope(), {}
 
     grant_record, unavailable = await _access_grant_record(
         request=request,
@@ -1014,33 +781,31 @@ async def _authorize_delegated_managed_request(
     except Exception:
         pass
 
-    if authority_id and envelope.issuer_authority_id != authority_id:
-        logger.info(
-            "[connection-hub.oauth.%s_guard] denied reason=authority_mismatch required=%s got=%s resource=%s",
-            surface_label,
-            authority_id,
-            envelope.issuer_authority_id,
-            _request_resource(request),
-        )
-        return _json_response(403, "forbidden", "delegated credential authority mismatch"), user, envelope, grant_record or {}
-
-    credential_resources = _credential_resources(envelope)
     request_resource = _request_resource(request)
-    if not credential_resources:
+    boundary = authorize_credential_boundary(
+        authority_id=authority_id,
+        required_roles=(),
+        required_permissions=(),
+        user_roles=user.get("roles") or (),
+        user_permissions=user.get("permissions") or (),
+        envelope=envelope,
+        grant_record=grant_record,
+        request_resource=request_resource,
+    )
+    if not boundary.allowed:
+        assert boundary.denial is not None
         logger.info(
-            "[connection-hub.oauth.%s_guard] denied reason=credential_resource_missing request_resource=%s",
+            "[connection-hub.oauth.%s_guard] denied reason=%s request_resource=%s",
             surface_label,
+            boundary.denial.reason,
             request_resource,
         )
-        return _json_response(403, "forbidden", "delegated credential resource is missing"), user, envelope, grant_record or {}
-    if not _any_resource_matches(credential_resources, request_resource):
-        logger.info(
-            "[connection-hub.oauth.%s_guard] denied reason=resource_mismatch credential_resources=%s request_resource=%s",
-            surface_label,
-            list(credential_resources),
-            request_resource,
+        return (
+            _surface_policy_denial_response(boundary.denial),
+            user,
+            envelope,
+            grant_record or {},
         )
-        return _json_response(403, "forbidden", "delegated credential resource mismatch"), user, envelope, grant_record or {}
 
     return None, user, envelope, grant_record or {}
 
@@ -1056,7 +821,6 @@ async def authorize_delegated_mcp_request(
     policy = managed_mcp_auth_policy(auth)
     if policy is None:
         return None
-
     if isinstance(_decode_json_body(body), list):
         return _json_response(
             400,
@@ -1064,109 +828,19 @@ async def authorize_delegated_mcp_request(
             "JSON-RPC batch requests are not supported by this MCP transport",
         )
 
-    token = _extract_bearer(request)
-    if not token:
-        LOGGER.info(
-            "[connection-hub.oauth.mcp_guard] denied reason=missing_bearer resource=%s",
-            _request_resource(request),
-        )
-        return _json_response(
-            401,
-            "unauthorized",
-            "Bearer access token is required",
-            headers=_oauth_challenge_headers(request, auth),
-        )
-
-    user = await _authenticate_delegated_client_access_token(token)
-    if user is None:
-        LOGGER.info(
-            "[connection-hub.oauth.mcp_guard] denied reason=invalid_bearer resource=%s",
-            _request_resource(request),
-        )
-        return _json_response(
-            401,
-            "unauthorized",
-            "Bearer access token is invalid",
-            headers=_oauth_challenge_headers(request, auth),
-        )
-
-    roles = set(user.get("roles") or [])
-    permissions = set(user.get("permissions") or [])
-
-    if policy.roles and not roles.intersection(policy.roles):
-        LOGGER.info(
-            "[connection-hub.oauth.mcp_guard] denied reason=missing_role required=%s roles=%s resource=%s",
-            list(policy.roles),
-            sorted(roles),
-            _request_resource(request),
-        )
-        return _json_response(403, "forbidden", "required role is missing")
-    if policy.permissions and not permissions.issuperset(policy.permissions):
-        LOGGER.info(
-            "[connection-hub.oauth.mcp_guard] denied reason=missing_permission required=%s permissions=%s resource=%s",
-            list(policy.permissions),
-            sorted(permissions),
-            _request_resource(request),
-        )
-        return _json_response(403, "forbidden", "required permission is missing")
-
-    grant_record, unavailable = await _access_grant_record(
+    denial, user, envelope, grant_record = await _authorize_delegated_managed_request(
         request=request,
-        token=token,
+        auth=auth,
+        authority_id=policy.authority_id,
+        roles=policy.roles,
+        permissions=policy.permissions,
         logger=LOGGER,
         surface_label="mcp",
     )
-    if unavailable is not None:
-        return unavailable
-    try:
-        grant_record = await _live_grant_record(request, grant_record)
-    except LiveGrantCardError as exc:
-        LOGGER.warning(
-            "[connection-hub.oauth.mcp_guard] denied reason=live_grant_%s resource=%s",
-            exc.reason,
-            _request_resource(request),
-        )
-        return _json_response(
-            503,
-            "temporarily_unavailable",
-            "Current delegated authorization state is unavailable",
-        )
-    envelope = _grant_record_credential(grant_record)
-    try:
-        request.state.delegated_credential = {
-            "user": dict(user or {}),
-            "credential": envelope.to_dict(),
-            "grant_record": dict(grant_record or {}),
-        }
-    except Exception:
-        pass
+    if denial is not None:
+        return denial
 
-    if policy.authority_id:
-        if envelope.issuer_authority_id != policy.authority_id:
-            LOGGER.info(
-                "[connection-hub.oauth.mcp_guard] denied reason=authority_mismatch required=%s got=%s resource=%s",
-                policy.authority_id,
-                envelope.issuer_authority_id,
-                _request_resource(request),
-            )
-            return _json_response(403, "forbidden", "delegated credential authority mismatch")
-
-    credential_resources = _credential_resources(envelope)
     request_resource = _request_resource(request)
-    if not credential_resources:
-        LOGGER.info(
-            "[connection-hub.oauth.mcp_guard] denied reason=credential_resource_missing request_resource=%s",
-            request_resource,
-        )
-        return _json_response(403, "forbidden", "delegated credential resource is missing")
-    if not _any_resource_matches(credential_resources, request_resource):
-        LOGGER.info(
-            "[connection-hub.oauth.mcp_guard] denied reason=resource_mismatch credential_resources=%s request_resource=%s",
-            list(credential_resources),
-            request_resource,
-        )
-        return _json_response(403, "forbidden", "delegated credential resource mismatch")
-
     catalog, unavailable = await _active_catalog(request)
     if catalog is None:
         LOGGER.warning(
@@ -1176,141 +850,35 @@ async def authorize_delegated_mcp_request(
         )
         return _catalog_unavailable_response(unavailable)
 
-    matched_resource = _matched_credential_resource(credential_resources, request_resource)
-    catalog_path = {
-        "catalog": catalog,
-        "grant_record": grant_record,
-        "resource": matched_resource,
-        "request_resource": request_resource,
-        "surface": "mcp",
-    }
-    removed = _capability_denial(kind=CAPABILITY_RESOURCE, **catalog_path)
-    if removed is not None:
-        LOGGER.info(
-            "[connection-hub.oauth.mcp_guard] denied reason=capability_removed path=%s resource=%s",
-            removed["ret"]["requested_capability"],
-            request_resource,
-        )
-        return _capability_denial_response(removed)
-
-    stored_grants = _credential_grants_for_resource(envelope, request_resource)
-    # Stored claims are reduced to what the current resource still permits.
-    available_grants = stored_grants & set(
-        catalog.resource_claims(
-            CapabilityRequest(
-                kind=CAPABILITY_RESOURCE_CLAIM,
-                resource=matched_resource,
-                request_resource=request_resource,
-            )
-        )
+    boundary = authorize_credential_boundary(
+        authority_id=policy.authority_id,
+        required_roles=policy.roles,
+        required_permissions=policy.permissions,
+        user_roles=user.get("roles") or (),
+        user_permissions=user.get("permissions") or (),
+        envelope=envelope,
+        grant_record=grant_record,
+        request_resource=request_resource,
     )
     tool_calls = extract_mcp_tool_calls(body)
-    if not tool_calls:
-        try:
-            store_managed_named_service_admission_snapshot(
-                request,
-                catalog=catalog,
-                grant_record=grant_record or {},
-                credential=envelope,
-                resource=matched_resource,
-                request_resource=request_resource,
-            )
-        except ValueError as exc:
-            LOGGER.warning(
-                "[connection-hub.oauth.mcp_guard] admission snapshot unavailable: %s",
-                exc,
-            )
-            return _json_response(
-                503,
-                "temporarily_unavailable",
-                "Exact delegated-card authority is unavailable for this request",
-            )
-        runtime = delegated_mcp_runtime_projection(request)
-        LOGGER.info(
-            "[connection-hub.oauth.mcp_guard] accepted resource=%s subject=%s grantor=%s delegate=%s authority=%s scopes=%s tools=%s identity_scope=%s tool_calls=0",
-            request_resource,
-            user.get("sub") or "",
-            runtime.get("grantor_user_id") or "",
-            runtime.get("delegate_identity") or "",
-            envelope.issuer_authority_id,
-            sorted(available_grants),
-            list(_as_list(grant_record.get("operations"))) if isinstance(grant_record, Mapping) else [],
-            runtime.get("identity_scope") or "",
-        )
-        return None
-
-    granted_operations = None
-    if isinstance(grant_record, Mapping):
-        granted_operations = set(_as_list(grant_record.get("operations")))
-    tool_policies = _catalog_tool_policies(
+    decision = authorize_mcp_capabilities(
+        boundary=boundary,
+        policy=policy,
         catalog=catalog,
-        resource=matched_resource,
+        grant_record=grant_record,
         request_resource=request_resource,
-        declared=policy.tool_policies,
+        user_roles=user.get("roles") or (),
+        user_permissions=user.get("permissions") or (),
+        tool_calls=tool_calls,
     )
-
-    for rpc_id, tool_name in tool_calls:
-        removed = _capability_denial(
-            kind=CAPABILITY_OUTER_OPERATION, outer_operation=tool_name, **catalog_path
+    if not decision.allowed:
+        assert decision.denial is not None
+        LOGGER.info(
+            "[connection-hub.oauth.mcp_guard] denied reason=%s resource=%s",
+            decision.denial.reason,
+            request_resource,
         )
-        if removed is not None:
-            LOGGER.info(
-                "[connection-hub.oauth.mcp_guard] denied reason=capability_removed path=%s resource=%s",
-                removed["ret"]["requested_capability"],
-                request_resource,
-            )
-            return _rpc_capability_error(rpc_id, removed)
-
-        tool_policy = tool_policies.get(tool_name)
-        if tool_policies and tool_policy is None:
-            return _rpc_tool_error(rpc_id, f"tool not allowed by endpoint policy: {tool_name}")
-
-        if tool_policy is not None:
-            if tool_policy.roles and not roles.intersection(tool_policy.roles):
-                return _rpc_tool_error(rpc_id, f"required role is missing for tool: {tool_name}")
-            if tool_policy.permissions and not permissions.issuperset(tool_policy.permissions):
-                return _rpc_tool_error(rpc_id, f"required permission is missing for tool: {tool_name}")
-            for claim in sorted(set(tool_policy.grants or ()) & (stored_grants - available_grants)):
-                removed = _capability_denial(
-                    kind=CAPABILITY_RESOURCE_CLAIM, claim=claim, **catalog_path
-                )
-                LOGGER.info(
-                    "[connection-hub.oauth.mcp_guard] denied reason=capability_removed path=%s resource=%s",
-                    removed["ret"]["requested_capability"],
-                    request_resource,
-                )
-                return _rpc_capability_error(rpc_id, removed)
-            missing = sorted(set(tool_policy.grants or ()) - available_grants)
-            if missing:
-                return _rpc_capability_error(
-                    rpc_id,
-                    card_boundary_denial(
-                        provenance=_card_provenance(grant_record),
-                        request=CapabilityRequest(
-                            kind=CAPABILITY_RESOURCE_CLAIM,
-                            resource=matched_resource,
-                            request_resource=request_resource,
-                            surface="mcp",
-                            claim=missing[0],
-                        ),
-                    ),
-                )
-
-        if policy.selected_tool_grants:
-            if granted_operations is None or tool_name not in granted_operations:
-                return _rpc_capability_error(
-                    rpc_id,
-                    card_boundary_denial(
-                        provenance=_card_provenance(grant_record),
-                        request=CapabilityRequest(
-                            kind=CAPABILITY_OUTER_OPERATION,
-                            resource=matched_resource,
-                            request_resource=request_resource,
-                            surface="mcp",
-                            outer_operation=tool_name,
-                        ),
-                    ),
-                )
+        return _surface_policy_denial_response(decision.denial)
 
     try:
         store_managed_named_service_admission_snapshot(
@@ -1318,9 +886,9 @@ async def authorize_delegated_mcp_request(
             catalog=catalog,
             grant_record=grant_record or {},
             credential=envelope,
-            resource=matched_resource,
+            resource=decision.matched_resource,
             request_resource=request_resource,
-            outer_operation=tool_calls[0][1],
+            outer_operation=tool_calls[0][1] if tool_calls else "",
         )
     except ValueError as exc:
         LOGGER.warning(
@@ -1332,16 +900,18 @@ async def authorize_delegated_mcp_request(
             "temporarily_unavailable",
             "Exact delegated-card authority is unavailable for this request",
         )
+
     runtime = delegated_mcp_runtime_projection(request)
     LOGGER.info(
-        "[connection-hub.oauth.mcp_guard] accepted resource=%s subject=%s grantor=%s delegate=%s authority=%s scopes=%s tools=%s identity_scope=%s tool_calls=%s",
+        "[connection-hub.oauth.mcp_guard] accepted resource=%s subject=%s grantor=%s "
+        "delegate=%s authority=%s scopes=%s tools=%s identity_scope=%s tool_calls=%s",
         request_resource,
         user.get("sub") or "",
         runtime.get("grantor_user_id") or "",
         runtime.get("delegate_identity") or "",
         envelope.issuer_authority_id,
-        sorted(available_grants),
-        sorted(granted_operations or []),
+        sorted(decision.available_grants),
+        sorted(decision.granted_operations),
         runtime.get("identity_scope") or "",
         [tool for _, tool in tool_calls],
     )
@@ -1355,13 +925,7 @@ async def authorize_delegated_rest_request(
     operation: str,
     method: str = "",
 ) -> Response | None:
-    """Return a denial response or None when the REST operation may run.
-
-    This is the REST analogue of the managed MCP guard. It is intentionally
-    independent of the platform authority that originally authenticated the
-    grantor. The bearer proves a delegated-client credential; the stored grant
-    record projects the runtime platform user.
-    """
+    """Return a denial response or None when the REST operation may run."""
 
     policy = managed_rest_auth_policy(auth)
     if policy is None:
@@ -1391,122 +955,42 @@ async def authorize_delegated_rest_request(
         )
         return _catalog_unavailable_response(unavailable)
 
-    matched_resource = _matched_credential_resource(
-        _credential_resources(envelope), request_resource
+    boundary = authorize_credential_boundary(
+        authority_id=policy.authority_id,
+        required_roles=policy.roles,
+        required_permissions=policy.permissions,
+        user_roles=user.get("roles") or (),
+        user_permissions=user.get("permissions") or (),
+        envelope=envelope,
+        grant_record=grant_record,
+        request_resource=request_resource,
     )
-    catalog_path = {
-        "catalog": catalog,
-        "grant_record": grant_record,
-        "resource": matched_resource,
-        "request_resource": request_resource,
-        "surface": "rest",
-    }
-    removed = _capability_denial(kind=CAPABILITY_RESOURCE, **catalog_path)
-    if removed is None and operation_name:
-        removed = _capability_denial(
-            kind=CAPABILITY_OUTER_OPERATION, outer_operation=operation_name, **catalog_path
-        )
-    if removed is not None:
-        REST_LOGGER.info(
-            "[connection-hub.oauth.rest_guard] denied reason=capability_removed path=%s resource=%s",
-            removed["ret"]["requested_capability"],
-            request_resource,
-        )
-        return _capability_denial_response(removed)
-
-    stored_grants = _credential_grants_for_resource(envelope, request_resource)
-    # Stored claims are reduced to what the current resource still permits, so
-    # a claim removed from the catalog cannot satisfy an endpoint policy.
-    claim_ceiling = catalog.resource_claims(
-        CapabilityRequest(
-            kind=CAPABILITY_RESOURCE_CLAIM,
-            resource=matched_resource,
-            request_resource=request_resource,
-        )
+    decision = authorize_rest_capabilities(
+        boundary=boundary,
+        policy=policy,
+        catalog=catalog,
+        grant_record=grant_record,
+        request_resource=request_resource,
+        operation=operation_name,
+        user_roles=user.get("roles") or (),
+        user_permissions=user.get("permissions") or (),
+        operation_policies=_connection_hub_rest_operation_policies(request),
     )
-    available_grants = stored_grants & set(claim_ceiling)
-
-    def _claim_removed(required: Iterable[str]) -> dict[str, Any] | None:
-        """A required claim the card still carries but the catalog dropped."""
-        for claim in sorted(set(required) & (stored_grants - available_grants)):
-            return _capability_denial(
-                kind=CAPABILITY_RESOURCE_CLAIM, claim=claim, **catalog_path
-            )
-        return None
-
-    removed = _claim_removed(policy.grants or ())
-    if removed is not None:
+    if not decision.allowed:
+        assert decision.denial is not None
         REST_LOGGER.info(
-            "[connection-hub.oauth.rest_guard] denied reason=capability_removed path=%s resource=%s",
-            removed["ret"]["requested_capability"],
+            "[connection-hub.oauth.rest_guard] denied reason=%s resource=%s operation=%s",
+            decision.denial.reason,
             request_resource,
-        )
-        return _capability_denial_response(removed)
-    if policy.grants and not available_grants.issuperset(policy.grants):
-        REST_LOGGER.info(
-            "[connection-hub.oauth.rest_guard] denied reason=missing_grant required=%s available=%s resource=%s operation=%s",
-            list(policy.grants),
-            sorted(available_grants),
-            request_resource,
-            operation,
-        )
-        return _json_response(403, "forbidden", "required delegated grant is missing")
-
-    operation_policies = _connection_hub_rest_operation_policies(request)
-    if not operation_policies:
-        operation_policies = dict(policy.operation_policies or {})
-    selected_operation_grants = policy.selected_operation_grants or bool(operation_policies)
-    operation_policy = operation_policies.get(operation_name)
-    if operation_policies and operation_policy is None:
-        REST_LOGGER.info(
-            "[connection-hub.oauth.rest_guard] denied reason=operation_not_allowed operation=%s configured=%s resource=%s",
             operation_name,
-            sorted(operation_policies.keys()),
-            request_resource,
         )
-        return _json_response(403, "forbidden", f"operation not allowed by endpoint policy: {operation_name}")
-
-    roles = set(user.get("roles") or [])
-    permissions = set(user.get("permissions") or [])
-    if operation_policy is not None:
-        if operation_policy.roles and not roles.intersection(operation_policy.roles):
-            return _json_response(403, "forbidden", f"required role is missing for operation: {operation_name}")
-        if operation_policy.permissions and not permissions.issuperset(operation_policy.permissions):
-            return _json_response(403, "forbidden", f"required permission is missing for operation: {operation_name}")
-        removed = _claim_removed(operation_policy.grants or ())
-        if removed is not None:
-            REST_LOGGER.info(
-                "[connection-hub.oauth.rest_guard] denied reason=capability_removed path=%s resource=%s",
-                removed["ret"]["requested_capability"],
-                request_resource,
-            )
-            return _capability_denial_response(removed)
-        if operation_policy.grants and not available_grants.issuperset(operation_policy.grants):
-            REST_LOGGER.info(
-                "[connection-hub.oauth.rest_guard] denied reason=missing_operation_grant operation=%s required=%s available=%s resource=%s",
-                operation_name,
-                list(operation_policy.grants),
-                sorted(available_grants),
-                request_resource,
-            )
-            return _json_response(403, "forbidden", f"required delegated grant is missing for operation: {operation_name}")
-
-    granted_operations = None
-    if isinstance(grant_record, Mapping):
-        granted_operations = set(_as_list(grant_record.get("operations")))
-    if selected_operation_grants:
-        if granted_operations is None or operation_name not in granted_operations:
-            REST_LOGGER.info(
-                "[connection-hub.oauth.rest_guard] denied reason=operation_not_consented operation=%s consented=%s resource=%s",
-                operation_name,
-                sorted(granted_operations or []),
-                request_resource,
-            )
-            return _json_response(403, "forbidden", f"operation not consented for this connection: {operation_name}")
+        return _surface_policy_denial_response(decision.denial)
 
     runtime = delegated_rest_runtime_projection(request)
     REST_LOGGER.info(
-        "[connection-hub.oauth.rest_guard] accepted resource=%s method=%s operation=%s subject=%s grantor=%s delegate=%s authority=%s scopes=%s operations=%s identity_scope=%s",
+        "[connection-hub.oauth.rest_guard] accepted resource=%s method=%s operation=%s "
+        "subject=%s grantor=%s delegate=%s authority=%s scopes=%s operations=%s "
+        "identity_scope=%s",
         request_resource,
         method,
         operation_name,
@@ -1514,8 +998,8 @@ async def authorize_delegated_rest_request(
         runtime.get("grantor_user_id") or "",
         runtime.get("delegate_identity") or "",
         envelope.issuer_authority_id,
-        sorted(available_grants),
-        sorted(granted_operations or []),
+        sorted(decision.available_grants),
+        sorted(decision.granted_operations),
         runtime.get("identity_scope") or "",
     )
     return None

@@ -1,21 +1,9 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""PKCE (RFC 7636) S256 challenge helpers."""
-from __future__ import annotations
+"""Compatibility alias; implementation lives in prokura.delegated_credentials.oauth.pkce."""
 
-import base64
-import hashlib
-import hmac
+from importlib import import_module as _import_module
+import sys as _sys
 
-
-def make_s256_challenge(code_verifier: str) -> str:
-    """BASE64URL(SHA256(ASCII(code_verifier))) without ``=`` padding."""
-    digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
-    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
-
-
-def verify_s256(code_verifier: str, code_challenge: str) -> bool:
-    """Constant-time check that ``code_verifier`` matches the stored challenge."""
-    expected = make_s256_challenge(code_verifier)
-    return hmac.compare_digest(expected, code_challenge)
+_sys.modules[__name__] = _import_module("prokura.delegated_credentials.oauth.pkce")

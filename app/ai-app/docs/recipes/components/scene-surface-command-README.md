@@ -51,7 +51,7 @@ contract from the host's ack at command time.
 
 Keep a small module that owns the contract constants, the parser, and the
 applied ack (pattern:
-`connection-hub@1-0/ui/widgets/connections/src/api/surfaceCommand.ts`):
+[Connection Hub `surfaceCommand.ts`](https://github.com/elenaviter/app-ecosystem/blob/main/apps/connection-hub%401-0/ui/widgets/connections/src/api/surfaceCommand.ts)):
 
 ```ts
 export function parseMyOpen(data: unknown): MyOpenCommand | null {
@@ -125,7 +125,7 @@ hub widget applies at runtime — the same state its URL deep-link path
 produces: delegated_to_kdcube seeds the consent plan for the provider +
 claims; provider_connections scrolls the provider card into view with the
 tiers preselected; posts the applied ack
-  (connection-hub@1-0/ui/widgets/connections/src/api/surfaceCommand.ts + App.tsx)
+  (the Connection Hub `surfaceCommand.ts` and `App.tsx` in `app-ecosystem`)
 
 unacked (standalone / non-routing host)
   -> window.open(the consent deep-link URL itself)
@@ -136,9 +136,9 @@ groundwork), `bd762da` (website — contract declaration, routing ack,
 summon/focus), `2fb7ade1` (kdcube-ai-app — chat consent emit + workspace scene
 contract).
 
-Source anchors (under `app/ai-app/src/kdcube-ai-app/`):
+Source anchors:
 
-- `kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/ui/widgets/connections/src/api/surfaceCommand.ts` — receiver + applied ack
+- [Connection Hub `surfaceCommand.ts`](https://github.com/elenaviter/app-ecosystem/blob/main/apps/connection-hub%401-0/ui/widgets/connections/src/api/surfaceCommand.ts) - receiver + applied ack
 - `kdcube_ai_app/apps/chat/sdk/solutions/chat/ui/widget/src/host.ts` — emitter, ack-wait, fallback
 - `npm/packages/components-core/src/chat/connectionsConsent.ts` — claim → tier map
 - `kdcube_ai_app/apps/chat/sdk/examples/bundles/workspace@2026-03-31-13-36/ui/scene/src/sceneConfig.ts` — package-host contract declaration

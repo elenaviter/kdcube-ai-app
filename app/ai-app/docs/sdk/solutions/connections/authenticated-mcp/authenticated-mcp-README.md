@@ -173,7 +173,7 @@ refresh, revocation, resource, and per-operation grant machinery. Single-use
 OAuth state changes are atomic across workers, and a pointer-backed credential
 resolves its current Connection Hub card on every managed call and refresh.
 The protocol support boundary and conformance gates are owned by
-[OAuth Delegated Credential Protocol Adapter](../delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md#mcp-2026-07-28-support-boundary).
+[OAuth Delegated Credential Protocol Adapter](https://github.com/elenaviter/app-ecosystem/blob/main/docs/prokura/package/oauth-delegated-credential-protocol.md#mcp-2026-07-28-support-boundary).
 
 ## Layer 5 - namespace boundary policy: door claims per operation
 

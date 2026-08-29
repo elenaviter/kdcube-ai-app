@@ -7,8 +7,8 @@ tags: ["recipes", "connections", "connection-hub", "slack", "oauth", "connected-
 updated_at: 2026-07-28
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/provider-error-contract-README.md
-  - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/docs/integrations/slack.md
-  - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/docs/integrations/README.md
+  - https://github.com/elenaviter/app-ecosystem/blob/main/docs/prokura/frontend/application/integrations/slack.md
+  - https://github.com/elenaviter/app-ecosystem/blob/main/docs/prokura/frontend/application/integrations/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/create-delegated-automation-access-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/named-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md

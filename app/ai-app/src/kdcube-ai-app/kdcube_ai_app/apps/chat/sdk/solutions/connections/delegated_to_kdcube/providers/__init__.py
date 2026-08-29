@@ -1,27 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""Built-in delegated to KDCube adapters."""
+"""Compatibility surface; implementation lives in prokura.delegated_to_kdcube.providers."""
 
-from __future__ import annotations
-
-# Imports register adapters through decorators.
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.providers.email import EmailAppPasswordAdapter
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.providers.generic_oauth import (
-    GenericOAuthAdapter,
-    GenericOIDCAdapter,
-)
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.providers.google import GoogleOAuthAdapter
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.providers.linkedin import (
-    LinkedInMemberAdapter,
-)
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.providers.slack import SlackUserTokenAdapter
-
-__all__ = [
-    "EmailAppPasswordAdapter",
-    "GenericOAuthAdapter",
-    "GenericOIDCAdapter",
-    "GoogleOAuthAdapter",
-    "LinkedInMemberAdapter",
-    "SlackUserTokenAdapter",
-]
+from prokura.delegated_to_kdcube.providers import *  # noqa: F401,F403
+from prokura.delegated_to_kdcube.providers import __all__

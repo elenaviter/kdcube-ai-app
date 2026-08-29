@@ -7,7 +7,7 @@ tags: ["recipes", "connections", "connection-hub", "google", "gmail", "sheets", 
 keywords: ["google connected account", "google docs named service", "google sheets tools", "google oauth scopes", "document tab selector", "document comment selector"]
 updated_at: 2026-08-01
 see_also:
-  - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/docs/integrations/google.md
+  - https://github.com/elenaviter/app-ecosystem/blob/main/docs/prokura/frontend/application/integrations/google.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/google/google-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/mail-named-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/resolve-connected-credential-README.md
@@ -39,7 +39,7 @@ client, adapter, or code.
 
 The Google Cloud work happens **outside** KDCube and is documented once in the
 bundle-local operator doc. Do it there, not here:
-[Connection Hub - Google (Gmail and Sheets) setup](../../../../src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/docs/integrations/google.md).
+[Connection Hub - Google (Gmail, Sheets, and Docs) setup](https://github.com/elenaviter/app-ecosystem/blob/main/docs/prokura/frontend/application/integrations/google.md).
 
 That doc covers, in one place:
 

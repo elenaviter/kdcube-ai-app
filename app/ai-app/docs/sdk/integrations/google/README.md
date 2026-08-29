@@ -7,7 +7,7 @@ keywords: ["google integration", "gmail integration", "sheets integration", "goo
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/google/google-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-service-README.md
-  - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/docs/integrations/google.md
+  - https://github.com/elenaviter/app-ecosystem/blob/main/docs/prokura/frontend/application/integrations/google.md
 ---
 
 # Google Integration Docs
@@ -28,4 +28,4 @@ Use these docs in this order:
 
 The external operator setup (Google Cloud project, OAuth client, redirect URIs,
 and per-service API enablement) lives in the bundle-local
-[Connection Hub Google setup](repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/docs/integrations/google.md).
+[Connection Hub Google setup](https://github.com/elenaviter/app-ecosystem/blob/main/docs/prokura/frontend/application/integrations/google.md).

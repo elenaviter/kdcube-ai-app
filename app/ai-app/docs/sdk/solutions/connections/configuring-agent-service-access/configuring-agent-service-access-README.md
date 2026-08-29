@@ -298,8 +298,8 @@ reference to copy from when wiring a new deployment or a new agent:
   `connection-hub@1-0` entry carries Surface A; its
   `ported-langgraph-agents@2026-07-13` agent carries the Surface B connection as
   a documented, off-by-default template (both connection shapes shown inline).
-- **The Connection Hub bundle template** —
-  `…/examples/bundles/connection-hub@1-0/config/bundles.template.yaml`, the
+- **The Connection Hub app template** -
+  [`apps/connection-hub@1-0/config/bundles.template.yaml`](https://github.com/elenaviter/app-ecosystem/blob/main/apps/connection-hub%401-0/config/bundles.template.yaml), the
   canonical `delegated_to_kdcube` provider/connector/claim block and the
   `consent_ui` options.
 - **The agent's named-services config guide** (worked example, both shapes) —

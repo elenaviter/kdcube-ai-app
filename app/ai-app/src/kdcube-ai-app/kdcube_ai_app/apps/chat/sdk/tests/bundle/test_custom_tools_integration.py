@@ -87,22 +87,19 @@ class TestToolSubsystemNoConflicts:
 class TestBundleGraphHasRunMethod:
     """Test that the bundle graph exposes ainvoke for LangGraph tool calls."""
 
-    def test_bundle_graph_has_ainvoke(self, bundle):
+    def test_bundle_graph_has_ainvoke(self, bundle_graph):
         """Compiled graph exposes ainvoke (prerequisite for tool-calling nodes)."""
-        graph = bundle._build_graph()
-        assert hasattr(graph, "ainvoke"), "Compiled graph must expose ainvoke()"
-        assert callable(graph.ainvoke)
+        assert hasattr(bundle_graph, "ainvoke"), "Compiled graph must expose ainvoke()"
+        assert callable(bundle_graph.ainvoke)
 
-    def test_bundle_graph_has_get_graph(self, bundle):
+    def test_bundle_graph_has_get_graph(self, bundle_graph):
         """Compiled graph exposes get_graph() for introspection."""
-        graph = bundle._build_graph()
-        assert hasattr(graph, "get_graph")
-        assert callable(graph.get_graph)
+        assert hasattr(bundle_graph, "get_graph")
+        assert callable(bundle_graph.get_graph)
 
-    def test_bundle_graph_nodes_are_connected(self, bundle):
+    def test_bundle_graph_nodes_are_connected(self, bundle_graph):
         """Every real node is connected to at least one edge (no orphaned tool nodes)."""
-        graph = bundle._build_graph()
-        inner = graph.get_graph()
+        inner = bundle_graph.get_graph()
         all_nodes = set(inner.nodes) - {"__start__", "__end__"}
         connected = set()
         for e in inner.edges:

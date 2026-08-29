@@ -22,11 +22,6 @@ def _ai_app_root() -> pathlib.Path:
 
 
 _AI_APP_ROOT = _ai_app_root()
-_REFERENCE_DESCRIPTOR = (
-    _AI_APP_ROOT
-    / "src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles"
-    / "connection-hub@1-0/config/bundles.template.yaml"
-)
 _DEPLOYED_DESCRIPTOR = _AI_APP_ROOT / "deployment/bundles.yaml"
 
 
@@ -88,12 +83,8 @@ def _descriptor_connections(path: pathlib.Path) -> dict:
     return found[0]
 
 
-def test_reference_and_deployed_descriptors_declare_the_same_residency():
-    reference = DelegatedCacheSettings.from_connections(
-        _descriptor_connections(_REFERENCE_DESCRIPTOR)
-    )
+def test_default_install_descriptor_declares_prokura_cache_defaults():
     deployed = DelegatedCacheSettings.from_connections(
         _descriptor_connections(_DEPLOYED_DESCRIPTOR)
     )
-    assert reference == deployed
-    assert reference == DelegatedCacheSettings()
+    assert deployed == DelegatedCacheSettings()

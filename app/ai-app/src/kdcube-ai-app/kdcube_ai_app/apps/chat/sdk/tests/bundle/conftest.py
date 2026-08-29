@@ -195,3 +195,12 @@ def bundle(bundle_dir, bundle_id, redis_client, pg_pool, comm_context):
         pytest.skip(f"Cannot import bundle infrastructure: {str(e)}")
     except Exception as e:
         pytest.skip(f"Cannot initialize bundle at '{bundle_dir}': {str(e)}")
+
+
+@pytest.fixture
+def bundle_graph(bundle):
+    """Build the app graph when the selected app declares that capability."""
+    build_graph = getattr(bundle, "_build_graph", None)
+    if not callable(build_graph):
+        pytest.skip("Selected app declares no graph execution capability")
+    return build_graph()

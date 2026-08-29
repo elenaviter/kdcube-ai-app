@@ -8,6 +8,10 @@ PyYAML==6.0.2
 python-dotenv==1.1.1
 python-socketio==5.13.0
 redis==6.2.0
+# Delegated-access authority. Use the repository reference until Prokura is
+# published as a versioned package.
+prokura @ git+https://github.com/elenaviter/app-ecosystem@main#subdirectory=packages/prokura
+
 requests==2.32.5
 uvicorn==0.37.0
 asyncpg

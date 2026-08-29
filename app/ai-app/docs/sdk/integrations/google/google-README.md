@@ -9,7 +9,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/resolve-connected-credential-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/provider-error-contract-README.md
-  - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/docs/integrations/google.md
+  - https://github.com/elenaviter/app-ecosystem/blob/main/docs/prokura/frontend/application/integrations/google.md
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/connections/delegated_to_kdcube/providers/google.py
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/integrations/google/sheets_proxy.py
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/integrations/google/docs_proxy.py
@@ -28,7 +28,7 @@ It is provider mechanics, not deployment steps. For the end-to-end recipe
 [Google Services Through KDCube](../../../recipes/connections/integrations/google-service-README.md).
 For the external Google Cloud setup (project, OAuth client, redirect URIs, and
 per-service API enablement) read the bundle-local
-[Connection Hub Google setup](repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/docs/integrations/google.md).
+[Connection Hub Google setup](https://github.com/elenaviter/app-ecosystem/blob/main/docs/prokura/frontend/application/integrations/google.md).
 
 ## The `google.oauth` adapter
 
