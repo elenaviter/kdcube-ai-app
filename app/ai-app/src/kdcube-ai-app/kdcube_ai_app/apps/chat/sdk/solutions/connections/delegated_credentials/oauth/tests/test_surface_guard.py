@@ -511,7 +511,9 @@ def test_managed_mcp_guard_applies_live_operation_narrowing(monkeypatch):
     assert response.status_code == 200
     result = response.json()["result"]
     assert result["isError"] is True
-    assert "not consented" in result["content"][0]["text"]
+    body = json.loads(result["content"][0]["text"])
+    assert body["error"]["code"] == "delegated_capability_not_granted"
+    assert body["ret"]["requested_capability"]["kind"] == "outer_operation"
 
 
 def test_managed_guard_uses_connection_hub_resource_policy(monkeypatch):
@@ -963,7 +965,7 @@ def test_managed_guard_enforces_grants_per_called_tool(monkeypatch):
     assert response.status_code == 200
     result = response.json()["result"]
     assert result["isError"] is True
-    assert "required delegated grant is missing for tool: memory_delete" in result["content"][0]["text"]
+    assert "delegated_capability_not_granted" in result["content"][0]["text"]
 
 
 def test_managed_guard_fails_closed_when_tool_not_consented(monkeypatch):
@@ -984,7 +986,9 @@ def test_managed_guard_fails_closed_when_tool_not_consented(monkeypatch):
     assert response.status_code == 200
     result = response.json()["result"]
     assert result["isError"] is True
-    assert "not consented" in result["content"][0]["text"]
+    body = json.loads(result["content"][0]["text"])
+    assert body["error"]["code"] == "delegated_capability_not_granted"
+    assert body["ret"]["requested_capability"]["kind"] == "outer_operation"
 
 
 def test_managed_guard_rejects_resource_mismatch(monkeypatch):
@@ -1247,6 +1251,108 @@ def test_a_claim_removed_from_the_catalog_denies_the_rest_operation(monkeypatch)
     assert path["claim"] == "records:read"
 
 
+# -- the per-tool claim check reads the catalog, not request-local Hub config ---
+#
+# Effective props are an input to publication, not to governed authorization. The
+# per-tool map used to be built from request-local Connection Hub config, which
+# only the platform authentication surface and the Hub's own routes bind — so a
+# door served through a bundle route saw an empty map and skipped the whole
+# per-tool block, claim checks included. These pin the claim to the catalog and
+# keep the surface declaration as the source of roles and permissions.
+
+
+def test_a_claim_removed_from_the_catalog_denies_the_mcp_tool(monkeypatch):
+    """The mirror of the REST case, on a door that declares no tool policy."""
+    client = _client(
+        monkeypatch,
+        connections=_connections_without(claim="records:read"),
+        auth={
+            "mode": "managed",
+            "authority_id": "delegated_client",
+            "selected_tool_grants": True,
+        },
+        grant_record={"operations": ["records_export"], "credential": _authority()},
+    )
+
+    response = client.post(
+        "/guard", json=_rpc_tool_call(), headers={"Authorization": "Bearer reader"},
+    )
+
+    assert response.status_code == 200
+    body = json.loads(response.json()["result"]["content"][0]["text"])
+    assert body["error"]["code"] == "delegated_capability_no_longer_available"
+    path = body["ret"]["requested_capability"]
+    assert path["kind"] == "resource_claim"
+    assert path["claim"] == "records:read"
+
+
+def test_the_surface_declaration_still_supplies_roles(monkeypatch):
+    """Grants move to the catalog; roles and permissions do not, because a
+    catalog row does not carry them."""
+    client = _client(
+        monkeypatch,
+        auth={
+            "mode": "managed",
+            "authority_id": "delegated_client",
+            "tools": {"records_export": {"roles": ["kdcube:role:nobody"]}},
+            "selected_tool_grants": True,
+        },
+        grant_record={"operations": ["records_export"], "credential": _authority()},
+    )
+
+    response = client.post(
+        "/guard", json=_rpc_tool_call(), headers={"Authorization": "Bearer reader"},
+    )
+
+    assert response.status_code == 200
+    assert "required role is missing" in response.json()["result"]["content"][0]["text"]
+
+
+def test_a_refused_tool_call_is_shaped_like_a_call_tool_result(monkeypatch):
+    """The guard answers before the MCP application runs, so it builds this
+    envelope itself. `mcp_types.CallToolResult` carries `resultType`, and a
+    client validating against that model discards an envelope without it —
+    never reaching the body, whatever the body says."""
+    client = _client(
+        monkeypatch,
+        connections=_connections_without(tool="records_export"),
+        grant_record={"operations": ["records_export"], "credential": _authority()},
+    )
+
+    response = client.post(
+        "/guard", json=_rpc_tool_call(), headers={"Authorization": "Bearer reader"},
+    )
+
+    result = response.json()["result"]
+    assert result["resultType"] == "complete"
+    assert result["isError"] is True
+
+
+def test_every_refusal_carries_a_structured_body(monkeypatch):
+    """A capability the card never held and one the catalog withdrew are
+    different answers, and both are objects: a bare sentence cannot say which
+    side refused, nor name the card or the operation."""
+    withdrawn = _client(
+        monkeypatch,
+        connections=_connections_without(tool="records_export"),
+        grant_record={"operations": ["records_export"], "credential": _authority()},
+    ).post("/guard", json=_rpc_tool_call(), headers={"Authorization": "Bearer reader"})
+    not_held = _client(
+        monkeypatch,
+        grant_record={"operations": [], "credential": _authority()},
+    ).post("/guard", json=_rpc_tool_call(), headers={"Authorization": "Bearer reader"})
+
+    for response, code in (
+        (withdrawn, "delegated_capability_no_longer_available"),
+        (not_held, "delegated_capability_not_granted"),
+    ):
+        body = json.loads(response.json()["result"]["content"][0]["text"])
+        assert body["error"]["code"] == code
+        path = body["ret"]["requested_capability"]
+        assert path["kind"] == "outer_operation"
+        assert path["outer_operation"] == "records_export"
+
+
 def test_a_card_that_still_matches_the_catalog_is_admitted(monkeypatch):
     client = _client(
         monkeypatch,
@@ -1407,7 +1513,9 @@ def test_a_capability_the_catalog_still_offers_keeps_the_consent_path(monkeypatc
     result = response.json()["result"]
     assert result["isError"] is True
     text = result["content"][0]["text"]
-    assert "not consented" in text
+    body = json.loads(text)
+    assert body["error"]["code"] == "delegated_capability_not_granted"
+    assert body["ret"]["requested_capability"]["kind"] == "outer_operation"
     assert "delegated_capability_no_longer_available" not in text
 
 
@@ -1487,6 +1595,40 @@ def test_an_administrator_card_still_reaches_the_wildcard_row(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["ok"] is True
+
+
+@pytest.mark.parametrize(
+    ("constraint", "required", "message"),
+    [
+        ("roles", ["kdcube:role:nobody"], "required role is missing"),
+        ("permissions", ["kdcube:nobody"], "required permission is missing"),
+    ],
+)
+def test_the_administrator_wildcard_keeps_surface_tool_constraints(
+    monkeypatch, constraint, required, message,
+):
+    """The wildcard delegates endpoint-owned operations, not an escape from
+    the endpoint's declared role and permission checks."""
+    authority = _authority(scopes=["kdcube:role:super-admin"])
+    authority["attrs"]["resource_grants"] = {"*": ["kdcube:role:super-admin"]}
+    client = _client(
+        monkeypatch,
+        connections=_connections_with_admin_wildcard(keep_guard_resource=False),
+        auth={
+            "mode": "managed",
+            "authority_id": "delegated_client",
+            "tools": {"records_export": {constraint: required}},
+            "selected_tool_grants": True,
+        },
+        grant_record={"operations": ["records_export"], "credential": authority},
+    )
+
+    response = client.post(
+        "/guard", json=_rpc_tool_call(), headers={"Authorization": "Bearer reader"},
+    )
+
+    assert response.status_code == 200
+    assert message in response.json()["result"]["content"][0]["text"]
 
 
 def test_a_surviving_resource_is_unaffected_by_the_wildcard_row(monkeypatch):

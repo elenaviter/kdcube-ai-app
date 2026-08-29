@@ -246,3 +246,60 @@ def test_production_dispatch_calls_name_their_admission():
                 missing.append(f"{path.relative_to(sdk_root)}:{node.lineno}")
 
     assert missing == []
+
+
+# -- a caller loaded by path holds its own generation of this package ---------
+#
+# `tool_subsystem` loads a tools module referenced by PATH through
+# `load_dynamic_module_for_path`, which builds a synthetic package. The module's
+# relative imports then resolve inside it, so the request reaching admission is
+# a same-shaped class from another generation while admission holds this one.
+
+
+def _foreign_generation_request():
+    """A decoded request as a second generation of this package would build it."""
+
+    namespace = {}
+    exec(  # noqa: S102 - a deliberate second class object with the same shape
+        "class NamedServiceRequest:\n"
+        "    def __init__(self, namespace, operation):\n"
+        "        self.namespace = namespace\n"
+        "        self.operation = operation\n"
+        "        self.action = None\n"
+        "    def to_dict(self):\n"
+        "        return {'namespace': self.namespace, 'operation': self.operation}\n",
+        namespace,
+    )
+    return namespace["NamedServiceRequest"](namespace="mail", operation="object.search")
+
+
+def test_a_request_from_another_generation_of_this_package_is_admitted():
+    foreign = _foreign_generation_request()
+    assert not isinstance(foreign, NamedServiceRequest)
+
+    admission = NamedServiceAdmission.application(source="test")
+    admission.validate(foreign)  # must not raise
+
+
+def test_something_that_is_not_a_request_is_still_refused():
+    admission = NamedServiceAdmission.application(source="test")
+    with pytest.raises(TypeError):
+        admission.validate(object())
+
+
+@pytest.mark.asyncio
+async def test_a_foreign_generation_request_reaches_the_provider(monkeypatch):
+    seen = {}
+
+    async def _module_call(endpoint, request):
+        seen["operation"] = request.operation
+        return NamedServiceResponse.ok_response(namespace=request.namespace)
+
+    monkeypatch.setattr(api_client, "_call_module_endpoint", _module_call)
+    response = await call_named_service_endpoint(
+        _endpoint(),
+        _foreign_generation_request(),
+        admission=NamedServiceAdmission.application(source="test"),
+    )
+    assert response.ok is True
+    assert seen["operation"] == "object.search"

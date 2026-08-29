@@ -127,21 +127,33 @@ class DelegatedCardResolver:
     ) -> list[CardAuthority]:
         """Active, unexpired cards for one grantor.
 
-        The index only accelerates discovery: every member is resolved through
-        the card cache/store, and a member that no longer resolves is pruned.
-        Losing the index cannot hide a live durable card.
+        Durable membership decides who is listed; the index only accelerates
+        discovery and carries expiry scores. Every candidate is resolved through
+        the card cache/store: one that no longer resolves is pruned, and one the
+        index lost is re-admitted. Losing the index, whole or in part, cannot
+        hide a live durable card.
+
+        The durable listing costs one directory read per call. Divergence
+        between the index and durable membership cannot be detected without it,
+        so the alternative is a card that stays invisible to its own grantor.
         """
         moment = int(now if now is not None else time.time())
         try:
             members = await self._cache.index_members(subject_hash=subject_hash, now=moment)
         except Exception as exc:
             raise CardUnavailable("cache_unavailable") from exc
+        try:
+            durable_ids = await self._store.list_card_ids(subject_hash=subject_hash)
+        except Exception as exc:
+            raise CardUnavailable("durable_card_unreadable") from exc
 
-        if not members:
-            members = await self._rebuild_index(subject_hash=subject_hash, moment=moment)
+        indexed = set(members)
+        candidates = list(members) + [
+            access_id for access_id in durable_ids if access_id not in indexed
+        ]
 
         found: list[CardAuthority] = []
-        for access_id in members:
+        for access_id in candidates:
             try:
                 authority = await self.resolve(
                     subject_hash=subject_hash, access_id=access_id, now=moment
@@ -151,41 +163,26 @@ class DelegatedCardResolver:
             if authority is None:
                 await self._forget(subject_hash=subject_hash, access_id=access_id)
                 continue
+            if access_id not in indexed:
+                await self._readmit(subject_hash=subject_hash, authority=authority)
             found.append(authority)
         found.sort(key=lambda item: item.created_at, reverse=True)
         return found
 
-    async def _rebuild_index(self, *, subject_hash: str, moment: int) -> list[str]:
+    async def _readmit(self, *, subject_hash: str, authority: CardAuthority) -> None:
+        """Return a resolved card the index lost. Never blocks the listing."""
         try:
-            card_ids = await self._store.list_card_ids(subject_hash=subject_hash)
-        except Exception as exc:
-            raise CardUnavailable("durable_card_unreadable") from exc
-
-        restored: list[str] = []
-        for access_id in card_ids:
-            try:
-                current = await self._store.read_current_authority(
-                    subject_hash=subject_hash, access_id=access_id
-                )
-            except Exception:
-                _LOGGER.warning(
-                    "[connection-hub.delegated-cards] index rebuild skipped card=%s",
-                    access_id,
-                    exc_info=True,
-                )
-                continue
-            if current is None:
-                continue
-            _, authority = current
-            if not authority_is_usable(authority, moment):
-                continue
             await self._cache.index_add(
                 subject_hash=subject_hash,
-                access_id=access_id,
+                access_id=authority.access_id,
                 expires_at=authority.expires_at,
             )
-            restored.append(access_id)
-        return restored
+        except Exception:
+            _LOGGER.warning(
+                "[connection-hub.delegated-cards] index readmit failed card=%s",
+                authority.access_id,
+                exc_info=True,
+            )
 
     async def _forget(self, *, subject_hash: str, access_id: str) -> None:
         try:

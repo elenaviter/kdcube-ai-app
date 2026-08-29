@@ -43,6 +43,33 @@ def test_run_once_for_shared_bundle_storage_runs_action_and_writes_signature(tmp
     assert signature_path.read_text(encoding="utf-8").strip() == "sig-1"
 
 
+def test_run_once_writes_the_signature_discovered_inside_the_action(tmp_path):
+    storage_root = tmp_path / "storage"
+    signature_path = storage_root / ".demo.signature"
+    output_path = storage_root / "output.txt"
+    committed = {"signature": "sig-1"}
+
+    async def _action():
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text("ok", encoding="utf-8")
+        committed["signature"] = "sig-2"
+
+    result = asyncio.run(
+        run_once_for_shared_bundle_storage(
+            storage_root=storage_root,
+            operation="demo",
+            signature_path=signature_path,
+            signature="sig-1",
+            ready=output_path.exists,
+            action=_action,
+            signature_after_action=lambda: committed["signature"],
+        )
+    )
+
+    assert result.status == "ran"
+    assert signature_path.read_text(encoding="utf-8").strip() == "sig-2"
+
+
 def test_run_once_for_shared_bundle_storage_skips_when_current(tmp_path):
     storage_root = tmp_path / "storage"
     storage_root.mkdir()

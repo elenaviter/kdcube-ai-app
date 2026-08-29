@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { connectionsConsentOpen, consentOpenForClaims, consentTiersForClaims } from '../dist/chat/index.js'
+import { agentGrantConsentOpen, connectionsConsentOpen, consentOpenForClaims, consentTiersForClaims } from '../dist/chat/index.js'
 
 // Surfaced live case: the backend consent deep link points at the
 // Delegated-to-KDCube consent plan; the hub-open payload must carry that tab
@@ -77,4 +77,30 @@ test('a picker consent affordance seeds the plan with exactly the named claims',
   // No served URL of its own: a host without the scene contract falls back
   // to the widget's served-URL path.
   assert.equal(open.url, '')
+})
+
+// The structured scene payload and the served deep link must agree: the URL
+// fallback already carries these two, so a host with the scene contract must
+// not receive less.
+test('an agent grant open carries the inner operation when the demand names one', () => {
+  const open = agentGrantConsentOpen({
+    agentClientId: 'kdcube-agent:app:main',
+    resource: 'https://h/api/mcp/named_services',
+    claims: ['named_services:use'],
+    namespace: 'task',
+    operation: 'object.search',
+  })
+  assert.equal(open.tab, 'delegated_by_kdcube')
+  assert.equal(open.params.namespace, 'task')
+  assert.equal(open.params.operation, 'object.search')
+})
+
+test('an agent grant open omits the inner operation when the demand names none', () => {
+  const open = agentGrantConsentOpen({
+    agentClientId: 'kdcube-agent:app:main',
+    resource: 'https://h/api/mcp/mem',
+    claims: ['memories:read'],
+  })
+  assert.equal('namespace' in open.params, false)
+  assert.equal('operation' in open.params, false)
 })

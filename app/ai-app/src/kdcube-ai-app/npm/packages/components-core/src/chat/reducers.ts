@@ -267,6 +267,10 @@ function connectedAccountConsentBanner(data: Record<string, unknown> | undefined
   const agentClientId = firstString(consent.agent_client_id, grantPayload?.client_id, urlParams.agent_client_id)
   if (agentClientId) {
     const resource = firstString(consent.resource, grantPayload?.resource, urlParams.resource)
+    // The inner operation the demand is about. The panel seeds its picker from
+    // these, so dropping them opens the grant with nothing selected.
+    const grantNamespace = firstString(consent.namespace, urlParams.namespace)
+    const grantOperation = firstString(consent.operation, urlParams.operation)
     const explicitGrantClaims = firstStringList(grant?.claims, grantPayload?.claims, urlParams.claims)
     const grantClaims = explicitGrantClaims.length ? explicitGrantClaims : (accountClaim ? [] : claims)
     const displayClaims = accountClaim ? [accountClaim] : grantClaims
@@ -280,7 +284,16 @@ function connectedAccountConsentBanner(data: Record<string, unknown> | undefined
       text: text || `Grant this agent access to ${resource || 'your data'}.`,
       actionLabel: actionLabel || 'Grant access',
       actionUrl: url,
-      consent: agentGrantConsentOpen({ agentClientId, resource, claims: grantClaims, accountId, accountClaim, url }),
+      consent: agentGrantConsentOpen({
+        agentClientId,
+        resource,
+        claims: grantClaims,
+        namespace: grantNamespace,
+        operation: grantOperation,
+        accountId,
+        accountClaim,
+        url,
+      }),
       // The supersession prefix runs through the FIRST '|': keep agent AND
       // resource before it, so one agent's demands on different resources
       // coexist as separate banners (memories next to the named-services

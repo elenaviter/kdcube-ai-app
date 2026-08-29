@@ -83,6 +83,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.car
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.cards.service import (
     CardCommitFailed,
     CardConflict,
+    CardServingUnavailable,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.catalog.resolver import (
     CatalogUnavailable,
@@ -101,6 +102,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.car
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.catalog.authorization import (
     CAPABILITY_NAMED_SERVICE_OPERATION,
+    CAPABILITY_RESOURCE_CLAIM,
     ActiveCatalogCapabilities,
     CapabilityRequest,
     CardProvenance,
@@ -464,6 +466,23 @@ async def read_agent_grant_record(
     return record
 
 
+def _serving_state_unavailable(exc: CardServingUnavailable) -> dict[str, Any]:
+    """The revision is committed; its serving state is not.
+
+    Names the card so a caller that minted credential material it never
+    received can point at it. Retrying creates a second card when the id is
+    random, so the answer says which one already exists.
+    """
+    return {
+        "ok": False,
+        "error": "delegated_card_serving_state_unavailable",
+        "reason": exc.reason,
+        "access_id": exc.access_id,
+        "retryable": True,
+        "status": 503,
+    }
+
+
 def _selection_policy_argument(
     selection: NamedServiceSelection,
 ) -> dict[str, dict[str, list[str]]] | None:
@@ -788,6 +807,48 @@ def record_from_card(
         access_token=held.access_token,
         last_issued_at=authority.last_issued_at,
     )
+
+
+def _card_holds_resource(record: Any, configured_resource: str) -> bool:
+    """Whether a card's stored resources reach a configured row."""
+    grants = getattr(record, "resource_grants", None) or {}
+    if configured_resource in grants:
+        return True
+    from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.credential_view import (
+        resource_matches,
+    )
+
+    return any(
+        resource_matches(configured_resource, str(stored or ""))
+        or resource_matches(str(stored or ""), configured_resource)
+        for stored in grants
+    )
+
+
+def _card_claims_for_resource(record: Any, configured_resource: str) -> set[str]:
+    """The card's claims that apply to a configured resource row.
+
+    A card keys `resource_grants` by what its issuance saw: an agent or manual
+    card by the configured selector, an OAuth card by the concrete request URL.
+    An exact lookup by the row's selector therefore reads empty for the URL
+    shape and reports every required claim as missing. Matching is the same
+    wildcard match the guard uses to decide which row governs the request.
+    """
+    from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.credential_view import (
+        resource_matches,
+    )
+
+    grants = getattr(record, "resource_grants", None) or {}
+    exact = grants.get(configured_resource)
+    if exact is not None:
+        return {_clean(item) for item in exact if _clean(item)}
+    out: set[str] = set()
+    for stored, held in grants.items():
+        if resource_matches(configured_resource, str(stored or "")) or resource_matches(
+            str(stored or ""), configured_resource
+        ):
+            out.update(_clean(item) for item in (held or ()) if _clean(item))
+    return out
 
 
 class AutomationAccessService:
@@ -1740,6 +1801,8 @@ class AutomationAccessService:
         )
         try:
             await self._persist_record(record, expected_revision=committed_revision)
+        except CardServingUnavailable as exc:
+            return _serving_state_unavailable(exc)
         except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
             return {
                 "ok": False,
@@ -1942,8 +2005,9 @@ class AutomationAccessService:
                     "endpoints that differ on separate cards."
                 ),
             })
-        # Recompute the boundary tree here: the descriptor is available in this
-        # process, the guard's is not.
+        # Materialize the boundary tree from the same active catalog the rows
+        # came from, so the stored tree and the version stamped on the card
+        # describe one generation.
         named_services: dict[str, Any] = {}
         for resource_value, cfg in resource_pairs:
             if not isinstance(cfg.named_services, Mapping):
@@ -2130,6 +2194,8 @@ class AutomationAccessService:
         del remaining
         try:
             await self._persist_record(updated, expected_revision=existing.card_revision)
+        except CardServingUnavailable as exc:
+            return _serving_state_unavailable(exc)
         except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
             return {
                 "ok": False,
@@ -2240,9 +2306,11 @@ class AutomationAccessService:
         active = await self._active_catalog()
         catalog = ActiveCatalogCapabilities(active)
         for cfg in oauth_delegated_config_from_connections(active.connections).resources:
-            if (
-                exact_record is not None
-                and cfg.resource not in exact_record.resource_grants
+            # Which row an exact card reaches. Membership by key alone reads
+            # empty for a card whose grants are keyed by the request URL, so the
+            # row that governs it is found the same way the guard finds it.
+            if exact_record is not None and not _card_holds_resource(
+                exact_record, cfg.resource
             ):
                 continue
             named = cfg.named_services if isinstance(cfg.named_services, Mapping) else None
@@ -2308,11 +2376,33 @@ class AutomationAccessService:
             )
             if removed is not None:
                 return {"governed": True, "granted": False, "removed": removed}
+            # The claim the operation costs is subject to the same ceiling as the
+            # operation itself. A claim the card holds and the catalog no longer
+            # publishes is a removal, not a missing grant: it answers `removed`
+            # rather than `missing_claims`, or the caller is told to ask for
+            # consent that nobody can give.
+            for claim in sorted(required):
+                removed = authorize_current_capability(
+                    catalog=catalog,
+                    provenance=CardProvenance(
+                        access_id=record.access_id if record is not None else "",
+                        card_revision=record.card_revision if record is not None else 0,
+                        catalog_version=record.catalog_version if record is not None else "",
+                    ),
+                    request=CapabilityRequest(
+                        kind=CAPABILITY_RESOURCE_CLAIM,
+                        resource=cfg.resource,
+                        surface="named_service",
+                        claim=claim,
+                    ),
+                )
+                if removed is not None:
+                    return {"governed": True, "granted": False, "removed": removed}
             granted = False
             missing_claims: list[str] = sorted(required)
             not_granted: dict[str, Any] | None = None
             if record is not None:
-                held = set(record.resource_grants.get(cfg.resource, ()))
+                held = _card_claims_for_resource(record, cfg.resource)
                 missing_claims = sorted(required - held)
                 granted = not missing_claims
                 if granted:
@@ -2475,7 +2565,14 @@ class AutomationAccessService:
         grants: Iterable[str],
         config: Any = None,
     ) -> dict[str, Any]:
-        """The boundary tree a selection expands to for one resource."""
+        """The boundary tree a selection expands to for one resource.
+
+        The selection is looked up under the caller's ``resource``, which is the
+        key the card stores it under. The configured row is still resolved by
+        pattern, but its selector is not that key: an OAuth consent records the
+        concrete request URL, so looking up under ``cfg.resource`` misses and
+        narrows the boundary to nothing.
+        """
         source = config or self._config
         cfg = source.resource_config(resource) if resource else None
         if cfg is None or not isinstance(getattr(cfg, "named_services", None), Mapping):
@@ -2483,7 +2580,7 @@ class AutomationAccessService:
         try:
             return named_service_policy_for_resource(
                 named_services=cfg.named_services,
-                resource=cfg.resource,
+                resource=resource,
                 selection=_selection_policy_argument(selection),
                 grants=list(grants),
             )
@@ -3053,6 +3150,8 @@ class AutomationAccessService:
         )
         try:
             await self._persist_record(updated, expected_revision=record.card_revision)
+        except CardServingUnavailable as exc:
+            return _serving_state_unavailable(exc)
         except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
             return {
                 "ok": False,
@@ -3103,7 +3202,22 @@ class AutomationAccessService:
             return {"ok": False, "error": "delegated_access_cross_user_access_denied"}
         # The revoked revision commits before any credential cleanup, so a
         # failure below cannot leave the card usable.
-        await self._forget_record(record)
+        serving_error: CardServingUnavailable | None = None
+        try:
+            await self._forget_record(record)
+        except CardServingUnavailable as exc:
+            # Durable revocation already won. Continue invalidating the
+            # source-specific credential so a stale serving projection cannot
+            # preserve access while Redis is being reconstructed.
+            serving_error = exc
+        except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
+            return {
+                "ok": False,
+                "error": "delegated_card_not_committed",
+                "reason": getattr(exc, "reason", ""),
+                "retryable": True,
+                "status": 503,
+            }
         removed_session = False
         if record.session_id:
             from kdcube_ai_app.auth.bundle import get_bundle_session_authority
@@ -3119,6 +3233,8 @@ class AutomationAccessService:
         if record.access_token:
             await self._store.revoke_access_grant(record.access_token)
         await self.notify_change(grantor_subject, action="revoked", access_id=access_id_value)
+        if serving_error is not None:
+            return _serving_state_unavailable(serving_error)
         return {
             "ok": True,
             "removed": True,

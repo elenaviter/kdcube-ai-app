@@ -64,23 +64,33 @@ class _CatalogView:
         return configured or None
 
     def outer_operations(self, resource: str) -> set[str] | None:
+        """What the resource publishes; ``None`` only for the all-resource row.
+
+        The all-resource row takes its operations from endpoint policy, not from
+        the catalog, so it carries no ceiling and nothing about it drifts. Every
+        other row is bounded by what it publishes, and an emptied or deleted
+        block publishes nothing — which the guard answers the same way.
+        """
         cfg = self.resource(resource)
         if cfg is None:
             return set()
-        configured = {
+        if _clean(getattr(cfg, "resource", "")).rstrip("/") == "*":
+            return None
+        return {
             _clean(getattr(tool, "name", "")) for tool in (cfg.tools or ())
         } - {""}
-        return configured or None
 
-    def named_service_operations(self, resource: str) -> dict[str, set[str]] | None:
-        """``None`` when the resource declares no named-service block."""
+    def named_service_operations(self, resource: str) -> dict[str, set[str]]:
+        """What the resource publishes; empty when it publishes nothing.
+
+        Unlike claims and outer operations this never reports "no ceiling":
+        an absent or empty block offers no inner operation, which the guard
+        answers the same way.
+        """
         cfg = self.resource(resource)
         if cfg is None:
             return {}
-        block = getattr(cfg, "named_services", None)
-        if not isinstance(block, Mapping) or not block:
-            return None
-        return configured_named_service_operations(block)
+        return configured_named_service_operations(getattr(cfg, "named_services", None))
 
 
 def selected_named_service_operations(card: Any) -> dict[str, dict[str, set[str]]]:
@@ -162,8 +172,6 @@ def _removed(
                 )
 
         offered_inner = active.named_service_operations(resource)
-        if offered_inner is None:
-            continue
         for namespace, operations in sorted(selected_inner.get(resource, {}).items()):
             for operation in sorted(operations - offered_inner.get(namespace, set())):
                 named_service_operations.append(

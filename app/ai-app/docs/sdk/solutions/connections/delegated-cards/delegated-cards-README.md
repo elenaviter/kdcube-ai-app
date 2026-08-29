@@ -135,16 +135,23 @@ installs the new Redis projection. A cache miss loads the durable current
 revision and repopulates Redis only when the card is active and unexpired. The
 conditional Redis installer compares `card_revision`: delayed recovery cannot
 overwrite a newer revision, an updating marker, or a revoked tombstone. The
-mutation finalizer may replace only the marker carrying its own mutation id.
+mutation finalizer may replace the marker carrying its own mutation id, or an
+ordinary projection whose revision it strictly supersedes — a read-through
+refills the key when the marker's residency lapses before the commit completes.
+It never displaces another mutation's marker, a revoked tombstone, or an equal
+or newer revision.
 
 Expiration deletes only the Redis projection. The durable revision remains and
 `expires_at` prevents cache restoration or use. Revocation commits a new
 durable `revoked` revision before live credential cleanup; it does not delete
-history. Normal active list/open is Redis-first: it reads the expiry-scored
-grantor index and current live-card projections, then computes drift against
-Redis-cached `active.json`. The grantor index has no fixed seven-day expiry;
-expired members are pruned by score. If the index or a projection is missing,
-Connection Hub rebuilds it from durable `current.json` and the referenced
+history. Open is Redis-first: it reads the live-card projection by `access_id`
+and computes drift against Redis-cached `active.json`. List decides membership
+from durable storage on every call, because a partially lost index cannot be
+detected without reading it; the grantor index accelerates discovery and carries
+the expiry scores. It has no fixed seven-day expiry; expired members are pruned
+by score. Every candidate is resolved through the card cache/store: one that no
+longer resolves is pruned, and a durable member the index lost is re-admitted.
+A missing projection is rebuilt from durable `current.json` and the referenced
 timestamped revision, repopulating only active, unexpired cards. Retention of
 card history is an explicit administrative policy separate from authorization
 TTL.
@@ -641,6 +648,12 @@ records. An already-issued bearer therefore sees revoked current state on its
 next invocation. An invocation that already received its singular admission
 decision completes under that decision.
 
+If durable revocation commits but publishing its tombstone or index state
+fails, source-specific session/token invalidation still runs. The operation
+then returns a retryable `503 delegated_card_serving_state_unavailable` naming
+the committed card; it does not report that revocation failed or leave the
+credential cleanup behind the failed serving-state write.
+
 Legacy bindings without `registry_access_id` retain embedded-snapshot semantics
 for the card's own facts; the active-catalog intersection still applies to them.
 
@@ -745,7 +758,9 @@ change detection, deduplication, and integrity validation. It does not create a
 second catalog shape. Publication copies current `connections`, enters a shared
 critical section, rereads and rehashes the mapping inside that section, writes
 the immutable version, and atomically replaces complete `active.json`. The
-version name combines a sortable UTC timestamp with a content-hash suffix.
+shared-operation signature is written from that same in-section hash, not from
+the snapshot captured before the lock. The version name combines a sortable
+UTC timestamp with a content-hash suffix.
 
 Durable storage and request serving have one clear boundary:
 
@@ -762,10 +777,13 @@ Redis serving projection
 ```
 
 There is no process catalog cache. `on_app_deploy` already owns the effective
-`connections` object in memory. It writes the durable version and complete
-`active.json`, caches the immutable version in Redis, and atomically caches the
-complete active document. A matching durable version is not enough to declare
-deployment ready: the Redis active document must also be present. If a cache
+`connections` object in memory, and re-reads it inside the shared critical
+section before publishing, so a publisher that captured an earlier generation
+registers what is current rather than its own snapshot under a later version
+stamp. It writes the durable version and complete `active.json`, caches the
+immutable version in Redis, and atomically caches the complete active document.
+A matching durable version is not enough to declare deployment ready: the Redis
+active document must also be present. If a cache
 entry later expires, the relevant request uses the validated durable
 read-through and stores it again with the configured TTL.
 
@@ -873,6 +891,13 @@ server prunes stale selections, validates every survivor against the active
 catalog, rebuilds `operations` and `named_services`, increments
 `card_revision`, and stamps the active `catalog_version` atomically.
 
+Create and Save write the durable revision before the projection, the grantor
+index, and the credential handles. A failure in any of those three returns
+`503 delegated_card_serving_state_unavailable` and names the `access_id`: the
+committed revision is the authority and a read that misses its projection
+reloads it, but the caller's own step did not complete, so a client holding
+credential material it never received can name the card that exists without it.
+
 Runtime applies the same ceiling before Save:
 
 ```text
@@ -881,6 +906,19 @@ effective outer operations      = stored operations intersect active operations
 effective named operations      = stored selections intersect active namespace operations
 effective account-backed access = stored account_scope checked against current requirements
 ```
+
+What each row bounds, when its block is empty or absent:
+
+| Dimension | Rule |
+| --- | --- |
+| Resource claims | Bounded by the row's `grants`, which the parser derives from its tools and namespace operations when they are not written. A row that publishes no claim publishes none. |
+| Outer operations | The all-resource row `*` carries no ceiling: its operations come from endpoint policy, not the catalog, and it answers only a card whose own selector is `*`. Every other row is bounded by the tools it publishes, and a block that was emptied or deleted publishes none. |
+| Named-service operations | Bounded by the published namespaces always. An absent or empty block publishes nothing; unlike outer tools there is no second source for an inner operation. |
+
+Emptying a block and deleting it are one withdrawal written two ways, and the
+guard answers them identically. Drift reads each dimension the same way the
+guard does, so a capability the deployment withdrew is both refused at the call
+and shown on the card as repairable.
 
 A governed request returns different structured outcomes for policy change and
 catalog failure:

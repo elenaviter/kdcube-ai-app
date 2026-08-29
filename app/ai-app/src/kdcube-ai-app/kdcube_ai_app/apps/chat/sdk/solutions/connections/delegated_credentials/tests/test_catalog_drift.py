@@ -239,16 +239,76 @@ def test_a_card_that_selected_nothing_reports_no_inner_removals():
     assert drift["removed"]["named_service_operations"] == []
 
 
-def test_a_resource_that_enumerates_no_named_services_reports_no_inner_removals():
-    without_block = copy.deepcopy(CONNECTIONS)
-    without_block["delegated_credentials"]["oauth"]["resources"][0].pop("named_services")
+@pytest.mark.parametrize(
+    "withdraw",
+    [
+        pytest.param(lambda r: r.pop("named_services"), id="block-deleted"),
+        pytest.param(lambda r: r.__setitem__("named_services", {}), id="block-emptied"),
+    ],
+)
+def test_a_resource_that_publishes_no_named_services_reports_every_selection_removed(withdraw):
+    # The guard denies these operations, so the owner has to see what to repair.
+    withdrawn = copy.deepcopy(CONNECTIONS)
+    withdraw(withdrawn["delegated_credentials"]["oauth"]["resources"][0])
 
-    drift = card_drift(card=_card(), active=_document(without_block), baseline=_document())
+    drift = card_drift(card=_card(), active=_document(withdrawn), baseline=_document())
 
-    assert drift["removed"]["named_service_operations"] == []
+    assert drift["status"] == DRIFT_CHANGED
+    assert [
+        (row["namespace"], row["operation"])
+        for row in drift["removed"]["named_service_operations"]
+    ] == [("mail", "object.schema"), ("mail", "object.search")]
 
 
 # -- additions ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "withdraw",
+    [
+        pytest.param(lambda r: r.pop("tools"), id="block-deleted"),
+        pytest.param(lambda r: r.__setitem__("tools", {}), id="block-emptied"),
+    ],
+)
+def test_a_resource_that_publishes_no_outer_operations_reports_every_selection_removed(
+    withdraw,
+):
+    # The guard denies these tools, so the owner has to see what to repair.
+    # Both spellings are the same withdrawal.
+    withdrawn = copy.deepcopy(CONNECTIONS)
+    withdraw(withdrawn["delegated_credentials"]["oauth"]["resources"][0])
+
+    drift = card_drift(card=_card(), active=_document(withdrawn), baseline=_document())
+
+    assert drift["status"] == DRIFT_CHANGED
+    assert [row["operation"] for row in drift["removed"]["outer_operations"]] == [
+        "named_services_schema",
+        "named_services_search",
+    ]
+
+
+def test_the_wildcard_row_publishes_no_outer_ceiling_and_never_drifts():
+    """The all-resource row takes its operations from endpoint policy, so an
+    administrator card holding them reads as current, not as removed."""
+    catalog = copy.deepcopy(CONNECTIONS)
+    catalog["delegated_credentials"]["oauth"]["resources"].append(
+        {
+            "resource": "*",
+            "label": "All platform and application APIs",
+            "admin_only": True,
+            "grants": ["kdcube:role:super-admin"],
+        }
+    )
+    document = _document(catalog)
+    card = _card(
+        resource_grants={"*": ("kdcube:role:super-admin",)},
+        operations=("records_export",),
+        named_service_operations=NamedServiceSelection.none(),
+    )
+
+    drift = card_drift(card=card, active=document, baseline=document)
+
+    assert drift["removed"]["outer_operations"] == []
 
 
 def test_a_new_named_service_operation_is_offered_unselected():

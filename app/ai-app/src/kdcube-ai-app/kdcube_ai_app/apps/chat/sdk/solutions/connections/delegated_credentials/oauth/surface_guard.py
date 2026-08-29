@@ -37,6 +37,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.cat
     CapabilityRequest,
     CardProvenance,
     authorize_current_capability,
+    card_boundary_denial,
     catalog_unavailable_denial,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.catalog.resolver import (
@@ -311,11 +312,20 @@ def _oauth_challenge_headers(request: Request, auth: Mapping[str, Any] | None) -
 
 
 def _rpc_tool_error(rpc_id: Any, message: str) -> JSONResponse:
+    """A refused tool call, shaped as the SDK's own `CallToolResult`.
+
+    The guard answers before the MCP application runs, so this envelope is built
+    here rather than by the server. `mcp_types.CallToolResult` carries
+    `result_type` with a `"complete"` default, and a client that validates
+    against that model rejects an envelope without it — never reaching the body,
+    whatever the body says.
+    """
     return JSONResponse(
         {
             "jsonrpc": "2.0",
             "id": rpc_id,
             "result": {
+                "resultType": "complete",
                 "isError": True,
                 "content": [{"type": "text", "text": message}],
             },
@@ -367,21 +377,58 @@ def delegated_request_resource(request: Request) -> str:
     return _request_resource(request)
 
 
-def _connection_hub_tool_policies(request: Request) -> dict[str, ManagedMcpToolPolicy]:
-    from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.config import (
-        oauth_delegated_config,
-    )
+def _catalog_tool_policies(
+    *,
+    catalog: ActiveCatalogCapabilities,
+    resource: str,
+    request_resource: str,
+    declared: Mapping[str, ManagedMcpToolPolicy] | None,
+) -> dict[str, ManagedMcpToolPolicy]:
+    """Per-tool policy for this request, with claims taken from the catalog.
 
-    cfg = oauth_delegated_config(request)
-    tools = cfg.resource_tool_catalog(_request_resource(request))
+    Effective props are an input to publication, not to governed authorization,
+    so the claim a tool costs is read from the registered catalog rather than
+    from request-local Hub config. That config is bound only by the platform
+    authentication surface and Connection Hub's own routes, so a door served
+    through a bundle route saw an empty map and skipped the whole per-tool
+    block, including both claim checks.
+
+    ``roles`` and ``permissions`` stay with the surface declaration: a catalog
+    row does not carry them, and dropping the declaration would remove a
+    control instead of moving it.
+    """
+    row = catalog.resource_config(
+        CapabilityRequest(
+            kind=CAPABILITY_RESOURCE,
+            resource=resource,
+            request_resource=request_resource,
+        )
+    )
+    declared = dict(declared or {})
     out: dict[str, ManagedMcpToolPolicy] = {}
-    for tool in tools:
+    for tool in (getattr(row, "tools", None) or ()):
         name = str(getattr(tool, "name", "") or "").strip()
         if not name:
             continue
+        surface = declared.get(name)
         out[name] = ManagedMcpToolPolicy(
             grants=_as_list(getattr(tool, "grants", ())),
+            roles=getattr(surface, "roles", ()) or (),
+            permissions=getattr(surface, "permissions", ()) or (),
         )
+    if _normalize_resource(getattr(row, "resource", "")) == "*":
+        # The all-resource administrator row deliberately has no catalog tool
+        # ceiling: its outer operations come from the endpoint declaration.
+        # Preserve that declaration's non-claim controls instead of dropping
+        # the entire policy merely because the catalog has no tool rows.
+        for name, surface in declared.items():
+            clean_name = str(name or "").strip()
+            if not clean_name or clean_name in out:
+                continue
+            out[clean_name] = ManagedMcpToolPolicy(
+                roles=getattr(surface, "roles", ()) or (),
+                permissions=getattr(surface, "permissions", ()) or (),
+            )
     return out
 
 
@@ -1195,9 +1242,12 @@ async def authorize_delegated_mcp_request(
     granted_operations = None
     if isinstance(grant_record, Mapping):
         granted_operations = set(_as_list(grant_record.get("operations")))
-    tool_policies = _connection_hub_tool_policies(request)
-    if not tool_policies:
-        tool_policies = dict(policy.tool_policies or {})
+    tool_policies = _catalog_tool_policies(
+        catalog=catalog,
+        resource=matched_resource,
+        request_resource=request_resource,
+        declared=policy.tool_policies,
+    )
 
     for rpc_id, tool_name in tool_calls:
         removed = _capability_denial(
@@ -1230,14 +1280,36 @@ async def authorize_delegated_mcp_request(
                     request_resource,
                 )
                 return _rpc_capability_error(rpc_id, removed)
-            if tool_policy.grants and not available_grants.issuperset(tool_policy.grants):
-                return _rpc_tool_error(rpc_id, f"required delegated grant is missing for tool: {tool_name}")
+            missing = sorted(set(tool_policy.grants or ()) - available_grants)
+            if missing:
+                return _rpc_capability_error(
+                    rpc_id,
+                    card_boundary_denial(
+                        provenance=_card_provenance(grant_record),
+                        request=CapabilityRequest(
+                            kind=CAPABILITY_RESOURCE_CLAIM,
+                            resource=matched_resource,
+                            request_resource=request_resource,
+                            surface="mcp",
+                            claim=missing[0],
+                        ),
+                    ),
+                )
 
         if policy.selected_tool_grants:
             if granted_operations is None or tool_name not in granted_operations:
-                return _rpc_tool_error(
+                return _rpc_capability_error(
                     rpc_id,
-                    f"tool not consented for this connection: {tool_name}",
+                    card_boundary_denial(
+                        provenance=_card_provenance(grant_record),
+                        request=CapabilityRequest(
+                            kind=CAPABILITY_OUTER_OPERATION,
+                            resource=matched_resource,
+                            request_resource=request_resource,
+                            surface="mcp",
+                            outer_operation=tool_name,
+                        ),
+                    ),
                 )
 
     try:
