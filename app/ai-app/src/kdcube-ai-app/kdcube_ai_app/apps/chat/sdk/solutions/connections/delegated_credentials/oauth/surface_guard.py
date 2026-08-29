@@ -416,6 +416,19 @@ def _catalog_tool_policies(
             roles=getattr(surface, "roles", ()) or (),
             permissions=getattr(surface, "permissions", ()) or (),
         )
+    if _normalize_resource(getattr(row, "resource", "")) == "*":
+        # The all-resource administrator row deliberately has no catalog tool
+        # ceiling: its outer operations come from the endpoint declaration.
+        # Preserve that declaration's non-claim controls instead of dropping
+        # the entire policy merely because the catalog has no tool rows.
+        for name, surface in declared.items():
+            clean_name = str(name or "").strip()
+            if not clean_name or clean_name in out:
+                continue
+            out[clean_name] = ManagedMcpToolPolicy(
+                roles=getattr(surface, "roles", ()) or (),
+                permissions=getattr(surface, "permissions", ()) or (),
+            )
     return out
 
 

@@ -3202,7 +3202,22 @@ class AutomationAccessService:
             return {"ok": False, "error": "delegated_access_cross_user_access_denied"}
         # The revoked revision commits before any credential cleanup, so a
         # failure below cannot leave the card usable.
-        await self._forget_record(record)
+        serving_error: CardServingUnavailable | None = None
+        try:
+            await self._forget_record(record)
+        except CardServingUnavailable as exc:
+            # Durable revocation already won. Continue invalidating the
+            # source-specific credential so a stale serving projection cannot
+            # preserve access while Redis is being reconstructed.
+            serving_error = exc
+        except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
+            return {
+                "ok": False,
+                "error": "delegated_card_not_committed",
+                "reason": getattr(exc, "reason", ""),
+                "retryable": True,
+                "status": 503,
+            }
         removed_session = False
         if record.session_id:
             from kdcube_ai_app.auth.bundle import get_bundle_session_authority
@@ -3218,6 +3233,8 @@ class AutomationAccessService:
         if record.access_token:
             await self._store.revoke_access_grant(record.access_token)
         await self.notify_change(grantor_subject, action="revoked", access_id=access_id_value)
+        if serving_error is not None:
+            return _serving_state_unavailable(serving_error)
         return {
             "ok": True,
             "removed": True,

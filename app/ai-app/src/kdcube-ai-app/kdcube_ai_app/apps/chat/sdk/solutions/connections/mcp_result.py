@@ -72,6 +72,7 @@ async def announce_result_consent(parsed: Dict[str, Any]) -> Dict[str, Any] | No
             return None
         block = _consent_block(parsed)
         namespace = str(block.get("namespace") or parsed.get("namespace") or "").strip()
+        operation = str(block.get("operation") or parsed.get("operation") or "").strip()
 
         if code == NEEDS_CONNECTED_ACCOUNT_CONSENT:
             from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.consent import (
@@ -109,8 +110,9 @@ async def announce_result_consent(parsed: Dict[str, Any]) -> Dict[str, Any] | No
         )
 
         logger.info(
-            "[mcp-result] agent-grant consent -> banner: client=%s resource=%s claims=%s namespace=%s",
-            client_id, resource, claims, namespace,
+            "[mcp-result] agent-grant consent -> banner: client=%s resource=%s "
+            "claims=%s namespace=%s operation=%s",
+            client_id, resource, claims, namespace, operation,
         )
         consent = mcp_consent_from_denial(
             {"status": 403, "reason": "authority_mismatch"},
@@ -118,6 +120,8 @@ async def announce_result_consent(parsed: Dict[str, Any]) -> Dict[str, Any] | No
             claims=claims,
             tool_name=str(block.get("tool_name") or namespace),
             agent_client_id=client_id,
+            namespace=namespace,
+            operation=operation,
         )
         await announce_agent_consent(consent)
         return consent.to_tool_result()

@@ -31,17 +31,20 @@ def _tool(result):
 
 
 def test_agent_grant_consent_announced_from_self_describing_block(monkeypatch):
-    # The block carries agent_client_id + resource + claims + namespace — the
-    # post-processor reads them directly; NO fallback resource, NO parsing.
+    # The block carries agent_client_id + resource + claims + namespace +
+    # operation — the post-processor reads them directly; NO fallback resource,
+    # NO tool-name parsing.
     client = "kdcube-agent:app@v1:main"
     resource = "*/kdcube-services@1-0/public/mcp/named_services*"
     denial = json.dumps({
         "ok": False, "error": "delegated_consent_required",
-        "namespace": "slack", "missing_grants": ["slack:read"],
+        "namespace": "slack", "operation": "object.search",
+        "missing_grants": ["slack:read"],
         "consent": {
             "kind": "delegated_agent_grant", "agent_client_id": client,
             "resource": resource, "claims": ["slack:read"],
             "tool_name": "slack", "namespace": "slack",
+            "operation": "object.search",
         },
     })
     announced = []
@@ -61,7 +64,10 @@ def test_agent_grant_consent_announced_from_self_describing_block(monkeypatch):
     out = json.loads(content)
     assert out["consent"]["grant"]["payload"] == {
         "client_id": client, "resource": resource, "claims": ["slack:read"],
+        "named_service_operations": {"slack": ["object.search"]},
     }
+    assert out["consent"]["namespace"] == "slack"
+    assert out["consent"]["operation"] == "object.search"
 
 
 def test_agent_grant_consent_announced_from_normalized_mcp_content_envelope(monkeypatch, caplog):

@@ -157,6 +157,7 @@ async def ensure_delegated_catalog(
         signature=expected_hash,
         ready=_ready,
         action=_publish,
+        signature_after_action=lambda: str(registered["hash"]),
         logger=logger,
         owner_metadata={"kind": "delegated-catalog", "reason": reason},
         log_prefix="[connection-hub.delegated-catalog]",

@@ -648,6 +648,12 @@ records. An already-issued bearer therefore sees revoked current state on its
 next invocation. An invocation that already received its singular admission
 decision completes under that decision.
 
+If durable revocation commits but publishing its tombstone or index state
+fails, source-specific session/token invalidation still runs. The operation
+then returns a retryable `503 delegated_card_serving_state_unavailable` naming
+the committed card; it does not report that revocation failed or leave the
+credential cleanup behind the failed serving-state write.
+
 Legacy bindings without `registry_access_id` retain embedded-snapshot semantics
 for the card's own facts; the active-catalog intersection still applies to them.
 
@@ -752,7 +758,9 @@ change detection, deduplication, and integrity validation. It does not create a
 second catalog shape. Publication copies current `connections`, enters a shared
 critical section, rereads and rehashes the mapping inside that section, writes
 the immutable version, and atomically replaces complete `active.json`. The
-version name combines a sortable UTC timestamp with a content-hash suffix.
+shared-operation signature is written from that same in-section hash, not from
+the snapshot captured before the lock. The version name combines a sortable
+UTC timestamp with a content-hash suffix.
 
 Durable storage and request serving have one clear boundary:
 

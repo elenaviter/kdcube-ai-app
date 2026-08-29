@@ -326,7 +326,9 @@ test('a named-service grant demand carries its namespace and operation to the pa
     conversation: { session_id: 'session-1', conversation_id: 'conv-1', turn_id: 'turn-1' },
     event: { step: 'delegated_to_kdcube.consent', status: 'completed', title: 'Consent', agent: null },
     data: {
-      error: { code: 'delegated_consent_required', message: 'named_services_search needs consent.' },
+      // MCPConsentRequired.chat_event_payload normalizes both consent families
+      // onto the shared connected-account banner event code.
+      error: { code: 'needs_connected_account_consent', message: 'named_services_search needs consent.' },
       consent: {
         kind: 'delegated_agent_grant',
         claims: ['named_services:use'],

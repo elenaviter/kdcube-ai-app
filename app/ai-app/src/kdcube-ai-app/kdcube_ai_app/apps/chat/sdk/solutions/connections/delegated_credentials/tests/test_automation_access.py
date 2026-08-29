@@ -18,6 +18,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.car
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.cards.store import (
     BundleStorageDelegatedCardStore,
+    subject_hash_for,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.catalog.resolver import (
     CatalogUnavailable,
@@ -844,6 +845,66 @@ async def test_oauth_grant_registers_lists_and_revokes(card_persistence):
     assert store.revoked_refresh == ["refresh-2"]
     assert store.revoked_access == ["kst1.oauth.token2"]
     assert (await service.list_access(user))["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_revoke_reports_post_commit_serving_failure_and_still_kills_oauth_tokens(
+    card_persistence, monkeypatch,
+):
+    """A failed tombstone projection must not turn a committed revocation into
+    a 500 or skip the credential cleanup that closes a stale projection."""
+    redis = _Redis()
+    store = _OAuthStore()
+    user = {
+        "sub": "platform-user-1",
+        "roles": ["kdcube:role:registered"],
+        "permissions": [],
+    }
+    service = AutomationAccessService(
+        catalog_resolver=_CatalogResolver(connections=_connections()),
+        card_persistence=card_persistence,
+        redis=redis,
+        tenant="demo-tenant",
+        project="demo-project",
+        config=_config(),
+        grant_store=store,
+        authority=_Authority(),
+        minter=_minter,
+    )
+    record = await service.record_oauth_grant(
+        grantor_subject="platform-user-1",
+        client_id="dcr-claude",
+        client_label="Claude",
+        scopes=["records:read"],
+        operations=["records_export"],
+        resource="https://example.test/mcp",
+        access_token="kst1.oauth.token",
+        refresh_token="refresh-1",
+    )
+    assert record is not None
+
+    async def _fail_tombstone(*args, **kwargs):
+        raise RuntimeError("redis unavailable")
+
+    monkeypatch.setattr(
+        card_persistence._cards._cache, "commit_tombstone", _fail_tombstone,
+    )
+
+    revoked = await service.revoke_access(user, access_id=record.access_id)
+
+    assert revoked == {
+        "ok": False,
+        "error": "delegated_card_serving_state_unavailable",
+        "reason": "serving_state_unavailable",
+        "access_id": record.access_id,
+        "retryable": True,
+        "status": 503,
+    }
+    assert await card_persistence.current_revision(
+        record.access_id, subject_hash=subject_hash_for(record.grantor_subject),
+    ) == 2
+    assert store.revoked_refresh == ["refresh-1"]
+    assert store.revoked_access == ["kst1.oauth.token"]
 
 
 async def test_live_sessions_receive_delegated_access_changes():

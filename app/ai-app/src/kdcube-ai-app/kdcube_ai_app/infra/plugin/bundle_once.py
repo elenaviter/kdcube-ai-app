@@ -170,6 +170,7 @@ async def run_once_for_shared_bundle_storage(
     signature: str,
     ready: Callable[[], bool | Awaitable[bool]],
     action: Callable[[], Awaitable[Any]],
+    signature_after_action: Callable[[], str] | None = None,
     logger: Optional[Any] = None,
     owner_metadata: Optional[dict[str, Any]] = None,
     lock_wait_seconds: float = 600.0,
@@ -188,6 +189,11 @@ async def run_once_for_shared_bundle_storage(
     The action is considered current when both are true:
     - signature_path contains `signature`
     - ready() returns True; it may be synchronous or awaitable
+
+    ``signature_after_action`` supports actions that discover their committed
+    identity only inside the lock. The initial ``signature`` still controls
+    admission to the action; after a successful action the callback's value is
+    written while the lock is held.
 
     The lock is a directory under `<storage_root>/.kdcube.once/`, which works for
     local filesystems and shared mounts such as EFS. Filesystem operations run
@@ -304,7 +310,12 @@ async def run_once_for_shared_bundle_storage(
         await _run_action(action)
         if not await _run_ready(ready):
             raise RuntimeError(f"{op} action completed but ready() is false for storage={root}")
-        await asyncio.to_thread(_write_signature, sig_path, signature)
+        committed_signature = (
+            signature_after_action() if signature_after_action is not None else signature
+        )
+        if not isinstance(committed_signature, str):
+            raise TypeError("signature_after_action must return a string")
+        await asyncio.to_thread(_write_signature, sig_path, committed_signature)
         _logger_log(logger, f"{log_prefix} done: op={op} storage={root}", "INFO")
         return SharedStorageOnceResult("ran", root, op, lock_path, sig_path, ran=True)
     finally:

@@ -1597,6 +1597,40 @@ def test_an_administrator_card_still_reaches_the_wildcard_row(monkeypatch):
     assert response.json()["ok"] is True
 
 
+@pytest.mark.parametrize(
+    ("constraint", "required", "message"),
+    [
+        ("roles", ["kdcube:role:nobody"], "required role is missing"),
+        ("permissions", ["kdcube:nobody"], "required permission is missing"),
+    ],
+)
+def test_the_administrator_wildcard_keeps_surface_tool_constraints(
+    monkeypatch, constraint, required, message,
+):
+    """The wildcard delegates endpoint-owned operations, not an escape from
+    the endpoint's declared role and permission checks."""
+    authority = _authority(scopes=["kdcube:role:super-admin"])
+    authority["attrs"]["resource_grants"] = {"*": ["kdcube:role:super-admin"]}
+    client = _client(
+        monkeypatch,
+        connections=_connections_with_admin_wildcard(keep_guard_resource=False),
+        auth={
+            "mode": "managed",
+            "authority_id": "delegated_client",
+            "tools": {"records_export": {constraint: required}},
+            "selected_tool_grants": True,
+        },
+        grant_record={"operations": ["records_export"], "credential": authority},
+    )
+
+    response = client.post(
+        "/guard", json=_rpc_tool_call(), headers={"Authorization": "Bearer reader"},
+    )
+
+    assert response.status_code == 200
+    assert message in response.json()["result"]["content"][0]["text"]
+
+
 def test_a_surviving_resource_is_unaffected_by_the_wildcard_row(monkeypatch):
     """A specific row still answers its own requests when both exist."""
     client = _client(

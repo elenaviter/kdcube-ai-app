@@ -14,6 +14,7 @@ import pytest
 
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.catalog.publisher import (
     CatalogPublicationError,
+    SIGNATURE_FILENAME,
     ensure_delegated_catalog,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.catalog.resolver import (
@@ -228,6 +229,7 @@ async def test_the_reread_value_is_published_not_the_captured_one(tmp_path, cach
     assert result.created is True
     assert active.connections == moved
     assert result.content_hash == active.content_hash
+    assert (store.root / SIGNATURE_FILENAME).read_text(encoding="utf-8").strip() == active.content_hash
 
 
 @pytest.mark.asyncio
