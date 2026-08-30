@@ -98,6 +98,21 @@ def test_account_resolution_renders_on_both_surfaces():
     assert "asks for an account choice" in bridge
 
 
+def test_schema_denial_recovery_keeps_the_contract_first_order_on_both_surfaces():
+    react = compose_named_service_agent_instructions(
+        _consumer_props("slack"), client_id="main", surface="react", intros=INTROS
+    )
+    bridge = compose_named_service_agent_instructions(
+        _consumer_props("slack"), client_id="main", surface="bridge", intros=INTROS
+    )
+
+    for block in (react, bridge):
+        assert "contract remains unavailable" in block
+        assert "resolve the surfaced consent" in block
+        assert "retry `object_schema`" in block
+        assert "successful schema result" in block
+
+
 def test_bridge_surface_binds_the_door_tool_names_when_given():
     from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.instructions import (
         NAMED_SERVICES_MCP_DOOR_TOOL_NAMES,

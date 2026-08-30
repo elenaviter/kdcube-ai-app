@@ -315,7 +315,11 @@ async def test_menu_inventory_renders_even_when_coverage_hangs(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_boundary_refusal_asks_for_the_operation_it_was_refused(monkeypatch):
+@pytest.mark.parametrize("operation", ["object.search", "object.schema"])
+async def test_a_boundary_refusal_asks_for_the_operation_it_was_refused(
+    monkeypatch,
+    operation,
+):
     """The card holds the claims; only its own boundary excludes the operation.
 
     A claims-shaped demand asks for consent that is already given, deduplicates
@@ -350,7 +354,7 @@ async def test_a_boundary_refusal_asks_for_the_operation_it_was_refused(monkeypa
         "not_granted": {
             "ok": False,
             "error": {"code": "delegated_capability_not_granted", "retryable": False},
-            "ret": {"requested_capability": {"namespace": "mem", "operation": "object.search"}},
+            "ret": {"requested_capability": {"namespace": "mem", "operation": operation}},
         },
     }
 
@@ -372,16 +376,16 @@ async def test_a_boundary_refusal_asks_for_the_operation_it_was_refused(monkeypa
     monkeypatch.setattr(mcp_consent, "announce_agent_consent", fake_announce)
 
     admission, result = await _agent_grant_admission(
-        "mem", "object.search", "named_services_search"
+        "mem", operation, "named_services_search"
     )
 
     assert admission is None
     assert result["error"]["code"] == "delegated_capability_not_granted"
     grant = result["consent"]["grant"]["payload"]
-    assert grant["named_service_operations"] == {"mem": ["object.search"]}
+    assert grant["named_service_operations"] == {"mem": [operation]}
     # No claim is missing, so the demand asks for the operation alone.
     assert grant["claims"] == []
     assert len(announced) == 1
-    assert announced[0].consent["operation"] == "object.search"
+    assert announced[0].consent["operation"] == operation
     assert announced[0].consent["namespace"] == "mem"
-    assert "object.search" in announced[0].agent_message
+    assert operation in announced[0].agent_message

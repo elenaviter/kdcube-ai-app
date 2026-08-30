@@ -1218,6 +1218,99 @@ async def test_agent_namespace_grant_state_governs_and_grants(card_persistence):
     )) == {"governed": False}
 
 
+@pytest.mark.asyncio
+async def test_account_scoped_provider_claim_satisfies_native_admission(card_persistence):
+    service = _named_services_agent_service(card_persistence)
+    ns_resource = "*/kdcube-services@1-0/public/mcp/named_services*"
+    created = await service.create_access(
+        _AGENT_USER,
+        label="agent",
+        client_id=_AGENT_CLIENT,
+        resource_grants={ns_resource: ["named_services:use"]},
+        account_scope={"mail": {"account-1": ["mail:read"]}},
+        named_service_operations={ns_resource: {"mail": ["object.search"]}},
+    )
+    assert created["ok"] is True
+
+    state = await service.agent_namespace_grant_state(
+        grantor_subject="platform-user-1",
+        client_id=_AGENT_CLIENT,
+        namespace="mail",
+        operation="object.search",
+    )
+
+    assert state["governed"] is True
+    assert state["granted"] is True
+    assert state["missing_claims"] == []
+    assert state["account_scope"] == {
+        "mail": {"account-1": ["mail:read"]},
+    }
+
+
+@pytest.mark.asyncio
+async def test_account_scoped_provider_claim_materializes_boundary_on_edit(card_persistence):
+    from connection_hub.delegated_credentials.named_service_policy import (
+        boundary_permits_operation,
+    )
+
+    service = _named_services_agent_service(card_persistence)
+    ns_resource = "*/kdcube-services@1-0/public/mcp/named_services*"
+    created = await service.create_access(
+        _AGENT_USER,
+        label="agent",
+        client_id=_AGENT_CLIENT,
+        resource_grants={ns_resource: ["named_services:use"]},
+        account_scope={"mail": {"account-1": ["mail:read"]}},
+    )
+    assert created["ok"] is True
+
+    updated = await service.update_access(
+        _AGENT_USER,
+        access_id=created["access"]["access_id"],
+        resource_grants={ns_resource: ["named_services:use"]},
+        account_scope={"mail": {"account-1": ["mail:read"]}},
+        named_service_operations={ns_resource: {"mail": ["object.search"]}},
+    )
+
+    assert updated["ok"] is True
+    record = await service._load_record(
+        created["access"]["access_id"],
+        grantor_subject="platform-user-1",
+    )
+    assert record is not None
+    assert boundary_permits_operation(
+        record.named_services,
+        namespace="mail",
+        operation="object.search",
+    )
+
+
+@pytest.mark.asyncio
+async def test_oauth_account_scoped_provider_claim_materializes_boundary(card_persistence):
+    from connection_hub.delegated_credentials.named_service_policy import (
+        boundary_permits_operation,
+    )
+
+    service = _named_services_agent_service(card_persistence)
+    ns_resource = "*/kdcube-services@1-0/public/mcp/named_services*"
+    record = await service.record_oauth_grant(
+        grantor_subject="platform-user-1",
+        client_id="oauth-client",
+        scopes=["named_services:use"],
+        resource=ns_resource,
+        account_scope={"mail": {"account-1": ["mail:read"]}},
+        named_service_operations={ns_resource: {"mail": ["object.search"]}},
+        catalog_version=TEST_CATALOG_VERSION,
+    )
+
+    assert record is not None
+    assert boundary_permits_operation(
+        record.named_services,
+        namespace="mail",
+        operation="object.search",
+    )
+
+
 # -- the claim ceiling reaches the named-service path too ----------------------
 #
 # The managed door reduces stored claims through the catalog before checking a
