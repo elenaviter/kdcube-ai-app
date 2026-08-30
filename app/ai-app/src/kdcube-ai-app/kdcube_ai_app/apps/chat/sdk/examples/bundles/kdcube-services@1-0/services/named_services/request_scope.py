@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import contextvars
 
-from prokura.mcp_metadata import (
+from connection_hub.mcp_metadata import (
     _request_public_base_url,
 )
 

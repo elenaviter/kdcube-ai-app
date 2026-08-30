@@ -3,7 +3,7 @@ id: repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/README.md
 title: "SDK Integrations"
 summary: "Index of reusable KDCube SDK integration packages and the shared provider-boundary contracts that apps can use instead of reimplementing integration mechanics."
 tags: ["sdk", "integrations", "provider-errors", "email", "telegram", "bundles"]
-keywords: ["sdk integrations", "Prokura host binding", "email integration", "telegram integration", "bundle building blocks"]
+keywords: ["sdk integrations", "Connection Hub host binding", "email integration", "telegram integration", "bundle building blocks"]
 updated_at: 2026-08-30
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-assemble-bundle-with-sdk-building-blocks-README.md
@@ -23,7 +23,7 @@ UI composition. The integration package supplies the mechanics.
 | Integration | Use it for |
 | --- | --- |
 | [Provider Error And Observability Contract](provider-error-contract-README.md) | Required failure classification, safe client details, server logging, retries, and partial-result handling for every external provider integration. |
-| [Connections](connections-README.md) | KDCube host bindings for Prokura's registry-driven connected-account contracts: OAuth client configuration, user-scoped provider credentials, refresh, and settings operations. Read this first when adding a provider integration. |
+| [Connections](connections-README.md) | KDCube host bindings for Connection Hub's registry-driven connected-account contracts: OAuth client configuration, user-scoped provider credentials, refresh, and settings operations. Read this first when adding a provider integration. |
 | [Custom OAuth/OIDC connect service](custom-oauth-oidc-service-README.md) | The generic Delegated-to-KDCube framework for connecting any OAuth 2.0 or OIDC provider as a connected account (`oauth2.generic` / `oidc.generic`), so tools and named services resolve the user's provider token at runtime. Google and Slack are instances of it. |
 | [Email](email/README.md) | Gmail OAuth/API, iCloud IMAP/SMTP, account settings, attachment materialization, Email MCP, Claude Code email processing, and email delivery helpers. |
 | [Google](google/README.md) | Google connected accounts across services: the `google.oauth` adapter, connected-account credential resolution, and the scope machinery (claim-to-scope union, read-write supersedes read-only, and the Drive write scope needed to create a spreadsheet) behind Gmail and Sheets. |

@@ -27,18 +27,18 @@ from pydantic import Field
 
 from kdcube_ai_app.apps.chat.sdk.integrations.google.gmail_tools import GmailTools
 from kdcube_ai_app.apps.chat.sdk.integrations.slack.tools import SlackTools
-from prokura.delegated_credentials.credential_view import (
+from connection_hub.delegated_credentials.credential_view import (
     delegated_credential_view,
 )
-from prokura.delegated_to_kdcube.models import (
+from connection_hub.delegated_to_kdcube.models import (
     ToolClaimPolicy,
 )
-from prokura.mcp_metadata import (
+from connection_hub.mcp_metadata import (
     kdcube_mcp_icons,
     kdcube_website_url,
     read_only_annotations,
 )
-from kdcube_ai_app.apps.chat.sdk.integrations.prokura.mcp_tool_enforcement import (
+from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.mcp_tool_enforcement import (
     bind_service_connector_apps_from_config,
     enforce_tool_requirements,
 )
@@ -170,7 +170,7 @@ def build_productivity_mcp_app(
         """
         set_public_base_url_from_request(request)
         bind_service_connector_apps_from_config(dict(config_factory() or {}))
-        from prokura.agent_account_scope import (
+        from connection_hub.agent_account_scope import (
             set_agent_account_scope,
             set_agent_identity,
         )

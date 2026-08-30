@@ -4,10 +4,10 @@ import json
 import logging
 from typing import Any, Iterable, Mapping, Sequence
 
-from prokura.delegated_credentials.credential_view import (
+from connection_hub.delegated_credentials.credential_view import (
     delegated_credential_view,
 )
-from kdcube_ai_app.apps.chat.sdk.integrations.prokura.named_service_admission import (
+from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.named_service_admission import (
     managed_named_service_admission,
     managed_named_service_catalog_operations,
     managed_named_service_dispatch_config,
@@ -269,7 +269,7 @@ class NamedServicesMcpBridge:
         # The guarded service decides which connector app serves each provider
         # in auth scenarios (never a user pick): bind its declaration so realm
         # integrations and consent composers resolve it for this request.
-        from kdcube_ai_app.apps.chat.sdk.integrations.prokura.connector_app_resolution import (
+        from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.connector_app_resolution import (
             set_service_connector_apps,
         )
 
@@ -383,7 +383,7 @@ class NamedServicesMcpBridge:
         # CONNECT demand leads (the guided plan ends in the agent-grant
         # hand-off) — granting an agent access to a provider with no accounts
         # binds nothing. Falls through to the gate-1 denial otherwise.
-        from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_credentials.consent_denial import (
+        from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.consent_denial import (
             agent_grant_consent_denial,
             connect_first_denial,
         )

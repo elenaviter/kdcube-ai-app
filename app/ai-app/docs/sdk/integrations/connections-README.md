@@ -105,7 +105,7 @@ Provider TYPE        slack / gmail / telegram          CODE — a ConnectionProv
 ## What exists today
 
 Portable connected-account contracts and provider declarations live in the
-`prokura` package. KDCube's `integrations/connections` package supplies the host
+`connection-hub` package. KDCube's `integrations/connections` package supplies the host
 bindings for its client-app catalog, account store, OAuth flow, refresh path,
 user properties/secrets, and settings operations. Google and Slack use the
 shared provider declarations. Provider-specific integrations such as LinkedIn

@@ -694,7 +694,7 @@ def _delegated_snapshot_scope(runtime_ctx: Any) -> tuple:
 async def _read_delegated_blocked_snapshot(runtime_ctx: Any) -> list:
     user_id, bundle_id, conversation_id = _delegated_snapshot_scope(runtime_ctx)
     try:
-        from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube.consent_demand import (
+        from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_to_kdcube.consent_demand import (
             read_pending_consent,
         )
 
@@ -706,7 +706,7 @@ async def _read_delegated_blocked_snapshot(runtime_ctx: Any) -> list:
 async def _write_delegated_blocked_snapshot(runtime_ctx: Any, providers: list) -> None:
     user_id, bundle_id, conversation_id = _delegated_snapshot_scope(runtime_ctx)
     try:
-        from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube.consent_demand import (
+        from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_to_kdcube.consent_demand import (
             write_pending_consent,
         )
 
@@ -719,7 +719,7 @@ async def _write_delegated_blocked_snapshot(runtime_ctx: Any, providers: list) -
 
 def _delegated_reactivated_groups(previous: list, current: list) -> list:
     try:
-        from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube.consent_demand import (
+        from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_to_kdcube.consent_demand import (
             pending_consent_delta,
         )
 
@@ -1484,7 +1484,7 @@ class BaseWorkflow():
         project = str(getattr(runtime_ctx, "project", "") or "").strip()
         user_id = str(getattr(runtime_ctx, "user_id", "") or "").strip()
         try:
-            from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube import (
+            from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_to_kdcube import (
                 preflight_tool_claim_policies,
             )
 
@@ -1584,7 +1584,7 @@ class BaseWorkflow():
         project = str(getattr(runtime_ctx, "project", "") or "").strip()
         user_id = str(getattr(runtime_ctx, "user_id", "") or "").strip()
         try:
-            from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube import (
+            from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_to_kdcube import (
                 preflight_tool_claim_policies,
                 unavailable_tools_by_provider,
             )

@@ -27,7 +27,7 @@ from kdcube_ai_app.apps.chat.sdk.integrations.slack.named_service import (
     message_ref,
     parse_slack_ref,
 )
-from prokura.delegated_to_kdcube.models import (
+from connection_hub.delegated_to_kdcube.models import (
     REASON_ACCOUNT_REQUIRED,
     REASON_CLAIM_UPGRADE_REQUIRED,
     REASON_CONNECT_REQUIRED,
@@ -933,7 +933,7 @@ def test_registered_spec_carries_exact_connected_account_actions():
 
 @pytest.mark.asyncio
 async def test_no_consent_attempt_carries_agent_instructions_and_seeded_deep_link():
-    from prokura.delegated_to_kdcube.public_base import (
+    from connection_hub.delegated_to_kdcube.public_base import (
         set_connection_hub_public_base_url,
     )
 
@@ -1048,7 +1048,7 @@ async def test_no_consent_attempt_records_no_conversation_demand(monkeypatch):
     """MCP attempts are conversation-less: the provider consent error performs
     ZERO demand bookkeeping — no pending snapshot, no hub-registry entry, no
     lane event. The consent loop is response + link + retry only."""
-    from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube import (
+    from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_to_kdcube import (
         consent_demand,
     )
     from kdcube_ai_app.apps.chat.sdk import config as sdk_config

@@ -4,7 +4,7 @@ from typing import Annotated, Any, Callable, Literal, Mapping
 
 from pydantic import Field
 
-from prokura.mcp_metadata import (
+from connection_hub.mcp_metadata import (
     action_annotations,
     destructive_annotations,
     kdcube_mcp_icons,

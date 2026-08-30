@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from kdcube_ai_app.apps.chat.sdk.integrations.prokura.federated_tokens.data_bus import (
+from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.federated_tokens.data_bus import (
     FEDERATED_TOKEN_SECRET_KEY,
     FederatedTokenInvalid,
     issue_federated_data_bus_token,

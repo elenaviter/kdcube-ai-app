@@ -460,9 +460,9 @@ canonical secret key. Request-authenticator metadata in Postgres stores only
 | Connected provider account metadata + token helper | `kdcube_ai_app.apps.chat.sdk.integrations.connections.store.ConnectionStore` |
 | User secret helper | `kdcube_ai_app.apps.chat.sdk.config.get_secret/set_user_secret/delete_user_secret` |
 | User secret key builder | `kdcube_ai_app.infra.secrets.manager.build_user_secret_key` |
-| OAuth delegated credential grant store | `prokura.delegated_credentials.oauth.store.GrantStore` |
-| OAuth `/authorize` and `/token` routes | `kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_credentials.oauth.http.routes` |
-| Manual Delegated by KDCube token service | `kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_credentials.automation_access.AutomationAccessService` |
+| OAuth delegated credential grant store | `connection_hub.delegated_credentials.oauth.store.GrantStore` |
+| OAuth `/authorize` and `/token` routes | `kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.oauth.http.routes` |
+| Manual Delegated by KDCube token service | `kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.automation_access.AutomationAccessService` |
 | `kst1` session authority (technical bundle-session name) | `kdcube_ai_app.auth.bundle.sessions.BundleSessionAuthority` |
 
 ## Operational Checks

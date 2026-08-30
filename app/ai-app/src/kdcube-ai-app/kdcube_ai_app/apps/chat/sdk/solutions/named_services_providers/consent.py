@@ -149,7 +149,7 @@ async def raise_named_service_consent_demand(
             },
             "tools": [tool_name] if tool_name else [],
         }
-        from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube.consent_demand import (
+        from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_to_kdcube.consent_demand import (
             announce_consent_demand,
         )
 

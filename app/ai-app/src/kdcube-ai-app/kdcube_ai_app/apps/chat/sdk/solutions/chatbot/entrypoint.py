@@ -576,10 +576,10 @@ class BaseEntrypoint:
             from kdcube_ai_app.apps.chat.sdk.runtime.tool_config import (
                 agent_tool_config_from_bundle_props,
             )
-            from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube.consent_demand import (
+            from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_to_kdcube.consent_demand import (
                 claim_coverage_for_policies,
             )
-            from kdcube_ai_app.apps.chat.sdk.integrations.prokura.connection_edges import (
+            from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.connection_edges import (
                 connection_hub_bundle_id_from_entrypoint,
             )
 
@@ -597,7 +597,7 @@ class BaseEntrypoint:
             from kdcube_ai_app.apps.chat.sdk.runtime.agent_inventory import (
                 namespace_claim_policies,
             )
-            from prokura.delegated_to_kdcube.models import (
+            from connection_hub.delegated_to_kdcube.models import (
                 ToolClaimPolicy,
             )
 
@@ -681,10 +681,10 @@ class BaseEntrypoint:
         if not entries:
             return catalog
         try:
-            from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_mcp import (
+            from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_mcp import (
                 delegated_client_id_for_agent,
             )
-            from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_credentials.automation_access import (
+            from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.automation_access import (
                 read_agent_grant_record,
             )
 

@@ -4,7 +4,7 @@ title: "Connection Hub Solution"
 summary: "Canonical KDCube host map for Connection Hub identity, connected-account, delegated-card, managed-boundary, and registered external-service admission roles."
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "identity", "auth", "authority", "delegated-connections"]
-keywords: ["Connection Hub", "Prokura", "delegated access cards", "connected accounts", "authority registry", "request authenticators", "connection edges", "OAuth MCP", "direct admission"]
+keywords: ["Connection Hub", "Connection Hub", "delegated access cards", "connected accounts", "authority registry", "request authenticators", "connection edges", "OAuth MCP", "direct admission"]
 updated_at: 2026-08-30
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/delegated-authority-and-admission-README.md
@@ -29,7 +29,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-operation-csrf-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/auth/auth-selector-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/protect-external-service-with-connection-hub-README.md
-  - https://github.com/elenaviter/app-ecosystem/blob/main/docs/prokura/connection-hub-architecture.md
+  - https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/connection-hub-architecture.md
 ---
 # Connection Hub Solution
 
@@ -39,9 +39,9 @@ collapsing those concepts into scattered auth tricks.
 
 The executable app and frontend live in
 `repo:app-ecosystem/apps/connection-hub@1-0`. Portable authority policy lives
-in the `prokura` package in that repository. KDCube imports Prokura directly
+in the `connection-hub` package in that repository. KDCube imports Connection Hub directly
 and owns only the host bindings under
-`kdcube_ai_app.apps.chat.sdk.integrations.prokura`.
+`kdcube_ai_app.apps.chat.sdk.integrations.connection_hub`.
 
 It has nine roles:
 
@@ -408,10 +408,10 @@ Legacy or intermediate descriptors may still keep request authenticators under
 `authority_registry.authorities.*.providers.*.authenticator`.
 
 The app remains the hosted UI/API surface. The reusable provider runtime is a
-KDCube host binding over Prokura:
+KDCube host binding over Connection Hub:
 
 ```text
-kdcube_ai_app.apps.chat.sdk.integrations.prokura.authority_providers.bundle_session_login
+kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.authority_providers.bundle_session_login
 ```
 
 Connection Hub remains the registry owner for authority ids, platform-ness,

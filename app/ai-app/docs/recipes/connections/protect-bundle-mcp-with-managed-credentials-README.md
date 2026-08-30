@@ -87,7 +87,7 @@ and cache hints. Registration supports descriptor pre-registration and CIMD,
 with DCR retained as an independently configurable compatibility path. The
 exact support boundary and the evidence required before making a broad
 conformance claim are recorded in
-[OAuth Delegated Credential Protocol Adapter](https://github.com/elenaviter/app-ecosystem/blob/main/docs/prokura/package/oauth-delegated-credential-protocol.md#mcp-2026-07-28-support-boundary).
+[OAuth Delegated Credential Protocol Adapter](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/package/oauth-delegated-credential-protocol.md#mcp-2026-07-28-support-boundary).
 
 ## Descriptor Surface
 
@@ -289,7 +289,7 @@ returned by the MCP server. The read-only/write/delete grouping comes from MCP
 `ToolAnnotations`, not from Connection Hub consent. KDCube MCP surfaces should
 set `readOnlyHint`, `destructiveHint`, server `icons`, and `website_url` when
 building the MCP server; the SDK helper
-`prokura.mcp_metadata` provides the
+`connection_hub.mcp_metadata` provides the
 standard KDCube favicon and annotation helpers.
 
 With this generic bridge Claude will show tools such as
@@ -656,11 +656,11 @@ suite inside that same container:
 ```bash
 docker exec <proc-container> python -m pytest -q \
   /app/kdcube_ai_app/apps/chat/sdk/runtime/mcp/test_mcp_v2_conformance.py \
-  /app/kdcube_ai_app/apps/chat/sdk/integrations/prokura/delegated_credentials/oauth/tests/test_client_metadata.py
+  /app/kdcube_ai_app/apps/chat/sdk/integrations/connection_hub/delegated_credentials/oauth/tests/test_client_metadata.py
 ```
 
 The Connection Hub app owns its mounted-route discovery test. From an
-`app-ecosystem` checkout with the KDCube and Prokura dependencies installed,
+`app-ecosystem` checkout with the KDCube and Connection Hub dependencies installed,
 run:
 
 ```bash

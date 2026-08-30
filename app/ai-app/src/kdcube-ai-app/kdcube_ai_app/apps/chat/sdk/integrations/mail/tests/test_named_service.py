@@ -23,7 +23,7 @@ from kdcube_ai_app.apps.chat.sdk.integrations.mail.named_service import (
     message_ref,
     parse_mail_ref,
 )
-from prokura.delegated_to_kdcube.models import (
+from connection_hub.delegated_to_kdcube.models import (
     REASON_ACCOUNT_REQUIRED,
     REASON_CLAIM_UPGRADE_REQUIRED,
     REASON_CONNECT_REQUIRED,
@@ -268,7 +268,7 @@ async def test_search_fan_out_respects_the_agent_account_binding():
     # Parity with the send path: a read fan-out must be limited to the accounts
     # THIS agent is bound to. Two readable accounts, but the agent is bound to
     # acc-1 only -> acc-2 is never searched (it once was — a per-account leak).
-    from prokura.agent_account_scope import (
+    from connection_hub.agent_account_scope import (
         clear_agent_account_scope,
         set_agent_account_scope,
     )

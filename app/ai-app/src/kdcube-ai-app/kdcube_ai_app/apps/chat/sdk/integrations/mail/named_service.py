@@ -48,13 +48,13 @@ from kdcube_ai_app.apps.chat.sdk.integrations.named_service_consent import (
     resolution_consent_payload,
     tool_error_response,
 )
-from kdcube_ai_app.apps.chat.sdk.integrations.prokura.connection_edges import (
+from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.connection_edges import (
     DEFAULT_CONNECTION_HUB_BUNDLE_ID,
 )
-from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube import (
+from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_to_kdcube import (
     DelegatedToKdcubeClient,
 )
-from prokura.delegated_to_kdcube.models import (
+from connection_hub.delegated_to_kdcube.models import (
     REASON_CONNECT_REQUIRED,
     ClaimResolution,
     ConnectedAccount,
@@ -80,7 +80,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.types import
     PROVIDER_ABOUT,
     PROVIDER_CAPABILITIES,
 )
-from kdcube_ai_app.apps.chat.sdk.integrations.prokura.connector_app_resolution import resolve_connector_app_id
+from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.connector_app_resolution import resolve_connector_app_id
 
 
 LOGGER = logging.getLogger("kdcube.sdk.integrations.mail.named_service")
@@ -957,7 +957,7 @@ class MailNamedServiceProvider(NamedServiceProvider):
         # The calling agent's per-provider account binding (if any) restricts
         # which connected account may satisfy this claim. Unset / non-agent →
         # None → no restriction (unchanged).
-        from prokura.agent_account_scope import (
+        from connection_hub.agent_account_scope import (
             account_claim_scope_for,
         )
         return await client.ensure_claim(
@@ -1027,7 +1027,7 @@ class MailNamedServiceProvider(NamedServiceProvider):
         distinct agent-grant / upgrade / connect reason.
         """
         eligible = await self._gmail_accounts(ctx, claim=claim)
-        from prokura.agent_account_scope import (
+        from connection_hub.agent_account_scope import (
             account_claim_scope_for,
         )
         scope = account_claim_scope_for(GMAIL_PROVIDER_ID)

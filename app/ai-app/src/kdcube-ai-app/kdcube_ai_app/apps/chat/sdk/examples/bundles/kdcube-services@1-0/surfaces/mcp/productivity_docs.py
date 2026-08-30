@@ -17,7 +17,7 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
-from prokura.mcp_metadata import (
+from connection_hub.mcp_metadata import (
     destructive_annotations,
     read_only_annotations,
     write_annotations,

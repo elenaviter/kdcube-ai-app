@@ -19,8 +19,8 @@ from kdcube_ai_app.apps.chat.sdk.event_identity import (
     normalize_agent_id,
 )
 from kdcube_ai_app.apps.chat.sdk.identity_authority import resolve_platform_authority
-from kdcube_ai_app.apps.chat.sdk.integrations.prokura.connection_edges import ConnectionEdgesClient
-from prokura.authority_projection import (
+from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.connection_edges import ConnectionEdgesClient
+from connection_hub.authority_projection import (
     authority_has_platform_privilege,
 )
 from kdcube_ai_app.auth.sessions import RequestContext, UserSession, UserType

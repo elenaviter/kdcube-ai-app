@@ -407,7 +407,7 @@ async def auth_google_session(self, request: Request, **kwargs):
 The reusable implementation lives in:
 
 ```text
-kdcube_ai_app.apps.chat.sdk.integrations.prokura.authority_providers.bundle_session_login
+kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.authority_providers.bundle_session_login
 ```
 
 The Workspace example wrapper lives in:

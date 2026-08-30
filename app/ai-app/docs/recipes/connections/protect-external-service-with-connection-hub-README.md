@@ -1,13 +1,13 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/protect-external-service-with-connection-hub-README.md
 title: "Protect An External Service With Connection Hub"
-summary: "Hosts Prokura direct admission in KDCube so a registered backend outside KDCube can enforce a user's current delegated card and capability catalog on each operation."
+summary: "Hosts Connection Hub direct admission in KDCube so a registered backend outside KDCube can enforce a user's current delegated card and capability catalog on each operation."
 status: active
-tags: ["recipes", "connections", "connection-hub", "prokura", "delegated-access", "protected-service"]
+tags: ["recipes", "connections", "connection-hub", "connection-hub", "delegated-access", "protected-service"]
 keywords: ["direct admission", "external backend", "opaque bearer", "workload proof", "resource server"]
 updated_at: 2026-08-30
 see_also:
-  - https://github.com/elenaviter/app-ecosystem/blob/main/docs/prokura/recipes/direct-protected-service.md
+  - https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/recipes/direct-protected-service.md
   - https://github.com/elenaviter/app-ecosystem/tree/main/examples/direct-admission-service
   - repo:kdcube-ai-app/app/ai-app/docs/arch/delegated-authority-and-admission-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
@@ -23,7 +23,7 @@ resource and operation.
 
 The canonical capability, service-registration, signing, response, and
 verification contract is [Protect an external backend with Connection
-Hub](https://github.com/elenaviter/app-ecosystem/blob/main/docs/prokura/recipes/direct-protected-service.md).
+Hub](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/recipes/direct-protected-service.md).
 This recipe owns only the KDCube host steps.
 
 ## 1. Load the Connection Hub app
@@ -97,7 +97,7 @@ POST /api/integrations/bundles/{tenant}/{project}/connection-hub@1-0/public/dele
 ```
 
 The host route is discoverable in the Connection Hub OAuth metadata as
-`prokura_delegated_admission_endpoint`. It is not a permanent Prokura product
+`connection_hub_delegated_admission_endpoint`. It is not a permanent Connection Hub product
 URL. A stable shorter alias remains a separate KDCube router capability.
 
 Run the [reference protected

@@ -147,10 +147,10 @@ projection forward.
 
 ## Current SDK Implementation
 
-Prokura owns the portable edge-store contract:
+Connection Hub owns the portable edge-store contract:
 
 ```text
-prokura.hub.edges.ConnectionEdgeStore
+connection_hub.hub.edges.ConnectionEdgeStore
 ```
 
 The external `connection-hub@1-0` app is a thin UI/API shell over that package

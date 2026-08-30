@@ -13,7 +13,7 @@ import pytest
 from kdcube_ai_app.apps.chat.sdk.integrations.linkedin import named_service as ns
 from kdcube_ai_app.apps.chat.sdk.protocol import ExternalEventPayload, ExternalEventRouting
 from kdcube_ai_app.apps.chat.sdk.runtime.comm_ctx import bind_current_request_context
-from prokura.delegated_to_kdcube.models import (
+from connection_hub.delegated_to_kdcube.models import (
     ConnectedAccount,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers import (

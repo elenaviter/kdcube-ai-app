@@ -52,7 +52,7 @@ from kdcube_ai_app.apps.middleware.gateway import (
     bind_stream_id_to_request_state,
 )
 from kdcube_ai_app.apps.middleware.token_extract import extract_auth_tokens_from_query_params
-from kdcube_ai_app.apps.chat.sdk.integrations.prokura.request_auth import (
+from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.request_auth import (
     CONNECTION_HUB_DELEGATED_BEARER_ONLY,
 )
 from kdcube_ai_app.infra.gateway.config import (
@@ -345,7 +345,7 @@ async def lifespan(app: FastAPI):
     app.state.pg_pool = await get_pg_pool()
 
     try:
-        from kdcube_ai_app.apps.chat.sdk.integrations.prokura.authentication_surface import (
+        from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.authentication_surface import (
             maybe_install_connection_hub_authentication_surface,
         )
 
@@ -360,7 +360,7 @@ async def lifespan(app: FastAPI):
         logger.warning("Failed to install Connection Hub authentication surface: %s", e)
 
     try:
-        from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_credentials.serving import (
+        from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.serving import (
             install_delegated_serving_resolvers,
         )
 

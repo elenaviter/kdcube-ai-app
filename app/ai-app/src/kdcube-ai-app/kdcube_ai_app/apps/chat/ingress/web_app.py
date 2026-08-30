@@ -277,7 +277,7 @@ async def lifespan(app: FastAPI):
                                                 )
     app.state.pg_pool = await get_pg_pool()
     try:
-        from kdcube_ai_app.apps.chat.sdk.integrations.prokura.authentication_surface import (
+        from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.authentication_surface import (
             maybe_install_connection_hub_authentication_surface,
         )
 
@@ -292,7 +292,7 @@ async def lifespan(app: FastAPI):
         logger.warning("Failed to install Connection Hub authentication surface: %s", e)
 
     try:
-        from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_credentials.serving import (
+        from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.serving import (
             install_delegated_serving_resolvers,
         )
 

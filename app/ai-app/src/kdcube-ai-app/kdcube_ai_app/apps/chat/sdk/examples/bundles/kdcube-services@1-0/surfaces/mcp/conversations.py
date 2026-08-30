@@ -11,7 +11,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.conversation.mcp_export import (
     CurrentUserIdFactory,
     export_current_user_conversations,
 )
-from prokura.mcp_metadata import (
+from connection_hub.mcp_metadata import (
     kdcube_mcp_icons,
     kdcube_website_url,
     read_only_annotations,

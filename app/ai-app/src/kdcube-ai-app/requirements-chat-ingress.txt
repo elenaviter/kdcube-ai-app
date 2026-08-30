@@ -9,7 +9,7 @@ python-dotenv==1.1.1
 python-socketio==5.13.0
 redis==6.2.0
 # Delegated-access authority shared with the Connection Hub application.
-prokura==0.0.2
+connection-hub==0.0.3
 
 requests==2.32.5
 uvicorn==0.37.0

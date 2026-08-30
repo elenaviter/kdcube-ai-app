@@ -570,7 +570,7 @@ def _gate_unavailable(reason: str, namespace: str, operation: str) -> Dict[str, 
     An agent turn whose delegated boundary cannot be read must not proceed on
     the connected-account boundary alone.
     """
-    from prokura.delegated_credentials.catalog.authorization import (
+    from connection_hub.delegated_credentials.catalog.authorization import (
         catalog_unavailable_denial,
     )
 
@@ -595,17 +595,17 @@ async def _agent_grant_admission(
             get_current_request_context,
             get_current_user_identity,
         )
-        from kdcube_ai_app.apps.chat.sdk.integrations.prokura.connection_edges import (
+        from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.connection_edges import (
             DEFAULT_CONNECTION_HUB_BUNDLE_ID,
         )
-        from prokura.contract import (
+        from connection_hub.contract import (
             AGENT_GRANT_CHECK,
             NAMESPACE as CONNECTIONS_NAMESPACE,
         )
-        from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_mcp import (
+        from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_mcp import (
             delegated_client_id_for_agent,
         )
-        from kdcube_ai_app.apps.chat.sdk.integrations.prokura.named_service_admission import (
+        from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.named_service_admission import (
             native_agent_admission_from_state,
             native_agent_admission_selector,
         )
@@ -693,7 +693,7 @@ async def _agent_grant_admission(
         if isinstance(not_granted, Mapping):
             # Claims are held; only the card's own boundary excludes the
             # operation. The demand names it, and approval grants that one.
-            from kdcube_ai_app.apps.chat.sdk.integrations.prokura.mcp_consent import (
+            from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.mcp_consent import (
                 announce_agent_consent as _announce,
                 mcp_consent_from_denial as _consent_from_denial,
             )
@@ -723,7 +723,7 @@ async def _agent_grant_admission(
         # nothing. Fail-safe: any state-read failure keeps the agent-grant
         # demand below.
         try:
-            from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_credentials.consent_denial import (
+            from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.consent_denial import (
                 connect_first_denial_for_identity,
             )
 
@@ -769,7 +769,7 @@ async def _agent_grant_admission(
                 base_ns, operation, tool_name, client_id, connect_first.get("provider_id"),
             )
             return None, connect_first
-        from kdcube_ai_app.apps.chat.sdk.integrations.prokura.mcp_consent import (
+        from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.mcp_consent import (
             announce_agent_consent,
             mcp_consent_from_denial,
         )

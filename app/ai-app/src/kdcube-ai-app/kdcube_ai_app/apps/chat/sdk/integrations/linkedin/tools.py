@@ -42,7 +42,7 @@ from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace.references import (
     build_physical_artifact_path,
     split_logical_artifact_ref,
 )
-from kdcube_ai_app.apps.chat.sdk.integrations.prokura.connector_app_resolution import resolve_connector_app_id
+from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.connector_app_resolution import resolve_connector_app_id
 
 
 LINKEDIN_PROVIDER_ID = "linkedin"
@@ -87,7 +87,7 @@ def linkedin_api_version() -> str:
 
 
 def _subject_from_id_token(id_token: str) -> str:
-    from prokura.delegated_to_kdcube.providers.linkedin import (
+    from connection_hub.delegated_to_kdcube.providers.linkedin import (
         _decode_id_token_claims,
     )
 
@@ -101,10 +101,10 @@ async def _accounts_client(*, tenant: str = "", project: str = "", hub_bundle_id
     claim.
     """
     from kdcube_ai_app.apps.chat.sdk.runtime.comm_ctx import get_current_user_identity
-    from kdcube_ai_app.apps.chat.sdk.integrations.prokura.connection_edges import (
+    from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.connection_edges import (
         DEFAULT_CONNECTION_HUB_BUNDLE_ID,
     )
-    from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube import (
+    from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_to_kdcube import (
         DelegatedToKdcubeClient,
     )
 

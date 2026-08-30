@@ -3075,7 +3075,7 @@ async def _register_bundle_authority_provider_declarations(
         manifest = discover_bundle_interface_manifest(instance, bundle_id=bundle_id_hint)
         if not manifest.authority_providers:
             return
-        from prokura.authority_registry import (
+        from connection_hub.authority_registry import (
             RedisAuthorityDiscovery,
             authority_provider_spec_from_declaration,
         )

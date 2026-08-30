@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Any, Dict, Iterable
 
 from kdcube_ai_app.apps.chat.sdk.config import get_settings
-from prokura.authority_projection import (
+from connection_hub.authority_projection import (
     authority_has_platform_privilege,
 )
 from kdcube_ai_app.auth.sessions import SessionManager

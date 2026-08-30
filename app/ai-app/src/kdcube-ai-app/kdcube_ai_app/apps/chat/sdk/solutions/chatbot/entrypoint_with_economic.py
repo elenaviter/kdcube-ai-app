@@ -251,7 +251,7 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
         as authority for admin/budget bypass; bypass must come from projected
         roles, permissions, or explicit Connection Hub authority fields.
         """
-        from prokura.authority_projection import (
+        from connection_hub.authority_projection import (
             project_execution_authority,
         )
 

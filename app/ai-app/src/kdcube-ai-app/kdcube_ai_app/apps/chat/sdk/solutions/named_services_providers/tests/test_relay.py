@@ -32,7 +32,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.admission im
     NamedServiceAdmissionSelector,
     DELEGATED_SELECTOR_BEARER,
 )
-from kdcube_ai_app.apps.chat.sdk.integrations.prokura.named_service_admission import (
+from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.named_service_admission import (
     DELEGATED_CARD_BINDING_SCHEMA,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.types import (
@@ -253,7 +253,7 @@ async def test_bearer_relay_resolves_once_and_binds_scope_for_dispatch(monkeypat
             return NamedServiceResponse.ok_response(namespace=request.namespace)
 
     monkeypatch.setattr(
-        "kdcube_ai_app.apps.chat.sdk.integrations.prokura.named_service_admission.HubNamedServiceAdmissionAuthorizer.authorize",
+        "kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.named_service_admission.HubNamedServiceAdmissionAuthorizer.authorize",
         _authorize,
     )
     monkeypatch.setattr(
@@ -329,7 +329,7 @@ async def test_relay_replays_an_admission_denial_without_reauthorizing(monkeypat
             raise AssertionError("denied admission must not invoke the provider")
 
     monkeypatch.setattr(
-        "kdcube_ai_app.apps.chat.sdk.integrations.prokura.named_service_admission."
+        "kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.named_service_admission."
         "HubNamedServiceAdmissionAuthorizer.authorize",
         _authorize,
     )
@@ -388,7 +388,7 @@ async def test_bearer_relay_rejects_actor_binding_mismatch_before_hub(monkeypatc
         raise AssertionError("Hub admission must not run for a forged selector")
 
     monkeypatch.setattr(
-        "kdcube_ai_app.apps.chat.sdk.integrations.prokura.named_service_admission.HubNamedServiceAdmissionAuthorizer.authorize",
+        "kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.named_service_admission.HubNamedServiceAdmissionAuthorizer.authorize",
         _never,
     )
     selector = NamedServiceAdmissionSelector(

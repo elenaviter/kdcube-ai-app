@@ -17,8 +17,8 @@ from typing import Any
 import pytest
 
 import kdcube_ai_app.apps.chat.sdk.integrations.connected_accounts as ca
-from prokura.delegated_to_kdcube import models
-from prokura.delegated_to_kdcube.models import (
+from connection_hub.delegated_to_kdcube import models
+from connection_hub.delegated_to_kdcube.models import (
     ClaimResolution,
 )
 
@@ -42,7 +42,7 @@ class _FakeClient:
 
 
 def _install_fakes(monkeypatch, resolution: ClaimResolution):
-    from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube import consent_demand
+    from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_to_kdcube import consent_demand
     from kdcube_ai_app.apps.chat.sdk import config as sdk_config
 
     props: dict[tuple[str, str, str], Any] = {}
@@ -172,12 +172,12 @@ async def test_agent_binding_miss_routes_to_agent_card_not_connect(monkeypatch):
     # missing 'source') and once mis-routed to the connect-account banner. It
     # must raise ONE agent-grant banner (agent_client_id + the Delegated by
     # KDCube deep link, focused on the exact account+claim) and never crash.
-    from prokura.agent_account_scope import (
+    from connection_hub.agent_account_scope import (
         clear_agent_account_scope,
         set_agent_account_scope,
         set_agent_identity,
     )
-    from prokura.delegated_to_kdcube import public_base
+    from connection_hub.delegated_to_kdcube import public_base
 
     resolution = ClaimResolution(
         ok=False,
@@ -256,24 +256,24 @@ async def test_full_forward_two_gate_consent_sequence(monkeypatch):
     """
     from types import SimpleNamespace
 
-    from kdcube_ai_app.apps.chat.sdk.integrations.prokura import (
+    from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub import (
         delegated_to_kdcube as connections,
     )
-    from prokura.agent_account_scope import (
+    from connection_hub.agent_account_scope import (
         clear_agent_account_scope,
         set_agent_account_scope,
         set_agent_identity,
     )
-    from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube import (
+    from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_to_kdcube import (
         ConnectedAccount,
         DelegatedToKdcubeBroker,
         DelegatedToKdcubeStore,
     )
-    from prokura.delegated_to_kdcube import public_base
-    from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube.store import (
+    from connection_hub.delegated_to_kdcube import public_base
+    from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_to_kdcube.store import (
         credential_id_for,
     )
-    from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube.tests.test_delegated_to_kdcube import (
+    from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_to_kdcube.tests.test_delegated_to_kdcube import (
         _install_fake_storage,
         _sample_config,
     )

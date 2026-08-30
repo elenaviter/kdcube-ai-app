@@ -33,14 +33,14 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Mapping, Optional
 
-from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_mcp import (
+from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_mcp import (
     resolve_mcp_server_map,
     delegated_client_id_for_agent,
     is_delegated_connection,
     connection_resource,
     DROP_CONSENT_PENDING,
 )
-from kdcube_ai_app.apps.chat.sdk.integrations.prokura.mcp_consent import (
+from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.mcp_consent import (
     MCPConsentRequired,
     mcp_consent_from_denial,
 )

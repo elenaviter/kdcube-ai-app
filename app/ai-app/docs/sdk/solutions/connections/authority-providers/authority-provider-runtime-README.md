@@ -539,7 +539,7 @@ The hosting application does not implement this policy. The reusable runtime
 lives in:
 
 ```text
-kdcube_ai_app.apps.chat.sdk.integrations.prokura.authority_providers.bundle_session_login
+kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.authority_providers.bundle_session_login
 ```
 
 The application route/UI calls that runtime. The runtime resolves the provider

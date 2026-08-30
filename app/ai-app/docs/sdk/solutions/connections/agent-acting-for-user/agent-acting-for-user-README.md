@@ -58,7 +58,7 @@ A hosted agent gets a deterministic delegated-client identity derived from the
 app that defines it and its agent id:
 
 ```python
-from prokura.delegated_mcp import (
+from connection_hub.delegated_mcp import (
     delegated_client_id_for_agent,
 )
 

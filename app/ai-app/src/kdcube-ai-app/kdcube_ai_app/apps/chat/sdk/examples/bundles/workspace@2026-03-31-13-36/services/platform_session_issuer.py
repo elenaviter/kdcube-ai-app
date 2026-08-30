@@ -6,8 +6,8 @@ from typing import Any, Mapping
 
 from fastapi.responses import HTMLResponse
 
-import kdcube_ai_app.apps.chat.sdk.integrations.prokura.authority_providers.bundle_session_login as bundle_session_login
-from prokura.delegated_credentials.oauth.consent import (
+import kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.authority_providers.bundle_session_login as bundle_session_login
+from connection_hub.delegated_credentials.oauth.consent import (
     consent_authorize_fields,
     render_consent_authorize_hidden_inputs,
 )

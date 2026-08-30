@@ -725,8 +725,8 @@ and does not erase or silently expand the credential
 | Multi-Cognito trusted issuer/client validation | [Auth](../service/auth/auth-README.md) and `kdcube_ai_app/auth/implementations/multi_cognito.py` |
 | B OAuth/resource server, PKCE, cards, refresh, and revocation | [OAuth Delegated Credential Protocol Adapter](../sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md) |
 | B managed MCP concept | [Authenticated MCP](../sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md) |
-| A generic provider-account OAuth flow | `repo:app-ecosystem/packages/prokura/src/prokura/delegated_to_kdcube/operations.py` and `oauth.py` |
-| A framework-neutral MCP bearer seam | `repo:app-ecosystem/packages/prokura/src/prokura/delegated_mcp.py` |
-| Passive consent-completion events | Prokura's event contract plus `kdcube_ai_app/apps/chat/sdk/integrations/prokura/delegated_to_kdcube/consent_demand.py` |
+| A generic provider-account OAuth flow | `repo:app-ecosystem/packages/connection-hub/src/connection-hub/delegated_to_kdcube/operations.py` and `oauth.py` |
+| A framework-neutral MCP bearer seam | `repo:app-ecosystem/packages/connection-hub/src/connection-hub/delegated_mcp.py` |
+| Passive consent-completion events | Connection Hub's event contract plus `kdcube_ai_app/apps/chat/sdk/integrations/connection_hub/delegated_to_kdcube/consent_demand.py` |
 | Narrow app-issued Data Bus federation | [App Federated Auth For Data Bus](../sdk/bundle/auth-bundle-federated-README.md) |
 | Portable context boundary | [Cross-Runtime Context](cross-runtime-context-README.md) |

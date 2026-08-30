@@ -79,7 +79,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.discovery im
     RedisNamedServiceDiscovery,
     bind_named_service_discovery,
 )
-from prokura.authority_projection import (
+from connection_hub.authority_projection import (
     project_execution_authority,
 )
 from kdcube_ai_app.infra.jobs.stream import (

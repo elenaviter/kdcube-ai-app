@@ -24,7 +24,7 @@ from kdcube_ai_app.apps.chat.sdk.infra.bundle_operations import (
     BundleOperationStreamResult,
     bind_bundle_operation_stream_caller,
 )
-from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube import consent_demand
+from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_to_kdcube import consent_demand
 from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers import (
     NamedServiceResponse,
     register_configured_named_service_artifact_rehosters,
@@ -274,8 +274,8 @@ async def test_menu_inventory_renders_even_when_coverage_hangs(monkeypatch):
 
     from kdcube_ai_app.apps.chat.sdk.solutions.chatbot.entrypoint import BaseEntrypoint
     from kdcube_ai_app.apps.chat.sdk.runtime import tool_config as tool_config_mod
-    from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube import consent_demand as cd
-    from prokura.delegated_to_kdcube.models import ToolClaimPolicy
+    from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_to_kdcube import consent_demand as cd
+    from connection_hub.delegated_to_kdcube.models import ToolClaimPolicy
 
     policy = ToolClaimPolicy.from_config("slack.search_slack", {
         "connected_accounts": [
@@ -324,7 +324,7 @@ async def test_a_boundary_refusal_asks_for_the_operation_it_was_refused(monkeypa
     """
     import kdcube_ai_app.apps.chat.sdk.infra.bundle_operations as bundle_operations
     import kdcube_ai_app.apps.chat.sdk.runtime.comm_ctx as comm_ctx
-    import kdcube_ai_app.apps.chat.sdk.integrations.prokura.mcp_consent as mcp_consent
+    import kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.mcp_consent as mcp_consent
     from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.tools import (
         _agent_grant_admission,
     )

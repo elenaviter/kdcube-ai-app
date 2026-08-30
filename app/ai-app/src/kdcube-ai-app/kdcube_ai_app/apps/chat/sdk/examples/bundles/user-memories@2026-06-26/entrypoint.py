@@ -32,8 +32,8 @@ from kdcube_ai_app.infra.plugin.bundle_loader import bundle_entrypoint, bundle_i
 from kdcube_ai_app.apps.chat.sdk.solutions.chatbot.entrypoint_with_memory import (
     BaseEntrypointWithEconomicsAndMemory,
 )
-from prokura.authority_registry import CredentialEnvelope
-from prokura.hub.resolver import delegated_primary_user_id
+from connection_hub.authority_registry import CredentialEnvelope
+from connection_hub.hub.resolver import delegated_primary_user_id
 
 from . import memory_mcp_tools
 

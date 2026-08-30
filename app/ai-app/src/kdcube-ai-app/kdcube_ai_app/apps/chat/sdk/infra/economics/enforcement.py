@@ -55,7 +55,7 @@ from kdcube_ai_app.apps.chat.sdk.infra.economics.events_resources import (
     MSG_PROJECT_EXHAUSTED,
     MSG_DENIED_GENERIC,
 )
-from prokura.authority_projection import (
+from connection_hub.authority_projection import (
     authority_has_platform_privilege,
     project_execution_authority,
 )

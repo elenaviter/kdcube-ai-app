@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_mcp import (
+from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_mcp import (
     DROP_CONSENT_PENDING,
     DROP_MINT_ERROR,
     DROP_NO_USER,
@@ -159,7 +159,7 @@ def _announce_recorder(monkeypatch) -> list:
         captured.append(consent)
 
     monkeypatch.setattr(
-        "kdcube_ai_app.apps.chat.sdk.integrations.prokura.mcp_consent.announce_agent_consent",
+        "kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.mcp_consent.announce_agent_consent",
         _announce,
     )
     return captured
@@ -215,7 +215,7 @@ def test_the_hub_link_is_the_platforms_and_absent_without_a_public_base(monkeypa
         return ""
 
     monkeypatch.setattr(
-        "kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_credentials"
+        "kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials"
         ".consent_denial.connection_hub_grant_url",
         _hub_url,
     )

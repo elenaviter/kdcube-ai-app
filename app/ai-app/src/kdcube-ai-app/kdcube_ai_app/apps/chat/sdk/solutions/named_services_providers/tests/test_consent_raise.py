@@ -28,7 +28,7 @@ def announced(monkeypatch):
         calls.append(kwargs)
 
     monkeypatch.setattr(
-        "kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube.consent_demand.announce_consent_demand",
+        "kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_to_kdcube.consent_demand.announce_consent_demand",
         _announce,
     )
     return calls

@@ -118,7 +118,7 @@ async def test_application_admission_dispatches_without_hub_lookup(monkeypatch):
     monkeypatch.setattr(api_client, "_resolve_endpoint_from_discovery", _resolved)
     monkeypatch.setattr(api_client, "_call_module_endpoint", _module_call)
     monkeypatch.setattr(
-        "kdcube_ai_app.apps.chat.sdk.integrations.prokura.named_service_admission."
+        "kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.named_service_admission."
         "HubNamedServiceAdmissionAuthorizer.authorize",
         _hub_never,
     )

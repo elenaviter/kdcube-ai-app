@@ -39,7 +39,7 @@ from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace.references import (
     physical_path_to_logical_path,
     split_logical_artifact_ref,
 )
-from kdcube_ai_app.apps.chat.sdk.integrations.prokura.connector_app_resolution import resolve_connector_app_id
+from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.connector_app_resolution import resolve_connector_app_id
 
 
 SLACK_PROVIDER_ID = "slack"

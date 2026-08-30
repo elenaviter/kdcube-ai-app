@@ -24,7 +24,7 @@ from kdcube_ai_app.apps.middleware.token_extract import (
     resolve_auth_from_headers,
     resolve_auth_from_headers_and_cookies,
 )
-from kdcube_ai_app.apps.chat.sdk.integrations.prokura.request_auth import (
+from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.request_auth import (
     RequestAuthenticationSurface,
     RequestAuthResolver,
 )
