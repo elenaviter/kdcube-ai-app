@@ -264,6 +264,37 @@ class ServiceCommunicator:
             id(self), id(self._pubsub), to_remove, self._subscribed_channels
         )
 
+        # A redis-py PubSub holds a dedicated connection checked out of the shared
+        # pool until it is explicitly closed; unsubscribing every channel does NOT
+        # return it. On the session-release path (ChatRelayCommunicator ->
+        # apps/chat/emitters.py) this method is the only cleanup that runs --
+        # stop_listener(), which does close the pubsub, is never called there --
+        # so each released session leaked one pooled connection permanently.
+        #
+        # Once the pool was exhausted every Redis call in the process failed with
+        # "Too many connections", including _legacy_requeue_stale_inflight_tasks,
+        # the stale-turn takeover meant to recover from stuck turns: the recovery
+        # path depended on the resource whose exhaustion it recovers from, so the
+        # process could not self-heal.
+        #
+        # Nothing is subscribed any more, so release it. A later subscribe() or
+        # subscribe_add() recreates it. Guarded on the listener task so we never
+        # close the pubsub out from under an active listen().
+        if (
+            not self._subscribed_channels
+            and not self._subscribed_patterns
+            and self._listen_task is None
+            and self._pubsub is not None
+        ):
+            with contextlib.suppress(Exception):
+                await self._pubsub.close()
+            logger.info(
+                "[ServiceCommunicator] released idle pubsub self_id=%s pubsub_id=%s "
+                "(no channels remain; connection returned to the pool)",
+                id(self), id(self._pubsub),
+            )
+            self._pubsub = None
+
 
     async def listen(self) -> AsyncIterator[dict]:
         """
