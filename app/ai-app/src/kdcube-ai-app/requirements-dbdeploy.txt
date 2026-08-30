@@ -3,3 +3,6 @@ python-dotenv==1.1.1
 pydantic==2.11.7
 pydantic-settings==2.10.1
 PyYAML==6.0.2
+
+# Shared descriptor and authority configuration.
+prokura==0.0.2

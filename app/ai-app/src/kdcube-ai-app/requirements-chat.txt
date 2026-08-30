@@ -43,9 +43,8 @@ psycopg2-binary==2.9.10
 # psycopg2-binary + asyncpg. Ported LangGraph agents' memory/KB use asyncpg (the
 # shared pool); only these framework stores need psycopg v3.
 psycopg[binary]>=3.1
-# Delegated-access authority. Use the repository reference until Prokura is
-# published as a versioned package.
-prokura @ git+https://github.com/elenaviter/app-ecosystem@main#subdirectory=packages/prokura
+# Delegated-access authority shared with the Connection Hub application.
+prokura==0.0.2
 
 ddgs
 semantic-kernel

@@ -1,11 +1,11 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
 title: "Connection Hub Solution"
-summary: "Canonical map of Connection Hub roles: connection edges, identity-family resolution, request authenticators, authority projection, delegated connections, link flows, and widget auth-context transport."
+summary: "Canonical KDCube host map for Connection Hub identity, connected-account, delegated-card, managed-boundary, and registered external-service admission roles."
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "identity", "auth", "authority", "delegated-connections"]
-keywords: ["Connection Hub", "delegated access cards", "connected accounts", "authority registry", "request authenticators", "connection edges", "OAuth MCP"]
-updated_at: 2026-08-27
+keywords: ["Connection Hub", "Prokura", "delegated access cards", "connected accounts", "authority registry", "request authenticators", "connection edges", "OAuth MCP", "direct admission"]
+updated_at: 2026-08-30
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/delegated-authority-and-admission-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/tenant-project-user-and-execution-boundaries-README.md
@@ -28,6 +28,8 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-operation-csrf-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/auth/auth-selector-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/protect-external-service-with-connection-hub-README.md
+  - https://github.com/elenaviter/app-ecosystem/blob/main/docs/prokura/connection-hub-architecture.md
 ---
 # Connection Hub Solution
 
@@ -41,7 +43,7 @@ in the `prokura` package in that repository. KDCube imports Prokura directly
 and owns only the host bindings under
 `kdcube_ai_app.apps.chat.sdk.integrations.prokura`.
 
-It has eight roles:
+It has nine roles:
 
 ```text
 Connection Hub
@@ -67,6 +69,10 @@ Connection Hub
   |
   +-- Link Flows
   |     platform-first and channel-first linking
+  |
+  +-- Direct Protected-Service Admission
+  |     registered workload + delegated bearer -> current card/catalog decision
+  |     bounded pairwise subject; no provider credential
   |
   +-- Widget/Auth Context Transport
         host iframe/server config -> promoted auth headers
@@ -432,7 +438,7 @@ Surface Guard
        | same authority -> Grant Resolver
        | different authority -> Connection Edge Resolver -> Grant Resolver
        v
-KDCube app/API/runtime/ReAct/economics
+KDCube app/API/runtime/ReAct Agent/economics
 ```
 
 Delegated connections are the common abstraction for consented relationships
@@ -533,6 +539,7 @@ grantor's full platform session.
 | Understand delegated representatives, manual automation selection, and OAuth grants | [Delegated Connections](delegated-connections/delegated-connections-README.md) |
 | Understand Delegated by KDCube card storage, rendering, edit semantics, runtime enforcement, and catalog drift | [Delegated Access Cards](delegated-cards/delegated-cards-README.md) |
 | Understand the complete card/catalog decision across managed REST/MCP, plain account-backed tools, and nested named services | [Delegated Authority And Admission](../../../arch/delegated-authority-and-admission-README.md) |
+| Protect a registered backend outside KDCube with current delegated authority | [Protect An External Service With Connection Hub](../../../recipes/connections/protect-external-service-with-connection-hub-README.md) |
 | See and revoke access a user granted to automations and external clients | [Delegated Connections](delegated-connections/delegated-connections-README.md) |
 | Build an app that exposes a governed service over MCP (uses Gmail + your own OAuth server) | [Expose a Governed Service over MCP](../../../recipes/quickstart/expose-governed-service-mcp-README.md) |
 | See every place config lives to wire providers → an MCP service → a consumer, end to end | [The Connected-Services Config Chain](connected-services-config-chain/connected-services-config-chain-README.md) |

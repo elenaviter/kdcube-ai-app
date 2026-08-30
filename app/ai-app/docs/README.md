@@ -4,7 +4,7 @@ title: "Platform Documentation Index"
 summary: "Curated top-level map of the KDCube documentation tree for app builders, integrators, operators, and agents."
 tags: ["docs", "index", "sdk", "service", "ops", "architecture"]
 keywords: ["documentation index", "platform architecture", "configuration guides", "service runtime docs", "app sdk docs", "execution docs", "deployment and operations docs", "app builder docs", "client widgets", "streaming", "memory", "claude code"]
-updated_at: 2026-08-27
+updated_at: 2026-08-30
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/delegated-authority-and-admission-README.md
@@ -38,6 +38,8 @@ Curated index of platform, service, and SDK documentation.
 * Quick Start: [quick-start-README.md](quick-start-README.md)
 * Security And Trust Model: [security-and-trust-model-README.md](arch/security-and-trust-model-README.md)
 * Delegated Authority And Admission: [delegated-authority-and-admission-README.md](arch/delegated-authority-and-admission-README.md)
+* Connection Hub Solution: [connection-hub-solution-README.md](sdk/solutions/connections/connection-hub-solution-README.md)
+* Protect An External Service With Connection Hub: [protect-external-service-with-connection-hub-README.md](recipes/connections/protect-external-service-with-connection-hub-README.md)
 * Architecture Of What We Built: [architecture-of-what-we-built-README.md](arch/architecture-of-what-we-built-README.md)
 * Architecture Of What You Build: [architecture-of-what-you-build-README.md](arch/architecture-of-what-you-build-README.md)
 * Control Plane Web App: [control-plane-web-app-README.md](arch/control-plane-web-app-README.md)

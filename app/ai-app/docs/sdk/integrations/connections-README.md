@@ -4,13 +4,14 @@ title: "Connections Framework (OAuth integrations)"
 summary: "The implemented registry, OAuth, account-store, and settings primitives used by Connection Hub to connect provider accounts while keeping credentials inside trusted server-side integration code."
 status: active
 tags: ["sdk", "integrations", "connections", "oauth", "connection-hub", "connected-accounts", "named-services"]
-updated_at: 2026-08-07
+updated_at: 2026-08-30
 keywords: ["connections framework", "OAuth integration", "ConnectionProvider registry", "ConnectionStore", "user-scoped credential", "connected account", "trusted credential resolver"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/email/email-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/email/email-external-prereq-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/namespace-services/providers-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-accounts/delegated-accounts-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/linkedin-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/canvas/search-operations-README.md
 ---
@@ -78,9 +79,11 @@ Provider TYPE        slack / gmail / telegram          CODE — a ConnectionProv
 - **Client app** (a.k.a. connector / application client) is **admin-managed data**:
   `{app_id, provider, label, client_id, client_secret, redirect_uri, scopes,
   enabled}`. There can be **many per provider**. The platform/admin keeps them.
-  - Deploy-time config in the connection-hub bundle —
-    `connections.providers.<provider>.apps: [{app_id, label, client_id, scopes,
-    enabled}]`, with `client_secret` + `oauth_state_secret` in bundle secrets.
+  - Deploy-time config in the Connection Hub app:
+    `connections.delegated_to_kdcube.providers.<provider>.connector_apps.<connector_app_id>`,
+    with each `client_secret` and the shared
+    `connections.delegated_to_kdcube.oauth_state_secret` resolved from app
+    secrets.
 - **Account** is user data: connected through one client app, so the account record
   carries `app_id` (needed to refresh the token with that app's credentials).
 
@@ -101,12 +104,14 @@ Provider TYPE        slack / gmail / telegram          CODE — a ConnectionProv
 
 ## What exists today
 
-The generic `integrations/connections` package supplies the registry, client-app
-catalog, account store, OAuth flow, refresh path, and settings operations. Google
-and Slack use its built-in `ConnectionProvider` declarations. Provider-specific
-integrations such as LinkedIn retain adapters where their API or migration path
-requires one, while using the same connected-account broker and delegated-access
-contracts at the operation boundary.
+Portable connected-account contracts and provider declarations live in the
+`prokura` package. KDCube's `integrations/connections` package supplies the host
+bindings for its client-app catalog, account store, OAuth flow, refresh path,
+user properties/secrets, and settings operations. Google and Slack use the
+shared provider declarations. Provider-specific integrations such as LinkedIn
+retain adapters where their API or migration path requires one, while using the
+same connected-account broker and delegated-access contracts at the operation
+boundary.
 
 Account metadata lives under the bundle storage root; provider tokens live as
 user-scoped KDCube secrets and account records carry only a `has_token` flag.

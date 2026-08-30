@@ -12,6 +12,9 @@ asyncpg
 psycopg2-binary==2.9.10
 Pillow
 
+# Shared descriptor and authority configuration.
+prokura==0.0.2
+
 # CloudWatch export
 -r requirements-aws.txt
 
