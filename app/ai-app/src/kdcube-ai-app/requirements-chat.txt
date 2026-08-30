@@ -44,7 +44,7 @@ psycopg2-binary==2.9.10
 # shared pool); only these framework stores need psycopg v3.
 psycopg[binary]>=3.1
 # Delegated-access authority shared with the Connection Hub application.
-connection-hub==0.0.3
+connection-hub>=0.0.4
 
 ddgs
 semantic-kernel

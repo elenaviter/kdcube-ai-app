@@ -9,6 +9,7 @@ CONFIG_IMPORTING_REQUIREMENTS = (
     "requirements-dbdeploy.txt",
     "requirements-metric-service.txt",
 )
+CONNECTION_HUB_REQUIREMENT = "connection-hub>=0.0.4"
 
 
 def _connection_hub_requirement(filename: str) -> str:
@@ -20,15 +21,19 @@ def _connection_hub_requirement(filename: str) -> str:
     ]
     assert len(requirements) == 1, f"{filename} must declare one Connection Hub requirement"
     requirement = requirements[0]
-    assert requirement.startswith("connection-hub=="), (
-        f"{filename} must use an exact Connection Hub pin"
+    assert requirement == CONNECTION_HUB_REQUIREMENT, (
+        f"{filename} must use the shared Connection Hub compatibility floor "
+        f"{CONNECTION_HUB_REQUIREMENT}"
     )
     return requirement
 
 
-def test_shared_config_services_use_the_same_connection_hub_release() -> None:
-    pins = {
+def test_shared_config_services_use_the_same_connection_hub_compatibility_floor() -> None:
+    requirements = {
         _connection_hub_requirement(filename)
         for filename in CONFIG_IMPORTING_REQUIREMENTS
     }
-    assert len(pins) == 1, f"shared-config service images use different Connection Hub releases: {pins}"
+    assert len(requirements) == 1, (
+        "shared-config service images use different Connection Hub requirements: "
+        f"{requirements}"
+    )
