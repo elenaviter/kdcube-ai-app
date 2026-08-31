@@ -21,6 +21,11 @@ COPY src/kdcube-ai-app/requirements-chat-ingress.txt requirements.txt
 COPY src/kdcube-ai-app/requirements-aws.txt requirements-aws.txt
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
+COPY deployment/docker/local-python-packages /tmp/kdcube-local-python-packages
+RUN if [ -f /tmp/kdcube-local-python-packages/requirements.txt ]; then \
+      pip install --no-cache-dir --no-deps --force-reinstall \
+        -r /tmp/kdcube-local-python-packages/requirements.txt; \
+    fi
 
 # Stage 2: Production stage
 FROM python:3.12-slim as production

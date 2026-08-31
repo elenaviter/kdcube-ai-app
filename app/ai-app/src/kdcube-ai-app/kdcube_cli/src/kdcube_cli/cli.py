@@ -26,6 +26,11 @@ from rich.text import Text
 from kdcube_cli.banner import print_cli_banner
 from kdcube_cli import installer as installer_mod
 from kdcube_cli.export_live_bundles import export_live_bundle_descriptors
+from kdcube_cli.local_python_packages import (
+    clear_local_python_package_sources,
+    parse_local_python_package_sources,
+    stage_local_python_package_sources,
+)
 from kdcube_cli.tty_keys import (
     KEY_DOWN,
     KEY_ENTER,
@@ -4261,6 +4266,13 @@ def main() -> None:
     _sp.add_argument("--release", default="", help="Refresh against a specific platform git ref/tag before rebuilding.")
     _sp.add_argument("--build", action="store_true", help="Rebuild platform Docker images before restarting.")
     _sp.add_argument(
+        "--maintainer-local-python-package",
+        action="append",
+        default=[],
+        metavar="DIST=SOURCE_DIR",
+        help=argparse.SUPPRESS,
+    )
+    _sp.add_argument(
         "--no-restart",
         action="store_true",
         help="Do not restart the stack after refresh (useful for build-only invocations).",
@@ -5131,6 +5143,17 @@ def main() -> None:
             _refresh_version_selector = bool(args.latest or args.upstream or _refresh_release)
             if sum([bool(args.latest), bool(args.upstream), bool(_refresh_release)]) > 1:
                 raise SystemExit("Choose only one of --latest, --upstream, or --release.")
+            try:
+                _refresh_local_python_packages = parse_local_python_package_sources(
+                    getattr(args, "maintainer_local_python_package", None)
+                )
+            except ValueError as exc:
+                raise SystemExit(str(exc)) from exc
+            if _refresh_local_python_packages and not args.build:
+                raise SystemExit(
+                    "--maintainer-local-python-package requires --build because "
+                    "the override is installed while constructing platform images."
+                )
 
             _repo = _resolve_subcommand_repo(args.path, workdir=_resolved, path_provided=_refresh_path_provided)
             if _refresh_version_selector:
@@ -5202,7 +5225,21 @@ def main() -> None:
                     "continuing anyway.[/yellow]"
                 )
             if args.build:
-                build_compose_images(console, repo_root=_repo, workdir=_resolved)
+                try:
+                    if _refresh_local_python_packages:
+                        stage_local_python_package_sources(
+                            _repo,
+                            _refresh_local_python_packages,
+                        )
+                        for _local_package in _refresh_local_python_packages:
+                            console.print(
+                                "[dim]Maintainer local Python package:[/dim] "
+                                f"{_local_package.distribution} <- {_local_package.source}"
+                            )
+                    build_compose_images(console, repo_root=_repo, workdir=_resolved)
+                finally:
+                    if _refresh_local_python_packages:
+                        clear_local_python_package_sources(_repo)
             if not args.no_restart:
                 _check_before_start(console, tenant=_t, project=_p, workdir=_resolved)
                 start_compose_stack(console, repo_root=_repo, workdir=_resolved, build=False)
