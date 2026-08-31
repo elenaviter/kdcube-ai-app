@@ -8,7 +8,7 @@ keywords: ["direct admission", "external backend", "opaque bearer", "workload pr
 updated_at: 2026-08-30
 see_also:
   - https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/recipes/direct-protected-service.md
-  - https://github.com/elenaviter/app-ecosystem/tree/main/examples/direct-admission-service
+  - https://github.com/elenaviter/app-ecosystem/tree/main/examples/connection-hub/direct-admission-service
   - repo:kdcube-ai-app/app/ai-app/docs/arch/delegated-authority-and-admission-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
 ---
@@ -37,7 +37,7 @@ bundles:
       name: Connection Hub
       repo: https://github.com/elenaviter/app-ecosystem.git
       ref: <APP_ECOSYSTEM_COMMIT_OR_TAG>
-      subdir: apps/connection-hub@1-0
+      subdir: products/connection-hub/apps/connection-hub@1-0
       module: entrypoint
       singleton: false
       config:
@@ -80,7 +80,7 @@ container-visible path. With the standard source mount and sibling
 `app-ecosystem` checkout, that path is:
 
 ```yaml
-path: /bundles/products/app-ecosystem/apps/connection-hub@1-0
+path: /bundles/products/app-ecosystem/products/connection-hub/apps/connection-hub@1-0
 ```
 
 `kdcube bundle status connection-hub@1-0 --json` reports both `host_path` and
@@ -101,7 +101,7 @@ The host route is discoverable in the Connection Hub OAuth metadata as
 URL. A stable shorter alias remains a separate KDCube router capability.
 
 Run the [reference protected
-service](https://github.com/elenaviter/app-ecosystem/tree/main/examples/direct-admission-service)
+service](https://github.com/elenaviter/app-ecosystem/tree/main/examples/connection-hub/direct-admission-service)
 against that endpoint. The external service receives only its own workload
 secret. KDCube retains app secrets, replay state, current card/catalog storage,
 and provider credentials.

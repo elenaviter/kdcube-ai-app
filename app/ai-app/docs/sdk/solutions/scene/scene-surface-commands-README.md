@@ -269,7 +269,7 @@ The target widget installs its `kdcube.surface.command` listener, announces
 `kdcube.surface.ready`, filters commands by its own `target_surface` values,
 applies the payload at runtime (the same state its URL deep-link path
 produces), and posts the applied ack. Reference receiver:
-[Connection Hub surfaceCommand.ts](https://github.com/elenaviter/app-ecosystem/blob/main/apps/connection-hub%401-0/ui/widgets/connections/src/api/surfaceCommand.ts).
+[Connection Hub surfaceCommand.ts](https://github.com/elenaviter/app-ecosystem/blob/main/products/connection-hub/apps/connection-hub%401-0/ui/widgets/connections/src/api/surfaceCommand.ts).
 
 ## Reference Implementations
 

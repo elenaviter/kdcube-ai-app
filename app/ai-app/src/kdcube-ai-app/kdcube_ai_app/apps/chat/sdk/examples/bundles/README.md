@@ -93,7 +93,7 @@ generic starter apps.
 
 ### Connection Hub
 
-[connection-hub@1-0](https://github.com/elenaviter/app-ecosystem/tree/main/apps/connection-hub%401-0) owns user-scoped identity
+[connection-hub@1-0](https://github.com/elenaviter/app-ecosystem/tree/main/products/connection-hub/apps/connection-hub%401-0) owns user-scoped identity
 and connection boundaries:
 
 - external identity links and principal resolution;

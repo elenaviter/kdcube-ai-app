@@ -10,7 +10,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/resolve-connected-credential-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/provider-error-contract-README.md
   - https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/frontend/application/integrations/google.md
-  - repo:app-ecosystem/packages/connection-hub/src/connection-hub/delegated_to_kdcube/providers/google.py
+  - repo:app-ecosystem/products/connection-hub/packages/connection-hub/src/connection_hub/delegated_to_kdcube/providers/google.py
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/integrations/google/sheets_proxy.py
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/integrations/google/docs_proxy.py
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/integrations/google/gmail_tools.py
@@ -36,7 +36,7 @@ A `google` provider row selects `adapter: google.oauth`. The adapter lives at:
 
 ```text
 connection_hub.delegated_to_kdcube.providers.google
-  (repo:app-ecosystem/packages/connection-hub/src/connection-hub/delegated_to_kdcube/providers/google.py)
+  (repo:app-ecosystem/products/connection-hub/packages/connection-hub/src/connection_hub/delegated_to_kdcube/providers/google.py)
 ```
 
 It owns the Google-specific OAuth mechanics that the generic OAuth/OIDC adapter

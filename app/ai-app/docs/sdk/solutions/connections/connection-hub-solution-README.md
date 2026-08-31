@@ -38,7 +38,7 @@ request proofs, platform authority, and delegated connections without
 collapsing those concepts into scattered auth tricks.
 
 The executable app and frontend live in
-`repo:app-ecosystem/apps/connection-hub@1-0`. Portable authority policy lives
+`repo:app-ecosystem/products/connection-hub/apps/connection-hub@1-0`. Portable authority policy lives
 in the `connection-hub` package in that repository. KDCube imports Connection Hub directly
 and owns only the host bindings under
 `kdcube_ai_app.apps.chat.sdk.integrations.connection_hub`.

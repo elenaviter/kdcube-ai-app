@@ -67,7 +67,7 @@ are owned by [Scene Surface Commands](../../sdk/solutions/scene/scene-surface-co
 
 Keep a small module that owns the contract constants, the parser, and the
 applied ack (pattern:
-[Connection Hub `surfaceCommand.ts`](https://github.com/elenaviter/app-ecosystem/blob/main/apps/connection-hub%401-0/ui/widgets/connections/src/api/surfaceCommand.ts)):
+[Connection Hub `surfaceCommand.ts`](https://github.com/elenaviter/app-ecosystem/blob/main/products/connection-hub/apps/connection-hub%401-0/ui/widgets/connections/src/api/surfaceCommand.ts)):
 
 ```ts
 export function parseMyOpen(data: unknown): MyOpenCommand | null {
@@ -176,7 +176,7 @@ contract).
 
 Source anchors:
 
-- [Connection Hub `surfaceCommand.ts`](https://github.com/elenaviter/app-ecosystem/blob/main/apps/connection-hub%401-0/ui/widgets/connections/src/api/surfaceCommand.ts) - receiver + applied ack
+- [Connection Hub `surfaceCommand.ts`](https://github.com/elenaviter/app-ecosystem/blob/main/products/connection-hub/apps/connection-hub%401-0/ui/widgets/connections/src/api/surfaceCommand.ts) - receiver + applied ack
 - `kdcube_ai_app/apps/chat/sdk/solutions/chat/ui/widget/src/host.ts` — emitter, ack-wait, fallback
 - `npm/packages/components-core/src/chat/connectionsConsent.ts` — claim → tier map
 - `kdcube_ai_app/apps/chat/sdk/examples/bundles/workspace@2026-03-31-13-36/ui/scene/src/sceneConfig.ts` — package-host contract declaration

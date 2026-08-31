@@ -14,7 +14,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-accounts/delegated-accounts-README.md
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/integrations/connected_accounts.py
-  - repo:app-ecosystem/packages/connection-hub/src/connection-hub/agent_account_scope.py
+  - repo:app-ecosystem/products/connection-hub/packages/connection-hub/src/connection_hub/agent_account_scope.py
 ---
 # Resolve a Connected Credential in Tool Code
 

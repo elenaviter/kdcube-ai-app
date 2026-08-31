@@ -665,7 +665,7 @@ run:
 
 ```bash
 python -m pytest -q \
-  apps/connection-hub@1-0/tests/test_oauth_discovery.py
+  products/connection-hub/apps/connection-hub@1-0/tests/test_oauth_discovery.py
 ```
 
 The wire test records KDCube's actual HTTP exchange; it does not infer protocol

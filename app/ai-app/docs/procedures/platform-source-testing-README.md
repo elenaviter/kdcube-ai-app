@@ -85,7 +85,7 @@ checkout, add the extracted package's `src` directory to `PYTHONPATH`:
 
 ```bash
 export APP_ECOSYSTEM_REPO=/abs/path/to/app-ecosystem
-export CONNECTION_HUB_SRC="$APP_ECOSYSTEM_REPO/packages/connection-hub/src"
+export CONNECTION_HUB_SRC="$APP_ECOSYSTEM_REPO/products/connection-hub/packages/connection-hub/src"
 export PYTHONPATH="$KDCUBE_SRC:$CONNECTION_HUB_SRC${PYTHONPATH:+:$PYTHONPATH}"
 ```
 
