@@ -381,6 +381,51 @@ class ChatRelayCommunicator:
             except Exception:
                 logger.exception("Relay callback failed")
 
+    async def _release_transport_if_idle(self) -> None:
+        """Return the pubsub's pooled Redis connection once nothing is subscribed.
+
+        A redis-py PubSub checks a DEDICATED connection out of the shared pool and
+        holds it until it is explicitly closed. Unsubscribing every channel does
+        not return it -- only stop_listener() closes it, and nothing on the
+        session-release path called that. So every finished turn leaked exactly one
+        pooled connection, permanently, until the pool was exhausted and every
+        Redis call in the process began failing with "Too many connections" --
+        including the stale-turn takeover meant to recover from it. See issue #243.
+
+        The listener must be STOPPED, not worked around: closing the pubsub while
+        the listener task is iterating listen() makes that iteration raise, and the
+        listener's own error handler calls _reconnect_pubsub(), which immediately
+        checks out a REPLACEMENT connection. Releasing "only when no listener is
+        running" is therefore not a safe subset of this fix -- it is a no-op, because
+        on this path a listener is always running.
+
+        This lives at the refcount owner rather than inside
+        ServiceCommunicator.unsubscribe_some() because only this object knows that
+        no further channel is expected. unsubscribe_some() is a channel-level
+        operation and has non-relay callers that manage their listener explicitly.
+
+        Re-subscribing after teardown is safe: acquire_*/reconcile_* call
+        subscribe_add() -- which recreates the pubsub when it is None -- before
+        _ensure_listener(), which restarts the listener task when it is not alive.
+        """
+        if self._session_refcounts or self._project_refcounts:
+            return
+        has_subs = getattr(self._comm, "_has_active_subscriptions", None)
+        stop = getattr(self._comm, "stop_listener", None)
+        if not callable(has_subs) or not callable(stop):
+            # Duck-typed/stub communicator (tests, alternate transports): it does
+            # not own a pooled pubsub connection, so there is nothing to release.
+            return
+        if has_subs():
+            return
+        await stop()
+        self._listener_started = False
+        logger.info(
+            "[ChatRelayCommunicator] relay transport idle; released pubsub "
+            "relay_id=%s comm_id=%s",
+            id(self), id(self._comm),
+        )
+
     async def acquire_session_channel(self, session_id: str, tenant: str, project: str, *, callback=None):
         if not session_id:
             return
@@ -418,6 +463,7 @@ class ChatRelayCommunicator:
             if count <= 1:
                 self._session_refcounts.pop(key, None)
                 await self._comm.unsubscribe_some(self._session_channel(session_id, tenant=tenant, project=project))
+                await self._release_transport_if_idle()
             else:
                 self._session_refcounts[key] = count - 1
 
@@ -439,6 +485,7 @@ class ChatRelayCommunicator:
             if count <= 1:
                 self._project_refcounts.pop(key, None)
                 await self._comm.unsubscribe_some(self._project_channel(tenant=tenant, project=project))
+                await self._release_transport_if_idle()
             else:
                 self._project_refcounts[key] = count - 1
 
@@ -473,6 +520,8 @@ class ChatRelayCommunicator:
             for tenant, project, session_id in stale:
                 await self._comm.unsubscribe_some(self._session_channel(session_id, tenant=tenant, project=project))
                 self._session_refcounts.pop((tenant, project, session_id), None)
+            if stale:
+                await self._release_transport_if_idle()
 
         if session_counts:
             await self._ensure_listener()
@@ -502,6 +551,8 @@ class ChatRelayCommunicator:
             for tenant, project in stale:
                 await self._comm.unsubscribe_some(self._project_channel(tenant=tenant, project=project))
                 self._project_refcounts.pop((tenant, project), None)
+            if stale:
+                await self._release_transport_if_idle()
 
         if project_counts:
             await self._ensure_listener()
