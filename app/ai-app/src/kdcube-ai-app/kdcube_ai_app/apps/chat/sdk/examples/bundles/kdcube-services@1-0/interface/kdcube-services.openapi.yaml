@@ -218,6 +218,62 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/WrappedOperation" }
 
+  /bundles/{tenant}/{project}/{bundle_id}/operations/telegram_status:
+    post:
+      tags: [Telegram Notify]
+      summary: Whether the authenticated caller can be messaged on Telegram (integration, bot deep link, hub edge).
+      operationId: telegram_status
+      x-kdcube-result-alias: telegram_status
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody: { $ref: "#/components/requestBodies/OperationEnvelope" }
+      responses:
+        "200": { $ref: "#/components/responses/WrappedOperation" }
+
+  /bundles/{tenant}/{project}/{bundle_id}/operations/telegram_send:
+    post:
+      tags: [Telegram Notify]
+      summary: Send one text message to the caller's own connected Telegram account (text-only; file-shaped keys are refused).
+      operationId: telegram_send
+      x-kdcube-result-alias: telegram_send
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody: { $ref: "#/components/requestBodies/OperationEnvelope" }
+      responses:
+        "200": { $ref: "#/components/responses/WrappedOperation" }
+
+  /bundles/{tenant}/{project}/{bundle_id}/operations/telegram_send_images:
+    post:
+      tags: [Telegram Notify]
+      summary: Send images or documents (staged_ref, url, or capped inline base64) with optional captions to the caller's own connected account.
+      operationId: telegram_send_images
+      x-kdcube-result-alias: telegram_send_images
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody: { $ref: "#/components/requestBodies/OperationEnvelope" }
+      responses:
+        "200": { $ref: "#/components/responses/WrappedOperation" }
+
+  /bundles/{tenant}/{project}/{bundle_id}/operations/telegram_request_upload:
+    post:
+      tags: [Telegram Notify]
+      summary: Mint a signed single-use upload slot for one outbound Telegram image; bytes ride the slot, staged_ref rides the send.
+      operationId: telegram_request_upload
+      x-kdcube-result-alias: telegram_request_upload
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody: { $ref: "#/components/requestBodies/OperationEnvelope" }
+      responses:
+        "200": { $ref: "#/components/responses/WrappedOperation" }
+
   /bundles/{tenant}/{project}/{bundle_id}/operations/control_plane:
     post:
       tags: [Widget Operations]

@@ -16,6 +16,7 @@ New entries live as dated files in this directory.
 
 ## Entries
 
+- [2026-08-31 - Telegram notify: text and images to the caller's connected account](2026-08-31-telegram-notify.md)
 - [2026-08-01 - Google Docs explicit tab selection](2026-08-01-docs-explicit-tab-selection.md)
 - [2026-08-01 - Google Docs import-source discovery](2026-08-01-docs-import-source-discovery.md)
 - [2026-07-29 - Google Docs productivity surface](2026-07-29-google-docs-productivity.md)

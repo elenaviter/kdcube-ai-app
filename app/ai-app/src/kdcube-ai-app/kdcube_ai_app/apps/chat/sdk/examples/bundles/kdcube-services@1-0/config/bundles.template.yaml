@@ -36,12 +36,31 @@ bundles:
                   google: "gmail"
                   slack: "slack-demo"
                   linkedin: "demo"
+        connections:
+          connection_hub:
+            bundle_id: connection-hub@1-0
         integrations:
           linkedin:
             # LinkedIn requires a dated version header on every /rest call and
             # sunsets old versions. Raise this when LinkedIn retires the
             # configured one; see the LinkedIn integration recipe.
             api_version: "202601"
+          # Telegram notify: this app SENDS to the caller's connected account
+          # through the deployment bot the workspace app runs on. The row
+          # references the SAME bot the Connection Hub authenticates (secret
+          # ref into the hub's authenticator secret) and declares NO webhook:
+          # one webhook exists per bot, and the workspace bundle owns it.
+          telegram.kdcube_ref:
+            provider: telegram
+            where: connection-hub
+            enabled: false
+            secret_refs:
+              bot_token: bundles.connection-hub@1-0.secrets.identity.authenticators.telegram_kdcube_ref.bot_token
+            definition:
+              bot_name: kdcube-ref
+              # Drives the t.me deep link the telegram_status operation
+              # answers with (the Connect journey runs in the bot's Mini App).
+              bot_username: kdcube_doc_bot
         ui:
           widgets:
             bundle_storage:

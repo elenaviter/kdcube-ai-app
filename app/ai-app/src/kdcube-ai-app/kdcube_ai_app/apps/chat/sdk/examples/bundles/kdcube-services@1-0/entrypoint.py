@@ -4,6 +4,7 @@ import importlib
 import logging
 import traceback
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
 from langgraph.graph import END, START, StateGraph
@@ -64,6 +65,7 @@ from kdcube_ai_app.infra.plugin.bundle_loader import (
 )
 from kdcube_ai_app.infra.service_hub.inventory import BundleState, Config
 
+from .services import telegram as telegram_notify
 from .services.conversations.named_service import build_conversation_named_service_provider
 from .services.named_services import NamedServicesMcpBridge
 from .services.named_services.request_scope import get_public_base_url
@@ -871,6 +873,76 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
                 "Cache-Control": "private, no-store",
             },
         )
+
+    # ------------------------------------------------------------------
+    # Telegram notify — text and images to the caller's connected account
+    # ------------------------------------------------------------------
+
+    @api(method="POST", alias="telegram_status", route="operations", user_types=("registered", "paid", "privileged"))
+    async def telegram_status(self, data: Optional[Dict[str, Any]] = None, **kwargs: Any) -> Dict[str, Any]:
+        """Whether the caller can be messaged on Telegram.
+
+        Answers with the enabled integration state, the bot's username and
+        t.me deep link (for the Connect journey through the deployment bot's
+        Mini App), and whether the caller's Connection Hub identity family
+        carries a Telegram edge. The recipient is always the authenticated
+        caller — identity comes from the session, not the payload."""
+        del data, kwargs
+        return await telegram_notify.telegram_status(
+            self, identity=self._agent_selection_identity()
+        )
+
+    @api(method="POST", alias="telegram_send", route="operations", user_types=("registered", "paid", "privileged"))
+    async def telegram_send(self, data: Optional[Dict[str, Any]] = None, **kwargs: Any) -> Dict[str, Any]:
+        """One text message to the caller's own connected Telegram account.
+
+        ``body.data``: ``{text, parse_mode?}``. Text-only by contract: any
+        file-shaped key is refused with a pointer to ``telegram_send_images``
+        (the Slack named service's post_message rule, mirrored)."""
+        payload = self._agent_selection_payload(data, kwargs)
+        return await telegram_notify.send_text(
+            self, identity=self._agent_selection_identity(), payload=payload
+        )
+
+    @api(method="POST", alias="telegram_send_images", route="operations", user_types=("registered", "paid", "privileged"))
+    async def telegram_send_images(self, data: Optional[Dict[str, Any]] = None, **kwargs: Any) -> Dict[str, Any]:
+        """Images (or documents) to the caller's own connected account.
+
+        ``body.data``: ``{images: [{staged_ref | url | content_base64,
+        filename?, mime_type?, caption?}], caption?}``. Bytes arrive as
+        single-use ``staged:`` refs minted by ``telegram_request_upload``
+        (preferred), as public URLs, or as capped inline base64."""
+        payload = self._agent_selection_payload(data, kwargs)
+        return await telegram_notify.send_images(
+            self,
+            identity=self._agent_selection_identity(),
+            payload=payload,
+            storage_path=str(getattr(self.settings, "STORAGE_PATH", "") or ""),
+        )
+
+    @api(method="POST", alias="telegram_request_upload", route="operations", user_types=("registered", "paid", "privileged"))
+    async def telegram_request_upload(self, data: Optional[Dict[str, Any]] = None, **kwargs: Any) -> Dict[str, Any]:
+        """A signed single-use upload slot for one outbound Telegram image.
+
+        ``body.data``: ``{filename}`` → ``{upload_url, staged_ref,
+        expires_at, max_bytes}``. PUT/POST the raw bytes to ``upload_url``,
+        then pass ``staged_ref`` to ``telegram_send_images`` — bytes ride the
+        signed slot, never a tool call. Same staging plumbing the named
+        services use."""
+        payload = self._agent_selection_payload(data, kwargs)
+        filename = str(payload.get("filename") or "").strip()
+        if not filename:
+            return {"ok": False, "error": "invalid_request", "message": "body.data.filename is required"}
+        identity = self._agent_selection_identity()
+        ns_ctx = SimpleNamespace(
+            tenant=identity.get("tenant"),
+            project=identity.get("project"),
+            user_id=identity.get("user_id"),
+        )
+        slot = await self._integration_upload_slot(ns_ctx, {"filename": filename})
+        if not slot:
+            return {"ok": False, "error": "not_configured", "message": "upload slot unavailable (public origin or signing secret missing)"}
+        return {"ok": True, **slot}
 
     def _build_graph(self) -> StateGraph:
         g = StateGraph(BundleState)

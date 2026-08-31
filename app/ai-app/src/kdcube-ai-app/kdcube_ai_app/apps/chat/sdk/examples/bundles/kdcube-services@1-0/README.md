@@ -316,6 +316,23 @@ These routes are public only in transport terms. A managed MCP call mints the
 short-lived token, and the route trusts the verified token rather than a
 browser session or query-supplied identity.
 
+### Telegram Notify
+
+Send text and images to the authenticated caller's own connected Telegram
+account, through the deployment bot the workspace app runs on. No chat id in
+any descriptor: the user links Telegram once through the bot's Mini App
+(Connect tab embeds the Connection Hub widget), and this bundle resolves the
+hub's identity edge per call. The integration row references the hub's
+authenticator bot token and declares no webhook (the workspace bundle owns
+the bot's single webhook).
+
+| Alias | Method | Purpose |
+| --- | --- | --- |
+| `telegram_status` | POST | Integration state, bot deep link, and whether the caller's identity family carries a Telegram edge. |
+| `telegram_send` | POST | One text message to the caller's connected account. Text-only: file-shaped keys are refused. |
+| `telegram_send_images` | POST | Images/documents with optional captions: single-use `staged:` refs, public URLs, or capped inline base64. |
+| `telegram_request_upload` | POST | Signed single-use upload slot for one outbound image (same staging plumbing as the named services). |
+
 ## Shape
 
 ```text
