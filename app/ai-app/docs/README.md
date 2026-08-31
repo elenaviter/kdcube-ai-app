@@ -4,8 +4,10 @@ title: "Platform Documentation Index"
 summary: "Curated top-level map of the KDCube documentation tree for app builders, integrators, operators, and agents."
 tags: ["docs", "index", "sdk", "service", "ops", "architecture"]
 keywords: ["documentation index", "platform architecture", "configuration guides", "service runtime docs", "app sdk docs", "execution docs", "deployment and operations docs", "app builder docs", "client widgets", "streaming", "memory", "claude code"]
-updated_at: 2026-08-30
+updated_at: 2026-08-31
 see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/procedures/README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/procedures/platform-source-testing-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/delegated-authority-and-admission-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/what-you-can-do-with-kdcube-README.md
@@ -51,6 +53,11 @@ Curated index of platform, service, and SDK documentation.
 * Application-Hosted Website Recipe: [website-README.md](recipes/components/website-README.md)
 * How To Navigate App Docs: [how-to-navigate-kdcube-docs-README.md](sdk/bundle/build/how-to-navigate-kdcube-docs-README.md)
 * App Docs Index: [bundle-index-README.md](sdk/bundle/bundle-index-README.md)
+
+## Contributor Procedures
+
+* Contributor Procedures Index: [procedures/README.md](procedures/README.md)
+* Run Platform Source Tests: [platform-source-testing-README.md](procedures/platform-source-testing-README.md)
 
 ## Build Apps
 
