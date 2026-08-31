@@ -1248,6 +1248,101 @@ async def test_account_scoped_provider_claim_satisfies_native_admission(card_per
 
 
 @pytest.mark.asyncio
+async def test_account_claim_does_not_grant_an_unselected_operation(card_persistence):
+    service = _named_services_agent_service(card_persistence)
+    ns_resource = "*/kdcube-services@1-0/public/mcp/named_services*"
+    created = await service.create_access(
+        _AGENT_USER,
+        label="agent",
+        client_id=_AGENT_CLIENT,
+        resource_grants={ns_resource: ["named_services:use"]},
+        account_scope={"mail": {"account-1": ["mail:read"]}},
+        named_service_operations={ns_resource: {}},
+    )
+    assert created["ok"] is True
+
+    state = await service.agent_namespace_grant_state(
+        grantor_subject="platform-user-1",
+        client_id=_AGENT_CLIENT,
+        namespace="mail",
+        operation="object.search",
+    )
+
+    assert state["governed"] is True
+    assert state["granted"] is False
+    assert state["missing_claims"] == []
+    assert state["not_granted"]["error"]["code"] == "delegated_capability_not_granted"
+
+
+@pytest.mark.asyncio
+async def test_operation_only_regrant_merges_existing_agent_authority(card_persistence):
+    service = _named_services_agent_service(card_persistence)
+    ns_resource = "*/kdcube-services@1-0/public/mcp/named_services*"
+    created = await service.create_access(
+        _AGENT_USER,
+        label="agent",
+        client_id=_AGENT_CLIENT,
+        resource_grants={ns_resource: ["named_services:use"]},
+        account_scope={"mail": {"account-1": ["mail:read"]}},
+        named_service_operations={ns_resource: {}},
+    )
+    assert created["ok"] is True
+
+    granted = await service.create_access(
+        _AGENT_USER,
+        label="agent",
+        client_id=_AGENT_CLIENT,
+        resource_grants={ns_resource: []},
+        named_service_operations={
+            ns_resource: {"mail": ["object.search"]}
+        },
+    )
+
+    assert granted["ok"] is True, granted
+    assert granted["access"]["resource_grants"] == {
+        ns_resource: ["named_services:use"]
+    }
+    assert granted["access"]["account_scope"] == {
+        "mail": {"account-1": ["mail:read"]}
+    }
+    state = await service.agent_namespace_grant_state(
+        grantor_subject="platform-user-1",
+        client_id=_AGENT_CLIENT,
+        namespace="mail",
+        operation="object.search",
+    )
+    assert state["granted"] is True
+
+
+@pytest.mark.asyncio
+async def test_operation_only_grant_cannot_create_a_claimless_agent_card(
+    card_persistence,
+):
+    service = _named_services_agent_service(card_persistence)
+    ns_resource = "*/kdcube-services@1-0/public/mcp/named_services*"
+
+    refused = await service.create_access(
+        _AGENT_USER,
+        label="agent",
+        client_id=_AGENT_CLIENT,
+        resource_grants={ns_resource: []},
+        named_service_operations={
+            ns_resource: {"mail": ["object.search"]}
+        },
+    )
+
+    assert refused == {
+        "ok": False,
+        "error": "delegated_access_requires_resource_grants",
+    }
+    assert await service.agent_access_token(
+        grantor_subject="platform-user-1",
+        client_id=_AGENT_CLIENT,
+        resources=[ns_resource],
+    ) is None
+
+
+@pytest.mark.asyncio
 async def test_account_scoped_provider_claim_materializes_boundary_on_edit(card_persistence):
     from connection_hub.delegated_credentials.named_service_policy import (
         boundary_permits_operation,

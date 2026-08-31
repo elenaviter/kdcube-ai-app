@@ -109,6 +109,31 @@ def _request(
     )
 
 
+def test_public_api_request_session_preserves_gateway_authenticated_identity():
+    request = _request(path="/api/integrations/bundles/t/p/app/public/claim")
+    session = _session()
+    session.identity_authority = {
+        "authority_id": "platform",
+        "platform_user_id": "user-1",
+    }
+    setattr(request.state, integrations.STATE_SESSION, session)
+
+    resolved = integrations._build_public_api_request_session(request)
+
+    assert resolved is session
+    assert resolved.user_id == "user-1"
+    assert resolved.identity_authority["authority_id"] == "platform"
+
+
+def test_public_api_request_session_is_anonymous_without_gateway_session():
+    request = _request(path="/api/integrations/bundles/t/p/app/public/claim")
+
+    resolved = integrations._build_public_api_request_session(request)
+
+    assert resolved.user_type is UserType.ANONYMOUS
+    assert resolved.user_id is None
+
+
 @pytest.fixture(autouse=True)
 def _default_authoritative_bundle_props(monkeypatch):
     monkeypatch.setattr(integrations, "_authoritative_bundle_props", lambda **kwargs: {})

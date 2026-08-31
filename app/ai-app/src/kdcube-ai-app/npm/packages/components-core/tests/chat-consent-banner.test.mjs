@@ -352,3 +352,59 @@ test('a named-service grant demand carries its namespace and operation to the pa
   assert.equal(banner.consent.params.namespace, 'task')
   assert.equal(banner.consent.params.operation, 'object.search')
 })
+
+test('a new named-service operation raises a banner after the previous operation was dismissed', () => {
+  function operationDemand(operation) {
+    return {
+      type: 'chat.step',
+      timestamp: '2026-08-31T00:00:00.000Z',
+      service: { request_id: `req:${operation}` },
+      conversation: { session_id: 'session-1', conversation_id: 'conv-1', turn_id: `turn:${operation}` },
+      event: { step: 'delegated_to_kdcube.consent', status: 'completed', title: 'Consent', agent: 'connection-hub' },
+      data: {
+        error: {
+          code: 'needs_connected_account_consent',
+          message: `slack needs the user's consent to the operation ${operation}.`,
+        },
+        consent: {
+          kind: 'delegated_agent_grant',
+          reason: 'capability_not_granted',
+          claims: [],
+          resource: '*/api/integrations/bundles/*/*/kdcube-services@1-0/public/mcp/named_services*',
+          agent_client_id: 'kdcube-agent:workspace@2026-03-31-13-36:main',
+          namespace: 'slack',
+          operation,
+          grant: {
+            operation: 'delegated_agent_grant_create',
+            payload: {
+              client_id: 'kdcube-agent:workspace@2026-03-31-13-36:main',
+              resource: '*/api/integrations/bundles/*/*/kdcube-services@1-0/public/mcp/named_services*',
+              claims: [],
+              named_service_operations: { slack: [operation] },
+            },
+          },
+        },
+      },
+    }
+  }
+
+  const postMessage = applyChatStep(baseState(), operationDemand('object.action.post_message'))
+  assert.equal(postMessage.banners.length, 1)
+
+  const superseded = applyChatStep(postMessage, operationDemand('object.schema'))
+  assert.equal(superseded.banners.length, 1)
+  assert.notEqual(superseded.banners[0].id, postMessage.banners[0].id)
+  assert.equal(superseded.banners[0].consent.params.operation, 'object.schema')
+
+  const dismissed = chatReducer(postMessage, chatActions.dismissBanner(postMessage.banners[0].id))
+  assert.equal(dismissed.banners.length, 0)
+
+  const schema = applyChatStep(dismissed, operationDemand('object.schema'))
+  assert.equal(schema.banners.length, 1)
+  assert.equal(schema.banners[0].consent.params.namespace, 'slack')
+  assert.equal(schema.banners[0].consent.params.operation, 'object.schema')
+
+  const repeated = applyChatStep(schema, operationDemand('object.schema'))
+  assert.equal(repeated.banners.length, 1)
+  assert.equal(repeated.banners[0].id, schema.banners[0].id)
+})

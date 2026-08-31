@@ -910,6 +910,33 @@ async def test_actions_dispatch_to_slack_transport():
     assert [call[0] for call in provider._slack.calls] == ["post_slack_message", "upload_slack_file"]
 
 
+@pytest.mark.asyncio
+async def test_post_message_rejects_attachment_paths_instead_of_dropping_the_file():
+    provider = _Provider([_account("acc-1", "slack:post")])
+
+    response = await provider.object_action(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_ACTION,
+            namespace=SLACK_NAMESPACE,
+            object_ref="slack:acc-1:channel:C123",
+            action=ACTION_POST_MESSAGE,
+            payload={
+                "text": "review the pull request after lunch",
+                "attachment_paths": ["conv:fi:conv_conv-1.turn_1.files/image.png"],
+            },
+        ),
+    )
+
+    assert response.ok is False
+    assert response.status == 400
+    assert response.error.code == "slack_message_carries_no_files"
+    assert "attachment_paths" in response.error.message
+    assert "upload_file" in response.error.message
+    assert "file_path" in response.error.message
+    assert provider._slack.calls == []
+
+
 def test_registered_spec_carries_exact_connected_account_actions():
     from kdcube_ai_app.apps.chat.sdk.integrations.slack.named_service import (
         slack_named_service_spec,

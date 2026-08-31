@@ -5,7 +5,7 @@ summary: "Short recipes for Connection Hub flows such as connection edges, appli
 status: active
 tags: ["recipes", "connections", "connection-hub", "connection-edges", "external-channel", "delegated-credentials"]
 keywords: ["Connection Hub recipes", "application-hosted platform login", "connected identities", "delegated clients", "MCP access"]
-updated_at: 2026-08-30
+updated_at: 2026-08-31
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/custom-oauth-oidc-service-README.md
@@ -24,6 +24,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/delegate-kdcube-service-to-external-client-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/protect-external-service-with-connection-hub-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
+  - https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/testing/end-to-end-acceptance.md
 ---
 # Connection Recipes
 
@@ -62,3 +63,4 @@ For deeper design and implementation contracts, read:
 - [OAuth Delegated Credential Protocol Adapter](../../sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md)
 - [Widget Auth Context Transport](../../sdk/solutions/connections/widget-auth-context/widget-auth-context-README.md)
 - [Request Authenticators](../../sdk/solutions/connections/request-authenticators/request-authenticators-README.md)
+- [Connection Hub And Governed MCP End-To-End Acceptance](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/testing/end-to-end-acceptance.md)

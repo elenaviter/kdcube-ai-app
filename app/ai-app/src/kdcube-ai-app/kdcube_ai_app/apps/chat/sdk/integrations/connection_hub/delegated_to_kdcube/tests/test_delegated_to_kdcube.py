@@ -1872,6 +1872,61 @@ async def test_consent_completion_authors_one_event_per_demand_and_clears(monkey
 
 
 @pytest.mark.asyncio
+async def test_operation_only_agent_grant_authors_live_lane_event(monkeypatch):
+    """Regression for a card that already holds every account claim but lacks
+    one named-service operation: empty claims do not erase the operation fact."""
+    from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_to_kdcube.consent_demand import (
+        author_consent_granted_events,
+        record_consent_demand,
+    )
+    from kdcube_ai_app.apps.chat.sdk import config as sdk_config
+
+    store: dict = {}
+    _install_async_user_prop_store(monkeypatch, sdk_config, store)
+    client_id = "kdcube-agent:workspace@2026-03-31-13-36:main"
+    resource = "*/kdcube-services@1-0/public/mcp/named_services*"
+    await record_consent_demand(**_demand_kwargs(
+        provider_id="kdcube",
+        provider_label="KDCube",
+        connector_app_id=client_id,
+        claims=[],
+        tool_name="slack",
+        resource=resource,
+        namespace="slack",
+        operation="object.action.upload_file",
+    ))
+    sources: list[_FakeLaneSource] = []
+
+    def factory(entry):
+        source = _FakeLaneSource(entry)
+        sources.append(source)
+        return source
+
+    authored = await author_consent_granted_events(
+        redis=None,
+        user_id="user-1",
+        provider_id="kdcube",
+        granted_claims=[],
+        granted_named_service_operations={
+            "slack": ["object.action.upload_file"]
+        },
+        granted_resource=resource,
+        connector_app_id=client_id,
+        account_id="agent-1",
+        connection_hub_bundle_id="connection-hub@1-0",
+        source_factory=factory,
+    )
+
+    assert authored == 1
+    event = sources[0].published[0]
+    assert event["payload"]["claims"] == []
+    assert event["payload"]["namespace"] == "slack"
+    assert event["payload"]["operation"] == "object.action.upload_file"
+    assert event["payload"]["resource"] == resource
+    assert "operation object.action.upload_file in slack" in event["text"]
+
+
+@pytest.mark.asyncio
 async def test_publish_failure_keeps_the_record_for_the_announce_fallback(monkeypatch):
     """(f) When the lane publish fails, the demand stays recorded — the
     turn-start [CONNECTED ACCOUNTS UPDATE] announce covers the grant."""

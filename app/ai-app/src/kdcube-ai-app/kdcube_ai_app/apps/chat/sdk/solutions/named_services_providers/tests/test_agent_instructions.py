@@ -113,6 +113,21 @@ def test_schema_denial_recovery_keeps_the_contract_first_order_on_both_surfaces(
         assert "successful schema result" in block
 
 
+def test_consent_reporting_preserves_an_operation_only_demand_on_both_surfaces():
+    react = compose_named_service_agent_instructions(
+        _consumer_props("slack"), client_id="main", surface="react", intros=INTROS
+    )
+    bridge = compose_named_service_agent_instructions(
+        _consumer_props("slack"), client_id="main", surface="bridge", intros=INTROS
+    )
+
+    for block in (react, bridge):
+        assert "structured consent demand is authoritative" in block
+        assert "`operation` and `claims` exactly" in block
+        assert "`claims: []` means only the operation boundary is missing" in block
+        assert "never infer or add claims from an earlier denial" in block
+
+
 def test_bridge_surface_binds_the_door_tool_names_when_given():
     from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.instructions import (
         NAMED_SERVICES_MCP_DOOR_TOOL_NAMES,

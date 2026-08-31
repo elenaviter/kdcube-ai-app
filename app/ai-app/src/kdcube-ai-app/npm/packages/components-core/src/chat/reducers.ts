@@ -297,8 +297,10 @@ function connectedAccountConsentBanner(data: Record<string, unknown> | undefined
       // The supersession prefix runs through the FIRST '|': keep agent AND
       // resource before it, so one agent's demands on different resources
       // coexist as separate banners (memories next to the named-services
-      // bridge), and only a changed claim set on the SAME resource supersedes.
-      signature: `agent:${agentClientId}:${resource}|${[...new Set([...grantClaims, ...displayClaims])].sort().join(',')}|${accountId}|${accountClaim}`,
+      // bridge). The exact signature also identifies the inner operation: a
+      // dismissed post_message demand must not hide a later object.schema or
+      // upload_file demand on the same named-services resource.
+      signature: `agent:${agentClientId}:${resource}|${grantNamespace}|${grantOperation}|${[...new Set([...grantClaims, ...displayClaims])].sort().join(',')}|${accountId}|${accountClaim}`,
       tools: blockedTools,
       claims: displayClaims,
     }

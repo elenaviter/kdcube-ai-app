@@ -4769,6 +4769,14 @@ def _build_mcp_request_session(request: Request) -> UserSession:
 
 
 def _build_public_api_request_session(request: Request) -> UserSession:
+    # `public` means authentication is optional, not that an identity already
+    # verified by the gateway must be discarded.  The gateway stores its
+    # resolved session on request.state before this router runs.  Preserve that
+    # session so public app operations can distinguish an authenticated
+    # platform caller from an anonymous or externally authenticated request.
+    session = getattr(request.state, STATE_SESSION, None)
+    if session is not None:
+        return session
     return _build_mcp_request_session(request)
 
 
