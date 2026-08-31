@@ -4,7 +4,7 @@ title: "Generic Scene Contract"
 summary: "Gold-standard target design for a config-driven scene: surfaces, namespace presentation, context drag, event relay, generic surface commands, and widget responsibilities."
 status: design
 tags: ["sdk", "solutions", "scene", "components", "widgets", "configuration", "surface-command", "event-bus", "data-bus", "named-services"]
-updated_at: 2026-07-07
+updated_at: 2026-08-31
 keywords:
   [
     "generic scene contract",
@@ -297,7 +297,7 @@ hardcoded into the widgets.
 | `route` | Route relative to the app's widget/public route root. |
 | `mount` | Inline, docked, rail-summoned, modal, or overlay placement. |
 | `authRequired` | Surface is visible/mountable only after scene auth reports an authenticated user. |
-| `ready` | How the scene knows commands can be flushed. |
+| `ready` | How the component explicitly reports that its command receiver is installed; see [Scene Surface Commands](scene-surface-commands-README.md#receiver-readiness). |
 | `commands` | Generic actions the surface accepts. |
 | `dropTargets` | Declarative object selector policy and effect for this surface: attach, pin, or provider-backed open. |
 | `liveEventsTransport` / `liveDataTransport` | Transport ownership mode exposed to the component. Exact event claims are component-owned runtime messages. |
@@ -422,7 +422,7 @@ The generic scene component should implement these capabilities.
 | Config/profile loading | Resolve selected profile and runtime/app/surface declarations. | Accept config handshake or standalone config. |
 | Auth gating | Show anonymous/public surfaces; reveal authenticated surfaces when host auth reports authenticated. | Treat auth material as runtime config, not as a polling signal. |
 | Surface mounting | Mount inline, rail, modal, overlay, and summoned surfaces from config. | Render local UI and send readiness. |
-| Readiness queue | Queue commands until surface readiness policy is satisfied. | Emit ready/closed messages or acknowledge config handshake. |
+| Readiness queue | Queue commands until the declared receiver-readiness policy is satisfied. | Install the command receiver before emitting its ready message or completing its declared handshake. |
 | Namespace presentation | Fetch once per configured provider and fan out to surfaces. | Render chips/cards/overlays from the supplied map. |
 | Surface commands | Emit `kdcube.surface.command` with target/action/object_ref/context. | Interpret the command locally and call local APIs as needed. |
 | Provider-backed open | Call `object.action(open, object_ref, requestedTargetSurface)` and route provider `ui_event.target_surface`. | Load/focus object after receiving command. |

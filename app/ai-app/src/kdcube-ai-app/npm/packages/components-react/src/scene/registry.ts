@@ -37,6 +37,12 @@ export interface SceneDropAccepts {
   open?: SceneContextDropOpenRoute
 }
 
+export interface SceneComponentReadySpec {
+  type: 'message' | 'load' | 'load-timeout' | 'config-handshake'
+  messageType?: string
+  fallbackDelayMs?: number
+}
+
 export interface SceneComponentSpec {
   alias: string
   /** Owning app package; '' means the scene's own app. */
@@ -55,6 +61,8 @@ export interface SceneComponentSpec {
   size: { w: number; h: number }
   full?: { w: number; h: number }
   targetSurfaces: string[]
+  /** How the host knows the component can receive queued commands. */
+  ready?: SceneComponentReadySpec
   /** Cross-surface context drop acceptance for the host drag overlay. */
   drop?: SceneDropAccepts
   /**
@@ -107,6 +115,22 @@ function asSize(value: unknown, fallback: { w: number; h: number }): { w: number
   const h = Number(record.h)
   if (Number.isFinite(w) && w > 0 && Number.isFinite(h) && h > 0) return { w, h }
   return fallback
+}
+
+function normalizeReady(
+  value: unknown,
+  fallback?: SceneComponentReadySpec,
+): SceneComponentReadySpec | undefined {
+  if (value === undefined) return fallback
+  const record = asRecord(value)
+  const type = asString(record.type)
+  if (!['message', 'load', 'load-timeout', 'config-handshake'].includes(type)) return fallback
+  const delay = Number(record.fallback_delay_ms ?? record.fallbackDelayMs)
+  return {
+    type: type as SceneComponentReadySpec['type'],
+    messageType: asString(record.message_type) || asString(record.messageType) || undefined,
+    fallbackDelayMs: Number.isFinite(delay) && delay >= 0 ? delay : undefined,
+  }
 }
 
 export function normalizeExternalPanelConfig(value: unknown): SceneExternalPanelConfig | null {
@@ -206,6 +230,7 @@ function mergeComponentSpec(
       : Array.isArray(record.targetSurfaces)
         ? record.targetSurfaces.map(asString).filter(Boolean)
         : fallback.targetSurfaces,
+    ready: normalizeReady(record.ready, fallback.ready),
     drop: normalizeDropAccepts(record.drop) ?? fallback.drop,
     placement: normalizePlacement(record.placement, record.docked, fallback.placement),
     rail: asBool(record.rail, fallback.rail),

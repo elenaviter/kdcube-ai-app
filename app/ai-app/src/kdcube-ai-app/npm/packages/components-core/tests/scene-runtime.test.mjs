@@ -2,9 +2,49 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   createContextDragBroker,
+  createSceneRuntime,
   normalizeContextDragMessage,
   sceneMatchObjectSelector,
 } from '../dist/scene/index.js'
+
+test('keeps the first surface command queued until a cold target reports ready', () => {
+  let ready = false
+  let opened = 0
+  const posted = []
+  const runtime = createSceneRuntime({ flushDelayMs: -1 })
+  runtime.registerSurface('connection_hub.connections', {
+    label: 'Connection Hub',
+    ensureOpen: () => { opened += 1 },
+    isReady: () => ready,
+    postCommand: (command) => {
+      posted.push(command)
+      return true
+    },
+    commandFromOpen: () => null,
+  })
+
+  const command = {
+    type: 'kdcube.surface.command',
+    target_surface: 'connection_hub.connections',
+    command_id: 'first-click',
+    ui_event: {
+      tab: 'delegated_by_kdcube',
+      pending_agent_grant: '1',
+    },
+  }
+  const queued = runtime.queueSurfaceCommand('connection_hub.connections', command)
+
+  assert.equal(queued.ok, true)
+  assert.equal(queued.code, 'queued')
+  assert.equal(opened, 1)
+  assert.equal(posted.length, 0)
+  assert.deepEqual(runtime.getPendingCommand('connection_hub.connections'), command)
+
+  ready = true
+  assert.equal(runtime.flushSurface('connection_hub.connections'), true)
+  assert.deepEqual(posted, [command])
+  assert.equal(runtime.getPendingCommand('connection_hub.connections'), undefined)
+})
 
 test('normalizes canonical context drag messages', () => {
   const active = normalizeContextDragMessage({

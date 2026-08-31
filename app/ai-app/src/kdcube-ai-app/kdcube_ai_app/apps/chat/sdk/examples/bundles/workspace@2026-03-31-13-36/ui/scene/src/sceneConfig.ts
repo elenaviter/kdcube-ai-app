@@ -277,6 +277,11 @@ export function defaultComponentSpecs(): SceneComponentSpec[] {
       size: { w: 760, h: 640 },
       full: { w: 1040, h: 760 },
       targetSurfaces: ['connection_hub.connections', 'connection_hub.settings'],
+      ready: {
+        type: 'message',
+        messageType: 'kdcube.surface.ready',
+        fallbackDelayMs: 6000,
+      },
       placement: 'floating',
       rail: true,
       defaultOpen: false,

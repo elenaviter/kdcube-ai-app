@@ -15,6 +15,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
   SCENE_SURFACE_COMMAND,
+  SCENE_SURFACE_READY,
   SCENE_SUBSCRIBE_MESSAGE,
   SCENE_UNSUBSCRIBE_MESSAGE,
   createContextDragBroker,
@@ -69,6 +70,8 @@ const EXTERNAL_ALIAS_PREFIX = 'external:'
 const INGRESS_MESSAGE_TYPE = 'kdcube.canvas.ingress'
 const INGRESS_DRAG_START = 'kdcube-canvas-ingress-drag-start'
 const INGRESS_DRAG_END = 'kdcube-canvas-ingress-drag-end'
+const MESSAGE_READY_FALLBACK_MS = 6000
+const MEMORY_STATUS_FALLBACK_MS = 1800
 
 interface ActiveDragView {
   sourceAlias: string
@@ -127,6 +130,11 @@ function App() {
   const tileRefs = useRef<Record<string, HTMLElement | null>>({})
   /** Per-component readiness reported via kdcube-memory-widget-status. */
   const statusReadyRef = useRef<Record<string, boolean>>({})
+  /** Document load is the compatibility/default readiness policy. */
+  const frameLoadedRef = useRef<Record<string, boolean>>({})
+  /** Command readiness is explicit: a frame exists before its app installs
+   *  its message listener, so contentWindow alone cannot release a command. */
+  const surfaceReadyRef = useRef<Record<string, boolean>>({})
   const sceneConfigRef = useRef(sceneConfig)
   sceneConfigRef.current = sceneConfig
   const ctxRef = useRef(ctx)
@@ -403,10 +411,18 @@ function App() {
       spec.targetSurfaces.forEach((targetSurface) => {
         registry[targetSurface] = {
           label: spec.title,
-          ensureOpen: () => openComponent(spec.alias),
+          ensureOpen: () => {
+            if (!frameRefs.current[spec.alias]) {
+              frameLoadedRef.current[spec.alias] = false
+              surfaceReadyRef.current[spec.alias] = false
+              statusReadyRef.current[spec.alias] = false
+            }
+            openComponent(spec.alias)
+          },
           isReady: () => {
             if (targetSurface.startsWith('sdk.memory.')) return Boolean(statusReadyRef.current[spec.alias])
-            return Boolean(frameRefs.current[spec.alias]?.contentWindow)
+            if (spec.ready?.type === 'message') return Boolean(surfaceReadyRef.current[spec.alias])
+            return Boolean(frameRefs.current[spec.alias]?.contentWindow && frameLoadedRef.current[spec.alias])
           },
           postCommand: (command) => postToFrame(spec.alias, command as Record<string, unknown>),
           commandFromOpen: providerSurfaceCommandFromOpen,
@@ -420,10 +436,15 @@ function App() {
       // external-panel routing (so a provider open of e.g.
       // `task_tracker.issue_editor` reaches the widget as a command it acts on).
       Object.assign(registry, externalPanelSurfaceRegistrations(externalPanel, {
-        ensureOpen: (_targetSurface, surface) => openComponent(externalAlias, {
-          ...(surface.expanded !== undefined ? { expanded: surface.expanded } : {}),
-        }),
-        isReady: () => Boolean(frameRefs.current[externalAlias]?.contentWindow),
+        ensureOpen: (_targetSurface, surface) => {
+          if (!frameRefs.current[externalAlias]) frameLoadedRef.current[externalAlias] = false
+          openComponent(externalAlias, {
+            ...(surface.expanded !== undefined ? { expanded: surface.expanded } : {}),
+          })
+        },
+        isReady: () => Boolean(
+          frameRefs.current[externalAlias]?.contentWindow && frameLoadedRef.current[externalAlias]
+        ),
         postToPanel: (message) => postToFrame(externalAlias, message as Record<string, unknown>),
       }))
     }
@@ -844,6 +865,19 @@ function App() {
         return
       }
 
+      if (type === SCENE_SURFACE_READY) {
+        surfaceReadyRef.current[sourceAlias] = true
+        const surfaces = sourceAlias === externalAlias
+          ? Object.keys(externalPanel?.surfaces || {})
+          : (specByAlias.get(sourceAlias)?.targetSurfaces || [])
+        surfaces.forEach((surface) => sceneRuntime.flushSurface(surface))
+        console.info('[kdc-scene] surface command target ready', {
+          alias: sourceAlias,
+          target_surfaces: surfaces,
+        })
+        return
+      }
+
       if (type === SCENE_SUBSCRIBE_MESSAGE) {
         const nested = asRecord(data.data)
         const alias = asString(data.alias) || asString(data.widget) || sourceAlias
@@ -1230,19 +1264,36 @@ function App() {
                 allow="clipboard-write"
                 onLoad={() => {
                   armFrameFocusRaise(spec.alias)
+                  frameLoadedRef.current[spec.alias] = true
                   statusReadyRef.current[spec.alias] = false
                   const win = managerRef.current.get(spec.alias)
                   if (spec.views) syncWidgetView(spec.alias, win?.expanded ? 'expanded' : 'compact')
+                  const usesStatusReadiness = spec.targetSurfaces.some((surface) => surface.startsWith('sdk.memory.'))
+                  if (spec.ready?.type === 'message') {
+                    const fallbackDelayMs = spec.ready.fallbackDelayMs ?? MESSAGE_READY_FALLBACK_MS
+                    // Command-aware widgets report readiness after installing
+                    // their listener. The delayed fallback keeps older widgets
+                    // usable and makes the missing readiness signal visible.
+                    window.setTimeout(() => {
+                      if (surfaceReadyRef.current[spec.alias]) return
+                      surfaceReadyRef.current[spec.alias] = true
+                      spec.targetSurfaces.forEach((surface) => sceneRuntime.flushSurface(surface))
+                      console.warn('[kdc-scene] explicit surface readiness not received; using load fallback', {
+                        alias: spec.alias,
+                        after_ms: fallbackDelayMs,
+                      })
+                    }, fallbackDelayMs)
+                    return
+                  }
+                  if (usesStatusReadiness) {
+                    window.setTimeout(() => {
+                      if (statusReadyRef.current[spec.alias]) return
+                      statusReadyRef.current[spec.alias] = true
+                      spec.targetSurfaces.forEach((surface) => sceneRuntime.flushSurface(surface))
+                    }, MEMORY_STATUS_FALLBACK_MS)
+                    return
+                  }
                   spec.targetSurfaces.forEach((surface) => sceneRuntime.flushSurface(surface))
-                  // Status-gated widgets normally report readiness themselves
-                  // (kdcube-memory-widget-status); the load-timeout fallback
-                  // keeps queued surface commands from stalling if that
-                  // message is missed (website `ready: load-timeout` model).
-                  window.setTimeout(() => {
-                    if (statusReadyRef.current[spec.alias]) return
-                    statusReadyRef.current[spec.alias] = true
-                    spec.targetSurfaces.forEach((surface) => sceneRuntime.flushSurface(surface))
-                  }, 1800)
                 }}
               />
             </FloatingWindow>
@@ -1315,6 +1366,7 @@ function App() {
             allow="clipboard-write"
             onLoad={() => {
               armFrameFocusRaise(externalAlias)
+              frameLoadedRef.current[externalAlias] = true
               const win = managerRef.current.get(externalAlias)
               syncWidgetView(externalAlias, win?.expanded ? 'expanded' : 'compact')
               Object.keys(externalPanel.surfaces || {}).forEach((surface) => sceneRuntime.flushSurface(surface))

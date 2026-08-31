@@ -46,6 +46,26 @@ test('enabled:false removes a default; docked flag maps to placement', () => {
   assert.equal(board2.drop.targetSurface, 'sdk.memory.viewer')
 })
 
+test('normalizes explicit receiver readiness without changing components that omit it', () => {
+  const specs = resolveComponentSpecs({
+    pinboard: {},
+    usage: {
+      ready: {
+        type: 'message',
+        message_type: 'kdcube.surface.ready',
+        fallback_delay_ms: 6000,
+      },
+    },
+  }, defaults)
+
+  assert.equal(specs.find((s) => s.alias === 'pinboard').ready, undefined)
+  assert.deepEqual(specs.find((s) => s.alias === 'usage').ready, {
+    type: 'message',
+    messageType: 'kdcube.surface.ready',
+    fallbackDelayMs: 6000,
+  })
+})
+
 test('external panel config normalizes surfaces and message types', () => {
   const panel = normalizeExternalPanelConfig({
     id: 'task_panel', label: 'Tasks', bundle_id: 'task-tracker@1-0',

@@ -1,3 +1,15 @@
+---
+id: repo:kdcube-ai-app/app/ai-app/docs/recipes/components/scene-surface-command-README.md
+title: "Recipe: Scene Surface Command"
+summary: "Declare, receive, announce readiness for, and emit scene surface commands with routing acknowledgements and a standalone fallback."
+status: current
+tags: ["recipe", "scene", "surface-command", "widgets", "postmessage"]
+updated_at: 2026-08-31
+keywords: ["scene surface command recipe", "kdcube.surface.ready", "command listener readiness", "target_surface", "command_id"]
+see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/scene/scene-surface-commands-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/scene/generic-scene-contract-README.md
+---
 # Recipe: Scene Surface Command
 
 A surface command lets one widget direct another through the scene host: summon
@@ -14,7 +26,7 @@ shows the three code touchpoints and one shipped end-to-end flow.
 
 ```text
 scene config     declare: contract id -> component alias + target surfaces
-target widget    receive kdcube.surface.command, apply payload, post applied ack
+target widget    install listener, post kdcube.surface.ready, apply command, ack
 emitter widget   compose command_id + ui_event payload, await ack, else fallback
 ```
 
@@ -47,7 +59,11 @@ component spec — the scene runtime registers and routes them:
 Declaring is the whole capability story: an emitter learns the scene routes the
 contract from the host's ack at command time.
 
-## 2. Receive And Ack In Your Widget
+For a command-receiving iframe, configure message readiness with
+`messageType: "kdcube.surface.ready"`. The mechanism and compatibility fallback
+are owned by [Scene Surface Commands](../../sdk/solutions/scene/scene-surface-commands-README.md#receiver-readiness).
+
+## 2. Receive, Announce Readiness, And Ack
 
 Keep a small module that owns the contract constants, the parser, and the
 applied ack (pattern:
@@ -65,9 +81,27 @@ export function parseMyOpen(data: unknown): MyOpenCommand | null {
 }
 ```
 
-In the app shell: listen on `window` `message`, parse, apply the SAME state
-your URL deep-link path produces (switch tab, focus the card, preselect
-values), then post the applied ack
+In the app shell, install the listener before announcing readiness:
+
+```ts
+useEffect(() => {
+  const onSurfaceCommand = (event: MessageEvent) => {
+    const command = parseMyOpen(event.data)
+    if (!command) return
+    applyMyOpen(command)
+    ackMyOpen(command, 'applied')
+  }
+  window.addEventListener('message', onSurfaceCommand)
+  window.parent.postMessage({
+    type: 'kdcube.surface.ready',
+    target_surfaces: MY_TARGET_SURFACES,
+  }, '*')
+  return () => window.removeEventListener('message', onSurfaceCommand)
+}, [])
+```
+
+Apply the same state your URL deep-link path produces (switch tab, focus the
+card, preselect values), then post the applied ack
 (`{type: 'kdcube.surface.command.ack', target_surface, action, reason: 'applied', ts}`;
 echo `command_id` when present). Applying at runtime keeps the widget's state —
 a summon re-targets it with zero reload.
@@ -118,7 +152,11 @@ emit connections.hub.open with command_id
   (chat/ui/widget/src/host.ts)
         |
         v
-scene routes the contract, summons/focuses the hub window, acks {command_id, ok}
+scene routes the contract, summons/focuses the hub window, owns the queued
+command, and acks {command_id, ok}
+        |
+        v
+hub installs its command listener and posts kdcube.surface.ready
         |
         v
 hub widget applies at runtime — the same state its URL deep-link path

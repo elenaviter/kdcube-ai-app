@@ -1,15 +1,17 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/scene/scene-surface-commands-README.md
 title: "Scene Surface Commands"
-summary: "How one surface directs another through the scene host: contract declaration, the kdcube.surface.command envelope, host routing with readiness queueing, both ack shapes, and the emitter pattern with a standalone fallback."
+summary: "How one surface directs another through the scene host: contract declaration, the kdcube.surface.command envelope, receiver-ready delivery, both ack shapes, and the emitter pattern with a standalone fallback."
 status: current
 tags: ["sdk", "solutions", "scene", "surfaces", "surface-command", "widgets", "postmessage"]
-updated_at: 2026-07-07
+updated_at: 2026-08-31
 keywords:
   [
     "scene surface commands",
     "kdcube.surface.command",
     "kdcube.surface.command.ack",
+    "kdcube.surface.ready",
+    "command listener readiness",
     "surfaceCommandContracts",
     "target_surface",
     "ui_event payload",
@@ -77,9 +79,18 @@ and the target surfaces it answers for:
 }
 ```
 
-Optional entry fields: `readyType` / `closeType` (widget lifecycle message
-types that release or drop a pending command) and `pending: true` (hold the
-command for the widget's explicit ready signal instead of frame load).
+Optional entry fields include `readyType` / `closeType` for widget lifecycle
+messages and `pending: true` for a contract-specific pending lane. A component
+that receives commands should declare message readiness; in website-style
+configuration that is:
+
+```json
+"ready": {
+  "type": "message",
+  "messageType": "kdcube.surface.ready",
+  "fallbackDelayMs": 6000
+}
+```
 
 **Component target surfaces (package hosts).** A scene built on
 `@kdcube/components-react/scene` declares `targetSurfaces` directly on the
@@ -150,14 +161,49 @@ host summons the target: opens the component window, or brings an
 already-open window to the front
         |
         v
-host forwards the rebuilt command to the target frame
-  - queued until the frame is ready (config handshake or load event;
-    contracts with `pending` wait for the widget's declared readyType)
+host keeps the rebuilt command queued
+        |
+        v
+target installs its command listener, then posts kdcube.surface.ready
+        |
+        v
+host marks that source frame ready and forwards the queued command unchanged
 ```
 
 A matched contract whose component is absent from the current profile is a
 visible no-op: the host logs it and, when the command carried a `command_id`,
 acks `ok: false` with a code — the emitter's fallback then takes over.
+
+## Receiver Readiness
+
+Readiness means the target can receive the command now. It is an explicit
+action by the target widget, not a property inferred from the iframe object:
+
+```json
+{
+  "type": "kdcube.surface.ready",
+  "target_surfaces": [
+    "connection_hub.connections",
+    "connection_hub.settings"
+  ]
+}
+```
+
+The widget emits this message only after installing its
+`kdcube.surface.command` listener. The host validates the source frame and its
+origin, marks that frame alias ready, and flushes commands queued for its
+declared target surfaces.
+
+`iframe.contentWindow` exists while the frame still contains `about:blank`, so
+it proves only that a transport object exists. The iframe `load` event proves
+that a document loaded, but not that application code installed its command
+listener. A config handshake is a valid readiness policy only when that
+component installs its command receiver before completing the handshake.
+
+Hosts may retain a delayed load fallback for older widgets. The shipped hosts
+wait six seconds, log that the explicit signal was absent, then release the
+queue. This is compatibility recovery; the normal command path is the
+receiver's explicit ready message.
 
 ## Acks
 
@@ -178,6 +224,8 @@ Two acknowledgements with different jobs:
 
 `ok: false` codes: `target_not_mounted` (contract matched, component absent in
 this profile), `command_rejected` (the host declined to build the command).
+An `ok: true` routing ack may be sent once the host safely owns the queued
+command; it does not claim that the target has already applied it.
 
 **Widget → host** (applied ack; diagnostics). After the target widget applies
 the command it reports back to its parent:
@@ -217,9 +265,10 @@ state. Reference emitter: `postConnectionsCommandAndAwaitAck` /
 
 ## Receiver Pattern
 
-The target widget listens for `kdcube.surface.command`, filters by its own
-`target_surface` values, applies the payload at runtime (the same state its
-URL deep-link path produces), and posts the applied ack. Reference receiver:
+The target widget installs its `kdcube.surface.command` listener, announces
+`kdcube.surface.ready`, filters commands by its own `target_surface` values,
+applies the payload at runtime (the same state its URL deep-link path
+produces), and posts the applied ack. Reference receiver:
 [Connection Hub surfaceCommand.ts](https://github.com/elenaviter/app-ecosystem/blob/main/apps/connection-hub%401-0/ui/widgets/connections/src/api/surfaceCommand.ts).
 
 ## Reference Implementations
@@ -227,13 +276,13 @@ URL deep-link path produces), and posts the applied ack. Reference receiver:
 | Piece | Where |
 | --- | --- |
 | Scene runtime routing + readiness queue | `app/ai-app/src/kdcube-ai-app/npm/packages/components-core/src/scene/runtime.ts` (`queueSurfaceCommand`) |
-| Package-host scene declaring a routed component | `app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/workspace@2026-03-31-13-36/ui/scene/src/sceneConfig.ts` |
+| Package-host scene readiness + routed component | `app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/workspace@2026-03-31-13-36/ui/scene/src/main.tsx` and `sceneConfig.ts` |
 | Emitter with ack-wait + standalone fallback | `app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/chat/ui/widget/src/host.ts` |
-| Receiver with runtime apply + applied ack | [Connection Hub `surfaceCommand.ts`](https://github.com/elenaviter/app-ecosystem/blob/main/apps/connection-hub%401-0/ui/widgets/connections/src/api/surfaceCommand.ts) |
+| Receiver ready signal + runtime apply + applied ack | Connection Hub `ui/widgets/connections/src/api/surfaceCommand.ts` and `App.tsx` in the app-ecosystem repository |
 
 The plain-script host variant (contract map, ack sender, summon/focus) ships in
-the KDCube website scene (`kdcube.config.json` `scene.surfaceCommandContracts`,
-`scene-summon.js`, `scene-windows.js`).
+the KDCube website scene (`kdcube.config.json` `scene.surfaceCommandContracts`
+and component `ready`, `scene-summon.js`, `scene-windows.js`).
 
 The step-by-step walkthrough for app authors — declaring a contract for your
 component, receiving, emitting, and the worked consent → hub flow — is the
