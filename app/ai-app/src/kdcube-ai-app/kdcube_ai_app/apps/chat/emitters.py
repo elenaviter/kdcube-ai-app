@@ -390,7 +390,7 @@ class ChatRelayCommunicator:
         session-release path called that. So every finished turn leaked exactly one
         pooled connection, permanently, until the pool was exhausted and every
         Redis call in the process began failing with "Too many connections" --
-        including the stale-turn takeover meant to recover from it. See issue #243.
+        including the stale-turn takeover meant to recover from it. See issue #245.
 
         The listener must be STOPPED, not worked around: closing the pubsub while
         the listener task is iterating listen() makes that iteration raise, and the
