@@ -100,6 +100,12 @@ each other and keep the platform's contracts intact.
 
 ### Verification
 
+- Before running platform-source tests, follow
+  [Run Platform Source Tests](app/ai-app/docs/procedures/platform-source-testing-README.md).
+  Use one explicit interpreter, prove the imported KDCube and Connection Hub
+  source origins, and provide the required app fixture to shared bundle tests.
+- Test a pull request from its own worktree. Fetch and compare the current PR
+  head immediately before publishing review findings.
 - Run the test suites your change touches before claiming completion; name
   any pre-existing failures you did not cause.
 - A code change is live only in a runtime that actually loaded it. Local
