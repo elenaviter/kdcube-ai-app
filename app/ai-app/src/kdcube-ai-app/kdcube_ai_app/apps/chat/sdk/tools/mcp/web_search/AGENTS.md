@@ -20,7 +20,7 @@ web_search_server.py      the MCP wrapper: tool registration, egress
                           loader (apply_yaml_config: scoped sections ->
                           env, env wins on conflict)
 list_edit.py              textual editor behind the operator-enabled
-                          allowlist_edit tool: entry lines only,
+                          site_filter_edit tool: entry lines only,
                           comments and everything else byte-identical
 config.example.yaml       the YAML config template (the recommended
                           mode). The operator's config.yaml lives in

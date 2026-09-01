@@ -28,7 +28,7 @@ filter:
   # Disable ONLY for a deployment that must fetch internal hosts:
   # ssrf_guard: false
   #
-  # Expose the allowlist_edit tool so Claude (any client, Desktop
+  # Expose the site_filter_edit tool so Claude (any client, Desktop
   # included) can edit the lists when the user asks. Off by default:
   # with it on, anything that can call tools - a prompt-injected page
   # included - can edit the lists. The SSRF guard stays un-editable

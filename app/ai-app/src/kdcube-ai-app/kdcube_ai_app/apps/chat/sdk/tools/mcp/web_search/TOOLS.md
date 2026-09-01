@@ -199,7 +199,7 @@ CLI flags: `--config`, `--allowlist`, `--transport`/`--host`/`--port`.
 | `WEB_ALLOWLIST` | Inline comma-separated entries; fixed for the process. The file sources take precedence. |
 | `WEB_BLOCKLIST_YAML`, `WEB_BLOCKLIST_FILE`, `WEB_BLOCKLIST` | The blocklist's three sources, same mechanics and same entry format. A blocklisted host is refused even when the allowlist admits it; unset = no host blocked. |
 | `WEB_SSRF_GUARD` | The address-level SSRF guard (`filter.ssrf_guard` in YAML). Default on; `off` disables it for deployments that must fetch internal hosts. |
-| `WEB_FILTER_EDIT_TOOL` | Exposes the `allowlist_edit` tool (`filter.expose_edit_tool` in YAML). Default off; set only on the user's explicit, trade-stated yes. |
+| `WEB_FILTER_EDIT_TOOL` | Exposes the `site_filter_edit` tool (`filter.expose_edit_tool` in YAML). Default off; set only on the user's explicit, trade-stated yes. |
 | `BRAVE_API_KEY` | Search provider key (Brave is the default backend). |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY`, `DEFAULT_LLM_MODEL_ID`, `ROLE_MODELS_JSON` | Model service, needed only for `use_llm=true` calls. |
 | `REDIS_URL`, `WEB_SEARCH_CACHE_TTL_SECONDS` | Optional result cache. Leave `REDIS_URL` empty to run without one. |
@@ -229,7 +229,7 @@ user (admin-owned, user-readable), pointed at by that user's MCP
 registration. A shared `http`/`sse` instance applies its one filter to
 every caller — run separate instances for separate profiles.
 
-## allowlist_edit (operator-enabled)
+## site_filter_edit (operator-enabled)
 
 Registered only when the operator sets `filter.expose_edit_tool: true`
 (env `WEB_FILTER_EDIT_TOOL`), a decision the setup procedure asks the

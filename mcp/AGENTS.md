@@ -73,7 +73,7 @@ beside it. Never put the config (it holds API keys) inside the clone.
    allow/block lists on your ask — including from Claude Desktop?"**
    Default is no (the lists change only through you or a text editor).
    If yes, state the trade plainly before setting
-   `filter.expose_edit_tool: true`: the `allowlist_edit` tool is then
+   `filter.expose_edit_tool: true`: the `site_filter_edit` tool is then
    callable by anything that can call tools, a prompt-injected page
    included, so the user is trusting their model's judgment with the
    fence. Either way the SSRF guard stays un-editable through any tool.
@@ -237,7 +237,7 @@ talk to Claude normally, and Claude routes to the tools:
 - **Change the fence** ("allow noaa.gov too") — a config edit, live on
   the next call. Three paths, depending on the bootstrap decision: if
   the user opted into `filter.expose_edit_tool`, Claude itself has the
-  `allowlist_edit` tool and can do it from any client, Desktop included.
+  `site_filter_edit` tool and can do it from any client, Desktop included.
   Otherwise YOU do it when the user asks you (next section), or the user
   opens the `config.yaml` from their registration's `--config` path in
   any text editor — without the opt-in, no tool edits the lists by
@@ -323,7 +323,7 @@ answering "run it for the whole team":
 - A call can never widen the egress filter — the `sites` parameter
   narrows inside it, and only the user's config changes it. The one
   exception is the operator's own doing: `filter.expose_edit_tool: true`
-  registers `allowlist_edit`, set only on the user's explicit,
+  registers `site_filter_edit`, set only on the user's explicit,
   trade-stated yes. The SSRF guard has no exception. One filter per
   server process: per-user setups are one install dir (config +
   registration) per user.

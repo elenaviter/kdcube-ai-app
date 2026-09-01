@@ -242,7 +242,7 @@ def _edit_tool_enabled() -> bool:
     return value in ("true", "on", "1", "yes")
 
 
-async def allowlist_edit(
+async def site_filter_edit(
     list_name: str,
     add: Optional[str | List[str]] = None,
     remove: Optional[str | List[str]] = None,
@@ -625,7 +625,7 @@ def _build_mcp_app():
 
     if _edit_tool_enabled():
         @mcp.tool(
-            name="allowlist_edit",
+            name="site_filter_edit",
             description=(
                 "Edit the operator's egress lists in the live config - enabled "
                 "by the operator (filter.expose_edit_tool). Adds/removes domain "
@@ -653,7 +653,7 @@ def _build_mcp_app():
             "error} names the refusal reason (invalid entry, file-sourced "
             "list, unsupported config shape)."
         ))]:
-            return await allowlist_edit(list_name=list_name, add=add, remove=remove)
+            return await site_filter_edit(list_name=list_name, add=add, remove=remove)
 
     return mcp
 

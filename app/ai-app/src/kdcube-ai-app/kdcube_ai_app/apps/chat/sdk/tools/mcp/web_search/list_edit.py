@@ -3,7 +3,7 @@
 
 """Textual editor for the config.yaml egress lists.
 
-Serves the operator-enabled ``allowlist_edit`` tool: adds/removes
+Serves the operator-enabled ``site_filter_edit`` tool: adds/removes
 entries under ``filter.allowlist`` / ``filter.blocklist`` by editing
 LINES, so everything else in the file — comments included — stays
 byte-identical. Only block-style lists are supported (the template's
