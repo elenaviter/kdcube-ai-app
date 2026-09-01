@@ -42,7 +42,16 @@ def test_web_search_server_uses_backend(monkeypatch):
         called["allowed_domains"] = allowed_domains
         called["blocked_domains"] = blocked_domains
         called["sites"] = sites
-        return [{"ok": True}]
+        return [{
+            "title": "t", "url": "https://example.org/a", "text": "snippet",
+            "content": "body", "content_length": 4, "fetch_status": "success",
+            # internal plumbing that must NOT leave the server:
+            "sid": 7, "seg_spans": [{"s": "a", "e": "b"}],
+            "seg_end_boundary": "exclusive", "provider_rank": 2,
+            "weighted_rank": 0.87, "authority": "web",
+            "content_original_length": 100, "content_pruned_length": 4,
+            "published_time_raw": None, "archive_snapshot_date": None,
+        }]
 
     monkeypatch.setenv("DEFAULT_LLM_MODEL_ID", "o3-mini")
     monkeypatch.setenv("OPENAI_API_KEY", "test")
@@ -61,7 +70,12 @@ def test_web_search_server_uses_backend(monkeypatch):
             country=None,
             safesearch="moderate",
         )
-        assert out == [{"ok": True}]
+        # rows leave the server in the outward shape only: keep-listed
+        # fields, no segmenter/ranking/sid internals, no None values
+        assert out == [{
+            "title": "t", "url": "https://example.org/a", "text": "snippet",
+            "content": "body", "content_length": 4, "fetch_status": "success",
+        }]
         assert called.get("svc") is not None
         assert called.get("use_llm") is True
         assert called.get("allowed_domains") is None  # no allowlist configured

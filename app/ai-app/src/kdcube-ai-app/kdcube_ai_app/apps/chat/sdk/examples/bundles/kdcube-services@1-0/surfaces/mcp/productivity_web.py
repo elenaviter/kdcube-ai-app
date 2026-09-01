@@ -280,12 +280,9 @@ def register_web_tools(
                     egress.blocklist.entries if egress.blocklist.configured else None
                 ),
             )
-            cleaned = []
-            for r in rows or []:
-                if isinstance(r, dict):
-                    r.pop("provider", None)
-                    cleaned.append({k: v for k, v in r.items() if v is not None})
-            return _ok(cleaned)
+            from kdcube_ai_app.apps.chat.sdk.tools.backends.web.rows import clean_rows
+
+            return _ok(clean_rows(rows))
         except Exception as e:
             return _error(
                 code=type(e).__name__,

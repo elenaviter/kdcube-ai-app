@@ -49,6 +49,7 @@ from kdcube_ai_app.apps.chat.sdk.tools.backends.web.allowlist import (
     BLOCKLIST_YAML_ENV,
     EgressFilter,
 )
+from kdcube_ai_app.apps.chat.sdk.tools.backends.web.rows import clean_rows
 from kdcube_ai_app.apps.chat.sdk.tools.mcp.mcp_app_transport import run_http, run_sse, run_stdio
 
 _SERVICE: Optional[ModelServiceBase] = None
@@ -322,7 +323,7 @@ async def web_search(
     cache = _get_cache()
     egress = _get_filter()
     kept_sites = _clamp_sites(sites)
-    return await search_backends.web_search(
+    rows = await search_backends.web_search(
         _SERVICE=svc,
         queries=queries,
         objective=objective,
@@ -342,6 +343,7 @@ async def web_search(
         blocked_domains=egress.blocklist.entries if egress.blocklist.configured else None,
         namespaced_kv_cache=cache,
     )
+    return clean_rows(rows)
 
 
 async def web_fetch(
