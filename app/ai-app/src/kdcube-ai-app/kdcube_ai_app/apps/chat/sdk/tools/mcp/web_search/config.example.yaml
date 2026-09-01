@@ -27,6 +27,13 @@ filter:
   # answers, and redirect targets - regardless of the lists above.
   # Disable ONLY for a deployment that must fetch internal hosts:
   # ssrf_guard: false
+  #
+  # Expose the allowlist_edit tool so Claude (any client, Desktop
+  # included) can edit the lists when the user asks. Off by default:
+  # with it on, anything that can call tools - a prompt-injected page
+  # included - can edit the lists. The SSRF guard stays un-editable
+  # through any tool either way.
+  # expose_edit_tool: true
 
 # --- Services: provider secrets and the neural pipeline models ---
 # secrets carries per-provider api_key blocks, the same shape a KDCube

@@ -68,7 +68,17 @@ beside it. Never put the config (it holds API keys) inside the clone.
    .venv/bin/pip install -r kdcube/mcp/web-search/requirements.txt
    ```
 
-2. **Config.** Start from the shipped template and lock it down:
+2. **Config.** One decision to ASK the user now, because it changes what
+   Claude can do later: **"Do you want Claude to be able to edit your
+   allow/block lists on your ask — including from Claude Desktop?"**
+   Default is no (the lists change only through you or a text editor).
+   If yes, state the trade plainly before setting
+   `filter.expose_edit_tool: true`: the `allowlist_edit` tool is then
+   callable by anything that can call tools, a prompt-injected page
+   included, so the user is trusting their model's judgment with the
+   fence. Either way the SSRF guard stays un-editable through any tool.
+
+   Then start from the shipped template and lock it down:
 
    ```bash
    cp kdcube/mcp/web-search/config.example.yaml ./config.yaml
@@ -87,6 +97,8 @@ beside it. Never put the config (it holds API keys) inside the clone.
                            # *.example.net = subdomains only.
      # blocklist:          # optional: always refused, deny wins over
      #   - tracker.example #   the allowlist. Same entry format.
+     # expose_edit_tool: true   # only on the user's explicit yes (the
+                                #   bootstrap question above)
    services:
      secrets:
        brave:
@@ -223,13 +235,13 @@ talk to Claude normally, and Claude routes to the tools:
   because every denial names the host, the list, and the config the
   operator owns.
 - **Change the fence** ("allow noaa.gov too") — a config edit, live on
-  the next call. YOU do it when the user asks you (next section). From
-  Claude Desktop this is the one thing Claude cannot do for them —
-  Desktop has no file access, and no tool edits the lists by design (a
-  call must never be able to widen the filter). Tell a Desktop-only user
-  the two ways: ask their coding agent, or open the `config.yaml` from
-  their registration's `--config` path in any text editor and add the
-  line themselves.
+  the next call. Three paths, depending on the bootstrap decision: if
+  the user opted into `filter.expose_edit_tool`, Claude itself has the
+  `allowlist_edit` tool and can do it from any client, Desktop included.
+  Otherwise YOU do it when the user asks you (next section), or the user
+  opens the `config.yaml` from their registration's `--config` path in
+  any text editor — without the opt-in, no tool edits the lists by
+  design, so Desktop's Claude cannot.
 - **Save money** ("search without the LLM steps") — `use_llm=false`:
   no model spend, provider ranking only.
 
@@ -309,8 +321,11 @@ answering "run it for the whole team":
 - The venv comes from `kdcube/mcp/web-search/requirements.txt` and
   nothing else; the pins are the contract.
 - A call can never widen the egress filter — the `sites` parameter
-  narrows inside it, and only the user's config changes it. One filter
-  per server process: per-user setups are one install dir (config +
+  narrows inside it, and only the user's config changes it. The one
+  exception is the operator's own doing: `filter.expose_edit_tool: true`
+  registers `allowlist_edit`, set only on the user's explicit,
+  trade-stated yes. The SSRF guard has no exception. One filter per
+  server process: per-user setups are one install dir (config +
   registration) per user.
 - Known limit worth telling the user: the fetcher follows HTTP
   redirects, so a listed site that redirects off-domain can lead

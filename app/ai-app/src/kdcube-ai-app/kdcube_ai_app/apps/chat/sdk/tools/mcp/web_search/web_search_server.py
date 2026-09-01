@@ -133,6 +133,8 @@ def apply_yaml_config(path: str | pathlib.Path) -> List[str]:
         _set(BLOCKLIST_YAML_ENV, str(path))
     if "ssrf_guard" in filter_cfg:
         _set("WEB_SSRF_GUARD", filter_cfg.get("ssrf_guard"))
+    if "expose_edit_tool" in filter_cfg:
+        _set("WEB_FILTER_EDIT_TOOL", filter_cfg.get("expose_edit_tool"))
 
     for section, value in data.items():
         if section == "filter":
@@ -231,6 +233,50 @@ def _get_filter() -> EgressFilter:
     if _FILTER is None:
         _FILTER = EgressFilter.from_env()
     return _FILTER
+
+
+def _edit_tool_enabled() -> bool:
+    value = (os.environ.get("WEB_FILTER_EDIT_TOOL") or "").strip().lower()
+    return value in ("true", "on", "1", "yes")
+
+
+async def allowlist_edit(
+    list_name: str,
+    add: Optional[str | List[str]] = None,
+    remove: Optional[str | List[str]] = None,
+) -> Dict[str, Any]:
+    """Operator-enabled list editing; changes are live on the next call."""
+    from kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search import list_edit
+
+    def _as_list(value: Optional[str | List[str]]) -> List[str]:
+        if not value:
+            return []
+        if isinstance(value, str):
+            raw = value.strip()
+            return [str(v).strip() for v in json.loads(raw)] if raw.startswith("[") else [raw]
+        return [str(v).strip() for v in value]
+
+    env_name = ALLOWLIST_YAML_ENV if list_name == "allowlist" else BLOCKLIST_YAML_ENV
+    config_path = os.environ.get(env_name)
+    if not config_path:
+        return {
+            "ok": False,
+            "error": (
+                f"the {list_name} is not sourced from a YAML config in this "
+                "deployment; edit its configured source instead"
+            ),
+        }
+
+    entries, error = list_edit.edit_lists(
+        config_path,
+        list_name=list_name,
+        add=_as_list(add),
+        remove=_as_list(remove),
+    )
+    if error:
+        return {"ok": False, "error": error}
+    status = await allowlist_status()
+    return {"ok": True, "edited": list_name, "entries": entries, "status": status}
 
 
 def _clamp_sites(sites: Optional[str | List[str]]) -> Optional[List[str]]:
@@ -569,6 +615,38 @@ def _build_mcp_app():
         "egress filter exactly as this server enforces it."
     ))]:
         return await allowlist_status()
+
+    if _edit_tool_enabled():
+        @mcp.tool(
+            name="allowlist_edit",
+            description=(
+                "Edit the operator's egress lists in the live config - enabled "
+                "by the operator (filter.expose_edit_tool). Adds/removes domain "
+                "entries in the allowlist or blocklist; changes apply on the "
+                "next call, no restart. Entries must look like domains "
+                "(example.org covers subdomains, *.example.org subdomains "
+                "only); anything else is refused. The SSRF guard is not "
+                "editable through any tool: private, loopback, link-local, and "
+                "metadata addresses stay unreachable regardless of the lists."
+            ),
+        )
+        async def _edit_tool(
+            list_name: Annotated[str, Field(description=(
+                "'allowlist' or 'blocklist'."
+            ))],
+            add: Annotated[Optional[str | List[str]], Field(description=(
+                "Domain entries to add - an array or a single domain string."
+            ))] = None,
+            remove: Annotated[Optional[str | List[str]], Field(description=(
+                "Domain entries to remove - an array or a single domain string."
+            ))] = None,
+        ) -> Annotated[Dict[str, Any], Field(description=(
+            "{ok, edited, entries, status} on success - entries is the list "
+            "after the edit and status the full filter state; {ok: false, "
+            "error} names the refusal reason (invalid entry, file-sourced "
+            "list, unsupported config shape)."
+        ))]:
+            return await allowlist_edit(list_name=list_name, add=add, remove=remove)
 
     return mcp
 

@@ -426,5 +426,34 @@ def test_registered_tools(monkeypatch):
         "kdcube_ai_app.apps.chat.sdk.runtime.mcp.server",
         SimpleNamespace(KDCubeMCPServer=_StubMCPServer),
     )
+    monkeypatch.delenv("WEB_FILTER_EDIT_TOOL", raising=False)
     app = srv._build_mcp_app()
     assert set(app.tool_names) == {"web_search", "web_fetch", "allowlist_status"}
+
+    # operator opt-in exposes the edit tool
+    monkeypatch.setenv("WEB_FILTER_EDIT_TOOL", "true")
+    app = srv._build_mcp_app()
+    assert "allowlist_edit" in app.tool_names
+
+
+def test_allowlist_edit_applies_live(tmp_path, monkeypatch):
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("filter:\n  expose_edit_tool: true\n  allowlist:\n    - example.org\n")
+    monkeypatch.setenv("WEB_SEARCH_CONFIG", str(cfg))
+    srv.load_config()
+    assert srv._edit_tool_enabled()
+
+    out = asyncio.run(srv.allowlist_edit("allowlist", add="noaa.gov"))
+    assert out["ok"] is True
+    assert out["entries"] == ["example.org", "noaa.gov"]
+    assert out["status"]["allowlist_entries"] == ["example.org", "noaa.gov"]
+
+    out = asyncio.run(srv.allowlist_edit("blocklist", add=["example.org"]))
+    assert out["ok"] is True
+    assert srv._get_filter().check("example.org") is False  # deny wins, live
+
+    out = asyncio.run(srv.allowlist_edit("allowlist", add="not a domain"))
+    assert out["ok"] is False and "does not look like a domain" in out["error"]
+
+    monkeypatch.delenv("WEB_SEARCH_CONFIG", raising=False)
+    monkeypatch.delenv("WEB_FILTER_EDIT_TOOL", raising=False)
