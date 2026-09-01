@@ -24,8 +24,8 @@ beside it. Never put the config (it holds API keys) inside the clone.
 ```
 <install-dir>/
   config.yaml   # the user's keys + allowlist; keep out of any git repo
-  repo/         # this repository, replaceable
-  .venv/        # built from repo/mcp/web-search/requirements.txt
+  kdcube/       # the clone of this repository, replaceable
+  .venv/        # built from kdcube/mcp/web-search/requirements.txt
 ```
 
 ## Setup, step by step
@@ -38,11 +38,9 @@ beside it. Never put the config (it holds API keys) inside the clone.
 
    ```bash
    mkdir <install-dir> && cd <install-dir>
-   # the trailing "repo" names the clone directory: this creates ./repo,
-   # which every repo/... path below refers to
-   git clone https://github.com/kdcube/kdcube.git repo
+   git clone https://github.com/kdcube/kdcube.git   # creates ./kdcube
    python3.11 -m venv .venv
-   .venv/bin/pip install -r repo/mcp/web-search/requirements.txt
+   .venv/bin/pip install -r kdcube/mcp/web-search/requirements.txt
    ```
 
 2. **Config.** Write `./config.yaml` (mode 600). Fill the allowlist
@@ -91,7 +89,7 @@ beside it. Never put the config (it holds API keys) inside the clone.
 
    ```bash
    .venv/bin/pip install pytest
-   SRC=$PWD/repo/app/ai-app/src/kdcube-ai-app
+   SRC=$PWD/kdcube/app/ai-app/src/kdcube-ai-app
    PYTHONPATH=$SRC .venv/bin/python -m pytest \
      $SRC/kdcube_ai_app/apps/chat/sdk/tools/mcp/web_search/ \
      $SRC/kdcube_ai_app/apps/chat/sdk/tools/backends/web/test_allowlist.py
@@ -137,12 +135,12 @@ beside it. Never put the config (it holds API keys) inside the clone.
 
    ```bash
    claude mcp add web-search \
-     -- $PWD/.venv/bin/python $PWD/repo/mcp/web-search/server.py --config $PWD/config.yaml
+     -- $PWD/.venv/bin/python $PWD/kdcube/mcp/web-search/server.py --config $PWD/config.yaml
    ```
 
    Claude Desktop instead: `claude_desktop_config.json` gets `command`
    = `<install-dir>/.venv/bin/python`, `args` =
-   `["<install-dir>/repo/mcp/web-search/server.py", "--config",
+   `["<install-dir>/kdcube/mcp/web-search/server.py", "--config",
    "<install-dir>/config.yaml"]`. The launcher needs no PYTHONPATH.
    Always pass `--config` with the absolute path: the MCP client's
    working directory is not the install dir.
@@ -151,7 +149,7 @@ beside it. Never put the config (it holds API keys) inside the clone.
 
 - Key values never appear in output, logs, transcripts, or committed
   files. `config.yaml` stays out of every git repo.
-- The venv comes from `repo/mcp/web-search/requirements.txt` and
+- The venv comes from `kdcube/mcp/web-search/requirements.txt` and
   nothing else; the pins are the contract.
 - A call can never widen the allowlist — only the user's config can.
   One allowlist per server process: per-user setups are one install

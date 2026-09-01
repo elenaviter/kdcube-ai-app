@@ -49,10 +49,10 @@ needed, one shallow path to point people at.
   fetches then fail with `CERTIFICATE_VERIFY_FAILED`. Check and fix:
 
   ```bash
-  .venv-websearch/bin/python -c "import ssl; print(ssl.create_default_context().cert_store_stats())"
+  .venv/bin/python -c "import ssl; print(ssl.create_default_context().cert_store_stats())"
   # {'x509': 0, ...} or a verify error on fetches means no CA store:
   # point tls.cert_file (or SSL_CERT_FILE) at certifi's bundle:
-  .venv-websearch/bin/python -m certifi
+  .venv/bin/python -m certifi
   ```
 
 Sanity check after setup — offline, no keys, safe anywhere (run from
@@ -78,9 +78,9 @@ the clone, and it survives the clone being updated or replaced.
 ```bash
 mkdir web-search-mcp && cd web-search-mcp    # your install dir
 
-# the trailing "repo" names the clone directory: this creates ./repo
-git clone https://github.com/kdcube/kdcube.git repo
-export REPO_SRC=$PWD/repo/app/ai-app/src/kdcube-ai-app
+
+git clone https://github.com/kdcube/kdcube.git   # creates ./kdcube
+export REPO_SRC=$PWD/kdcube/app/ai-app/src/kdcube-ai-app
 
 python3.11 -m venv .venv    # explicit interpreter, see Prerequisites
 .venv/bin/pip install -r \
@@ -128,7 +128,7 @@ added under `env` overrides a YAML value:
         "--config", "/path/to/web-search-mcp/config.yaml"
       ],
       "env": {
-        "PYTHONPATH": "/path/to/web-search-mcp/repo/app/ai-app/src/kdcube-ai-app"
+        "PYTHONPATH": "/path/to/web-search-mcp/kdcube/app/ai-app/src/kdcube-ai-app"
       }
     }
   }

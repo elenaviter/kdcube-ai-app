@@ -15,17 +15,14 @@ it:
 
 ```bash
 mkdir web-search-mcp && cd web-search-mcp    # your install dir
-
-# the trailing "repo" names the clone directory: this creates ./repo,
-# and every repo/... path below refers to it
-git clone https://github.com/kdcube/kdcube.git repo
+git clone https://github.com/kdcube/kdcube.git   # creates ./kdcube
 
 python3.11 -m venv .venv    # explicit interpreter, see the README's prerequisites
-.venv/bin/pip install -r repo/mcp/web-search/requirements.txt
+.venv/bin/pip install -r kdcube/mcp/web-search/requirements.txt
 
-cp repo/mcp/web-search/config.example.yaml ./config.yaml   # edit: keys, allowlist
+cp kdcube/mcp/web-search/config.example.yaml ./config.yaml   # edit: keys, allowlist
 
-.venv/bin/python repo/mcp/web-search/server.py \
+.venv/bin/python kdcube/mcp/web-search/server.py \
   --transport stdio --config $PWD/config.yaml
 ```
 
@@ -35,7 +32,7 @@ Claude Code (from the install dir):
 
 ```bash
 claude mcp add web-search \
-  -- $PWD/.venv/bin/python $PWD/repo/mcp/web-search/server.py --config $PWD/config.yaml
+  -- $PWD/.venv/bin/python $PWD/kdcube/mcp/web-search/server.py --config $PWD/config.yaml
 ```
 
 Claude Desktop (`claude_desktop_config.json`):
@@ -46,7 +43,7 @@ Claude Desktop (`claude_desktop_config.json`):
     "web-search": {
       "command": "/path/to/web-search-mcp/.venv/bin/python",
       "args": [
-        "/path/to/web-search-mcp/repo/mcp/web-search/server.py",
+        "/path/to/web-search-mcp/kdcube/mcp/web-search/server.py",
         "--config", "/path/to/web-search-mcp/config.yaml"
       ]
     }
