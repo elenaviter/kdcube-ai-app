@@ -18,6 +18,13 @@ objective-guided span extraction) runs on the user's model key when
 
 **How this reaches you:** the user pastes this file's link into a
 normal message with their keys and their site list — no special mode.
+Any coding agent that can run shell commands can execute it (Claude
+Code is one, not the only one). Without such an agent, a person follows
+`kdcube/mcp/web-search/README.md` in a terminal — the same procedure
+written for a human. Claude Desktop is a consumer of the finished
+install, not the installer: it has no shell, but step 5 registers the
+server in its config and it then uses the tools like any MCP server.
+
 The install is a one-time action per user (one install directory per
 user; that is also how per-user allowlists work). Part 1 below is that
 first install and later upgrades; Part 2 is day-2 changes: the
