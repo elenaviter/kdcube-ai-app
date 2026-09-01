@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +14,7 @@ from kdcube_ai_app.infra.service_hub import cache as cache_mod
 
 @pytest.fixture(autouse=True)
 def _reset_server_state(monkeypatch):
+    monkeypatch.delenv("WEB_ALLOWLIST_YAML", raising=False)
     monkeypatch.delenv("WEB_ALLOWLIST_FILE", raising=False)
     monkeypatch.delenv("WEB_ALLOWLIST", raising=False)
     srv._ALLOWLIST = None
@@ -152,6 +154,69 @@ def test_web_search_cache_settings(monkeypatch):
     cache = cache_mod.create_kv_cache_from_env(ttl_env_var="WEB_SEARCH_CACHE_TTL_SECONDS")
     # In CI without redis, this still builds the cache object; connection is lazy.
     assert cache is not None
+
+
+def test_yaml_config_applies_to_env(tmp_path, monkeypatch):
+    for var in ("WEB_ALLOWLIST_YAML", "ROLE_MODELS_JSON", "BRAVE_API_KEY", "DEFAULT_LLM_MODEL_ID"):
+        monkeypatch.delenv(var, raising=False)
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        "filter:\n  allowlist:\n    - example.org\n    - usgs.gov\n"
+        "services:\n"
+        "  secrets:\n    brave:\n      api_key: brave-key\n"
+        "  role_models:\n"
+        "    default: {provider: anthropic, model: claude-haiku-4-5-20251001}\n"
+        "    tool.source.reconciler: {provider: anthropic, model: claude-haiku-4-5-20251001}\n"
+        "unknown_knob: 1\n"
+    )
+    applied = srv.apply_yaml_config(cfg)
+    # inline allowlist makes the config file itself the live source
+    assert os.environ["WEB_ALLOWLIST_YAML"] == str(cfg)
+    assert os.environ["BRAVE_API_KEY"] == "brave-key"
+    assert os.environ["DEFAULT_LLM_MODEL_ID"] == "claude-haiku-4-5-20251001"
+    assert json.loads(os.environ["ROLE_MODELS_JSON"]) == {
+        "tool.source.reconciler": {"provider": "anthropic", "model": "claude-haiku-4-5-20251001"}
+    }
+    assert "WEB_ALLOWLIST_YAML" in applied and "ROLE_MODELS_JSON" in applied
+
+    srv._ALLOWLIST = None
+    out = asyncio.run(srv.allowlist_status())
+    assert out["enforced"] is True
+    assert out["allowlist_entries"] == ["example.org", "usgs.gov"]
+
+    # editing the allowlist in the yaml applies on the next call
+    cfg.write_text(cfg.read_text().replace("    - usgs.gov\n", "    - usgs.gov\n    - noaa.gov\n"))
+    os.utime(cfg, (os.path.getmtime(cfg) + 10, os.path.getmtime(cfg) + 10))
+    out = asyncio.run(srv.allowlist_status())
+    assert "noaa.gov" in out["allowlist_entries"]
+
+    for var in ("WEB_ALLOWLIST_YAML", "ROLE_MODELS_JSON", "BRAVE_API_KEY", "DEFAULT_LLM_MODEL_ID"):
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_yaml_config_env_wins(tmp_path, monkeypatch):
+    monkeypatch.setenv("BRAVE_API_KEY", "from-env")
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("services:\n  secrets:\n    brave:\n      api_key: from-file\n")
+    applied = srv.apply_yaml_config(cfg)
+    assert os.environ["BRAVE_API_KEY"] == "from-env"
+    assert "BRAVE_API_KEY" not in applied
+
+
+def test_config_discovery_precedence(tmp_path, monkeypatch):
+    cli = tmp_path / "cli.yaml"
+    env_cfg = tmp_path / "env.yaml"
+    cli.write_text("{}")
+    env_cfg.write_text("{}")
+    monkeypatch.setenv("WEB_SEARCH_CONFIG", str(env_cfg))
+    assert srv._discover_config(str(cli)) == cli
+    assert srv._discover_config(None) == env_cfg
+    monkeypatch.delenv("WEB_SEARCH_CONFIG")
+    found = srv._discover_config(None)
+    # falls through to a config.yaml beside the server file, when present
+    import pathlib
+    module_cfg = pathlib.Path(srv.__file__).with_name("config.yaml")
+    assert found == (module_cfg if module_cfg.is_file() else None)
 
 
 class _StubMCPServer:

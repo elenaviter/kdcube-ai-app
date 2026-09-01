@@ -24,10 +24,49 @@ backends:
   cannot widen the allowlist; only the operator's config can.
 - The **LLM steps are optional**. `use_llm=false` (search) runs the
   pipeline with no model calls and no model keys; `web_fetch` defaults to
-  `use_llm=false`. What the LLM adds when on: snippet relevance scoring
-  against the objective (`objective_relevance` / `query_relevance`,
-  0..1), dropping clearly irrelevant results, and objective-guided
-  content refinement.
+  `use_llm=false`. What the LLM adds when on is the neural pipeline
+  below: snippet relevance scoring against the objective, dropping
+  clearly irrelevant results, and objective-guided content refinement.
+
+## The neural pipeline
+
+With `use_llm=true` the search pipeline runs up to three model stages,
+each on its own configured role:
+
+| Stage | Role | What it does |
+| --- | --- | --- |
+| Snippet reconciler | `tool.source.reconciler` | Reads the search snippets against the objective and queries, scores each source (`objective_relevance` and `query_relevance`, 0..1), drops clearly irrelevant ones, ranks the rest. Runs before any content fetch. |
+| Content filter | `tool.sources.filter.by.content` | Filter-only pass over fetched page content: which sources actually answer the objective. Used when segmentation is off. |
+| Filter + segmenter | `tool.sources.filter.by.content.and.segment` | Two phases in one call: filters the fetched sources by content, then extracts the spans of each kept page that serve the objective. The code trims the page to those spans with context margins around each (the refinement mode sets the target coverage: `balanced` 50-70%, `recall` 80-95%, `precision` 20-50%). Spans that cover the whole page leave it intact; spans that fail to match keep the original text, so refinement degrades toward keeping content. |
+
+A verified run on this setup: two encyclopedia pages of 21,648 and
+19,463 extracted characters came back as 2,203 and 1,925 characters of
+objective-targeted content, with relevance scores on every row — that
+reduction is what the pipeline is for.
+
+**Role configuration.** Every role resolves to an explicit
+provider+model pair. Pin all three in `ROLE_MODELS_JSON` (see
+`.env.example`, which pins them to Haiku — `claude-haiku-4-5-20251001` —
+the intended model class for these roles: fast, cheap, strong enough for
+scoring, filtering, and span extraction). A role left unpinned falls
+back to `DEFAULT_LLM_MODEL_ID`. Model ids, their aliases, and their
+prices live in the deployment's price table — in this repo,
+`app/ai-app/deployment/economics.yaml` (the `claude-haiku-4-5-20251001`
+entry is there with its per-token and cache pricing); a KDCube
+deployment carries its own copy of that table.
+
+**Failure semantics.** Reconciler failure returns the raw ranked rows
+(nothing lost). Content-filter failure keeps every source. The
+filter+segment stage is stricter: a failed or empty span response drops
+the unsegmented sources from the result, and in refinement mode rows
+whose content fetch failed are dropped as well — with an allowlist this
+means a starved fetch stage can empty the result, so if results vanish
+with `use_llm=true` and a refinement mode, check fetch statuses first
+(`fetch_content=false` or `refinement="none"` shows the undropped rows).
+
+Two platform knobs reach this pipeline through assembly config when run
+inside KDCube: `web_search_segmenter` (`fast` is the current default)
+and `web_search_agentic_thinking_budget`.
 
 ## web_search
 
@@ -98,19 +137,42 @@ DuckDuckGo fallback backend.
 
 ## Configuration
 
-All standalone config is environment variables (plus the `--allowlist`
-and `--transport`/`--host`/`--port` CLI flags). `.env.example` is the
-copyable template.
+Two modes, same settings:
+
+**YAML (recommended).** One structured file holds everything —
+`config.example.yaml` is the copyable template. The server loads it from
+`--config PATH`, or `WEB_SEARCH_CONFIG`, or a gitignored `config.yaml`
+beside the server file. Sections: `filter` (the allowlist inline — the
+config file itself is then the live source, edits to the list apply on
+the next call — or `allowlist_file`), `services.secrets` (per-provider
+`api_key` blocks, the exact shape a KDCube deployment's secrets.yaml
+nests under `services:`, so the block carries over verbatim),
+`services.role_models` (the pipeline roles pinned as provider+model
+pairs, with `default` covering every role not pinned), `cache`
+(`redis_url`, `ttl_seconds`), `server` (`host`/`port` for http/sse),
+`kdcube` (a deployment's `assembly_yaml`/`global_secrets_yaml` as the
+key source instead of inline keys), `tls` (`cert_file`).
+
+**Environment variables.** The same settings as raw variables —
+`.env.example` is the copyable template; the table below is the
+reference. This is the natural mode for MCP client configs (Claude
+Desktop's `env` block) and CI. The two modes compose: YAML values are
+applied onto the process environment, and a variable already set in the
+environment wins over the file.
+
+CLI flags: `--config`, `--allowlist`, `--transport`/`--host`/`--port`.
 
 | Variable | Purpose |
 | --- | --- |
-| `WEB_ALLOWLIST_FILE` | Path to the allowlist file: one domain per line, blank lines and `#` comments ignored. Re-read whenever its mtime changes — edits apply to the next call without a restart. |
-| `WEB_ALLOWLIST` | Inline comma-separated entries; fixed for the process. The file takes precedence. |
+| `WEB_ALLOWLIST_YAML` | Path to a YAML file whose `filter.allowlist` holds the entries (set automatically when the config.yaml carries an inline allowlist). Re-read whenever its mtime changes — edits apply to the next call without a restart. |
+| `WEB_ALLOWLIST_FILE` | Path to a plain allowlist file: one domain per line, blank lines and `#` comments ignored. Also re-read on change. |
+| `WEB_ALLOWLIST` | Inline comma-separated entries; fixed for the process. The file sources take precedence. |
 | `BRAVE_API_KEY` | Search provider key (Brave is the default backend). |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY`, `DEFAULT_LLM_MODEL_ID`, `ROLE_MODELS_JSON` | Model service, needed only for `use_llm=true` calls. |
 | `REDIS_URL`, `WEB_SEARCH_CACHE_TTL_SECONDS` | Optional result cache. Leave `REDIS_URL` empty to run without one. |
 | `MCP_SERVER_HOST`, `MCP_SERVER_PORT` | Binding for `http`/`sse` transports (stdio needs neither). |
 | `ASSEMBLY_YAML_DESCRIPTOR_PATH`, `GLOBAL_SECRETS_YAML` | Optional KDCube-deployment lane: point them at a deployment's `assembly.yaml` / `secrets.yaml` and keys resolve from there (`services.brave.api_key`, model keys) instead of individual env vars. |
+| `SSL_CERT_FILE` | CA bundle for verifying HTTPS certificates when fetching pages (`tls.cert_file` in YAML). Needed only on machines whose Python has no working CA store — point it at certifi's `cacert.pem`; otherwise leave unset. |
 
 Allowlist entry semantics (`../../backends/web/allowlist.py`):
 

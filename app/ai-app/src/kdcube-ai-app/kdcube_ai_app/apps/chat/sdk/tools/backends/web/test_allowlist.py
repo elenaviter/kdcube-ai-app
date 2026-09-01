@@ -3,11 +3,19 @@
 
 import os
 
+import pytest
+
 from kdcube_ai_app.apps.chat.sdk.tools.backends.web.allowlist import (
     Allowlist,
     hostname_allowed,
     parse_entries,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clean_allowlist_env(monkeypatch):
+    for var in ("WEB_ALLOWLIST_YAML", "WEB_ALLOWLIST_FILE", "WEB_ALLOWLIST"):
+        monkeypatch.delenv(var, raising=False)
 
 
 def test_entry_matching():
@@ -33,8 +41,6 @@ def test_parse_entries_skips_comments_and_blanks():
 
 
 def test_unconfigured_allows_configured_empty_denies(monkeypatch):
-    monkeypatch.delenv("WEB_ALLOWLIST_FILE", raising=False)
-    monkeypatch.delenv("WEB_ALLOWLIST", raising=False)
     allowlist = Allowlist.from_env()
     assert not allowlist.configured
     assert allowlist.check("anything.example")
@@ -48,6 +54,22 @@ def test_unconfigured_allows_configured_empty_denies(monkeypatch):
     allowlist = Allowlist.from_env()
     assert allowlist.configured
     assert not allowlist.check("anything.example")
+
+
+def test_yaml_source_reads_filter_scope_and_reloads(tmp_path, monkeypatch):
+    path = tmp_path / "config.yaml"
+    path.write_text("filter:\n  allowlist:\n    - example.org\n")
+    monkeypatch.setenv("WEB_ALLOWLIST_YAML", str(path))
+    allowlist = Allowlist.from_env()
+    assert allowlist.configured
+    assert allowlist.check("example.org")
+    assert not allowlist.check("usgs.gov")
+    source, _entries = allowlist.describe()
+    assert "config:" in source
+
+    path.write_text("filter:\n  allowlist:\n    - example.org\n    - usgs.gov\n")
+    os.utime(path, (os.path.getmtime(path) + 10, os.path.getmtime(path) + 10))
+    assert allowlist.check("usgs.gov")
 
 
 def test_file_source_reloads_on_mtime_change(tmp_path, monkeypatch):

@@ -29,7 +29,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
+import pathlib
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
@@ -38,7 +40,9 @@ from kdcube_ai_app.infra.service_hub.cache import create_kv_cache_from_env
 import kdcube_ai_app.apps.chat.sdk.tools.backends.web.search_backends as search_backends
 import kdcube_ai_app.apps.chat.sdk.tools.backends.web.fetch_backends as fetch_backends
 from kdcube_ai_app.apps.chat.sdk.tools.backends.web.allowlist import (
+    ALLOWLIST_ENV,
     ALLOWLIST_FILE_ENV,
+    ALLOWLIST_YAML_ENV,
     Allowlist,
 )
 from kdcube_ai_app.apps.chat.sdk.tools.mcp.mcp_app_transport import run_http, run_sse, run_stdio
@@ -46,6 +50,128 @@ from kdcube_ai_app.apps.chat.sdk.tools.mcp.mcp_app_transport import run_http, ru
 _SERVICE: Optional[ModelServiceBase] = None
 _CACHE = None
 _ALLOWLIST: Optional[Allowlist] = None
+
+_logger = logging.getLogger(__name__)
+
+# config.yaml keys -> the environment variables the stack reads. The YAML
+# file is the friendly form of the same settings; values from it are
+# applied onto the process environment, and a variable already set in the
+# environment wins over the file.
+# Scoped config keys -> the environment variables the stack reads. Every
+# setting lives in a named section; see config.example.yaml.
+SCOPED_ENV_MAP = {
+    ("cache", "redis_url"): "REDIS_URL",
+    ("cache", "ttl_seconds"): "WEB_SEARCH_CACHE_TTL_SECONDS",
+    ("server", "host"): "MCP_SERVER_HOST",
+    ("server", "port"): "MCP_SERVER_PORT",
+    ("kdcube", "assembly_yaml"): "ASSEMBLY_YAML_DESCRIPTOR_PATH",
+    ("kdcube", "global_secrets_yaml"): "GLOBAL_SECRETS_YAML",
+    ("tls", "cert_file"): "SSL_CERT_FILE",
+}
+
+# ``services.secrets:`` - per-provider api_key blocks, the same shape a
+# KDCube deployment's secrets.yaml nests under ``services:``, so the
+# block can be carried over verbatim.
+SERVICES_SECRETS_ENV_MAP = {
+    "brave": "BRAVE_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "google": "GOOGLE_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+}
+
+
+def apply_yaml_config(path: str | pathlib.Path) -> List[str]:
+    """Apply a config.yaml onto the process environment.
+
+    Every setting lives in a named section (see config.example.yaml):
+    ``filter`` (allowlist inline - the config file itself becomes the
+    live, re-read allowlist source - or allowlist_file), ``services``
+    (per-provider api_key, the secrets.yaml shape), ``models``
+    (default_llm_model_id and role_models, the latter serialized into
+    ROLE_MODELS_JSON), ``cache``, ``server``, ``kdcube`` (a deployment's
+    assembly/secrets YAMLs as the key source), ``tls``. Environment
+    variables that are already set win over the file. Returns the names
+    of the variables the file supplied; unknown keys are logged and
+    skipped.
+    """
+    import yaml
+
+    with open(path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"config file {path} must hold a mapping")
+
+    applied: List[str] = []
+
+    def _set(env_name: str, value: Any) -> None:
+        if value is None:
+            return
+        if os.environ.get(env_name):
+            return  # explicit environment wins
+        os.environ[env_name] = str(value)
+        applied.append(env_name)
+
+    for section, value in data.items():
+        if section == "filter" and isinstance(value, dict):
+            if isinstance(value.get("allowlist"), (list, tuple)):
+                # the config file itself becomes the live allowlist source:
+                # edits to its filter.allowlist apply on the next call
+                _set(ALLOWLIST_YAML_ENV, str(path))
+            elif value.get("allowlist_file"):
+                _set(ALLOWLIST_FILE_ENV, value.get("allowlist_file"))
+            continue
+        if section == "services" and isinstance(value, dict):
+            secrets = value.get("secrets")
+            if isinstance(secrets, dict):
+                for provider, block in secrets.items():
+                    api_key = block.get("api_key") if isinstance(block, dict) else None
+                    env_name = SERVICES_SECRETS_ENV_MAP.get(str(provider))
+                    if env_name:
+                        _set(env_name, api_key)
+                    else:
+                        _logger.warning(
+                            "config %s: unknown service '%s' skipped", path, provider
+                        )
+            role_models = value.get("role_models")
+            if isinstance(role_models, dict):
+                # the ``default`` pseudo-role covers every role not pinned
+                default_spec = role_models.get("default")
+                if isinstance(default_spec, dict) and default_spec.get("model"):
+                    _set("DEFAULT_LLM_MODEL_ID", default_spec.get("model"))
+                pinned = {k: v for k, v in role_models.items() if k != "default"}
+                if pinned:
+                    _set("ROLE_MODELS_JSON", json.dumps(pinned))
+            for key in value:
+                if key not in ("secrets", "role_models"):
+                    _logger.warning(
+                        "config %s: unknown key 'services.%s' skipped", path, key
+                    )
+            continue
+        if not isinstance(value, dict):
+            _logger.warning("config %s: unknown key '%s' skipped", path, section)
+            continue
+        for key, item in value.items():
+            env_name = SCOPED_ENV_MAP.get((section, key))
+            if env_name:
+                _set(env_name, item)
+            else:
+                _logger.warning(
+                    "config %s: unknown key '%s.%s' skipped", path, section, key
+                )
+    return applied
+
+
+def _discover_config(cli_path: Optional[str]) -> Optional[pathlib.Path]:
+    """--config beats WEB_SEARCH_CONFIG beats a config.yaml beside this file."""
+    for candidate in (
+        cli_path,
+        os.environ.get("WEB_SEARCH_CONFIG"),
+        pathlib.Path(__file__).with_name("config.yaml"),
+    ):
+        if candidate and pathlib.Path(candidate).is_file():
+            return pathlib.Path(candidate)
+    return None
 
 
 async def _get_service() -> ModelServiceBase:
@@ -286,10 +412,24 @@ def main() -> int:
         default=None,
         help=f"path to the domain allowlist file (same as {ALLOWLIST_FILE_ENV})",
     )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help=(
+            "path to a config.yaml (see config.example.yaml); also found via "
+            "WEB_SEARCH_CONFIG or a config.yaml beside this file. Environment "
+            "variables win over file values."
+        ),
+    )
     args = parser.parse_args()
 
     if args.allowlist:
         os.environ[ALLOWLIST_FILE_ENV] = args.allowlist
+
+    config_path = _discover_config(args.config)
+    if config_path is not None:
+        applied = apply_yaml_config(config_path)
+        _logger.info("config %s applied: %s", config_path, ", ".join(applied) or "nothing (env wins)")
 
     app = _build_mcp_app()
     if args.transport == "stdio":

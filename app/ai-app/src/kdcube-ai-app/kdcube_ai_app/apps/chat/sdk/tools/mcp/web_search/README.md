@@ -22,6 +22,41 @@ Full reference — every tool's contract, how the pipeline works inside,
 and the complete config table — is in [TOOLS.md](TOOLS.md). An agent
 working on this folder starts at [AGENTS.md](AGENTS.md).
 
+## Prerequisites
+
+- **Python 3.11+** and network access to PyPI for the install.
+- **A dedicated venv built from this folder's `requirements.txt`.** Do
+  not run the server from a preexisting platform venv: those may carry
+  an older `mcp` package without the v2 `MCPServer`, and an older or
+  newer `anthropic` than the pinned one (either breaks the neural
+  pipeline, the newer one silently).
+- **A Brave Search API key** for `web_search`; `web_fetch` and
+  `allowlist_status` need no key at all.
+- **An Anthropic key** (or OpenAI/Google) only for `use_llm=true` — the
+  neural pipeline. Everything runs without it at `use_llm=false`.
+- **A working CA store.** Some Python builds (pyenv, the macOS
+  installer) ship without CA certificates wired for aiohttp, and HTTPS
+  fetches then fail with `CERTIFICATE_VERIFY_FAILED`. Check and fix:
+
+  ```bash
+  .venv-websearch/bin/python -c "import ssl; print(ssl.create_default_context().cert_store_stats())"
+  # {'x509': 0, ...} or a verify error on fetches means no CA store:
+  # point tls.cert_file (or SSL_CERT_FILE) at certifi's bundle:
+  .venv-websearch/bin/python -m certifi
+  ```
+
+Sanity check after setup — offline, no keys, safe anywhere:
+
+```bash
+.venv-websearch/bin/pip install pytest
+PYTHONPATH=$PWD .venv-websearch/bin/python -m pytest \
+  kdcube_ai_app/apps/chat/sdk/tools/mcp/web_search/ \
+  kdcube_ai_app/apps/chat/sdk/tools/backends/web/test_allowlist.py
+```
+
+The tests fake every network and model call, so this proves the install
+without egress and without spending anything.
+
 ## Quick start
 
 The server lives inside the KDCube repo but runs standalone: clone the
@@ -37,30 +72,35 @@ python3 -m venv .venv-websearch
 .venv-websearch/bin/pip install -r \
   kdcube_ai_app/apps/chat/sdk/tools/mcp/web_search/requirements.txt
 
-# allowlist: one domain per line, '#' comments allowed
-cat > /etc/claude/web-allowlist.txt <<EOF
-usgs.gov
-noaa.gov
-data.census.gov
-EOF
+# all settings in one YAML: allowlist, provider keys, pipeline models
+cd kdcube_ai_app/apps/chat/sdk/tools/mcp/web_search
+cp config.example.yaml config.yaml   # gitignored; edit it
+cd -
 
-PYTHONPATH=$PWD BRAVE_API_KEY=... \
-.venv-websearch/bin/python -m \
+PYTHONPATH=$PWD .venv-websearch/bin/python -m \
   kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search.web_search_server \
-  --transport stdio --allowlist /etc/claude/web-allowlist.txt
+  --transport stdio
 ```
 
-Claude Code (from the same directory):
+The server finds `config.yaml` beside itself (or via `--config PATH` /
+`WEB_SEARCH_CONFIG`). With the allowlist written inline under
+`filter.allowlist`, the config file is its live source: edit the list
+and the next call already follows it. Everything can also be configured
+through environment variables instead — the two modes carry the same
+settings, and an environment variable wins over the file (TOOLS.md has
+both forms in full).
+
+Claude Code (from the same directory; the config.yaml in the server's
+folder supplies everything else):
 
 ```bash
 claude mcp add web-search \
   --env PYTHONPATH=$PWD \
-  --env BRAVE_API_KEY=... \
-  --env WEB_ALLOWLIST_FILE=/etc/claude/web-allowlist.txt \
   -- $PWD/.venv-websearch/bin/python -m kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search.web_search_server
 ```
 
-Claude Desktop (`claude_desktop_config.json`):
+Claude Desktop (`claude_desktop_config.json`) — same idea; any variable
+added under `env` overrides the YAML value:
 
 ```json
 {
@@ -69,9 +109,7 @@ Claude Desktop (`claude_desktop_config.json`):
       "command": "/path/to/kdcube/app/ai-app/src/kdcube-ai-app/.venv-websearch/bin/python",
       "args": ["-m", "kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search.web_search_server"],
       "env": {
-        "PYTHONPATH": "/path/to/kdcube/app/ai-app/src/kdcube-ai-app",
-        "BRAVE_API_KEY": "...",
-        "WEB_ALLOWLIST_FILE": "/etc/claude/web-allowlist.txt"
+        "PYTHONPATH": "/path/to/kdcube/app/ai-app/src/kdcube-ai-app"
       }
     }
   }
@@ -98,7 +136,11 @@ example.org        # example.org and every subdomain
 
 Search needs a search-provider key (Brave by default) in the
 environment; see `.env.example`. `use_llm=true` additionally needs a
-model key. `web_fetch` needs neither.
+model key and turns on the neural pipeline — snippet relevance scoring,
+content filtering, and objective-guided span segmentation of fetched
+pages, each stage on its own configured model role (Haiku-class by
+default; see TOOLS.md, "The neural pipeline"). `web_fetch` needs
+neither.
 
 ## Enforcement notes
 

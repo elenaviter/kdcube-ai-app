@@ -1,0 +1,72 @@
+# Web search MCP server - YAML configuration (the friendly form of the
+# environment variables; see TOOLS.md for the full reference).
+#
+# The server loads it from --config PATH, or WEB_SEARCH_CONFIG, or a
+# gitignored config.yaml placed beside the server file. Values are
+# applied onto the process environment; a variable already set in the
+# environment wins over this file.
+
+# --- Egress filter (operator-owned; omit = every host allowed) ---
+# The allowlist lives right here, and this file is its live source:
+# edits to the list apply on the next call without a restart.
+filter:
+  allowlist:
+    - example.org        # domain and every subdomain
+    - "*.example.net"    # subdomains only
+  # Or point at a separate text file (one domain per line, '#'
+  # comments, also re-read on change):
+  # allowlist_file: /etc/claude/web-allowlist.txt
+
+# --- Services: provider secrets and the neural pipeline models ---
+# secrets carries per-provider api_key blocks, the same shape a KDCube
+# deployment's secrets.yaml nests under services:, so the block can be
+# carried over verbatim. brave serves the search; anthropic (or
+# openai/google) serves the neural pipeline on use_llm=true.
+#
+# role_models pins the pipeline roles (see TOOLS.md, "The neural
+# pipeline"); ``default`` covers every role not pinned. Haiku is the
+# intended model class for these roles: fast, cheap, strong enough for
+# scoring, filtering, and span extraction. Model ids and prices live in
+# the deployment price table (app/ai-app/deployment/economics.yaml).
+services:
+  secrets:
+    brave:
+      api_key: ""
+    anthropic:
+      api_key: ""
+    # openai:
+    #   api_key: ""
+    # google:
+    #   api_key: ""
+  role_models:
+    default:
+      provider: anthropic
+      model: claude-haiku-4-5-20251001
+    tool.source.reconciler:
+      provider: anthropic
+      model: claude-haiku-4-5-20251001
+    tool.sources.filter.by.content:
+      provider: anthropic
+      model: claude-haiku-4-5-20251001
+    tool.sources.filter.by.content.and.segment:
+      provider: anthropic
+      model: claude-haiku-4-5-20251001
+
+# --- Alternative to individual keys: a KDCube deployment's config ---
+# kdcube:
+#   assembly_yaml: /path/to/assembly.yaml
+#   global_secrets_yaml: /path/to/secrets.yaml
+
+# --- Optional result cache (empty = run without one) ---
+cache:
+  redis_url: ""
+  # ttl_seconds: 3600
+
+# --- Binding for http/sse transports (stdio needs neither) ---
+# server:
+#   host: 0.0.0.0
+#   port: 8787
+
+# --- TLS trust for the fetcher, when the system store is incomplete ---
+# tls:
+#   cert_file: /path/to/cacert.pem

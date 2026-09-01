@@ -1,0 +1,5 @@
+# local operator config - the committed templates are config.example.yaml
+# and .env.example
+config.yaml
+.env
+web-allowlist.txt

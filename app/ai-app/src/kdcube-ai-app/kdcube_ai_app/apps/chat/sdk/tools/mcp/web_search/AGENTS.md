@@ -14,7 +14,15 @@ optional LLM steps. Contracts and config: [TOOLS.md](TOOLS.md). Setup:
 
 ```
 web_search_server.py      the MCP wrapper: tool registration, allowlist
-                          wiring, LLM on/off, per-URL fetch denials
+                          wiring, LLM on/off, per-URL fetch denials,
+                          and the YAML config loader (apply_yaml_config:
+                          scoped sections -> env, env wins on conflict)
+config.example.yaml       the YAML config template (the recommended
+                          mode); a gitignored config.yaml beside the
+                          server is auto-discovered, and its inline
+                          filter.allowlist is the live allowlist source
+.env.example              the same settings as raw environment variables
+                          (the mode MCP client configs and CI speak)
 test_web_search_server.py contract tests (run with pytest)
 ../mcp_app_transport.py   stdio/sse/http runners (dependency-free)
 ../../backends/web/
@@ -90,13 +98,37 @@ file is part of the tool's contract.
   bound. Don't strip the decorators and don't make an unbound context an
   error.
 
+## Running safely on a dev machine
+
+The README's Prerequisites section is the checklist; the parts that
+matter to an agent:
+
+- **Always work from a venv built from this folder's
+  `requirements.txt`** — a preexisting platform venv may carry an old
+  `mcp` (no v2 `MCPServer`, the server won't import) or a drifted
+  `anthropic` (the segmenter silently returns nothing). The pins are the
+  contract.
+- **The pytest suite is the safe check**: it fakes every network and
+  model call, needs no keys, and can run on any machine without egress
+  or spend. Run it first.
+- **A live check egresses and spends**: search calls the provider on
+  the operator's key, `use_llm=true` calls the model. Do it only with a
+  config the operator gave you, keep the allowlist configured so egress
+  stays inside it, and prefer one small call (`n<=5`,
+  `fetch_content=false`) before anything bigger.
+- **`config.yaml`, `.env`, and `web-allowlist.txt` are gitignored
+  operator files** — never commit them, never print the key values.
+- **HTTPS failures that look like tool bugs**
+  (`CERTIFICATE_VERIFY_FAILED`, or pages classified `paywall`/`error`
+  that open fine in a browser) are usually the machine's missing CA
+  store: set `tls.cert_file` to certifi's bundle
+  (`python -m certifi`) and retry before touching fetch code.
+
 ## Known limitations
 
 - The page fetcher follows HTTP redirects, so a listed site redirecting
   off-domain can lead outside the allowlist (hop-level re-checking would
   need changes in `fetch_backends`).
-- Local dev machines may lack the MCP SDK v2 and CA certificates for
-  aiohttp; both are environment gaps, not tool logic.
 
 ## Related surfaces
 

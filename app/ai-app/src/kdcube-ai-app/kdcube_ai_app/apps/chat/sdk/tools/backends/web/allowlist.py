@@ -16,10 +16,13 @@ hosts pass — a configured but empty list denies everything.
 
 Sources, in order of precedence:
 
+  WEB_ALLOWLIST_YAML  path to a YAML file whose ``allowlist:`` key holds
+                      the entries (the server's config.yaml). Re-read
+                      whenever its mtime changes, so edits apply to the
+                      next call without a restart.
   WEB_ALLOWLIST_FILE  path to a text file, one entry per line,
-                      blank lines and ``#`` comments ignored. The file is
-                      re-read whenever its mtime changes, so edits apply
-                      to the next call without a restart.
+                      blank lines and ``#`` comments ignored. Also
+                      re-read on mtime change.
   WEB_ALLOWLIST       comma-separated entries, fixed for the process.
 """
 
@@ -29,6 +32,7 @@ import os
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
+ALLOWLIST_YAML_ENV = "WEB_ALLOWLIST_YAML"
 ALLOWLIST_FILE_ENV = "WEB_ALLOWLIST_FILE"
 ALLOWLIST_ENV = "WEB_ALLOWLIST"
 
@@ -58,8 +62,9 @@ def hostname_allowed(entries: List[str], host: Optional[str]) -> bool:
 
 @dataclass
 class Allowlist:
-    """Allowlist with its source; a file source is re-read on mtime change."""
+    """Allowlist with its source; file sources are re-read on mtime change."""
 
+    yaml_path: Optional[str] = None
     file_path: Optional[str] = None
     env_value: Optional[str] = None
     _entries: List[str] = field(default_factory=list)
@@ -68,6 +73,7 @@ class Allowlist:
     @classmethod
     def from_env(cls) -> "Allowlist":
         allowlist = cls(
+            yaml_path=os.environ.get(ALLOWLIST_YAML_ENV) or None,
             file_path=os.environ.get(ALLOWLIST_FILE_ENV) or None,
             env_value=os.environ.get(ALLOWLIST_ENV) or None,
         )
@@ -76,21 +82,41 @@ class Allowlist:
 
     @property
     def configured(self) -> bool:
-        return bool(self.file_path) or self.env_value is not None
+        return bool(self.yaml_path) or bool(self.file_path) or self.env_value is not None
+
+    def _read_source_file(self, path: str, *, as_yaml: bool) -> None:
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            self._entries = []
+            self._mtime = None
+            return
+        if mtime == self._mtime:
+            return
+        if as_yaml:
+            import yaml
+
+            with open(path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            raw = None
+            if isinstance(data, dict):
+                scope = data.get("filter")
+                if isinstance(scope, dict):
+                    raw = scope.get("allowlist")
+                if raw is None:
+                    raw = data.get("allowlist")
+            raw_lines = [str(v) for v in raw] if isinstance(raw, (list, tuple)) else []
+            self._entries = parse_entries(raw_lines)
+        else:
+            with open(path, "r", encoding="utf-8") as f:
+                self._entries = parse_entries(f.readlines())
+        self._mtime = mtime
 
     def refresh(self) -> None:
-        if self.file_path:
-            try:
-                mtime = os.path.getmtime(self.file_path)
-            except OSError:
-                self._entries = []
-                self._mtime = None
-                return
-            if mtime == self._mtime:
-                return
-            with open(self.file_path, "r", encoding="utf-8") as f:
-                self._entries = parse_entries(f.readlines())
-            self._mtime = mtime
+        if self.yaml_path:
+            self._read_source_file(self.yaml_path, as_yaml=True)
+        elif self.file_path:
+            self._read_source_file(self.file_path, as_yaml=False)
         elif self.env_value is not None:
             self._entries = parse_entries(self.env_value.split(","))
         else:
@@ -109,6 +135,8 @@ class Allowlist:
     def describe(self) -> Tuple[str, List[str]]:
         """(source description, entries) — the same truth for operator and model."""
         entries = self.entries
+        if self.yaml_path:
+            return f"config: {self.yaml_path}", entries
         if self.file_path:
             return f"file: {self.file_path}", entries
         if self.env_value is not None:
