@@ -69,6 +69,7 @@ Things to say to Claude once the server is connected:
 | "Search without the LLM steps." | `use_llm=false`: cheaper, no model spend, provider ranking only. |
 | "Scan the latest news on X" (feels hung?) | Full-content search with the pipeline at high `n` legitimately takes minutes (every page fetched, then one large refinement call). The fast pattern: snippets first (`fetch_content=false`, seconds), then fetch only the chosen articles. Say "scan headlines first, then open the top 3". |
 | "Why was that site refused?" | The denial itself says: `denied_by_allowlist` (host not on your list), `denied_by_blocklist` (host you banned), `denied_by_ssrf_guard` (private/loopback/metadata address — refused whatever the lists say). |
+| "Allow noaa.gov too." / "Ban tracker.example." | Only if you opted into `filter.expose_edit_tool` at setup: Claude edits the list itself (any client, Desktop included) and shows you the list after the change — live, no restart. Without the opt-in, see "Allow or ban a site" below. |
 
 Operator quick moves (config.yaml sits at the top of your install dir):
 
