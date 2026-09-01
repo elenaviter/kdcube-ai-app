@@ -68,6 +68,7 @@ SCOPED_ENV_MAP = {
     ("cache", "ttl_seconds"): "WEB_SEARCH_CACHE_TTL_SECONDS",
     ("server", "host"): "MCP_SERVER_HOST",
     ("server", "port"): "MCP_SERVER_PORT",
+    ("server", "log_level"): "WEB_SEARCH_LOG_LEVEL",
     ("kdcube", "assembly_yaml"): "ASSEMBLY_YAML_DESCRIPTOR_PATH",
     ("kdcube", "global_secrets_yaml"): "GLOBAL_SECRETS_YAML",
     ("tls", "cert_file"): "SSL_CERT_FILE",
@@ -655,6 +656,27 @@ def _build_mcp_app():
     return mcp
 
 
+def _configure_logging() -> None:
+    """Narrate to stderr (stdout belongs to JSON-RPC): filter drops,
+    pipeline models, denials. Level via WEB_SEARCH_LOG_LEVEL /
+    server.log_level, default INFO; the MCP client keeps stderr (Claude
+    Desktop: ~/Library/Logs/Claude/mcp-server-<name>.log)."""
+    import sys
+
+    level_name = (os.environ.get("WEB_SEARCH_LOG_LEVEL") or "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    root = logging.getLogger()
+    if not root.handlers:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+        )
+        root.addHandler(handler)
+    root.setLevel(level)
+    for noisy in ("httpx", "httpcore", "urllib3", "openai", "anthropic"):
+        logging.getLogger(noisy).setLevel(max(level, logging.WARNING))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="MCP web search server")
     parser.add_argument("--transport", default="stdio", choices=["stdio", "sse", "http"])
@@ -680,6 +702,7 @@ def main() -> int:
         os.environ[ALLOWLIST_FILE_ENV] = args.allowlist
 
     load_config(args.config)
+    _configure_logging()
 
     app = _build_mcp_app()
     if args.transport == "stdio":

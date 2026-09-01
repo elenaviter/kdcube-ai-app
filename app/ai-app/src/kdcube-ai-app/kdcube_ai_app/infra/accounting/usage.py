@@ -766,12 +766,13 @@ def _norm_usage_dict(u: Dict[str, Any], debug: bool = False) -> Dict[str, int]:
     if visible_out:
         out["visible_output_tokens"] = visible_out
     if debug:
+        # Logger, never print: in a stdio MCP server stdout carries the
+        # JSON-RPC stream, and a stray print corrupts the protocol (a
+        # live Desktop session hung exactly this way, 2026-09-02).
         try:
-            print("=== USAGE DEBUG ===")
-            print(json.dumps(out, indent=2, default=str))
-            print("===================")
+            logger.info("=== USAGE DEBUG ===\n%s", json.dumps(out, indent=2, default=str))
         except Exception:
-            print(f"=== USAGE DEBUG === {out}")
+            logger.info("=== USAGE DEBUG === %s", out)
     return out
 
 def _approx_tokens_by_chars(text: str) -> Dict[str, int]:

@@ -204,6 +204,7 @@ CLI flags: `--config`, `--allowlist`, `--transport`/`--host`/`--port`.
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY`, `DEFAULT_LLM_MODEL_ID`, `ROLE_MODELS_JSON` | Model service, needed only for `use_llm=true` calls. |
 | `REDIS_URL`, `WEB_SEARCH_CACHE_TTL_SECONDS` | Optional result cache. Leave `REDIS_URL` empty to run without one. |
 | `MCP_SERVER_HOST`, `MCP_SERVER_PORT` | Binding for `http`/`sse` transports (stdio needs neither). |
+| `WEB_SEARCH_LOG_LEVEL` | Server narration level (`server.log_level` in YAML), default INFO. Logs go to stderr — filter drops, pipeline models, denials — and the MCP client keeps them (Claude Desktop: `~/Library/Logs/Claude/mcp-server-<name>.log`). stdout carries only JSON-RPC. |
 | `ASSEMBLY_YAML_DESCRIPTOR_PATH`, `GLOBAL_SECRETS_YAML` | Optional KDCube-deployment lane: point them at a deployment's `assembly.yaml` / `secrets.yaml` and keys resolve from there (`services.brave.api_key`, model keys) instead of individual env vars. |
 | `SSL_CERT_FILE` | CA bundle for verifying HTTPS certificates when fetching pages (`tls.cert_file` in YAML). Needed only on machines whose Python has no working CA store — point it at certifi's `cacert.pem`; otherwise leave unset. |
 
