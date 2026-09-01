@@ -272,7 +272,7 @@ async def test_stream_with_channels_v3_streams_three_canvas_writes_from_repeated
             "tool_call": {
                 "tool_id": "react.write",
                 "params": {
-                    "path": "outputs/ai_security_news/report.html",
+                    "path": "files/ai_security_news/report.html",
                     "channel": "canvas",
                     "content": html_report,
                     "kind": "display",
@@ -285,7 +285,7 @@ async def test_stream_with_channels_v3_streams_three_canvas_writes_from_repeated
             "tool_call": {
                 "tool_id": "react.write",
                 "params": {
-                    "path": "outputs/ai_security_news/slides.html",
+                    "path": "files/ai_security_news/slides.html",
                     "channel": "canvas",
                     "content": html_slides,
                     "kind": "display",
@@ -298,7 +298,7 @@ async def test_stream_with_channels_v3_streams_three_canvas_writes_from_repeated
             "tool_call": {
                 "tool_id": "react.write",
                 "params": {
-                    "path": "outputs/ai_security_news/report.md",
+                    "path": "files/ai_security_news/report.md",
                     "channel": "canvas",
                     "content": markdown_doc,
                     "kind": "display",
@@ -364,9 +364,9 @@ async def test_stream_with_channels_v3_streams_three_canvas_writes_from_repeated
 async def test_stream_with_channels_v3_repeated_canvas_writes_emit_before_completion_recovery(chunk_size):
     payloads = []
     for path, label in [
-        ("outputs/ai_security_news/report.html", "Report body."),
-        ("outputs/ai_security_news/slides.html", "Slide body."),
-        ("outputs/ai_security_news/report.md", "Markdown body."),
+        ("files/ai_security_news/report.html", "Report body."),
+        ("files/ai_security_news/slides.html", "Slide body."),
+        ("files/ai_security_news/report.md", "Markdown body."),
     ]:
         payloads.append(
             {
@@ -442,7 +442,7 @@ async def test_stream_with_channels_v3_repeated_json_decisions_ignore_backticks_
             "tool_call": {
                 "tool_id": "react.write",
                 "params": {
-                    "path": "outputs/report.md",
+                    "path": "files/report.md",
                     "channel": "canvas",
                     "content": "Before\n```python\nprint('not a protocol fence')\n```\nAfter",
                     "kind": "display",
@@ -455,7 +455,7 @@ async def test_stream_with_channels_v3_repeated_json_decisions_ignore_backticks_
             "tool_call": {
                 "tool_id": "react.write",
                 "params": {
-                    "path": "outputs/slides.html",
+                    "path": "files/slides.html",
                     "channel": "canvas",
                     "content": "<html><body>slides after fenced content</body></html>",
                     "kind": "display",
@@ -468,7 +468,7 @@ async def test_stream_with_channels_v3_repeated_json_decisions_ignore_backticks_
             "tool_call": {
                 "tool_id": "react.write",
                 "params": {
-                    "path": "outputs/report.doc.md",
+                    "path": "files/report.doc.md",
                     "channel": "canvas",
                     "content": "doc body after slides",
                     "kind": "display",
@@ -803,7 +803,7 @@ async def test_stream_with_channels_v3_captures_mixed_repeated_channel_sequence(
             "tool_call": {
                 "tool_id": "react.write",
                 "params": {
-                    "path": "outputs/beta.md",
+                    "path": "files/beta.md",
                     "channel": "canvas",
                     "content": "beta body",
                     "kind": "display",
@@ -816,7 +816,7 @@ async def test_stream_with_channels_v3_captures_mixed_repeated_channel_sequence(
             "tool_call": {
                 "tool_id": "react.write",
                 "params": {
-                    "path": "outputs/gamma.md",
+                    "path": "files/gamma.md",
                     "channel": "canvas",
                     "content": "gamma body",
                     "kind": "display",
@@ -1084,7 +1084,7 @@ async def test_stream_with_channels_v3_uses_declared_rendering_format_for_pdf_st
         "tool_call": {
             "tool_id": "rendering_tools.write_pdf",
             "params": {
-                "path": "outputs/science_news/top_news_april_2026.pdf",
+                "path": "files/science_news/top_news_april_2026.pdf",
                 "format": "html",
                 "title": "Top Science News",
                 "content": "<!DOCTYPE html><html><body><h1>Top Science News</h1></body></html>",

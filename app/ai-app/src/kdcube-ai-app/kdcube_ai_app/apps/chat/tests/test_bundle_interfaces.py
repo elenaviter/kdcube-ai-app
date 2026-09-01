@@ -1530,7 +1530,9 @@ async def test_dispatch_bundle_mcp_request_runs_mcpserver_streamable_http_lifesp
     )
 
     assert response.status_code == 200
-    assert b'"name":"hello"' in response.body
+    payload = json.loads(response.body)
+    assert payload["id"] == 1
+    assert any(tool.get("name") == "hello" for tool in payload["result"]["tools"])
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,24 @@
-import React, {useEffect, useRef, useState} from 'react';
+import {type ComponentType, type ReactNode, useEffect, useRef, useState} from 'react';
 import {AlertCircle, CheckCircle, HelpCircle, Info, Lightbulb, X} from 'lucide-react';
+
+type HintPosition = 'top' | 'bottom' | 'left' | 'right';
+type HintTrigger = 'hover' | 'click_toggle' | 'focus' | 'click';
+type HintVariant = 'tooltip' | 'popover' | 'info' | 'warning' | 'success' | 'error';
+
+interface HintProps {
+    children: ReactNode;
+    content: ReactNode;
+    position?: HintPosition;
+    trigger?: HintTrigger;
+    variant?: HintVariant;
+    className?: string;
+    disabled?: boolean;
+    delay?: number;
+    autohideDelay?: number;
+    offset?: number;
+    maxWidth?: string;
+    zIndex?: string;
+}
 
 // Main Hint Component
 function Hint({
@@ -15,13 +34,13 @@ function Hint({
                   offset = 8,
                   maxWidth = 'max-w-xs',
                   zIndex = 'z-50'
-              }) {
+              }: HintProps) {
     const [isVisible, setIsVisible] = useState(false);
     const [actualPosition, setActualPosition] = useState(position);
-    const triggerRef = useRef(null);
-    const hintRef = useRef(null);
-    const timeoutRef = useRef<number | null>(null);
-    const hideRef = useRef<number | null>(null);
+    const triggerRef = useRef<HTMLDivElement | null>(null);
+    const hintRef = useRef<HTMLDivElement | null>(null);
+    const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const hideRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // Calculate optimal position based on viewport
     useEffect(() => {
@@ -72,8 +91,8 @@ function Hint({
         if (timeoutRef.current) {
             clearTimeout(timeoutRef.current);
         }
-        if (hintRef.current) {
-            clearTimeout(hintRef.current);
+        if (hideRef.current) {
+            clearTimeout(hideRef.current);
         }
         setIsVisible(false);
     };
@@ -116,7 +135,7 @@ function Hint({
     };
 
     const getPositionClasses = () => {
-        const positions = {
+        const positions: Record<HintPosition, string> = {
             top: 'bottom-full left-1/2 transform -translate-x-1/2 mb-0.5',
             bottom: 'top-full left-1/2 transform -translate-x-1/2 mt-0.5',
             left: 'right-full top-1/2 transform -translate-y-1/2 mr-0.5',
@@ -126,7 +145,7 @@ function Hint({
     };
 
     const getVariantClasses = () => {
-        const variants = {
+        const variants: Record<HintVariant, string> = {
             tooltip: 'bg-gray-200 text-black text-sm px-3 py-2 rounded shadow-lg',
             popover: 'bg-white text-gray-900 text-sm p-4 rounded-lg shadow-xl border border-gray-400',
             info: 'bg-blue-50 text-blue-900 text-sm p-3 rounded border border-blue-200',
@@ -191,10 +210,26 @@ function Hint({
 }
 
 // Inline Hint Component
-function InlineHint({children, type = 'info', className = ''}) {
+type InlineHintType = 'info' | 'warning' | 'success' | 'error' | 'tip';
+
+interface InlineHintProps {
+    children: ReactNode;
+    type?: InlineHintType;
+    className?: string;
+}
+
+interface InlineHintStyle {
+    bgColor: string;
+    textColor: string;
+    borderColor: string;
+    icon: ComponentType<{className?: string}>;
+    iconColor: string;
+}
+
+function InlineHint({children, type = 'info', className = ''}: InlineHintProps) {
     const [isVisible, setIsVisible] = useState(true);
 
-    const types = {
+    const types: Record<InlineHintType, InlineHintStyle> = {
         info: {
             bgColor: 'bg-blue-50',
             textColor: 'text-blue-800',
@@ -255,21 +290,47 @@ function InlineHint({children, type = 'info', className = ''}) {
 }
 
 // Icon Hint Component (just the icon with tooltip)
-function IconHint({content, icon = 'help', size = 'w-4 h-4', variant = 'tooltip', position = 'top', className = ''}) {
+interface IconHintProps {
+    content: ReactNode;
+    icon?: 'help' | 'info' | 'warning' | 'tip';
+    size?: string;
+    variant?: HintVariant;
+    position?: HintPosition;
+    className?: string;
+    maxWidth?: string;
+}
+
+function IconHint({
+                      content,
+                      icon = 'help',
+                      size = 'w-4 h-4',
+                      variant = 'tooltip',
+                      position = 'top',
+                      className = '',
+                      maxWidth,
+                  }: IconHintProps) {
     const Icon = icon === 'help' ? HelpCircle :
         icon === 'info' ? Info :
             icon === 'warning' ? AlertCircle :
                 icon === 'tip' ? Lightbulb : HelpCircle;
 
     return (
-        <Hint content={content} variant={variant} position={position}>
+        <Hint content={content} variant={variant} position={position} maxWidth={maxWidth}>
             <Icon className={`${size} text-gray-400 hover:text-gray-600 cursor-help ${className}`}/>
         </Hint>
     );
 }
 
 // Form Field with Hint
-function FormFieldWithHint({label, hint, error, children, required = false}) {
+interface FormFieldWithHintProps {
+    label: ReactNode;
+    hint?: ReactNode;
+    error?: ReactNode;
+    children: ReactNode;
+    required?: boolean;
+}
+
+function FormFieldWithHint({label, hint, error, children, required = false}: FormFieldWithHintProps) {
     return (
         <div className="space-y-2">
             <div className="flex items-center space-x-2">
@@ -300,7 +361,21 @@ function FormFieldWithHint({label, hint, error, children, required = false}) {
 }
 
 // Progressive Hint Component (for onboarding)
-function ProgressiveHint({steps, currentStep, onNext, onSkip, onComplete}) {
+interface ProgressiveHintStep {
+    title: ReactNode;
+    content: ReactNode;
+    image?: ReactNode;
+}
+
+interface ProgressiveHintProps {
+    steps: ProgressiveHintStep[];
+    currentStep: number;
+    onNext: (step: number) => void;
+    onSkip: () => void;
+    onComplete: () => void;
+}
+
+function ProgressiveHint({steps, currentStep, onNext, onSkip, onComplete}: ProgressiveHintProps) {
     const step = steps[currentStep];
 
     if (!step || currentStep >= steps.length) {
@@ -336,7 +411,7 @@ function ProgressiveHint({steps, currentStep, onNext, onSkip, onComplete}) {
 
                 <div className="flex items-center justify-between">
                     <div className="flex space-x-1">
-                        {steps.map((_, index) => (
+                        {steps.map((_unusedStep, index) => (
                             <div
                                 key={index}
                                 className={`w-2 h-2 rounded-full ${

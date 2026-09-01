@@ -2,7 +2,7 @@
 # Copyright (c) 2025 Elena Viter
 
 import asyncio
-import os
+from types import SimpleNamespace
 
 import kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search.web_search_server as srv
 from kdcube_ai_app.infra.service_hub import cache as cache_mod
@@ -40,12 +40,20 @@ def test_web_search_server_uses_backend(monkeypatch):
     asyncio.run(_run())
 
 
-def test_web_search_cache_env(monkeypatch):
-    monkeypatch.setenv("REDIS_URL", "")
+def test_web_search_cache_settings(monkeypatch):
+    monkeypatch.setattr(
+        cache_mod,
+        "get_settings",
+        lambda: SimpleNamespace(REDIS_URL=""),
+    )
     cache = cache_mod.create_kv_cache_from_env(ttl_env_var="WEB_SEARCH_CACHE_TTL_SECONDS")
     assert cache is None
 
-    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setattr(
+        cache_mod,
+        "get_settings",
+        lambda: SimpleNamespace(REDIS_URL="redis://localhost:6379/0"),
+    )
     monkeypatch.setenv("WEB_SEARCH_CACHE_TTL_SECONDS", "120")
     cache = cache_mod.create_kv_cache_from_env(ttl_env_var="WEB_SEARCH_CACHE_TTL_SECONDS")
     # In CI without redis, this still builds the cache object; connection is lazy.

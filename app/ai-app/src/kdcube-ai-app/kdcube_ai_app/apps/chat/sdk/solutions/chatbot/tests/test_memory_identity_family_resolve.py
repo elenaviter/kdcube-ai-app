@@ -56,6 +56,9 @@ class _Stub:
     def _memory_identity_family_bundle_id(self) -> str:
         return "connection-hub@1-0"
 
+    def _memory_identity_authority_projection(self):
+        return {}
+
     async def _memory_scope_pref_for(self, scope) -> str:
         return self._scope_pref
 
@@ -82,12 +85,15 @@ async def test_resolves_family_with_canonical_call(_patch_call) -> None:
     family = await stub._memory_read_user_ids()
     assert family == [_ACTOR, _LINKED]
     # Canonical call: connection-hub@1-0 / identity_family_resolve /
-    # route="operations" / data={"input_user_id": <actor>}.
+    # route="operations" / data with the requested and acting user ids.
     call = _patch_call["called_with"]
     assert call["bundle_id"] == "connection-hub@1-0"
     assert call["operation"] == "identity_family_resolve"
     assert call["route"] == "operations"
-    assert call["data"] == {"input_user_id": _ACTOR}
+    assert call["data"] == {
+        "input_user_id": _ACTOR,
+        "actor_user_id": _ACTOR,
+    }
 
 
 @pytest.mark.asyncio

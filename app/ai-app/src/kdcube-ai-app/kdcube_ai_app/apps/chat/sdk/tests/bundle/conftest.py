@@ -16,7 +16,9 @@ Infrastructure used:
 
 import ast
 import asyncio
+import inspect
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -197,10 +199,54 @@ def bundle(bundle_dir, bundle_id, redis_client, pg_pool, comm_context):
         pytest.skip(f"Cannot initialize bundle at '{bundle_dir}': {str(e)}")
 
 
-@pytest.fixture
-def bundle_graph(bundle):
-    """Build the app graph when the selected app declares that capability."""
+def _build_bundle_graph(bundle):
+    """Build one graph across legacy and per-agent app entrypoint shapes."""
     build_graph = getattr(bundle, "_build_graph", None)
     if not callable(build_graph):
         pytest.skip("Selected app declares no graph execution capability")
-    return build_graph()
+
+    args = []
+    kwargs = {}
+    unsupported = []
+    module = sys.modules.get(type(bundle).__module__)
+    for parameter in inspect.signature(build_graph).parameters.values():
+        if parameter.kind in {inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD}:
+            continue
+        if parameter.default is not inspect.Parameter.empty:
+            continue
+        if parameter.name == "agent_id":
+            agent_id = (
+                os.environ.get("BUNDLE_AGENT_ID")
+                or getattr(bundle, "DEFAULT_AGENT_ID", "")
+                or getattr(module, "DEFAULT_AGENT_ID", "")
+            )
+            if not agent_id:
+                pytest.skip("Per-agent graph app does not expose a default agent id")
+            if parameter.kind is inspect.Parameter.POSITIONAL_ONLY:
+                args.append(agent_id)
+            else:
+                kwargs[parameter.name] = agent_id
+            continue
+        unsupported.append(parameter.name)
+
+    if unsupported:
+        pytest.skip(
+            "Graph builder requires app-specific inputs: " + ", ".join(unsupported)
+        )
+
+    graph = build_graph(*args, **kwargs)
+    if inspect.isawaitable(graph):
+        graph = asyncio.run(graph)
+    return graph
+
+
+@pytest.fixture
+def bundle_graph_factory(bundle):
+    """Return a fresh graph builder for the selected app."""
+    return lambda: _build_bundle_graph(bundle)
+
+
+@pytest.fixture
+def bundle_graph(bundle_graph_factory):
+    """Build the app graph when the selected app declares that capability."""
+    return bundle_graph_factory()

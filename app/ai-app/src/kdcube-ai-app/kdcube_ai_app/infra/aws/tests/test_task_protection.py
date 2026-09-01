@@ -3,6 +3,7 @@ import asyncio
 import logging
 import json
 import os
+from types import SimpleNamespace
 import urllib.error
 
 import pytest
@@ -161,9 +162,18 @@ def test_ecs_task_scale_in_protection_reconcile_refreshes_busy_claims_when_sync_
     assert state["protection_enabled"] is True
 
 
-def test_ecs_task_scale_in_protection_prefers_max_wall_time_env_for_expiry(tmp_path, monkeypatch):
-    monkeypatch.setenv("CHAT_TASK_TIMEOUT_SEC", "600")
-    monkeypatch.setenv("CHAT_TASK_MAX_WALL_TIME_SEC", "3600")
+def test_ecs_task_scale_in_protection_prefers_max_wall_time_for_expiry(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "kdcube_ai_app.infra.aws.task_protection.get_settings",
+        lambda: SimpleNamespace(
+            PLATFORM=SimpleNamespace(
+                SERVICE=SimpleNamespace(
+                    CHAT_TASK_TIMEOUT_SEC=600,
+                    CHAT_TASK_MAX_WALL_TIME_SEC=3600,
+                )
+            )
+        ),
+    )
 
     protection = EcsTaskScaleInProtection(
         logger_=logging.getLogger("test"),

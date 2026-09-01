@@ -42,7 +42,7 @@ const Dummy = () => {
 
     useEffect(() => {
         dispatch(connectChat())
-    }, []);
+    }, [dispatch]);
 
     return <div className={"m-1 p-1"}>
         <button className={"p-1 border cursor-pointer hover:bg-gray-100"} onClick={() => {

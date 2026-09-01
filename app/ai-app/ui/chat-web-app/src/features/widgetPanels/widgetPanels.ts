@@ -184,7 +184,7 @@ export const widgetPanelsApiSlice = createApi({
                     ],
                 }
             },
-            transformResponse(res: BundleWidgetResponse, _meta, arg) {
+            transformResponse(res: BundleWidgetResponse, _unusedMeta, arg) {
                 const value = res[arg.widgetAlias];
                 if (Array.isArray(value)) {
                     return String(value[0] ?? "");

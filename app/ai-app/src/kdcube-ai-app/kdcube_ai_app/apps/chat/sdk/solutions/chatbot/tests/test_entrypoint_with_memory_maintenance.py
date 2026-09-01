@@ -128,6 +128,9 @@ class _NamedServicesHarnessBase:
     def _named_service_providers(self):
         return []
 
+    def _configure_named_service_schema_search(self, provider):
+        del provider
+
     named_services = BaseEntrypoint.named_services
     _named_services_bundle_id = BaseEntrypoint._named_services_bundle_id
     _publish_named_services_discovery = BaseEntrypoint._publish_named_services_discovery
@@ -366,7 +369,7 @@ async def test_legacy_scope_less_snapshot_index_is_repaired_from_status():
         }
     )
 
-    snapshots = await harness._memory_snapshot_load_index()
+    snapshots = await harness._memory_snapshot_load_index(prune=False)
 
     assert snapshots[0]["scope"] == full_snapshot["scope"]
     repaired_index = json.loads(harness.storage[harness._memory_snapshot_index_key()])

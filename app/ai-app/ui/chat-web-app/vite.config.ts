@@ -22,28 +22,28 @@ function controlPlaneRuntimeBootstrapPlugin(): Plugin {
 
                 html = html.replace(
                     /\s*<script\b(?=[^>]*\btype=["']module["'])([^>]*?)\bsrc=["']([^"']+)["']([^>]*)><\/script>/g,
-                    (_match, _before, src) => {
+                    (_unusedMatch, _unusedBefore, src) => {
                         moduleScripts.push(normalizeEmittedPublicPath(src));
                         return "";
                     },
                 );
                 html = html.replace(
                     /\s*<link\b(?=[^>]*\brel=["']stylesheet["'])([^>]*?)\bhref=["']([^"']+)["']([^>]*)>/g,
-                    (_match, _before, href) => {
+                    (_unusedMatch, _unusedBefore, href) => {
                         stylesheets.push(normalizeEmittedPublicPath(href));
                         return "";
                     },
                 );
                 html = html.replace(
                     /\s*<link\b(?=[^>]*\brel=["']modulepreload["'])([^>]*?)\bhref=["']([^"']+)["']([^>]*)>/g,
-                    (_match, _before, href) => {
+                    (_unusedMatch, _unusedBefore, href) => {
                         modulePreloads.push(normalizeEmittedPublicPath(href));
                         return "";
                     },
                 );
                 html = html.replace(
                     /\s*<link\b(?=[^>]*\brel=["']icon["'])([^>]*?)\bhref=["']([^"']+)["']([^>]*)>/g,
-                    (_match, _before, href) => {
+                    (_unusedMatch, _unusedBefore, href) => {
                         icons.push(normalizeEmittedPublicPath(href));
                         return "\n    <link rel=\"icon\" type=\"image/svg+xml\" data-kdcube-control-plane-icon>";
                     },

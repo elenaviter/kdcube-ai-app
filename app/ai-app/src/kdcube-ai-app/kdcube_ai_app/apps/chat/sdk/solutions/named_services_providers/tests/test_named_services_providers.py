@@ -731,6 +731,7 @@ def test_discovery_context_is_portable_through_comm_ctx(monkeypatch):
 
 def test_discovery_reconstructs_from_restored_request_context(monkeypatch):
     redis = FakeDiscoveryRedis()
+    prior_context = comm_ctx_mod.snapshot_ctxvars()
     request_context = ExternalEventPayload(
         meta=ExternalEventMeta(task_id="req-1", created_at=1.0),
         routing=ExternalEventRouting(bundle_id="workspace@1-0", session_id="session-1"),
@@ -754,8 +755,7 @@ def test_discovery_reconstructs_from_restored_request_context(monkeypatch):
         assert restored.project == "project-a"
     finally:
         discovery_mod._DISCOVERY_CV.set(discovery_mod._DISCOVERY_UNSET)
-        comm_ctx_mod.set_current_request_context(None)
-        comm_ctx_mod.set_current_named_service_discovery_context({})
+        comm_ctx_mod.restore_ctxvars(prior_context)
 
 
 @pytest.mark.asyncio

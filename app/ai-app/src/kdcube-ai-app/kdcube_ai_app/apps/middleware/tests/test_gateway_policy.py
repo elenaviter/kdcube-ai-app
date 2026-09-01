@@ -10,7 +10,8 @@ def _request(path: str):
     return SimpleNamespace(url=SimpleNamespace(path=path))
 
 
-def test_socket_connect_bypasses_request_throttling():
+def test_socket_connect_bypasses_request_throttling(monkeypatch):
+    monkeypatch.setenv("GATEWAY_COMPONENT", "ingress")
     policy = GatewayPolicyResolver().resolve(_request("/socket.io/"))
 
     assert policy.cls == EndpointClass.CONNECT
@@ -19,14 +20,16 @@ def test_socket_connect_bypasses_request_throttling():
     assert policy.bypass_backpressure is True
 
 
-def test_sse_stream_connect_bypasses_request_throttling():
+def test_sse_stream_connect_bypasses_request_throttling(monkeypatch):
+    monkeypatch.setenv("GATEWAY_COMPONENT", "ingress")
     policy = GatewayPolicyResolver().resolve(_request("/sse/stream"))
 
     assert policy.cls == EndpointClass.CONNECT
     assert policy.bypass_throttling is True
 
 
-def test_regular_read_keeps_normal_session_policy():
+def test_regular_read_keeps_normal_session_policy(monkeypatch):
+    monkeypatch.setenv("GATEWAY_COMPONENT", "ingress")
     policy = GatewayPolicyResolver().resolve(_request("/profile"))
 
     assert policy.cls == EndpointClass.READ

@@ -502,8 +502,6 @@ const chatStateSlice = createSlice({
         },
         chatCompleted(state, action: PayloadAction<ChatCompleteEnvelope>) {
             const turnId = action.payload.conversation.turn_id;
-            const timestamp = Date.parse(action.payload.timestamp) || new Date().getTime();
-
             if (Object.hasOwn(state.turns, turnId)) {
                 if (action.payload.data.error_message) {
                     state.turns[turnId].state = "error"

@@ -198,7 +198,7 @@ const conversationsMiddleware = (): Middleware => {
             dispatch(loadConversation({
                 conversationBundleId: conversation.bundle_id,
                 turnOrder: conversation.turns.map(it => it.turn_id),
-                turns: conversation.turns.reduce((previousValue, currentValue, i, arr) => {
+                turns: conversation.turns.reduce((previousValue, currentValue) => {
                     let userMessage: UserMessage | null = null;
                     const additionalUserMessages: UserMessage[] = [];
                     const userMessages: UserMessage[] = [];

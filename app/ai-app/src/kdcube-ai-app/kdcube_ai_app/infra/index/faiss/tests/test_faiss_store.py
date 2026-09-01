@@ -102,7 +102,7 @@ def test_canvas_pin_search_faiss_backend():
         def canvas_id(self, *, canvas_name, canvas_id):
             return canvas_id or f"cnv:{canvas_name}"
 
-        def read_document(self, *, canvas_id, story_id, canvas_name):
+        def read_document(self, *, canvas_id, canvas_name):
             return (None, {"cards": self._cards})
 
     async def run():
@@ -115,7 +115,7 @@ def test_canvas_pin_search_faiss_backend():
         with tempfile.TemporaryDirectory() as d:
             store = FakeStore(Path(d), cards)
             idx = await index_pins(
-                store=store, user_id="u-1", story_id="s-1",
+                store=store, user_id="u-1",
                 payload={"canvas_id": "b1"}, embed_fn=fake_embed, dim=len(VOCAB),
                 vector_backend="faiss-local",
             )
@@ -124,7 +124,7 @@ def test_canvas_pin_search_faiss_backend():
             assert faiss_file.exists(), f"expected faiss file at {faiss_file}"
 
             res = await search_pins(
-                store=store, user_id="u-1", story_id="s-1",
+                store=store, user_id="u-1",
                 payload={"query": "alpha deploy", "canvas_id": "b1", "limit": 10},
                 embed_fn=fake_embed, dim=len(VOCAB), vector_backend="faiss-local",
             )

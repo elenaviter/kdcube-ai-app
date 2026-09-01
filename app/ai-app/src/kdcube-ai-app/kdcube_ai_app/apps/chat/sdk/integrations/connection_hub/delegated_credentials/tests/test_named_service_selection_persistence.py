@@ -11,7 +11,7 @@ import pytest
 
 from types import SimpleNamespace
 
-from test_automation_access import (
+from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.tests.test_automation_access import (
     AutomationAccessService,
     NAMED_SERVICES_OAUTH,
     _CatalogResolver,
@@ -425,7 +425,9 @@ def test_public_projection_carries_what_a_wildcard_actually_covers():
 
 
 def _service_without_catalog(card_persistence) -> AutomationAccessService:
-    from test_automation_access import _CatalogResolver
+    from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.tests.test_automation_access import (
+        _CatalogResolver,
+    )
 
     return AutomationAccessService(
         catalog_resolver=_CatalogResolver(unavailable=True),
@@ -464,7 +466,9 @@ async def test_an_unconfigured_resolver_also_fails_closed():
 
 @pytest.mark.asyncio
 async def test_saves_stamp_the_active_version_and_advance_the_revision(card_persistence):
-    from test_automation_access import TEST_CATALOG_VERSION
+    from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.tests.test_automation_access import (
+        TEST_CATALOG_VERSION,
+    )
 
     service = _service(card_persistence)
     created = await service.create_access(

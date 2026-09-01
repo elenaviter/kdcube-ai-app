@@ -20,6 +20,7 @@ from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_mcp impor
     delegated_client_id_for_agent,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime import mcp_bridge
+from kdcube_ai_app.infra.accounting import clear_context
 
 
 # ── connect_required_outcome (pure shaping) ──────────────────────────────────
@@ -129,8 +130,12 @@ def test_current_turn_user_sub_is_empty_when_nothing_is_bound() -> None:
         def comm(self):
             raise RuntimeError("no turn task bound")
 
-    # Outside a turn: no accounting context user, comm raises -> "".
-    assert mcp_bridge.current_turn_user_sub(_NoTurn()) == ""
+    # Establish the unbound state explicitly; test order must not supply identity.
+    clear_context()
+    try:
+        assert mcp_bridge.current_turn_user_sub(_NoTurn()) == ""
+    finally:
+        clear_context()
 
 
 def test_current_turn_user_sub_falls_back_to_the_comm_user() -> None:
