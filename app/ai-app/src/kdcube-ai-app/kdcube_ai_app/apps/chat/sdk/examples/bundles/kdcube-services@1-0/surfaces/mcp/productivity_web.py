@@ -210,8 +210,11 @@ def register_web_tools(
                 description=(
                     "If true, fetch full page content for the results. If "
                     "false, return ranked snippets/URLs only (no content "
-                    "attribute) — cheaper, and you can fetch selected URLs "
-                    "yourself with productivity_web_fetch."
+                    "attribute) — cheaper and FAST. LATENCY: fetch_content "
+                    "with the LLM pipeline on is the slow path (every page "
+                    "fetched, then refined in one large model call — minutes "
+                    "at high n). Scanning pattern: fetch_content=false first, "
+                    "then productivity_web_fetch only the URLs you want."
                 )
             ),
         ] = True,

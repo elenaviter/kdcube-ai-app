@@ -470,8 +470,12 @@ def _build_mcp_app():
         ))] = 8,
         fetch_content: Annotated[bool, Field(description=(
             "If true, fetch full page content for the results. If false, return "
-            "ranked snippets/URLs only - cheaper; fetch selected URLs yourself "
-            "with web_fetch."
+            "ranked snippets/URLs only - cheaper and FAST. LATENCY: "
+            "fetch_content=true with use_llm=true is the slow path - every page "
+            "is fetched and then refined in one large model call, which can "
+            "take minutes at high n. The scanning pattern: fetch_content=false "
+            "first (seconds), read the snippets, then web_fetch only the few "
+            "URLs you actually want."
         ))] = True,
         include_binary_base64: Annotated[bool, Field(description=(
             "If true, attach base64 for binary/image/PDF results when size "

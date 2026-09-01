@@ -67,6 +67,7 @@ Things to say to Claude once the server is connected:
 | "Search for `<topic>` only on en.wikipedia.org." | The `sites` scoping: the provider searches within that domain, so the whole result page is on-site. |
 | "Fetch `<url>` and summarize it." | `web_fetch` dereferences the exact URL — text, dates, status. |
 | "Search without the LLM steps." | `use_llm=false`: cheaper, no model spend, provider ranking only. |
+| "Scan the latest news on X" (feels hung?) | Full-content search with the pipeline at high `n` legitimately takes minutes (every page fetched, then one large refinement call). The fast pattern: snippets first (`fetch_content=false`, seconds), then fetch only the chosen articles. Say "scan headlines first, then open the top 3". |
 | "Why was that site refused?" | The denial itself says: `denied_by_allowlist` (host not on your list), `denied_by_blocklist` (host you banned), `denied_by_ssrf_guard` (private/loopback/metadata address — refused whatever the lists say). |
 
 Operator quick moves (config.yaml sits at the top of your install dir):
