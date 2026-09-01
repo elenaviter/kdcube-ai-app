@@ -43,9 +43,16 @@ beside it. Never put the config (it holds API keys) inside the clone.
    .venv/bin/pip install -r kdcube/mcp/web-search/requirements.txt
    ```
 
-2. **Config.** Write `./config.yaml` (mode 600). Fill the allowlist
-   with the sites the user named, and the keys the user gave you —
-   never print or log key values, refer to them only by name:
+2. **Config.** Start from the shipped template and lock it down:
+
+   ```bash
+   cp kdcube/mcp/web-search/config.example.yaml ./config.yaml
+   chmod 600 config.yaml
+   ```
+
+   Then edit it: fill the allowlist with the sites the user named, and
+   the keys the user gave you — never print or log key values, refer to
+   them only by name. What the filled file looks like:
 
    ```yaml
    filter:
