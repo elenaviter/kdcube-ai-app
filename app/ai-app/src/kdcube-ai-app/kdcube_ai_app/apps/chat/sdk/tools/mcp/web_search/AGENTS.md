@@ -19,6 +19,9 @@ web_search_server.py      the MCP wrapper: tool registration, egress
                           per-URL fetch denials, and the YAML config
                           loader (apply_yaml_config: scoped sections ->
                           env, env wins on conflict)
+list_edit.py              textual editor behind the operator-enabled
+                          allowlist_edit tool: entry lines only,
+                          comments and everything else byte-identical
 config.example.yaml       the YAML config template (the recommended
                           mode). The operator's config.yaml lives in
                           the INSTALL DIRECTORY, beside the clone, and
@@ -42,6 +45,9 @@ test_web_search_server.py contract tests (run with pytest)
                           `sites` query rewrite land here
   fetch_backends.py       fetch_url_contents (text extraction, dates)
                           + the SSRF guard's per-URL pre-check
+  rows.py                 the outward row shape: MCP surfaces keep-list
+                          result fields so pipeline internals (spans,
+                          ranks, sids) never reach the calling model
   ssrf_guard.py           address-level layer (ported from PR #1):
                           blocked IP ranges, metadata hostnames, DNS
                           validation, and the guarded aiohttp resolver

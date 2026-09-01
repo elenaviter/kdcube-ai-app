@@ -23,7 +23,12 @@ filter, never widens it.
 
 Tools: `web_search`, `web_fetch`, `allowlist_status` (the egress filter
 exactly as the server enforces it — both lists — so the model and the
-operator read the same truth).
+operator read the same truth), and optionally `allowlist_edit` when the
+operator sets `filter.expose_edit_tool: true` — then the user changes
+the lists conversationally from any client, and without the opt-in no
+tool can touch them. Result rows leave the server keep-listed: what the
+model acts on (title, url, snippet, content, statuses, scores, dates),
+none of the pipeline's internal bookkeeping.
 
 Full reference — every tool's contract, how the pipeline works inside,
 and the complete config table — is in [TOOLS.md](TOOLS.md). An agent
