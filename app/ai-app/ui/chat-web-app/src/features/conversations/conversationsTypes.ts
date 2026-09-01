@@ -18,6 +18,7 @@ export interface ArtifactDataDTO {
     payload: unknown,
     text: string,
     meta?: Record<string, unknown>,
+    event_type?: string,
 }
 
 export interface AssistantFileData {

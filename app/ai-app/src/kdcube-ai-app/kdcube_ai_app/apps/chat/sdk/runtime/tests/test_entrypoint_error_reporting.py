@@ -29,7 +29,7 @@ class _CaptureComm:
 
 
 @pytest.mark.asyncio
-async def test_report_turn_error_emits_user_visible_error_and_step():
+async def test_report_turn_error_emits_one_user_visible_error_surface():
     entrypoint = object.__new__(BaseEntrypoint)
     entrypoint.logger = _CaptureLogger()
     entrypoint._comm = _CaptureComm()
@@ -63,19 +63,7 @@ async def test_report_turn_error_emits_user_visible_error_and_step():
             "title": "Turn Error",
         }
     ]
-    assert entrypoint._comm.step_calls == [
-        {
-            "step": "turn",
-            "status": "error",
-            "title": "Turn Error",
-            "data": {
-                "error": "boom",
-                "error_message": "boom",
-                "error_type": "RuntimeError",
-            },
-            "markdown": "**Error:** boom",
-        }
-    ]
+    assert entrypoint._comm.step_calls == []
     assert any(
         "RuntimeError: boom" in message
         for _level, message in entrypoint.logger.messages

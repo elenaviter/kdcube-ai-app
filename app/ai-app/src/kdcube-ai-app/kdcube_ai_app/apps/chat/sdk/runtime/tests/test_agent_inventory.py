@@ -662,7 +662,9 @@ async def test_realm_enrichment_scopes_mail_claims_to_allowed_operations():
     assert realm["label"] == "Mail"
     requirement = realm["connected_accounts"][0]
     assert requirement["provider_id"] == "google"
-    assert requirement["connector_app_id"] == "gmail"
+    # No guarded-service declaration is bound in this unit fixture, so the
+    # requirement is deliberately provider-wide.
+    assert requirement["connector_app_id"] == ""
     assert requirement["claims"] == ["gmail:read"]
     # The declared differentiation rides along so consumers can recompute
     # effective claims over a user-narrowed operation set.
@@ -702,7 +704,7 @@ async def test_realm_enrichment_scopes_mail_claims_to_allowed_operations():
 
 
 @pytest.mark.asyncio
-async def test_realm_enrichment_keeps_slack_flat_claim_set():
+async def test_realm_enrichment_scopes_slack_claims_by_operation():
     from kdcube_ai_app.apps.chat.sdk.runtime.agent_inventory import (
         enrich_catalog_named_service_realms,
     )
@@ -720,20 +722,25 @@ async def test_realm_enrichment_keeps_slack_flat_claim_set():
     )
     slack_entry, task_entry = out["named_services"]
     realm = slack_entry["realm"]
-    # One declared flat set: shown whole, no invented per-operation split.
-    assert realm["connected_accounts"] == [{
-        "provider_id": "slack",
-        "connector_app_id": "demo",
-        "claims": sorted([
-            "slack:search", "slack:channels", "slack:history",
-            "slack:files:read", "slack:files:write", "slack:post",
-            "slack:assistant:search",
-        ]),
-    }]
-    actions = {item["name"] for item in realm["actions"]}
-    assert {"post_message", "upload_file", "download_file"} <= actions
-    for item in realm["actions"]:
-        assert "claims" not in item  # slack declared no per-action claims
+    requirement = realm["connected_accounts"][0]
+    assert requirement["provider_id"] == "slack"
+    assert requirement["connector_app_id"] == ""
+    assert requirement["claims"] == sorted([
+        "slack:search", "slack:channels", "slack:history",
+        "slack:files:read", "slack:files:write", "slack:post",
+        "slack:assistant:search",
+    ])
+    assert requirement["claims_by_operation"]["object.action.post_message"] == [
+        "slack:post"
+    ]
+    actions = {item["name"]: item for item in realm["actions"]}
+    assert {"post_message", "upload_file", "download_file"} <= set(actions)
+    assert actions["post_message"]["claims"] == ["slack:post"]
+    assert actions["upload_file"]["claims"] == ["slack:files:write"]
+    assert actions["download_file"]["claims"] == ["slack:files:read"]
+    assert actions["assistant_search_info"]["claims"] == [
+        "slack:assistant:search"
+    ]
     # Unresolvable namespace keeps its plain row (fail-open).
     assert "realm" not in task_entry
 
@@ -931,15 +938,20 @@ def test_namespace_claim_policies_recompute_effective_claims_over_denies():
     assert policies == [{
         "tool_name": "mail",
         "connected_accounts": [{
-            "provider_id": "google", "connector_app_id": "gmail",
+            "provider_id": "google", "connector_app_id": "",
             "claims": ["gmail:read", "gmail:send"],
         }],
     }]
 
-    # Denying send + forward drops the send claim: the user is never asked
-    # for gmail:send.
+    # Denying every send-class action drops the send claim: the user is never
+    # asked for gmail:send.
     policies = namespace_claim_policies(catalog, {
-        "named_services": {"mail": ["object.action.send", "object.action.forward"]},
+        "named_services": {"mail": [
+            "object.action.send",
+            "object.action.forward",
+            "object.action.request_upload",
+            "object.action.discard_upload",
+        ]},
     })
     assert policies[0]["connected_accounts"][0]["claims"] == ["gmail:read"]
 
@@ -947,7 +959,7 @@ def test_namespace_claim_policies_recompute_effective_claims_over_denies():
     assert namespace_claim_policies(catalog, {"named_services": {"mail": True}}) == []
 
 
-def test_namespace_claim_policies_keep_flat_realms_flat():
+def test_namespace_claim_policies_scope_slack_claims_over_denies():
     from kdcube_ai_app.apps.chat.sdk.integrations.slack.named_service import (
         SLACK_CONNECTED_ACCOUNT_REQUIREMENTS,
     )
@@ -965,14 +977,18 @@ def test_namespace_claim_policies_keep_flat_realms_flat():
             },
         }]
     }
-    # Slack declared one flat set: entry denies keep it whole (honest — the
-    # realm declared no per-operation split).
+    # Slack declares operation-level claims, so denying post_message removes
+    # only slack:post. object.get is not in this catalog, so history is absent.
     policies = namespace_claim_policies(catalog, {
         "named_services": {"slack": ["object.action.post_message"]},
     })
-    assert policies[0]["connected_accounts"][0]["claims"] == sorted(
-        SLACK_CONNECTED_ACCOUNT_REQUIREMENTS[0]["claims"]
-    )
+    assert policies[0]["connected_accounts"][0]["claims"] == sorted([
+        "slack:assistant:search",
+        "slack:channels",
+        "slack:files:read",
+        "slack:files:write",
+        "slack:search",
+    ])
 
 
 # ── The human layer: the realm card speaks the service's own contract ────────

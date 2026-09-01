@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 import pytest
+from PIL import Image
 from types import SimpleNamespace
 
 from kdcube_ai_app.apps.chat.sdk.events import EventSourceSubsystem
@@ -1029,7 +1030,7 @@ async def test_external_tool_self_hosted_internal_image_is_not_emitted_but_is_mu
     }
     target = artifact_outdir_for(tmp_path) / "turn_exec" / "files" / "browser_screenshots" / "123_main.png"
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    Image.new("RGB", (1, 1), color="white").save(target, format="PNG")
 
     async def _fake_execute_tool(**kwargs):
         return {

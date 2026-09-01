@@ -5,6 +5,7 @@ import IconContainer from "../../components/IconContainer.tsx";
 import {LoaderCircle, Maximize2, Minimize2, RotateCcw, X} from "lucide-react";
 import {motion} from "motion/react";
 import {useSidePanelContext} from "./sidePanelContext.ts";
+import type {ChatScope} from "../chat/chatTypes.ts";
 
 interface IFrameSrcDocPanelProps {
     srcDoc: string;
@@ -157,7 +158,7 @@ export const UrlFramePanel = ({visible, className, src}: UrlFramePanelProps) => 
 interface GenericWidgetPanelProps {
     visible: boolean;
     className?: string;
-    trigger: (params: unknown, preferCache?: boolean) => void;
+    trigger: (params: ChatScope, preferCache?: boolean) => unknown;
     useCached?: boolean;
     params?: Record<string, string>;
     lastArg: {

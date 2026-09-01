@@ -878,9 +878,9 @@ async def test_publish_git_workspace_if_needed_raises_turn_phase_error_on_publis
 
 def test_stage_current_turn_text_workspace_stages_new_files_without_existing_tracked_files(monkeypatch, tmp_path):
     turn_root = tmp_path / "turn"
-    files_root = turn_root / "files"
-    files_root.mkdir(parents=True, exist_ok=True)
-    (files_root / "README.md").write_text("# Demo\n", encoding="utf-8")
+    project_root = turn_root / "git" / "projects" / "demo"
+    project_root.mkdir(parents=True, exist_ok=True)
+    (project_root / "README.md").write_text("# Demo\n", encoding="utf-8")
 
     calls = []
 
@@ -898,7 +898,12 @@ def test_stage_current_turn_text_workspace_stages_new_files_without_existing_tra
     _stage_current_turn_text_workspace(turn_root=turn_root)
 
     assert calls[0][1] == ["add", "--sparse", "-u", "--", "."]
-    assert calls[1][1] == ["add", "--sparse", "--", "files/README.md"]
+    assert calls[1][1] == [
+        "add",
+        "--sparse",
+        "--",
+        "git/projects/demo/README.md",
+    ]
 
 
 @pytest.mark.asyncio

@@ -133,7 +133,7 @@ class CognitoAuth {
                         let user: User | null = null;
                         if (hasCallbackParams) {
                             try {
-                                user = await userManager.signinCallback();
+                                user = (await userManager.signinCallback()) ?? null;
                             } catch (callbackError) {
                                 user = await userManager.getUser();
                                 if (!user) {

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+import os
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 
@@ -11,8 +13,7 @@ def _bundles_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _bundle_config(bundle_dir: str, bundle_id: str) -> dict[str, Any]:
-    path = _bundles_root() / bundle_dir / "config" / "bundles.template.yaml"
+def _bundle_config_from_path(path: Path, bundle_id: str) -> dict[str, Any]:
     descriptor = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     bundle = next(
         item
@@ -20,6 +21,32 @@ def _bundle_config(bundle_dir: str, bundle_id: str) -> dict[str, Any]:
         if item.get("id") == bundle_id
     )
     return bundle["config"]
+
+
+def _bundle_config(bundle_dir: str, bundle_id: str) -> dict[str, Any]:
+    path = _bundles_root() / bundle_dir / "config" / "bundles.template.yaml"
+    return _bundle_config_from_path(path, bundle_id)
+
+
+def _connection_hub_config() -> dict[str, Any]:
+    ecosystem_repo = str(os.environ.get("APP_ECOSYSTEM_REPO") or "").strip()
+    if not ecosystem_repo:
+        pytest.skip(
+            "APP_ECOSYSTEM_REPO is not set; Connection Hub app contract is "
+            "verified from its companion checkout"
+        )
+    path = (
+        Path(ecosystem_repo).expanduser().resolve()
+        / "products"
+        / "connection-hub"
+        / "apps"
+        / "connection-hub@1-0"
+        / "config"
+        / "bundles.template.yaml"
+    )
+    if not path.is_file():
+        pytest.fail(f"Connection Hub app descriptor does not exist: {path}")
+    return _bundle_config_from_path(path, "connection-hub@1-0")
 
 
 def _connected_account_requirements(node: Any) -> Iterator[dict[str, Any]]:
@@ -39,7 +66,7 @@ def test_connected_account_requirements_reference_declared_connector_apps():
         "workspace@2026-03-31-13-36",
         "workspace@2026-03-31-13-36",
     )
-    connection_hub = _bundle_config("connection-hub@1-0", "connection-hub@1-0")
+    connection_hub = _connection_hub_config()
     providers = connection_hub["connections"]["delegated_to_kdcube"]["providers"]
     requirements = list(_connected_account_requirements(workspace))
 
@@ -61,7 +88,7 @@ def test_connected_account_requirements_reference_declared_connector_apps():
 
 
 def test_connection_hub_template_declares_google_productivity_contract():
-    connection_hub = _bundle_config("connection-hub@1-0", "connection-hub@1-0")
+    connection_hub = _connection_hub_config()
     connections = connection_hub["connections"]
     google = connections["delegated_to_kdcube"]["providers"]["google"]
     connector = google["connector_apps"]["gmail"]

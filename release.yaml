@@ -1,51 +1,47 @@
 platform:
   repo: "kdcube-ai-app"
-  ref: "2026.08.19.120"
+  ref: "2026.09.01.110"
   description: |
-    This release follows 2026.08.18.242.
+    This release follows 2026.08.19.120.
 
-    Application startup now uses a supervised, generation-aware preparation
-    lifecycle. Each application independently resolves and loads its source,
-    runs on_bundle_load(), prepares declared UI surfaces, runs the fenced
-    on_app_deploy() hook, and publishes readiness. Failed preparation retries
-    with backoff, and a newer generation supersedes stale work. Applications
-    can therefore complete long initialization at their own pace while the
-    processor continues serving ready applications.
+    Connection Hub delegation now uses a registered catalog and durable,
+    revisioned caller cards. Every operation, named service, resource, account,
+    and account claim is bounded by both the published catalog and the user's
+    current card. Managed REST, MCP, and named-service calls resolve that card
+    on every invocation, so extending, narrowing, expiring, or revoking access
+    takes effect without restarting the caller. Consent responses preserve the
+    exact denied operation and can resume an active named-service call.
 
-    Health and admission are explicit deployment-neutral contracts.
-    /health/live reports processor liveness; /health reports aggregate service
-    readiness and includes only applications configured with
-    service.readiness: required. Every REST, MCP, chat, Data Bus, scheduled-job,
-    and internal operation checks the addressed application generation before
-    execution. Interactive doors return a structured application_not_ready
-    response, while queued work is deferred for retry. The same contracts apply
-    under Docker Compose, ECS, and Kubernetes probes.
+    Delegated-client OAuth credentials carry their verified identity and grant
+    attributes into the signed KDCube session claim. The access token remains
+    tied to the external caller identity while the live card supplies current
+    authority. Catalog versions and card revisions make stale selections
+    visible and reconcilable instead of silently broadening access.
 
-    ReAct artifact recovery now enforces current-turn locality consistently.
-    Conversation-file and external artifacts must be present in the current
-    ANNOUNCE LOCAL set or materialized during the active turn before file
-    processing. Logical URI references remain distinct from physical workspace
-    paths, timeline references remain directly readable, and canvas-owned
-    materialized artifacts retain their content. Bounded inspection and the
-    thinking instances used by timeline rendering are preserved across rounds.
+    Hosted agents share one workspace lifecycle across native ReAct, Claude
+    Code, and ported agent frameworks. Turn workspaces are rebuilt from durable
+    references, generated projects can be published through the workspace
+    boundary, and configurable turn summaries plus searchable turn records make
+    work available to later turns without relying on process-local state.
 
-    Full and compact ReAct tool catalogs now serialize structured purpose,
-    return, and example contracts as deterministic JSON, preserving nested MCP
-    schemas in model instructions. The shipped Workspace configuration uses
-    compact catalog forms, the extra-lite instruction profile, and its
-    configured Haiku decision model as coherent serving defaults.
+    Relay communicators now release their owned Redis PubSub listener when the
+    last session, project, and subscription reference is gone. Repeated turns
+    can create and retire communicators without exhausting the shared asyncio
+    client pool. Regression tests cover the exact teardown and reuse lifecycle.
 
-    Hosted-agent documentation now defines effective-turn and event-lane
-    ownership for external execution loops. The LangGraph agent surface covers
-    per-turn graph construction, framework-owned checkpoints, model accounting,
-    and stopped tool-call repair. The Claude Code conversation recipe records
-    truthful lane folding, refusal, stream capture, and stop reconciliation.
+    Scene delivery waits for explicit receiver readiness before sending queued
+    commands. ReAct artifact handling preserves valid image bytes and rejects
+    malformed images before model delivery. File-lock wait reporting is
+    rate-limited while retaining evidence for prolonged contention.
 
-    Fresh installation descriptors select the application-hosted Google
-    session authority through Connection Hub and align the default application
-    inventory, governed named-service catalog, scene, and CLI recommendation.
-    The default platform descriptor is pinned to the previous published
-    platform release as its installation baseline.
+    The CLI can stage local maintainer package sources alongside the platform,
+    including Connection Hub from its product-scoped repository layout. First
+    run guidance and the public platform-source testing procedure now describe
+    the same reproducible import and fixture checks used by contributors.
+
+    The KDCube services bundle adds Telegram text and image delivery through
+    the caller's connected account. The governed service boundary resolves the
+    connection and its claims before delivery.
 
 config:
-  version: "2026.08.19.120"
+  version: "2026.09.01.110"

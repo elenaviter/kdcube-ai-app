@@ -1,5 +1,5 @@
 import hljs from "highlight.js";
-import {useMemo, useState} from "react";
+import {useMemo} from "react";
 import ReactMarkdown from "react-markdown";
 import {
     markdownComponentsTight,
@@ -31,8 +31,6 @@ const CanvasItem = ({item, contentRef}: ArtifactComponentProps) => {
 
     const canvasItem = item as CanvasArtifact;
 
-    const [showItemSource, setShowItemSource] = useState<boolean>(false)
-
     const contentType = useMemo(() => {
         return canvasItem ? getCanvasContentType(canvasItem.content.contentType) : null
     }, [canvasItem])
@@ -40,10 +38,6 @@ const CanvasItem = ({item, contentRef}: ArtifactComponentProps) => {
     const itemCompleted = useMemo(() => {
         return !!canvasItem?.complete
     }, [canvasItem])
-
-    const showSourceSwitch = useMemo(() => {
-        return itemCompleted && contentType && ["srcdoc", "mermaid", "csv"].includes(contentType)
-    }, [itemCompleted, contentType])
 
     const itemSource = useMemo(() => {
         if (!canvasItem) return null;
@@ -94,9 +88,9 @@ const CanvasItem = ({item, contentRef}: ArtifactComponentProps) => {
 
     return useMemo(() => {
         return <div className={"p-2 border-gray-200 border-l-1 bg-white h-full w-full overflow-y-auto"}>
-            {showItemSource || !itemCompleted || !contentType ? itemSource : itemRender}
+            {!itemCompleted || !contentType ? itemSource : itemRender}
         </div>
-    }, [contentType, itemCompleted, itemRender, itemSource, showItemSource])
+    }, [contentType, itemCompleted, itemRender, itemSource])
 }
 
 export default CanvasItem

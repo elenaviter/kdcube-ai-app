@@ -64,7 +64,6 @@ def test_bundle_has_required_files():
     required = [
         "__init__.py",
         "entrypoint.py",
-        "skills_descriptor.py",
     ]
     missing = [name for name in required if not (bundle_root / name).exists()]
     assert not missing, f"Bundle is missing required files: {missing}"

@@ -24,13 +24,12 @@ class TestBundleGraph:
 
         assert bundle_graph is not None
 
-    def test_compiled_graph_stored_on_bundle(self, bundle, bundle_graph):
-        """Bundle stores the compiled graph as self.graph after __init__."""
-        del bundle_graph
-        assert hasattr(bundle, "graph"), (
-            "Bundle must store compiled graph as self.graph in __init__"
-        )
-        assert bundle.graph is not None
+    def test_graph_build_does_not_require_bundle_cache(self, bundle, bundle_graph):
+        """Per-turn apps may return a graph without caching it on the bundle."""
+        assert bundle_graph is not None
+        cached = getattr(bundle, "graph", None)
+        if cached is not None:
+            assert callable(getattr(cached, "get_graph", None))
 
     def test_graph_has_nodes(self, bundle_graph):
         """Compiled graph has at least one node."""
@@ -78,11 +77,11 @@ class TestBundleGraph:
         """_build_graph() completes without raising an exception."""
         assert bundle_graph is not None
 
-    def test_build_graph_is_fast(self, bundle, bundle_graph):
+    def test_build_graph_is_fast(self, bundle_graph_factory, bundle_graph):
         """Graph compilation completes in a reasonable time (< 5 seconds)."""
         del bundle_graph
         start = time.time()
-        bundle._build_graph()
+        bundle_graph_factory()
         elapsed = time.time() - start
         assert elapsed < 5.0, (
             f"_build_graph() took {elapsed:.2f}s — expected < 5s"
@@ -93,10 +92,10 @@ class TestBundleGraph:
         assert hasattr(bundle_graph, "ainvoke"), "Compiled graph must expose ainvoke()"
         assert callable(bundle_graph.ainvoke)
 
-    def test_multiple_graph_builds_are_independent(self, bundle, bundle_graph):
+    def test_multiple_graph_builds_are_independent(self, bundle_graph_factory, bundle_graph):
         """Each call to _build_graph() returns a fresh, independent graph."""
         del bundle_graph
-        graph1 = bundle._build_graph()
-        graph2 = bundle._build_graph()
+        graph1 = bundle_graph_factory()
+        graph2 = bundle_graph_factory()
         # Should be different objects (not the same cached instance)
         assert graph1 is not graph2

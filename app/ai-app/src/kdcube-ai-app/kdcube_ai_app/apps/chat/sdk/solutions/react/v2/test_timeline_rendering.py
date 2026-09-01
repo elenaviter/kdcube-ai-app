@@ -17,7 +17,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.plan import (
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 def test_timeline_render_debug_writes_to_configured_root_and_prunes(tmp_path):

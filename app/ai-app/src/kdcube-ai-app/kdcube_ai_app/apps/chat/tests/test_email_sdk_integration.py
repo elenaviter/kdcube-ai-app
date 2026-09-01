@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from kdcube_ai_app.apps.chat.sdk.integrations.email import (
     EMAIL_MCP_TOKEN_HEADER,
     EmailAccountStore,
@@ -12,6 +14,7 @@ from kdcube_ai_app.apps.chat.sdk.integrations.email import (
     default_icloud_account_settings,
     verify_email_mcp_token,
 )
+from kdcube_ai_app.apps.chat.sdk.integrations.email import mcp as email_mcp
 from kdcube_ai_app.apps.chat.sdk.integrations.email import settings as email_settings
 
 
@@ -24,7 +27,8 @@ class _Entry:
         return default
 
 
-def test_email_account_store_keeps_account_metadata_without_tokens(tmp_path):
+@pytest.mark.asyncio
+async def test_email_account_store_keeps_account_metadata_without_tokens(tmp_path):
     store = EmailAccountStore(tmp_path, user_id="user-a", bundle_id="demo.bundle@1-0")
 
     account = store.upsert_account(
@@ -37,7 +41,8 @@ def test_email_account_store_keeps_account_metadata_without_tokens(tmp_path):
 
     assert account["provider"] == "icloud"
     assert account["email"] == "user@example.test"
-    assert store.get_account("user@example.test")["account_id"] == account["account_id"]
+    stored = await store.get_account_async("user@example.test")
+    assert stored["account_id"] == account["account_id"]
 
 
 def test_email_settings_module_uses_configured_bundle_hooks(tmp_path):
@@ -57,8 +62,14 @@ def test_email_settings_module_uses_configured_bundle_hooks(tmp_path):
     assert store.bundle_id == "demo.bundle@1-0"
 
 
-def test_email_mcp_run_token_is_scoped_to_run_and_bundle(tmp_path):
-    prepared = create_email_mcp_run(
+@pytest.mark.asyncio
+async def test_email_mcp_run_token_is_scoped_to_run_and_bundle(tmp_path, monkeypatch):
+    async def _auth_secret(_entrypoint):
+        return "mcp-secret"
+
+    monkeypatch.setattr(email_mcp, "email_mcp_auth_secret", _auth_secret)
+
+    prepared = await create_email_mcp_run(
         entrypoint=_Entry(),
         storage_root=tmp_path,
         user_id="user-a",

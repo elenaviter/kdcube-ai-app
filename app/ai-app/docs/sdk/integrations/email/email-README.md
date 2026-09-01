@@ -72,13 +72,14 @@ account = store.upsert_account({
     "email": "user@example.com",
     "scope": ["https://www.googleapis.com/auth/gmail.readonly"],
 })
-store.set_tokens(account["account_id"], {"access_token": "...", "refresh_token": "..."})
+await store.set_tokens_async(account["account_id"], {"access_token": "...", "refresh_token": "..."})
 ```
 
 `EmailAccountStore` stores account metadata under the bundle storage root and
 stores secrets through the KDCube user-secret API. Account JSON records keep
-only metadata and a `has_token` flag; OAuth tokens and iCloud app passwords do
-not live in account metadata files.
+only metadata. Async account listings derive the `has_token` flag from the
+user-secret store; OAuth tokens and iCloud app passwords do not live in account
+metadata files.
 
 The store is provider-neutral. Provider-specific checks happen through:
 

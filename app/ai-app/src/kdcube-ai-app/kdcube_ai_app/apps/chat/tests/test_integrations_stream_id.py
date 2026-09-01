@@ -384,7 +384,7 @@ async def test_call_bundle_op_inner_uses_default_bundle_when_omitted(monkeypatch
     assert result["ping"] == {"pong": True}
 
 
-def test_serve_static_asset_builds_ui_on_first_request(monkeypatch, tmp_path):
+def test_serve_static_asset_returns_404_when_prepared_ui_is_missing(monkeypatch, tmp_path):
     bundle_root = tmp_path / "bundle"
     bundle_root.mkdir()
     storage_root = tmp_path / "storage"
@@ -393,59 +393,43 @@ def test_serve_static_asset_builds_ui_on_first_request(monkeypatch, tmp_path):
         bundle_id = kwargs.get("bundle_id") or (args[0] if args else None)
         return SimpleNamespace(id=bundle_id, path=str(bundle_root), module="entrypoint", singleton=False, version="v1")
 
-    async def _load_bundle_props_defaults(**kwargs):
-        assert kwargs.get("evict_before_load") is False
-        ui_root = storage_root / "ui"
-        ui_root.mkdir(parents=True, exist_ok=True)
-        (ui_root / "index.html").write_text("<html><head></head><body>Echo UI</body></html>", encoding="utf-8")
-        return {"ui": {"main_view": {"src_folder": "ui/main"}}}
-
     monkeypatch.setattr(
         integrations,
         "get_settings",
         lambda: SimpleNamespace(TENANT="tenant-a", PROJECT="project-a"),
     )
     monkeypatch.setattr(integrations, "_resolve_bundle_spec_from_runtime", _resolve_bundle_async)
-    monkeypatch.setattr(integrations, "_load_bundle_props_defaults", _load_bundle_props_defaults)
     monkeypatch.setattr(bundle_storage, "storage_for_spec", lambda **kwargs: storage_root)
 
-    response = asyncio.run(
-        integrations.serve_static_asset(
-            tenant="tenant-a",
-            project="project-a",
-            bundle_id="echo.ui@2026-03-30",
-            request=_request(),
-            session=_session(),
+    with pytest.raises(integrations.HTTPException) as exc:
+        asyncio.run(
+            integrations.serve_static_asset(
+                tenant="tenant-a",
+                project="project-a",
+                bundle_id="echo.ui@2026-03-30",
+                request=_request(),
+                session=_session(),
+            )
         )
-    )
 
-    assert isinstance(response, HTMLResponse)
-    html = response.body.decode("utf-8")
-    assert "Echo UI" in html
-    assert '/api/integrations/static/tenant-a/project-a/echo.ui@2026-03-30/' in html
-    assert "data-kdcube-resize-reporter" in html
-    assert "type:'kdcube-resize'" in html
-    assert "contentWidth" in html
-    assert "viewportWidth" in html
+    assert exc.value.status_code == 404
+    assert exc.value.detail == "Bundle 'echo.ui@2026-03-30' does not have a built UI"
 
 
-def test_serve_static_asset_refreshes_existing_ui_on_entrypoint_request(monkeypatch, tmp_path):
+def test_serve_static_asset_serves_prepared_ui_without_request_refresh(monkeypatch, tmp_path):
     bundle_root = tmp_path / "bundle"
     bundle_root.mkdir()
     storage_root = tmp_path / "storage"
     ui_root = storage_root / "ui"
     ui_root.mkdir(parents=True)
     (ui_root / "index.html").write_text("<html><head></head><body>Stale UI</body></html>", encoding="utf-8")
-    load_calls = []
-
     async def _resolve_bundle_async(*args, **kwargs):
         bundle_id = kwargs.get("bundle_id") or (args[0] if args else None)
         return SimpleNamespace(id=bundle_id, path=str(bundle_root), module="entrypoint", singleton=False, version="v1")
 
     async def _load_bundle_props_defaults(**kwargs):
-        load_calls.append((kwargs["bundle_id"], kwargs.get("evict_before_load")))
-        (ui_root / "index.html").write_text("<html><head></head><body>Fresh UI</body></html>", encoding="utf-8")
-        return {"ui": {"main_view": {"src_folder": "ui/main"}}}
+        del kwargs
+        raise AssertionError("static requests must not build or refresh a prepared UI")
 
     monkeypatch.setattr(
         integrations,
@@ -466,11 +450,9 @@ def test_serve_static_asset_refreshes_existing_ui_on_entrypoint_request(monkeypa
         )
     )
 
-    assert load_calls == [("echo.ui@2026-03-30", False)]
     assert isinstance(response, HTMLResponse)
     html = response.body.decode("utf-8")
-    assert "Fresh UI" in html
-    assert "Stale UI" not in html
+    assert "Stale UI" in html
     assert "data-kdcube-resize-reporter" in html
 
     response = asyncio.run(
@@ -483,10 +465,9 @@ def test_serve_static_asset_refreshes_existing_ui_on_entrypoint_request(monkeypa
         )
     )
 
-    assert load_calls == [("echo.ui@2026-03-30", False)]
     assert isinstance(response, HTMLResponse)
     html = response.body.decode("utf-8")
-    assert "Fresh UI" in html
+    assert "Stale UI" in html
     assert "data-kdcube-resize-reporter" in html
 
 

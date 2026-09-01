@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from kdcube_ai_app.apps.chat.ingress.economics import routines as economics_routines
 from kdcube_ai_app.apps.chat.ingress.opex import routines as opex_routines
+from kdcube_ai_app.apps.chat.sdk import config as sdk_config
 from kdcube_ai_app.infra.channel import email as email_channel
 
 
@@ -16,9 +17,9 @@ def test_email_smtp_settings_prefers_plain_descriptor(monkeypatch):
         "notifications.email.enabled": True,
     }
 
-    monkeypatch.setattr(email_channel, "read_plain", lambda key, default=None: values.get(key, default))
+    monkeypatch.setattr(sdk_config, "read_plain", lambda key, default=None: values.get(key, default))
     monkeypatch.setattr(
-        email_channel,
+        sdk_config,
         "get_settings",
         lambda: SimpleNamespace(
             EMAIL_HOST="smtp.env.local",
@@ -30,9 +31,7 @@ def test_email_smtp_settings_prefers_plain_descriptor(monkeypatch):
             EMAIL_ENABLED=False,
         ),
     )
-    monkeypatch.setattr(email_channel, "get_secret", lambda *_args, **_kwargs: "pw")
-
-    cfg = email_channel._smtp_settings()
+    cfg = email_channel._smtp_settings(password="pw")
 
     assert cfg["host"] == "smtp.descriptor.local"
     assert cfg["port"] == 2525
@@ -55,9 +54,9 @@ def test_economics_routines_prefer_plain_descriptor(monkeypatch):
         "routines.economics.subscription_rollover_sweep_limit": 77,
     }
 
-    monkeypatch.setattr(economics_routines, "read_plain", lambda key, default=None: values.get(key, default))
+    monkeypatch.setattr(sdk_config, "read_plain", lambda key, default=None: values.get(key, default))
     monkeypatch.setattr(
-        economics_routines,
+        sdk_config,
         "get_settings",
         lambda: SimpleNamespace(
             STRIPE_RECONCILE_ENABLED=True,
@@ -79,16 +78,11 @@ def test_economics_routines_prefer_plain_descriptor(monkeypatch):
     assert economics_routines._subscription_rollover_sweep_limit() == 77
 
 
-def test_opex_cron_prefers_plain_descriptor(monkeypatch):
-    monkeypatch.setattr(
-        opex_routines,
-        "read_plain",
-        lambda key, default=None: "11 6 * * *" if key == "routines.opex.agg_cron" else default,
-    )
+def test_opex_cron_uses_descriptor_projected_settings(monkeypatch):
     monkeypatch.setattr(
         opex_routines,
         "get_settings",
-        lambda: SimpleNamespace(OPEX_AGG_CRON="0 3 * * *"),
+        lambda: SimpleNamespace(OPEX_AGG_CRON="11 6 * * *"),
     )
 
     assert opex_routines._get_cron_expression() == "11 6 * * *"

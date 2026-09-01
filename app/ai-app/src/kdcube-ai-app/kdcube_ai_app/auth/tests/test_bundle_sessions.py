@@ -167,7 +167,16 @@ async def test_bundle_session_login_or_register_embeds_credential_claim():
         "issuer_authenticator_id": "delegated_client.bearer",
         "subject": "integration:claude:google:admin@example.test",
         "audience": "kdcube:delegated_client",
-        "attrs": {"client_id": "claude"},
+        "attrs": {
+            "grantor_subject": "google:admin@example.test",
+            "client_id": "claude",
+            "scopes": ["records:read"],
+            "operations": ["records.search"],
+            "resource_grants": {"https://mcp.example.test": ["records:read"]},
+            "account_scope": {"google": {"admin@example.test": ["drive.read"]}},
+            "identity_scope": "grantor",
+        },
+        "unexpected": {"must_not_be_signed": True},
     }
 
     grant = await authority.login_or_register(
@@ -181,6 +190,9 @@ async def test_bundle_session_login_or_register_embeds_credential_claim():
 
     assert grant.claims["credential"]["schema"] == "kdcube.credential.v1"
     assert grant.claims["credential"]["issuer_authority_id"] == "delegated_client"
-    assert grant.claims["credential"]["attrs"] == {"client_id": "claude"}
+    assert grant.claims["credential"]["attrs"] == credential["attrs"]
+    assert "unexpected" not in grant.claims["credential"]
     verified = await authority.validate_token(grant.token)
     assert verified.claims["credential"]["subject"] == credential["subject"]
+    assert verified.claims["credential"]["attrs"] == credential["attrs"]
+    assert "unexpected" not in verified.claims["credential"]

@@ -98,13 +98,18 @@ async def test_cache_ttl_light_pruning_renders_structured_recent_web_result():
         ttl_seconds=1,
         keep_recent_turns=2,
         keep_recent_intact_turns=1,
-        cfg=TruncationConfig(max_tool_text_chars=220, max_list_items=4),
+        cfg=TruncationConfig(
+            max_tool_text_chars=220,
+            max_list_items=4,
+            replacement_max_tokens=400,
+        ),
     )
     rendered = await tl.render(cache_last=False, include_sources=False, include_announce=False)
     text = "\n".join(str(b.get("text") or "") for b in rendered if isinstance(b, dict))
 
     assert res["status"] == "pruned_light"
-    assert "[TOOL RESULT tc_search].pruned web_tools.web_search" in text
+    assert "[TOOL RESULT tc_search].pruned" in text
+    assert '"tool_id": "web_tools.web_search"' in text
     assert f"result_hidden: {path}" in text
     assert '"items_meta"' in text
     assert "Alpha discovery" in text

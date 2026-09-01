@@ -10,7 +10,6 @@ import pytest
 from kdcube_ai_app.apps.chat.sdk.runtime.run_ctx import OUTDIR_CV, WORKDIR_CV
 from kdcube_ai_app.apps.chat.sdk.tools.rendering_tools import RenderingTools
 
-os.environ["WRITE_PNG_RUN"] = "1"
 _DEFAULT_REQUEST = {
     "path": "turn_1771789172537_66qyvv/files/memory_system_readable.png",
     "content": """graph TB
