@@ -16,6 +16,15 @@ An optional neural pipeline (relevance scoring, content filtering,
 objective-guided span extraction) runs on the user's model key when
 `use_llm=true`; everything else works without any model key.
 
+**How this reaches you:** the user pastes this file's link into a
+normal message with their keys and their site list — no special mode.
+The install is a one-time action per user (one install directory per
+user; that is also how per-user allowlists work). Part 1 below is that
+first install and later upgrades; Part 2 is day-2 changes: the
+allowlist, the keys.
+
+# Part 1 — First install
+
 ## The layout you are building
 
 The user's install directory owns the config; the clone is just code
@@ -29,6 +38,10 @@ beside it. Never put the config (it holds API keys) inside the clone.
 ```
 
 ## Setup, step by step
+
+0. **Install directory.** The user's choice — ask if they did not name
+   one, and suggest a sensible default (for example
+   `~/mcp-servers/web-search`). Everything below happens inside it.
 
 1. **Venv.** Check `which python3` first — on a machine with KDCube
    installed it may resolve into a platform venv, whose package
@@ -151,6 +164,56 @@ beside it. Never put the config (it holds API keys) inside the clone.
    "<install-dir>/config.yaml"]`. The launcher needs no PYTHONPATH.
    Always pass `--config` with the absolute path: the MCP client's
    working directory is not the install dir.
+
+## Upgrading later
+
+The clone is replaceable code; the config is not touched by an upgrade:
+
+```bash
+cd <install-dir>/kdcube && git pull
+cd .. && .venv/bin/pip install -r kdcube/mcp/web-search/requirements.txt
+```
+
+Re-run the offline sanity check (Part 1, step 3), then restart the
+server (in practice: restart or reconnect the MCP client — it owns the
+server process).
+
+# Part 2 — Day-2 changes
+
+First, find the install: the MCP registration carries the config path.
+`claude mcp list` / `claude mcp get web-search` (or the entry in
+`claude_desktop_config.json`) shows the `--config <path>` argument —
+that file is the single thing to edit, and its directory is the install
+dir.
+
+## Changing the allowlist
+
+Edit `filter.allowlist` in that config.yaml. **The change is live**: the
+server re-reads the file on the next call, no restart, no
+re-registration. Verify by calling the server's `allowlist_status` tool
+(you have it if the server is registered in your session) or by asking
+Claude to call it — the reply must show the edited list and
+`enforced: true`. When the user asks in plain words ("allow noaa.gov
+too", "remove example.org"), this one edit is the whole task.
+
+## Rotating or moving the keys
+
+Keys are applied to the server's environment **at start**, so unlike
+the allowlist a key change needs the server restarted (restart or
+reconnect the MCP client). Three places a key can live — the file wins
+only where the environment is silent, an env var set at launch always
+overrides:
+
+1. `services.secrets` in config.yaml (the default; file is mode 600).
+2. The MCP registration's env block — `claude mcp add --env
+   BRAVE_API_KEY=...` or the `"env"` object in
+   `claude_desktop_config.json` — for users who want no keys in
+   config.yaml at all.
+3. The shell environment, for terminal-launched clients only: an
+   `export BRAVE_API_KEY=...` in the user's shell profile reaches a
+   server spawned by Claude Code from that terminal. Desktop apps
+   launched from the dock do not read shell profiles — use 1 or 2
+   there.
 
 ## Rules that hold throughout
 
