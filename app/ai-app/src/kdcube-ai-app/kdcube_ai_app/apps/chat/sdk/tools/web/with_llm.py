@@ -743,6 +743,10 @@ async def filter_search_results_by_content(
         logger.info("filter_search_results_by_content: no results to filter")
         return []
 
+    # Standalone MCP callers may give no objective; the pipeline must
+    # degrade, not crash.
+    objective = objective or ""
+
     logger.info(
         f"filter_search_results_by_content: filtering {len(search_results)} sources "
         f"(segment={do_segment}) for objective: '{objective[:100]}'"
