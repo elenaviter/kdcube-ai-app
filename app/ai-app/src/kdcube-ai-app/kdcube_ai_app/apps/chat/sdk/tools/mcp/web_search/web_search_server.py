@@ -164,10 +164,14 @@ def apply_yaml_config(path: str | pathlib.Path) -> List[str]:
 
 
 def _discover_config(cli_path: Optional[str]) -> Optional[pathlib.Path]:
-    """--config beats WEB_SEARCH_CONFIG beats a config.yaml beside this file."""
+    """--config, then WEB_SEARCH_CONFIG, then config.yaml in the working
+    directory (the operator's install dir - the intended home for the
+    config, beside the clone rather than inside it), then config.yaml
+    beside this file (the in-repo development case)."""
     for candidate in (
         cli_path,
         os.environ.get("WEB_SEARCH_CONFIG"),
+        pathlib.Path.cwd() / "config.yaml",
         pathlib.Path(__file__).with_name("config.yaml"),
     ):
         if candidate and pathlib.Path(candidate).is_file():

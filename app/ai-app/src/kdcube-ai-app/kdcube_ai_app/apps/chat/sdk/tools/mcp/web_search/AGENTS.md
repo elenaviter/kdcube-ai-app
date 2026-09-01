@@ -18,9 +18,13 @@ web_search_server.py      the MCP wrapper: tool registration, allowlist
                           and the YAML config loader (apply_yaml_config:
                           scoped sections -> env, env wins on conflict)
 config.example.yaml       the YAML config template (the recommended
-                          mode); a gitignored config.yaml beside the
-                          server is auto-discovered, and its inline
-                          filter.allowlist is the live allowlist source
+                          mode). The operator's config.yaml lives in
+                          the INSTALL DIRECTORY, beside the clone, and
+                          is passed with --config (discovery also finds
+                          it in the working directory; one beside the
+                          server file is the in-repo dev case only).
+                          Its inline filter.allowlist is the live
+                          allowlist source
 .env.example              the same settings as raw environment variables
                           (the mode MCP client configs and CI speak)
 test_web_search_server.py contract tests (run with pytest)

@@ -51,13 +51,14 @@ working on this folder starts at [AGENTS.md](AGENTS.md).
   .venv-websearch/bin/python -m certifi
   ```
 
-Sanity check after setup — offline, no keys, safe anywhere:
+Sanity check after setup — offline, no keys, safe anywhere (run from
+your install dir, see Quick start for `$REPO_SRC`):
 
 ```bash
-.venv-websearch/bin/pip install pytest
-PYTHONPATH=$PWD .venv-websearch/bin/python -m pytest \
-  kdcube_ai_app/apps/chat/sdk/tools/mcp/web_search/ \
-  kdcube_ai_app/apps/chat/sdk/tools/backends/web/test_allowlist.py
+.venv/bin/pip install pytest
+PYTHONPATH=$REPO_SRC .venv/bin/python -m pytest \
+  $REPO_SRC/kdcube_ai_app/apps/chat/sdk/tools/mcp/web_search/ \
+  $REPO_SRC/kdcube_ai_app/apps/chat/sdk/tools/backends/web/test_allowlist.py
 ```
 
 The tests fake every network and model call, so this proves the install
@@ -65,57 +66,63 @@ without egress and without spending anything.
 
 ## Quick start
 
-The server lives inside the KDCube repo but runs standalone: clone the
-repo, install this folder's `requirements.txt` into a fresh venv, and
-put the source root on `PYTHONPATH`. Nothing else of the platform needs
-to be set up.
+The layout: **your install directory owns the config; the clone is just
+code beside it.** The `config.yaml` with your keys and allowlist sits at
+the top of the directory you set the tool up in — never buried inside
+the clone, and it survives the clone being updated or replaced.
 
 ```bash
-git clone https://github.com/kdcube/kdcube.git
-cd kdcube/app/ai-app/src/kdcube-ai-app
+mkdir web-search-mcp && cd web-search-mcp    # your install dir
+git clone https://github.com/kdcube/kdcube.git repo
+export REPO_SRC=$PWD/repo/app/ai-app/src/kdcube-ai-app
 
-python3 -m venv .venv-websearch
-.venv-websearch/bin/pip install -r \
-  kdcube_ai_app/apps/chat/sdk/tools/mcp/web_search/requirements.txt
+python3.11 -m venv .venv    # explicit interpreter, see Prerequisites
+.venv/bin/pip install -r \
+  $REPO_SRC/kdcube_ai_app/apps/chat/sdk/tools/mcp/web_search/requirements.txt
 
 # all settings in one YAML: allowlist, provider keys, pipeline models
-cd kdcube_ai_app/apps/chat/sdk/tools/mcp/web_search
-cp config.example.yaml config.yaml   # gitignored; edit it
-cd -
+cp $REPO_SRC/kdcube_ai_app/apps/chat/sdk/tools/mcp/web_search/config.example.yaml \
+   ./config.yaml    # edit it; keep it out of any git repo
 
-PYTHONPATH=$PWD .venv-websearch/bin/python -m \
+PYTHONPATH=$REPO_SRC .venv/bin/python -m \
   kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search.web_search_server \
-  --transport stdio
+  --transport stdio --config $PWD/config.yaml
 ```
 
-The server finds `config.yaml` beside itself (or via `--config PATH` /
-`WEB_SEARCH_CONFIG`). With the allowlist written inline under
+Config discovery order: `--config PATH`, then `WEB_SEARCH_CONFIG`, then
+`config.yaml` in the working directory, then one beside the server file
+(the in-repo development case). For launch configs prefer the explicit
+`--config` with an absolute path — an MCP client's working directory is
+not always yours. With the allowlist written inline under
 `filter.allowlist`, the config file is its live source: edit the list
 and the next call already follows it. Everything can also be configured
 through environment variables instead — the two modes carry the same
 settings, and an environment variable wins over the file (TOOLS.md has
 both forms in full).
 
-Claude Code (from the same directory; the config.yaml in the server's
-folder supplies everything else):
+Claude Code (from the install dir):
 
 ```bash
 claude mcp add web-search \
-  --env PYTHONPATH=$PWD \
-  -- $PWD/.venv-websearch/bin/python -m kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search.web_search_server
+  --env PYTHONPATH=$REPO_SRC \
+  -- $PWD/.venv/bin/python -m kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search.web_search_server \
+  --config $PWD/config.yaml
 ```
 
 Claude Desktop (`claude_desktop_config.json`) — same idea; any variable
-added under `env` overrides the YAML value:
+added under `env` overrides a YAML value:
 
 ```json
 {
   "mcpServers": {
     "web-search": {
-      "command": "/path/to/kdcube/app/ai-app/src/kdcube-ai-app/.venv-websearch/bin/python",
-      "args": ["-m", "kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search.web_search_server"],
+      "command": "/path/to/web-search-mcp/.venv/bin/python",
+      "args": [
+        "-m", "kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search.web_search_server",
+        "--config", "/path/to/web-search-mcp/config.yaml"
+      ],
       "env": {
-        "PYTHONPATH": "/path/to/kdcube/app/ai-app/src/kdcube-ai-app"
+        "PYTHONPATH": "/path/to/web-search-mcp/repo/app/ai-app/src/kdcube-ai-app"
       }
     }
   }

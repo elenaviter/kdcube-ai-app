@@ -214,6 +214,8 @@ def test_load_config_discovers_and_applies(tmp_path, monkeypatch):
 
 
 def test_config_discovery_precedence(tmp_path, monkeypatch):
+    import pathlib
+
     cli = tmp_path / "cli.yaml"
     env_cfg = tmp_path / "env.yaml"
     cli.write_text("{}")
@@ -222,9 +224,17 @@ def test_config_discovery_precedence(tmp_path, monkeypatch):
     assert srv._discover_config(str(cli)) == cli
     assert srv._discover_config(None) == env_cfg
     monkeypatch.delenv("WEB_SEARCH_CONFIG")
+
+    # the operator's working directory owns the config, beside the clone
+    workdir = tmp_path / "install"
+    workdir.mkdir()
+    (workdir / "config.yaml").write_text("{}")
+    monkeypatch.chdir(workdir)
+    assert srv._discover_config(None) == workdir / "config.yaml"
+
+    # last resort: a config.yaml beside the server file (in-repo dev case)
+    monkeypatch.chdir(tmp_path)
     found = srv._discover_config(None)
-    # falls through to a config.yaml beside the server file, when present
-    import pathlib
     module_cfg = pathlib.Path(srv.__file__).with_name("config.yaml")
     assert found == (module_cfg if module_cfg.is_file() else None)
 

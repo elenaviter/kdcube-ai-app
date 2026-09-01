@@ -140,9 +140,12 @@ DuckDuckGo fallback backend.
 Two modes, same settings:
 
 **YAML (recommended).** One structured file holds everything —
-`config.example.yaml` is the copyable template. The server loads it from
-`--config PATH`, or `WEB_SEARCH_CONFIG`, or a gitignored `config.yaml`
-beside the server file. Sections: `filter` (the allowlist inline — the
+`config.example.yaml` is the copyable template. The config's home is
+the operator's install directory, beside the clone rather than inside
+it. The server loads it from `--config PATH`, or `WEB_SEARCH_CONFIG`,
+or a `config.yaml` in the working directory, or (the in-repo
+development case) one beside the server file; launch configs should
+pass the explicit `--config` with an absolute path. Sections: `filter` (the allowlist inline — the
 config file itself is then the live source, edits to the list apply on
 the next call — or `allowlist_file`), `services.secrets` (per-provider
 `api_key` blocks, the exact shape a KDCube deployment's secrets.yaml
