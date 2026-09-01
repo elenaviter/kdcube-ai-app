@@ -31,7 +31,8 @@ working on this folder starts at [AGENTS.md](AGENTS.md).
 
 The short way in is the repo-root launcher
 [`mcp/web-search/`](/mcp/web-search/): same server, no PYTHONPATH
-needed, one shallow path to point people at.
+needed, one shallow path to point people at — its README also carries
+the usage cheatsheet (what to say to Claude, operator quick moves).
 
 ## Prerequisites
 

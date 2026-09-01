@@ -55,3 +55,25 @@ Claude Desktop (`claude_desktop_config.json`):
 `config.example.yaml` here is a symlink to the implementation's template
 (on Windows checkouts without symlinks, open it to read the real path
 and copy from there).
+
+## Cheatsheet
+
+Things to say to Claude once the server is connected:
+
+| Say | What happens |
+| --- | --- |
+| "Call allowlist_status and show me my whitelist." | Both lists, their sources, and the SSRF guard state — the quickest proof you're talking to your server. |
+| "Search the web for `<topic>`." | `web_search` over your allowlist; results carry title, url, snippet, and content when fetched. |
+| "Search for `<topic>` only on en.wikipedia.org." | The `sites` scoping: the provider searches within that domain, so the whole result page is on-site. |
+| "Fetch `<url>` and summarize it." | `web_fetch` dereferences the exact URL — text, dates, status. |
+| "Search without the LLM steps." | `use_llm=false`: cheaper, no model spend, provider ranking only. |
+| "Why was that site refused?" | The denial itself says: `denied_by_allowlist` (host not on your list), `denied_by_blocklist` (host you banned), `denied_by_ssrf_guard` (private/loopback/metadata address — refused whatever the lists say). |
+
+Operator quick moves (config.yaml sits at the top of your install dir):
+
+| Do | How |
+| --- | --- |
+| Allow or ban a site | Edit `filter.allowlist` / `filter.blocklist` — **live on the next call**, no restart. |
+| Rotate a key | Edit `services.secrets`, then respawn the server: Claude Code `/mcp` reconnect or new session, Desktop quit and reopen. |
+| Upgrade | `git pull` in `kdcube/`, re-run pip on the same requirements.txt, respawn. Your config is untouched. |
+| Internal-network deployment | `filter.ssrf_guard: false` — only then are private hosts fetchable, and you own that trade. |
