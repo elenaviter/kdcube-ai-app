@@ -73,6 +73,21 @@ def test_file_sourced_list_refused(tmp_path):
     assert entries is None and "allowlist_file" in err
 
 
+def test_commented_file_source_does_not_refuse(tmp_path):
+    """Regression: the template ships a commented-out allowlist_file
+    line, and a substring check mistook it for a real file source."""
+    p = _write(
+        tmp_path,
+        "filter:\n"
+        "  allowlist:\n    - example.org\n"
+        "  # allowlist_file: /etc/claude/web-allowlist.txt\n",
+    )
+    entries, err = edit_lists(p, list_name="allowlist", add=["noaa.gov"])
+    assert err is None
+    assert entries == ["example.org", "noaa.gov"]
+    assert "# allowlist_file" in p.read_text()  # comment preserved
+
+
 def test_flow_style_refused(tmp_path):
     p = _write(tmp_path, "filter:\n  allowlist: [example.org]\n")
     entries, err = edit_lists(p, list_name="allowlist", add=["noaa.gov"])

@@ -22,6 +22,17 @@ from typing import List, Optional, Tuple
 _ENTRY_RE = re.compile(r"^\*?\.?[a-z0-9]([a-z0-9.-]*[a-z0-9])?\.[a-z0-9-]{2,}$")
 
 
+def _has_active_key(text: str, key: str) -> bool:
+    """True when ``key:`` appears as a real (uncommented) mapping key."""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        if re.match(rf"^{re.escape(key)}\s*:", stripped):
+            return True
+    return False
+
+
 def normalize_entry(entry: str) -> Optional[str]:
     """Lowercased, dot-trimmed domain entry, or None when it is not a
     plausible domain (we refuse rather than write garbage into an
@@ -83,7 +94,7 @@ def edit_lists(
             filter_idx = i
             break
     if filter_idx is None:
-        if f"{list_name}_file" in "".join(lines):
+        if _has_active_key("".join(lines), f"{list_name}_file"):
             return None, (
                 f"the {list_name} comes from a separate file "
                 f"({list_name}_file); edit that file instead"
@@ -103,7 +114,7 @@ def edit_lists(
             break
 
     block_text = "".join(lines[filter_idx:end_idx])
-    if f"{list_name}_file" in block_text:
+    if _has_active_key(block_text, f"{list_name}_file"):
         return None, (
             f"the {list_name} comes from a separate file ({list_name}_file); "
             "edit that file instead"
