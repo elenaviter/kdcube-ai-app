@@ -21,6 +21,12 @@ filter:
   # comments, also re-read on change):
   # allowlist_file: /etc/claude/web-allowlist.txt
   # blocklist_file: /etc/claude/web-blocklist.txt
+  #
+  # SSRF guard (default on): refuses private, loopback, link-local, and
+  # cloud-metadata addresses at the address level - IP literals, DNS
+  # answers, and redirect targets - regardless of the lists above.
+  # Disable ONLY for a deployment that must fetch internal hosts:
+  # ssrf_guard: false
 
 # --- Services: provider secrets and the neural pipeline models ---
 # secrets carries per-provider api_key blocks, the same shape a KDCube

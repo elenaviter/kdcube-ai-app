@@ -23,6 +23,19 @@ backends:
   refused hosts from the fetch stage), and `web_fetch` denies a refused
   host per URL before any request. A call cannot widen the filter — the
   `sites` parameter narrows inside it — only the operator's config can.
+- The **SSRF guard** (`../../backends/web/ssrf_guard.py`, ported from
+  the community's PR #1) is the address-level layer under the name-level
+  filter: private, loopback, link-local (cloud metadata at
+  169.254.169.254 included), CGNAT, multicast, and reserved addresses,
+  plus metadata-style hostnames (`localhost`, `*.internal`, `*.local`,
+  `metadata.google.internal`), are refused regardless of the lists.
+  Enforced twice: a per-URL pre-check in the fetch core (IP literals,
+  clean `denied_by_ssrf_guard` results), and a guarded DNS resolver on
+  the fetcher's connector that validates every DNS answer at connect
+  time — so hostname redirect targets and DNS-rebinding answers are
+  checked with the exact IPs a connection would use. Default ON;
+  `filter.ssrf_guard: false` (or `WEB_SSRF_GUARD=off`) disables it for
+  deployments that must fetch internal hosts.
 - The **LLM steps are optional**. `use_llm=false` (search) runs the
   pipeline with no model calls and no model keys; `web_fetch` defaults to
   `use_llm=false`. What the LLM adds when on is the neural pipeline
@@ -116,8 +129,9 @@ Result: JSON object mapping each input URL to
 modified_time_iso?, date_method?, date_confidence?, error?}`. Statuses
 include `success`, `timeout`, `paywall`, `error`, `non_html`,
 `blocked_403`, `http_XXX`, `pdf_redirect` — and `denied_by_allowlist` /
-`denied_by_blocklist`, whose entries name the denied host and the
-list's source while the other URLs in the same call still fetch.
+`denied_by_blocklist` / `denied_by_ssrf_guard`, whose entries name the
+denied host and the reason while the other URLs in the same call still
+fetch.
 
 ## allowlist_status
 
@@ -175,6 +189,7 @@ CLI flags: `--config`, `--allowlist`, `--transport`/`--host`/`--port`.
 | `WEB_ALLOWLIST_FILE` | Path to a plain allowlist file: one domain per line, blank lines and `#` comments ignored. Also re-read on change. |
 | `WEB_ALLOWLIST` | Inline comma-separated entries; fixed for the process. The file sources take precedence. |
 | `WEB_BLOCKLIST_YAML`, `WEB_BLOCKLIST_FILE`, `WEB_BLOCKLIST` | The blocklist's three sources, same mechanics and same entry format. A blocklisted host is refused even when the allowlist admits it; unset = no host blocked. |
+| `WEB_SSRF_GUARD` | The address-level SSRF guard (`filter.ssrf_guard` in YAML). Default on; `off` disables it for deployments that must fetch internal hosts. |
 | `BRAVE_API_KEY` | Search provider key (Brave is the default backend). |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY`, `DEFAULT_LLM_MODEL_ID`, `ROLE_MODELS_JSON` | Model service, needed only for `use_llm=true` calls. |
 | `REDIS_URL`, `WEB_SEARCH_CACHE_TTL_SECONDS` | Optional result cache. Leave `REDIS_URL` empty to run without one. |

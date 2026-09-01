@@ -128,6 +128,8 @@ def apply_yaml_config(path: str | pathlib.Path) -> List[str]:
                 _set(BLOCKLIST_YAML_ENV, str(path))
             elif value.get("blocklist_file"):
                 _set(BLOCKLIST_FILE_ENV, value.get("blocklist_file"))
+            if "ssrf_guard" in value:
+                _set("WEB_SSRF_GUARD", value.get("ssrf_guard"))
             continue
         if section == "services" and isinstance(value, dict):
             secrets = value.get("secrets")
@@ -344,6 +346,8 @@ async def allowlist_status() -> Dict[str, Any]:
     egress = _get_filter()
     allow_source, allow_entries = egress.allowlist.describe()
     block_source, block_entries = egress.blocklist.describe()
+    from kdcube_ai_app.apps.chat.sdk.tools.backends.web import ssrf_guard
+
     return {
         "allowlist_source": allow_source,
         "allowlist_entries": allow_entries,
@@ -351,6 +355,7 @@ async def allowlist_status() -> Dict[str, Any]:
         "blocklist_source": block_source,
         "blocklist_entries": block_entries,
         "blocklist_count": len(block_entries),
+        "ssrf_guard": ssrf_guard.enabled(),
         "enforced": egress.configured,
     }
 

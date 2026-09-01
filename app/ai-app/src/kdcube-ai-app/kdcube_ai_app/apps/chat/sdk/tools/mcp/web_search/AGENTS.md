@@ -41,7 +41,13 @@ test_web_search_server.py contract tests (run with pytest)
                           `allowed_domains`/`blocked_domains`, and the
                           `sites` query rewrite land here
   fetch_backends.py       fetch_url_contents (text extraction, dates)
+                          + the SSRF guard's per-URL pre-check
+  ssrf_guard.py           address-level layer (ported from PR #1):
+                          blocked IP ranges, metadata hostnames, DNS
+                          validation, and the guarded aiohttp resolver
+                          installed by web_extractors' session
   test_allowlist.py       matcher + source semantics tests
+  test_ssrf_guard.py      blocked ranges, resolver rejection, pre-check
 ```
 
 The server builds on `KDCubeMCPServer`
@@ -102,6 +108,12 @@ file is part of the tool's contract.
   whose every site is excluded fails with the per-site reasons named.
 - **Deny wins.** A blocklisted host is refused even when the allowlist
   admits it, everywhere: search post-filter, fetch, sites clamping.
+- **The SSRF guard defaults ON and sits under the lists.** Private,
+  loopback, link-local, and metadata addresses stay unreachable
+  whatever the operator's lists say, unless the operator explicitly
+  disables the guard. Don't weaken the resolver path: it is what checks
+  redirect targets and rebinding answers with the exact IPs used to
+  connect.
 - **Denials are explained in-band**: host, reason, the list's source in
   the result, so the calling agent can relay what the operator would
   need to change. Do not turn a denial into a silent drop or a bare

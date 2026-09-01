@@ -174,8 +174,18 @@ role (Haiku-class by default; see TOOLS.md, "The neural pipeline").
 - The `sites` scoping is clamped against the filter before the provider
   is called; a call whose every site is excluded fails with the reasons
   named.
+- Under the name-level filter sits the address-level **SSRF guard**
+  (default on): private, loopback, link-local (cloud metadata included),
+  CGNAT, multicast, and reserved addresses, and metadata-style
+  hostnames, are refused regardless of the lists — as a per-URL
+  pre-check and as a guarded DNS resolver validating every answer at
+  connect time. `filter.ssrf_guard: false` disables it for deployments
+  that must fetch internal hosts.
 - With a filter configured, `web_fetch`'s archive-mirror fallback stays
   off: an archive host is a different host.
 - The page fetcher follows HTTP redirects, so a listed site that
-  redirects off-domain can lead outside the allowlist; list only sites
-  you trust not to.
+  redirects off-domain can lead outside the *allowlist*; the SSRF guard
+  still checks each redirect hop's DNS answers, so an off-domain
+  redirect cannot reach private or metadata addresses. A redirect
+  straight to an internal IP literal is the one residual gap. List only
+  sites you trust.

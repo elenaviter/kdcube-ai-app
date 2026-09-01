@@ -83,6 +83,27 @@ async def _fetch_urls_core(
     if not urls:
         return {}
 
+    # --- SSRF guard pre-check: refuse private/loopback/link-local/metadata
+    # addresses per URL before any connection (IP literals included; the
+    # fetcher's guarded resolver covers hostname redirects and rebinding) ---
+    from kdcube_ai_app.apps.chat.sdk.tools.backends.web import ssrf_guard
+
+    guard_denied: Dict[str, Dict[str, Any]] = {}
+    if ssrf_guard.enabled():
+        kept_urls: List[str] = []
+        for url in urls:
+            verdict = await ssrf_guard.check_url(url)
+            if verdict.allowed:
+                kept_urls.append(url)
+            else:
+                guard_denied[url] = {
+                    "status": "denied_by_ssrf_guard",
+                    "error": ssrf_guard.deny_text(verdict),
+                }
+        urls = kept_urls
+        if not urls:
+            return guard_denied
+
     if emit_delta_fn is None or comm is None:
         try:
             from kdcube_ai_app.apps.chat.sdk.runtime.comm_ctx import delta as emit_delta_fn, get_comm
@@ -270,6 +291,8 @@ async def _fetch_urls_core(
                     item["modified_time_iso"] = entry.get("modified_time_iso")
                 await widget.send(widget_payload)
 
+    if guard_denied:
+        results = {**guard_denied, **(results or {})}
     return results
 
 async def fetch_search_results_content(

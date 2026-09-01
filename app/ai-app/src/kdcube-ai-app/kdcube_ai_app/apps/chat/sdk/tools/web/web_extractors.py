@@ -1137,9 +1137,15 @@ class WebContentFetcher:
         self.extractor = ContentExtractor()
 
     async def __aenter__(self):
-        """Create aiohttp session."""
+        """Create aiohttp session (SSRF-guarded resolver unless disabled)."""
+        from kdcube_ai_app.apps.chat.sdk.tools.backends.web.ssrf_guard import guarded_connector
+
         timeout = aiohttp.ClientTimeout(total=self.timeout)
-        self.session = aiohttp.ClientSession(timeout=timeout)
+        connector = guarded_connector()
+        if connector is not None:
+            self.session = aiohttp.ClientSession(timeout=timeout, connector=connector)
+        else:
+            self.session = aiohttp.ClientSession(timeout=timeout)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):

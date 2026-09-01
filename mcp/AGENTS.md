@@ -117,7 +117,10 @@ beside it. Never put the config (it holds API keys) inside the clone.
    Blocklist unset = no host blocked, and deny wins over allow.** The
    model can also scope a single search WITHIN chosen domains via the
    `sites` tool parameter — it narrows inside this filter, never widens
-   it.
+   it. Underneath both lists sits the SSRF guard (default on): private,
+   loopback, link-local, and cloud-metadata addresses are refused at the
+   address level whatever the lists say — leave it on unless the user's
+   deployment must fetch internal hosts (`ssrf_guard: false`).
 
 3. **Offline sanity check** — fakes every network and model call, needs
    no keys, spends nothing. Run it before anything live:
@@ -290,3 +293,4 @@ answering "run it for the whole team":
 | Empty results with `use_llm=true` and a refinement mode | Failed fetches starve the segmenter (it drops unfetched rows). Check per-URL statuses with `refinement="none"` or `fetch_content=False` first. |
 | `from mcp.server import MCPServer` fails | Wrong venv (old `mcp` package). Rebuild from this requirements.txt. |
 | Server starts but the allowlist shows `enforced: false` | No config found: pass `--config` with the absolute path, or check the working directory. Unset allowlist = every host allowed — do not leave it this way. |
+| Fetch of an internal host returns `denied_by_ssrf_guard` | Working as designed: private, loopback, link-local, and metadata addresses are refused at the address level. Only a deployment that must fetch internal hosts sets `filter.ssrf_guard: false`, and the user owns that trade. |
