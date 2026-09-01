@@ -77,6 +77,8 @@ the clone, and it survives the clone being updated or replaced.
 
 ```bash
 mkdir web-search-mcp && cd web-search-mcp    # your install dir
+
+# the trailing "repo" names the clone directory: this creates ./repo
 git clone https://github.com/kdcube/kdcube.git repo
 export REPO_SRC=$PWD/repo/app/ai-app/src/kdcube-ai-app
 

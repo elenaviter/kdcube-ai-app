@@ -38,6 +38,8 @@ beside it. Never put the config (it holds API keys) inside the clone.
 
    ```bash
    mkdir <install-dir> && cd <install-dir>
+   # the trailing "repo" names the clone directory: this creates ./repo,
+   # which every repo/... path below refers to
    git clone https://github.com/kdcube/kdcube.git repo
    python3.11 -m venv .venv
    .venv/bin/pip install -r repo/mcp/web-search/requirements.txt

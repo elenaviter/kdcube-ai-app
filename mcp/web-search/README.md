@@ -15,6 +15,9 @@ it:
 
 ```bash
 mkdir web-search-mcp && cd web-search-mcp    # your install dir
+
+# the trailing "repo" names the clone directory: this creates ./repo,
+# and every repo/... path below refers to it
 git clone https://github.com/kdcube/kdcube.git repo
 
 python3.11 -m venv .venv    # explicit interpreter, see the README's prerequisites
