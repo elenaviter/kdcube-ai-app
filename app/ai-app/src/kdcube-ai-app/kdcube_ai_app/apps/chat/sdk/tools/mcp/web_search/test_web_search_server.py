@@ -89,6 +89,63 @@ def test_web_search_without_llm_skips_model_service(monkeypatch):
     assert called["allowed_domains"] == ["usgs.gov", "noaa.gov"]
 
 
+def test_sites_accepts_bare_string(monkeypatch):
+    """Regression: a real Claude Desktop call sent sites as a bare string
+    and the declared List-only type rejected it at schema validation,
+    before our string-tolerant handling could run (2026-09-02)."""
+    called = {}
+
+    async def _fake_search(**kwargs):
+        called.update(kwargs)
+        return []
+
+    monkeypatch.setattr(srv.search_backends, "web_search", _fake_search)
+    asyncio.run(srv.web_search(queries="q", use_llm=False, sites="en.wikipedia.org"))
+    assert called["sites"] == ["en.wikipedia.org"]
+
+
+def test_model_facing_params_tolerate_model_shapes(monkeypatch):
+    """The MCP schema is generated from the tool signatures; every
+    parameter a model may plausibly send as a bare string instead of a
+    list must be typed as a union, or pydantic rejects the call before
+    our code runs."""
+    import sys
+    import typing
+    from types import SimpleNamespace
+
+    class _CapturingStub:
+        def __init__(self, name, **kwargs):
+            self.fns = {}
+
+        def tool(self, name=None, description=None, **kwargs):
+            def _decorator(fn):
+                self.fns[name or fn.__name__] = fn
+                return fn
+
+            return _decorator
+
+    monkeypatch.setitem(
+        sys.modules,
+        "kdcube_ai_app.apps.chat.sdk.runtime.mcp.server",
+        SimpleNamespace(KDCubeMCPServer=_CapturingStub),
+    )
+    app = srv._build_mcp_app()
+
+    def _accepts_str(fn, param):
+        hints = typing.get_type_hints(fn, include_extras=False)
+        hint = hints[param]
+        args = typing.get_args(hint)
+        flat = set()
+        for a in args or (hint,):
+            flat.add(a)
+            flat.update(typing.get_args(a))
+        return str in flat
+
+    assert _accepts_str(app.fns["web_search"], "queries")
+    assert _accepts_str(app.fns["web_search"], "sites")
+    assert _accepts_str(app.fns["web_fetch"], "urls")
+
+
 def test_sites_narrow_within_filter(monkeypatch):
     called = {}
 

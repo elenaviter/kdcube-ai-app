@@ -228,12 +228,13 @@ def register_web_tools(
             Field(description="Safesearch: 'off'|'moderate'|'strict'."),
         ] = "moderate",
         sites: Annotated[
-            Optional[list[str]],
+            Optional[str | list[str]],
             Field(
                 description=(
                     "Scope the search WITHIN these domains (site: operators at "
-                    "the provider). Use when you know where the answer lives; "
-                    "narrows but never widens the operator's egress filter."
+                    "the provider). An array of domains or a single domain "
+                    "string. Use when you know where the answer lives; narrows "
+                    "but never widens the operator's egress filter."
                 )
             ),
         ] = None,

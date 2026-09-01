@@ -440,10 +440,11 @@ def _build_mcp_app():
         safesearch: Annotated[str, Field(description=(
             "Safesearch: 'off'|'moderate'|'strict'."
         ))] = "moderate",
-        sites: Annotated[Optional[List[str]], Field(description=(
+        sites: Annotated[Optional[str | List[str]], Field(description=(
             "Scope the search WITHIN these domains (site: operators at the "
-            "provider, up to 8). Use when you know where the answer lives; "
-            "narrows inside the operator's egress filter, never widens it."
+            "provider, up to 8). An array of domains or a single domain "
+            "string. Use when you know where the answer lives; narrows inside "
+            "the operator's egress filter, never widens it."
         ))] = None,
         use_llm: Annotated[bool, Field(description=(
             "True runs the neural pipeline (snippet relevance scoring against "
