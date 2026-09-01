@@ -16,6 +16,9 @@ Two operator-owned properties, both read from the surface config
                     naming the host and the allowlist. ``allowlist_file``
                     points at a file instead (one entry per line, re-read
                     on change). Unset = every host allowed.
+  blocklist         list of domain entries that are always refused - deny
+                    wins over the allowlist. ``blocklist_file`` is the
+                    file form. Unset = no host blocked.
   use_llm_default   default for the tools' ``use_llm`` parameter (False
                     when absent). With use_llm=false the pipeline runs
                     without LLM steps: no snippet relevance scoring, no
@@ -36,7 +39,7 @@ import kdcube_ai_app.apps.chat.sdk.tools.backends.web.search_backends as search_
 import kdcube_ai_app.apps.chat.sdk.tools.backends.web.fetch_backends as fetch_backends
 from kdcube_ai_app.apps.chat.sdk.tools.backends.web.allowlist import (
     Allowlist,
-    hostname_allowed,
+    EgressFilter,
 )
 from connection_hub.mcp_metadata import read_only_annotations
 
@@ -77,15 +80,46 @@ def _web_config(config_factory: ConfigFactory) -> Mapping[str, Any]:
     return web if isinstance(web, Mapping) else {}
 
 
-def _allowlist_from_config(web_cfg: Mapping[str, Any]) -> Allowlist:
-    file_path = str(web_cfg.get("allowlist_file") or "") or None
-    entries = web_cfg.get("allowlist")
+def _list_from_config(web_cfg: Mapping[str, Any], key: str) -> Allowlist:
+    file_path = str(web_cfg.get(f"{key}_file") or "") or None
+    entries = web_cfg.get(key)
     env_value = None
     if isinstance(entries, (list, tuple)):
         env_value = ",".join(str(e) for e in entries)
-    allowlist = Allowlist(file_path=file_path, env_value=env_value)
-    allowlist.refresh()
-    return allowlist
+    domain_list = Allowlist(file_path=file_path, env_value=env_value, yaml_key=key)
+    domain_list.refresh()
+    return domain_list
+
+
+def _filter_from_config(web_cfg: Mapping[str, Any]) -> EgressFilter:
+    return EgressFilter(
+        allowlist=_list_from_config(web_cfg, "allowlist"),
+        blocklist=_list_from_config(web_cfg, "blocklist"),
+    )
+
+
+def _clamp_sites(
+    sites: Optional[str | list[str]], egress: EgressFilter
+) -> Optional[list[str]]:
+    """Normalize the caller's site scoping and clamp it to the operator's
+    filter: sites can narrow the search, never widen egress."""
+    if not sites:
+        return None
+    if isinstance(sites, str):
+        raw = sites.strip()
+        site_list = [str(s).strip() for s in json.loads(raw)] if raw.startswith("[") else [raw]
+    else:
+        site_list = [str(s).strip() for s in sites]
+    site_list = [s for s in site_list if s]
+    if not site_list:
+        return None
+    kept = [s for s in site_list if egress.check(s)]
+    if not kept:
+        reasons = "; ".join(egress.deny_reason(s) for s in site_list)
+        raise ValueError(
+            f"every requested site is excluded by the operator's egress filter: {reasons}"
+        )
+    return kept
 
 
 def _ok(ret: Any) -> dict[str, Any]:
@@ -193,6 +227,16 @@ def register_web_tools(
             str,
             Field(description="Safesearch: 'off'|'moderate'|'strict'."),
         ] = "moderate",
+        sites: Annotated[
+            Optional[list[str]],
+            Field(
+                description=(
+                    "Scope the search WITHIN these domains (site: operators at "
+                    "the provider). Use when you know where the answer lives; "
+                    "narrows but never widens the operator's egress filter."
+                )
+            ),
+        ] = None,
         use_llm: Annotated[
             Optional[bool],
             Field(
@@ -204,11 +248,12 @@ def register_web_tools(
         ] = None,
     ) -> dict[str, Any]:
         web_cfg = _web_config(config_factory)
-        allowlist = _allowlist_from_config(web_cfg)
+        egress = _filter_from_config(web_cfg)
         effective_use_llm = (
             bool(web_cfg.get("use_llm_default", False)) if use_llm is None else bool(use_llm)
         )
         try:
+            kept_sites = _clamp_sites(sites, egress)
             svc = await _get_service() if effective_use_llm else None
             rows = await search_backends.web_search(
                 _SERVICE=svc,
@@ -222,7 +267,14 @@ def register_web_tools(
                 country=country,
                 safesearch=safesearch,
                 use_llm=effective_use_llm,
-                allowed_domains=allowlist.entries if allowlist.configured else None,
+                sites=kept_sites,
+                allowed_domains=(
+                    kept_sites if kept_sites
+                    else (egress.allowlist.entries if egress.allowlist.configured else None)
+                ),
+                blocked_domains=(
+                    egress.blocklist.entries if egress.blocklist.configured else None
+                ),
             )
             cleaned = []
             for r in rows or []:
@@ -285,7 +337,7 @@ def register_web_tools(
         ] = -1,
     ) -> dict[str, Any]:
         web_cfg = _web_config(config_factory)
-        allowlist = _allowlist_from_config(web_cfg)
+        egress = _filter_from_config(web_cfg)
         url_list = _normalize_urls(urls)
         if not url_list:
             return _error(
@@ -297,22 +349,19 @@ def register_web_tools(
 
         items: list[dict[str, Any]] = []
         allowed: list[str] = []
-        source, entries = allowlist.describe()
         from urllib.parse import urlsplit
 
         for url in url_list:
             host = urlsplit(url).hostname
-            if allowlist.check(host):
+            if egress.check(host):
                 allowed.append(url)
             else:
+                blocked = egress.blocklist.matches(host)
                 items.append(
                     {
                         "url": url,
-                        "status": "denied_by_allowlist",
-                        "error": (
-                            f"host '{host}' is outside the allowlist ({source}); "
-                            "the operator owns this config"
-                        ),
+                        "status": "denied_by_blocklist" if blocked else "denied_by_allowlist",
+                        "error": f"{egress.deny_reason(host)}; the operator owns this config",
                     }
                 )
 
@@ -324,8 +373,8 @@ def register_web_tools(
                     urls=json.dumps(allowed),
                     max_content_length=max_content_length,
                     # an archive mirror is a different host, so with an
-                    # allowlist configured the fallback stays off
-                    use_archive_fallback=not allowlist.configured,
+                    # egress filter configured the fallback stays off
+                    use_archive_fallback=not egress.configured,
                     include_binary_base64=True,
                     refinement="none",
                 )

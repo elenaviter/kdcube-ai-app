@@ -43,13 +43,15 @@ from kdcube_ai_app.apps.chat.sdk.tools.backends.web.allowlist import (
     ALLOWLIST_ENV,
     ALLOWLIST_FILE_ENV,
     ALLOWLIST_YAML_ENV,
-    Allowlist,
+    BLOCKLIST_FILE_ENV,
+    BLOCKLIST_YAML_ENV,
+    EgressFilter,
 )
 from kdcube_ai_app.apps.chat.sdk.tools.mcp.mcp_app_transport import run_http, run_sse, run_stdio
 
 _SERVICE: Optional[ModelServiceBase] = None
 _CACHE = None
-_ALLOWLIST: Optional[Allowlist] = None
+_FILTER: Optional[EgressFilter] = None
 
 _logger = logging.getLogger(__name__)
 
@@ -121,6 +123,11 @@ def apply_yaml_config(path: str | pathlib.Path) -> List[str]:
                 _set(ALLOWLIST_YAML_ENV, str(path))
             elif value.get("allowlist_file"):
                 _set(ALLOWLIST_FILE_ENV, value.get("allowlist_file"))
+            if isinstance(value.get("blocklist"), (list, tuple)):
+                # same live-source mechanics for the blocklist
+                _set(BLOCKLIST_YAML_ENV, str(path))
+            elif value.get("blocklist_file"):
+                _set(BLOCKLIST_FILE_ENV, value.get("blocklist_file"))
             continue
         if section == "services" and isinstance(value, dict):
             secrets = value.get("secrets")
@@ -211,11 +218,36 @@ def _get_cache() -> Any:
     return _CACHE
 
 
-def _get_allowlist() -> Allowlist:
-    global _ALLOWLIST
-    if _ALLOWLIST is None:
-        _ALLOWLIST = Allowlist.from_env()
-    return _ALLOWLIST
+def _get_filter() -> EgressFilter:
+    global _FILTER
+    if _FILTER is None:
+        _FILTER = EgressFilter.from_env()
+    return _FILTER
+
+
+def _clamp_sites(sites: Optional[str | List[str]]) -> Optional[List[str]]:
+    """Normalize the caller's site scoping and clamp it to the operator's
+    filter: sites can narrow the search, never widen egress. Raises when
+    every requested site is excluded, naming the reasons in the error."""
+    if not sites:
+        return None
+    if isinstance(sites, str):
+        raw = sites.strip()
+        site_list = [str(s).strip() for s in json.loads(raw)] if raw.startswith("[") else [raw]
+    else:
+        site_list = [str(s).strip() for s in sites]
+    site_list = [s for s in site_list if s]
+    if not site_list:
+        return None
+    egress = _get_filter()
+    kept = [s for s in site_list if egress.check(s)]
+    if not kept:
+        reasons = "; ".join(egress.deny_reason(s) for s in site_list)
+        raise ValueError(
+            f"every requested site is excluded by the operator's egress filter: {reasons}. "
+            "The operator owns this config; ask them to change it, or search without 'sites'."
+        )
+    return kept
 
 
 async def web_search(
@@ -228,11 +260,13 @@ async def web_search(
     freshness: Optional[str] = None,
     country: Optional[str] = None,
     safesearch: str = "moderate",
+    sites: Optional[str | List[str]] = None,
     use_llm: bool = True,
 ) -> List[Dict[str, Any]]:
     svc = await _get_service() if use_llm else None
     cache = _get_cache()
-    allowlist = _get_allowlist()
+    egress = _get_filter()
+    kept_sites = _clamp_sites(sites)
     return await search_backends.web_search(
         _SERVICE=svc,
         queries=queries,
@@ -245,7 +279,12 @@ async def web_search(
         country=country,
         safesearch=safesearch,
         use_llm=use_llm,
-        allowed_domains=allowlist.entries if allowlist.configured else None,
+        sites=kept_sites,
+        allowed_domains=(
+            kept_sites if kept_sites
+            else (egress.allowlist.entries if egress.allowlist.configured else None)
+        ),
+        blocked_domains=egress.blocklist.entries if egress.blocklist.configured else None,
         namespaced_kv_cache=cache,
     )
 
@@ -259,8 +298,8 @@ async def web_fetch(
     use_archive_fallback: bool = False,
     use_llm: bool = False,
 ) -> Dict[str, Any]:
-    """Fetch URLs; a host outside the configured allowlist is denied with the reason."""
-    allowlist = _get_allowlist()
+    """Fetch URLs; a host the egress filter refuses is denied with the reason."""
+    egress = _get_filter()
     if isinstance(urls, str):
         raw = urls.strip()
         url_list = [str(u).strip() for u in json.loads(raw)] if raw.startswith("[") else [raw]
@@ -270,30 +309,26 @@ async def web_fetch(
 
     out: Dict[str, Any] = {}
     allowed: List[str] = []
-    source, entries = allowlist.describe()
     for url in url_list:
         host = urlsplit(url).hostname
-        if allowlist.check(host):
+        if egress.check(host):
             allowed.append(url)
         else:
+            blocked = egress.blocklist.matches(host)
             out[url] = {
-                "status": "denied_by_allowlist",
-                "error": (
-                    f"host '{host}' is outside the allowlist ({source}); "
-                    "the operator owns this config"
-                ),
-                "allowlist_entries": entries,
+                "status": "denied_by_blocklist" if blocked else "denied_by_allowlist",
+                "error": f"{egress.deny_reason(host)}; the operator owns this config",
             }
 
     if allowed:
         svc = await _get_service() if use_llm else None
         # An archive mirror is a different host, so it would step around the
-        # allowlist; with an allowlist configured the fallback stays off.
+        # egress filter; with one configured the fallback stays off.
         fetched = await fetch_backends.fetch_url_contents(
             _SERVICE=svc,
             urls=json.dumps(allowed),
             max_content_length=max_content_length,
-            use_archive_fallback=use_archive_fallback and not allowlist.configured,
+            use_archive_fallback=use_archive_fallback and not egress.configured,
             include_binary_base64=include_binary_base64,
             refinement=refinement if use_llm else "none",
             objective=objective,
@@ -305,13 +340,18 @@ async def web_fetch(
 
 
 async def allowlist_status() -> Dict[str, Any]:
-    """The domain allowlist exactly as this server enforces it."""
-    source, entries = _get_allowlist().describe()
+    """The egress filter exactly as this server enforces it."""
+    egress = _get_filter()
+    allow_source, allow_entries = egress.allowlist.describe()
+    block_source, block_entries = egress.blocklist.describe()
     return {
-        "allowlist_source": source,
-        "allowlist_entries": entries,
-        "entry_count": len(entries),
-        "enforced": _get_allowlist().configured,
+        "allowlist_source": allow_source,
+        "allowlist_entries": allow_entries,
+        "entry_count": len(allow_entries),
+        "blocklist_source": block_source,
+        "blocklist_entries": block_entries,
+        "blocklist_count": len(block_entries),
+        "enforced": egress.configured,
     }
 
 
@@ -337,9 +377,13 @@ def _build_mcp_app():
             "pages; 'balanced' target + context (50-70%); 'recall' content bodies, "
             "minimal chrome (80-95%); 'precision' directly relevant sections only "
             "(20-50%, needs objective).\n"
-            "When the operator configures a domain allowlist, results from hosts "
-            "outside it are dropped server-side before any content fetch; a call "
-            "cannot widen the allowlist - see allowlist_status.\n"
+            "The 'sites' parameter scopes the search WITHIN the named domains "
+            "(the provider query is rewritten with site: operators) - use it when "
+            "you know where the answer lives; it can narrow but never widen the "
+            "operator's egress filter.\n"
+            "When the operator configures an allowlist and/or blocklist, results "
+            "from refused hosts are dropped server-side before any content fetch; "
+            "a call cannot widen the filter - see allowlist_status.\n"
             "Returns an array of results [{title, url, text, objective_relevance?, "
             "query_relevance?, content?, mime?, base64?, size_bytes?, ...dates}]. "
             "`text` is the search preview snippet; `content` is full fetched page "
@@ -357,6 +401,7 @@ def _build_mcp_app():
         freshness: Optional[str] = None,
         country: Optional[str] = None,
         safesearch: str = "moderate",
+        sites: Optional[List[str]] = None,
         use_llm: bool = True,
     ) -> List[Dict[str, Any]]:
         return await web_search(
@@ -369,6 +414,7 @@ def _build_mcp_app():
             freshness=freshness,
             country=country,
             safesearch=safesearch,
+            sites=sites,
             use_llm=use_llm,
         )
 
@@ -388,9 +434,10 @@ def _build_mcp_app():
             "context (50-70%); 'recall' most body, minimal chrome (80-95%); "
             "'precision' direct answers (20-50%, requires objective). Without an "
             "objective, refinement is ignored and full content is returned.\n"
-            "When the operator configures a domain allowlist, a URL on a host outside "
-            "it is denied: its entry carries status 'denied_by_allowlist' and names "
-            "the host and the allowlist source; other URLs in the call still fetch.\n"
+            "When the operator configures an allowlist and/or blocklist, a URL on a "
+            "refused host is denied: its entry carries status 'denied_by_allowlist' "
+            "or 'denied_by_blocklist' and names the host and the list's source; "
+            "other URLs in the call still fetch.\n"
             "Returns a JSON object mapping each input URL to a result "
             "{status, content?, content_length?, published_time_iso?, "
             "modified_time_iso?, error?}."
@@ -417,7 +464,11 @@ def _build_mcp_app():
 
     @mcp.tool(
         name="allowlist_status",
-        description="The domain allowlist this server enforces: source, entries, and whether it is active.",
+        description=(
+            "The egress filter this server enforces: allowlist and blocklist "
+            "sources, entries, and whether filtering is active. Deny wins: a "
+            "blocklisted host is refused even when the allowlist admits it."
+        ),
     )
     async def _status_tool() -> Dict[str, Any]:
         return await allowlist_status()

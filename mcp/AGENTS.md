@@ -77,9 +77,11 @@ beside it. Never put the config (it holds API keys) inside the clone.
    ```yaml
    filter:
      allowlist:            # this file is the live source: editing the
-       - example.org       #   list applies on the next call, no restart.
+       - example.org       #   lists applies on the next call, no restart.
        - "*.example.net"   # example.org = domain + subdomains;
                            # *.example.net = subdomains only.
+     # blocklist:          # optional: always refused, deny wins over
+     #   - tracker.example #   the allowlist. Same entry format.
    services:
      secrets:
        brave:
@@ -107,9 +109,13 @@ beside it. Never put the config (it holds API keys) inside the clone.
    ```
 
    The same settings also exist as environment variables (TOOLS.md has
-   the table); an env var set at launch overrides the file. Allowlist
-   semantics: **unset = every host allowed; configured = only listed
-   hosts, and a configured-but-empty list denies everything.**
+   the table); an env var set at launch overrides the file. Filter
+   semantics: **allowlist unset = every host allowed; configured = only
+   listed hosts, and a configured-but-empty list denies everything.
+   Blocklist unset = no host blocked, and deny wins over allow.** The
+   model can also scope a single search WITHIN chosen domains via the
+   `sites` tool parameter — it narrows inside this filter, never widens
+   it.
 
 3. **Offline sanity check** — fakes every network and model call, needs
    no keys, spends nothing. Run it before anything live:

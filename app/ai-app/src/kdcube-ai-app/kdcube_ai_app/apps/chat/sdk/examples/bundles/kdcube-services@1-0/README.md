@@ -280,7 +280,7 @@ Sheets tools, Google Docs tools, and web search/fetch.
 
 | Web tools | Connected account | Operator knobs |
 | --- | --- | --- |
-| `productivity_web_search` (multi-query discovery), `productivity_web_fetch` (dereference known URLs) | none — runs on the platform's search and fetch backends | `web.allowlist` / `web.allowlist_file` (domain allowlist enforced server-side before any content fetch; fetch of an outside host answers `denied_by_allowlist` with the host and the allowlist named), `web.use_llm_default` (LLM snippet relevance scoring and content refinement; off by default, no model keys needed) — under `surfaces.as_provider.mcp.productivity.web` in the descriptor |
+| `productivity_web_search` (multi-query discovery), `productivity_web_fetch` (dereference known URLs) | none — runs on the platform's search and fetch backends | `web.allowlist`/`web.allowlist_file` and `web.blocklist`/`web.blocklist_file` (egress filter enforced server-side before any content fetch, deny wins; a refused fetch answers `denied_by_allowlist` or `denied_by_blocklist` with the host and the list named), per-call `sites` scoping that narrows inside the filter, `web.use_llm_default` (LLM snippet relevance scoring and content refinement; off by default, no model keys needed) — under `surfaces.as_provider.mcp.productivity.web` in the descriptor |
 
 | Sheets tools | Caller grant | Connected Google claim |
 | --- | --- | --- |

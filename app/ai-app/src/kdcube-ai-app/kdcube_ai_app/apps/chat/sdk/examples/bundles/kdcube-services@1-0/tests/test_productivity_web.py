@@ -160,6 +160,50 @@ def test_fetch_no_urls_is_managed_error():
     assert out["error"]["code"] == "ValueError"
 
 
+def test_search_sites_narrow_and_blocklist_flows(monkeypatch):
+    mod = _web_module()
+    called = {}
+
+    async def _fake_search(**kwargs):
+        called.update(kwargs)
+        return []
+
+    monkeypatch.setattr(mod.search_backends, "web_search", _fake_search)
+    mcp = _register(
+        mod,
+        {"web": {"allowlist": ["usgs.gov", "noaa.gov"], "blocklist": ["noaa.gov"]}},
+    )
+    asyncio.run(
+        mcp.tools["productivity_web_search"](
+            queries="q", use_llm=False,
+            sites=["earthquake.usgs.gov", "noaa.gov", "evil.com"],
+        )
+    )
+    # narrowed inside the allowlist; blocklisted and outside sites clamped away
+    assert called["sites"] == ["earthquake.usgs.gov"]
+    assert called["allowed_domains"] == ["earthquake.usgs.gov"]
+    assert called["blocked_domains"] == ["noaa.gov"]
+
+
+def test_fetch_denies_blocklisted_host(monkeypatch):
+    mod = _web_module()
+
+    async def _fake_fetch(**kwargs):
+        return {u: {"status": "success"} for u in json.loads(kwargs["urls"])}
+
+    monkeypatch.setattr(mod.fetch_backends, "fetch_url_contents", _fake_fetch)
+    mcp = _register(mod, {"web": {"blocklist": ["tracker.example"]}})
+    out = asyncio.run(
+        mcp.tools["productivity_web_fetch"](
+            urls=json.dumps(["https://ok.example/a", "https://cdn.tracker.example/x"])
+        )
+    )
+    by_url = {row["url"]: row for row in out["ret"]}
+    assert by_url["https://ok.example/a"]["status"] == "success"
+    assert by_url["https://cdn.tracker.example/x"]["status"] == "denied_by_blocklist"
+    assert "blocklist" in by_url["https://cdn.tracker.example/x"]["error"]
+
+
 def test_tool_declarations_have_no_account_requirements():
     mod = _web_module()
     for name, cfg in mod.WEB_PRODUCTIVITY_TOOLS.items():

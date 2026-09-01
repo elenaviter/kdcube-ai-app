@@ -12,16 +12,21 @@ import kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search.web_search_server as srv
 from kdcube_ai_app.infra.service_hub import cache as cache_mod
 
 
+_FILTER_ENV_VARS = (
+    "WEB_ALLOWLIST_YAML", "WEB_ALLOWLIST_FILE", "WEB_ALLOWLIST",
+    "WEB_BLOCKLIST_YAML", "WEB_BLOCKLIST_FILE", "WEB_BLOCKLIST",
+)
+
+
 @pytest.fixture(autouse=True)
 def _reset_server_state(monkeypatch):
-    monkeypatch.delenv("WEB_ALLOWLIST_YAML", raising=False)
-    monkeypatch.delenv("WEB_ALLOWLIST_FILE", raising=False)
-    monkeypatch.delenv("WEB_ALLOWLIST", raising=False)
-    srv._ALLOWLIST = None
+    for var in _FILTER_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    srv._FILTER = None
     srv._SERVICE = None
     srv._CACHE = None
     yield
-    srv._ALLOWLIST = None
+    srv._FILTER = None
     srv._SERVICE = None
     srv._CACHE = None
 
@@ -29,13 +34,14 @@ def _reset_server_state(monkeypatch):
 def test_web_search_server_uses_backend(monkeypatch):
     called = {}
 
-    async def _fake_search(*, _SERVICE, queries, objective, refinement, n, fetch_content,
-                           include_binary_base64, freshness, country, safesearch,
-                           use_llm, allowed_domains, namespaced_kv_cache):
+    async def _fake_search(*, _SERVICE, use_llm, allowed_domains, blocked_domains,
+                           sites, namespaced_kv_cache, **kwargs):
         called["svc"] = _SERVICE
         called["cache"] = namespaced_kv_cache
         called["use_llm"] = use_llm
         called["allowed_domains"] = allowed_domains
+        called["blocked_domains"] = blocked_domains
+        called["sites"] = sites
         return [{"ok": True}]
 
     monkeypatch.setenv("DEFAULT_LLM_MODEL_ID", "o3-mini")
@@ -83,6 +89,40 @@ def test_web_search_without_llm_skips_model_service(monkeypatch):
     assert called["allowed_domains"] == ["usgs.gov", "noaa.gov"]
 
 
+def test_sites_narrow_within_filter(monkeypatch):
+    called = {}
+
+    async def _fake_search(**kwargs):
+        called.update(kwargs)
+        return []
+
+    monkeypatch.setattr(srv.search_backends, "web_search", _fake_search)
+    monkeypatch.setenv("WEB_ALLOWLIST", "usgs.gov, noaa.gov")
+    monkeypatch.setenv("WEB_BLOCKLIST", "noaa.gov")
+
+    # earthquake.usgs.gov narrows inside the allowlist; noaa.gov is
+    # blocklisted (deny wins) and evil.com is outside — both clamped away
+    asyncio.run(srv.web_search(
+        queries="q", use_llm=False,
+        sites=["earthquake.usgs.gov", "noaa.gov", "evil.com"],
+    ))
+    assert called["sites"] == ["earthquake.usgs.gov"]
+    # the post-filter guarantee follows the narrowed sites
+    assert called["allowed_domains"] == ["earthquake.usgs.gov"]
+    assert called["blocked_domains"] == ["noaa.gov"]
+
+
+def test_sites_all_excluded_raises_with_reasons(monkeypatch):
+    async def _fake_search(**kwargs):  # pragma: no cover - must not be reached
+        raise AssertionError("search ran although every site was excluded")
+
+    monkeypatch.setattr(srv.search_backends, "web_search", _fake_search)
+    monkeypatch.setenv("WEB_ALLOWLIST", "usgs.gov")
+    with pytest.raises(ValueError) as err:
+        asyncio.run(srv.web_search(queries="q", use_llm=False, sites=["evil.com"]))
+    assert "evil.com" in str(err.value) and "allowlist" in str(err.value)
+
+
 def test_web_fetch_denies_hosts_outside_allowlist(monkeypatch):
     monkeypatch.setenv("WEB_ALLOWLIST", "usgs.gov")
     seen = {}
@@ -104,11 +144,32 @@ def test_web_fetch_denies_hosts_outside_allowlist(monkeypatch):
     assert out["https://usgs.gov/quakes"]["status"] == "success"
     denied = out["https://evil.com/x"]
     assert denied["status"] == "denied_by_allowlist"
-    assert "evil.com" in denied["error"]
-    assert denied["allowlist_entries"] == ["usgs.gov"]
+    assert "evil.com" in denied["error"] and "allowlist" in denied["error"]
     assert seen["urls"] == ["https://usgs.gov/quakes"]
     # an archive mirror is another host: fallback forced off while the allowlist is on
     assert seen["archive"] is False
+
+
+def test_web_fetch_denies_blocklisted_hosts(monkeypatch):
+    monkeypatch.setenv("WEB_BLOCKLIST", "tracker.example")
+    seen = {}
+
+    async def _fake_fetch(*, _SERVICE, urls, use_archive_fallback, **kwargs):
+        seen["urls"] = json.loads(urls)
+        return {u: {"status": "success"} for u in json.loads(urls)}
+
+    monkeypatch.setattr(srv.fetch_backends, "fetch_url_contents", _fake_fetch)
+    out = asyncio.run(
+        srv.web_fetch(urls=json.dumps([
+            "https://ok.example/a", "https://cdn.tracker.example/x",
+        ]))
+    )
+    # no allowlist: everything except the blocklist passes
+    assert out["https://ok.example/a"]["status"] == "success"
+    denied = out["https://cdn.tracker.example/x"]
+    assert denied["status"] == "denied_by_blocklist"
+    assert "blocklist" in denied["error"]
+    assert seen["urls"] == ["https://ok.example/a"]
 
 
 def test_web_fetch_without_allowlist_keeps_archive_fallback(monkeypatch):
@@ -125,13 +186,22 @@ def test_web_fetch_without_allowlist_keeps_archive_fallback(monkeypatch):
 
 def test_allowlist_status(monkeypatch):
     monkeypatch.setenv("WEB_ALLOWLIST", "usgs.gov,noaa.gov")
+    monkeypatch.setenv("WEB_BLOCKLIST", "tracker.example")
     out = asyncio.run(srv.allowlist_status())
     assert out["enforced"] is True
     assert out["allowlist_entries"] == ["usgs.gov", "noaa.gov"]
     assert out["entry_count"] == 2
+    assert out["blocklist_entries"] == ["tracker.example"]
+    assert out["blocklist_count"] == 1
 
-    srv._ALLOWLIST = None
+    srv._FILTER = None
     monkeypatch.delenv("WEB_ALLOWLIST", raising=False)
+    # blocklist alone still counts as an enforced filter
+    out = asyncio.run(srv.allowlist_status())
+    assert out["enforced"] is True
+
+    srv._FILTER = None
+    monkeypatch.delenv("WEB_BLOCKLIST", raising=False)
     out = asyncio.run(srv.allowlist_status())
     assert out["enforced"] is False
 
@@ -161,7 +231,9 @@ def test_yaml_config_applies_to_env(tmp_path, monkeypatch):
         monkeypatch.delenv(var, raising=False)
     cfg = tmp_path / "config.yaml"
     cfg.write_text(
-        "filter:\n  allowlist:\n    - example.org\n    - usgs.gov\n"
+        "filter:\n"
+        "  allowlist:\n    - example.org\n    - usgs.gov\n"
+        "  blocklist:\n    - tracker.example\n"
         "services:\n"
         "  secrets:\n    brave:\n      api_key: brave-key\n"
         "  role_models:\n"
@@ -170,8 +242,9 @@ def test_yaml_config_applies_to_env(tmp_path, monkeypatch):
         "unknown_knob: 1\n"
     )
     applied = srv.apply_yaml_config(cfg)
-    # inline allowlist makes the config file itself the live source
+    # inline lists make the config file itself the live source
     assert os.environ["WEB_ALLOWLIST_YAML"] == str(cfg)
+    assert os.environ["WEB_BLOCKLIST_YAML"] == str(cfg)
     assert os.environ["BRAVE_API_KEY"] == "brave-key"
     assert os.environ["DEFAULT_LLM_MODEL_ID"] == "claude-haiku-4-5-20251001"
     assert json.loads(os.environ["ROLE_MODELS_JSON"]) == {
@@ -179,10 +252,11 @@ def test_yaml_config_applies_to_env(tmp_path, monkeypatch):
     }
     assert "WEB_ALLOWLIST_YAML" in applied and "ROLE_MODELS_JSON" in applied
 
-    srv._ALLOWLIST = None
+    srv._FILTER = None
     out = asyncio.run(srv.allowlist_status())
     assert out["enforced"] is True
     assert out["allowlist_entries"] == ["example.org", "usgs.gov"]
+    assert out["blocklist_entries"] == ["tracker.example"]
 
     # editing the allowlist in the yaml applies on the next call
     cfg.write_text(cfg.read_text().replace("    - usgs.gov\n", "    - usgs.gov\n    - noaa.gov\n"))

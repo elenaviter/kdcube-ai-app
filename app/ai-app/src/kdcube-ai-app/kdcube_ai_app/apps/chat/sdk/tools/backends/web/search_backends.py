@@ -592,6 +592,15 @@ async def web_search(
                 "Domain allowlist entries (see backends.web.allowlist). When set, results from "
                 "hosts outside the allowlist are dropped before any content fetch."
         )] = None,
+        blocked_domains: Annotated[Optional[List[str]], (
+                "Domain blocklist entries; results from matching hosts are dropped before any "
+                "content fetch. Deny wins over allowed_domains."
+        )] = None,
+        sites: Annotated[Optional[List[str]], (
+                "Per-call site scoping: the provider query is rewritten with site: operators so "
+                "the search runs WITHIN these domains. Callers enforce policy separately via "
+                "allowed_domains/blocked_domains; this parameter only focuses the search."
+        )] = None,
         artifact_id: str = None,
         enable_hybrid: bool = True,
         hybrid_mode: str = "sequential",
@@ -656,6 +665,13 @@ async def web_search(
     finish_thinking_is_sent = False
 
     q_list = [" ".join(q_list)]
+
+    # --- Per-call site scoping: search within these domains at the provider ---
+    if sites:
+        scoped = [str(s).strip().lower() for s in sites if str(s).strip()][:8]
+        if scoped:
+            site_expr = " OR ".join(f"site:{s}" for s in scoped)
+            q_list = [f"{q} ({site_expr})" for q in q_list]
 
     if not artifact_id:
         if objective and objective.strip():
@@ -824,19 +840,28 @@ async def web_search(
     rows = dedup_round_robin_ranked(per_query_results=per_query_results,
                                     n=999,)
 
-    # --- Allowlist: drop hosts outside it before any reconciliation or fetch ---
-    if allowed_domains is not None:
+    # --- Egress policy: blocklist (deny wins), then allowlist, before any fetch ---
+    if allowed_domains is not None or blocked_domains:
         from urllib.parse import urlsplit as _urlsplit
-        before_allowlist = len(rows)
-        rows = [
-            r for r in rows
-            if isinstance(r, dict)
-            and hostname_allowed(allowed_domains, _urlsplit(str(r.get("url") or "")).hostname)
-        ]
-        if len(rows) != before_allowlist:
+
+        def _row_host(r: Any) -> Optional[str]:
+            return _urlsplit(str(r.get("url") or "")).hostname if isinstance(r, dict) else None
+
+        before_filter = len(rows)
+        if blocked_domains:
+            rows = [
+                r for r in rows
+                if not hostname_allowed(blocked_domains, _row_host(r))
+            ]
+        if allowed_domains is not None:
+            rows = [
+                r for r in rows
+                if hostname_allowed(allowed_domains, _row_host(r))
+            ]
+        if len(rows) != before_filter:
             logger.info(
-                f"web_search: allowlist dropped {before_allowlist - len(rows)} of "
-                f"{before_allowlist} results"
+                f"web_search: egress filter dropped {before_filter - len(rows)} of "
+                f"{before_filter} results"
             )
 
     # --- Reconcile ---

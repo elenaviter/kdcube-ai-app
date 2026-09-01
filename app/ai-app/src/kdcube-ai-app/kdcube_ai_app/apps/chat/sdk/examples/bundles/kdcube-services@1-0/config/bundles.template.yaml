@@ -39,13 +39,18 @@ bundles:
                 # Web search + fetch (no connected account). Both knobs are
                 # operator-owned; a call cannot widen them.
                 web:
-                  # Domain allowlist. Unset = every host allowed. Entry format:
-                  # example.org (domain + subdomains), *.example.org (subdomains
-                  # only). allowlist_file points at a text file instead (one
-                  # entry per line, '#' comments, re-read on change).
+                  # Egress filter. Allowlist unset = every host allowed;
+                  # blocklist unset = no host blocked; deny wins over allow.
+                  # Entry format: example.org (domain + subdomains),
+                  # *.example.org (subdomains only). The *_file forms point at
+                  # text files instead (one entry per line, '#' comments,
+                  # re-read on change).
                   # allowlist:
                   #   - example.org
+                  # blocklist:
+                  #   - tracker.example
                   # allowlist_file: /path/to/web-allowlist.txt
+                  # blocklist_file: /path/to/web-blocklist.txt
                   # Default for the tools' use_llm parameter: LLM snippet
                   # relevance scoring and content refinement on search.
                   use_llm_default: false

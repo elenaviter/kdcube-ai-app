@@ -6,16 +6,21 @@
 # applied onto the process environment; a variable already set in the
 # environment wins over this file.
 
-# --- Egress filter (operator-owned; omit = every host allowed) ---
-# The allowlist lives right here, and this file is its live source:
-# edits to the list apply on the next call without a restart.
+# --- Egress filter (operator-owned) ---
+# Both lists live right here, and this file is their live source:
+# edits apply on the next call without a restart. Deny wins: a
+# blocklisted host is refused even when the allowlist admits it.
+# Omit allowlist = every host allowed; omit blocklist = no host blocked.
 filter:
   allowlist:
     - example.org        # domain and every subdomain
     - "*.example.net"    # subdomains only
-  # Or point at a separate text file (one domain per line, '#'
+  # blocklist:
+  #   - tracker.example  # always refused, same entry format
+  # Or point at separate text files (one domain per line, '#'
   # comments, also re-read on change):
   # allowlist_file: /etc/claude/web-allowlist.txt
+  # blocklist_file: /etc/claude/web-blocklist.txt
 
 # --- Services: provider secrets and the neural pipeline models ---
 # secrets carries per-provider api_key blocks, the same shape a KDCube

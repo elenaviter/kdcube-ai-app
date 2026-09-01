@@ -84,6 +84,7 @@ call.
 | `freshness` | null | `day` \| `week` \| `month` \| `year`. |
 | `country` | null | ISO2, e.g. `DE`, `US`. |
 | `safesearch` | `moderate` | `off` \| `moderate` \| `strict`. |
+| `sites` | null | Per-call site scoping: the provider query is rewritten with `site:` operators so the search runs WITHIN these domains (up to 8). Use it when you know where the answer lives. Clamped by the operator's egress filter — it narrows, never widens; if every requested site is excluded, the call fails with the reasons named. |
 | `use_llm` | true | LLM reconciliation + refinement on/off. With false, no model keys are needed. |
 
 Result: array of rows `{title, url, text, objective_relevance?,
@@ -113,15 +114,17 @@ Result: JSON object mapping each input URL to
 `{status, content?, content_length?, published_time_iso?,
 modified_time_iso?, date_method?, date_confidence?, error?}`. Statuses
 include `success`, `timeout`, `paywall`, `error`, `non_html`,
-`blocked_403`, `http_XXX`, `pdf_redirect` — and `denied_by_allowlist`,
-whose entry names the denied host and the allowlist source while the
-other URLs in the same call still fetch.
+`blocked_403`, `http_XXX`, `pdf_redirect` — and `denied_by_allowlist` /
+`denied_by_blocklist`, whose entries name the denied host and the
+list's source while the other URLs in the same call still fetch.
 
 ## allowlist_status
 
 No parameters. Returns `{allowlist_source, allowlist_entries,
-entry_count, enforced}` — the allowlist exactly as the server enforces
-it, so the model and the operator read the same truth.
+entry_count, blocklist_source, blocklist_entries, blocklist_count,
+enforced}` — the egress filter exactly as the server enforces it, so
+the model and the operator read the same truth. Deny wins: a
+blocklisted host is refused even when the allowlist admits it.
 
 ## Dependencies
 
@@ -145,9 +148,9 @@ the operator's install directory, beside the clone rather than inside
 it. The server loads it from `--config PATH`, or `WEB_SEARCH_CONFIG`,
 or a `config.yaml` in the working directory, or (the in-repo
 development case) one beside the server file; launch configs should
-pass the explicit `--config` with an absolute path. Sections: `filter` (the allowlist inline — the
-config file itself is then the live source, edits to the list apply on
-the next call — or `allowlist_file`), `services.secrets` (per-provider
+pass the explicit `--config` with an absolute path. Sections: `filter` (`allowlist` and `blocklist` inline — the
+config file itself is then the live source, edits to the lists apply on
+the next call — or `allowlist_file`/`blocklist_file`), `services.secrets` (per-provider
 `api_key` blocks, the exact shape a KDCube deployment's secrets.yaml
 nests under `services:`, so the block carries over verbatim),
 `services.role_models` (the pipeline roles pinned as provider+model
@@ -170,6 +173,7 @@ CLI flags: `--config`, `--allowlist`, `--transport`/`--host`/`--port`.
 | `WEB_ALLOWLIST_YAML` | Path to a YAML file whose `filter.allowlist` holds the entries (set automatically when the config.yaml carries an inline allowlist). Re-read whenever its mtime changes — edits apply to the next call without a restart. |
 | `WEB_ALLOWLIST_FILE` | Path to a plain allowlist file: one domain per line, blank lines and `#` comments ignored. Also re-read on change. |
 | `WEB_ALLOWLIST` | Inline comma-separated entries; fixed for the process. The file sources take precedence. |
+| `WEB_BLOCKLIST_YAML`, `WEB_BLOCKLIST_FILE`, `WEB_BLOCKLIST` | The blocklist's three sources, same mechanics and same entry format. A blocklisted host is refused even when the allowlist admits it; unset = no host blocked. |
 | `BRAVE_API_KEY` | Search provider key (Brave is the default backend). |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY`, `DEFAULT_LLM_MODEL_ID`, `ROLE_MODELS_JSON` | Model service, needed only for `use_llm=true` calls. |
 | `REDIS_URL`, `WEB_SEARCH_CACHE_TTL_SECONDS` | Optional result cache. Leave `REDIS_URL` empty to run without one. |
@@ -186,9 +190,10 @@ www.example.org    # that exact host and its subdomains
 ```
 
 Matching is case-insensitive on the URL hostname; ports don't
-participate. **Unset** (neither variable) = every host allowed.
-**Configured but empty** = every host denied: the server is closed until
-the operator lists what is allowed.
+participate. The same entry format serves the blocklist. **Allowlist
+unset** = every host allowed; **configured but empty** = every host
+denied: the server is closed until the operator lists what is allowed.
+**Blocklist unset** = no host blocked, and deny always wins over allow.
 
 **Scope: one allowlist per server process.** With stdio each user's
 client launches its own process, so per-user allowlists are a file per
