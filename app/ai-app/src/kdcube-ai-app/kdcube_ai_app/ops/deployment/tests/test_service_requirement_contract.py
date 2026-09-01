@@ -9,7 +9,7 @@ CONFIG_IMPORTING_REQUIREMENTS = (
     "requirements-dbdeploy.txt",
     "requirements-metric-service.txt",
 )
-CONNECTION_HUB_REQUIREMENT = "connection-hub>=0.0.4"
+CONNECTION_HUB_REQUIREMENT = "connection-hub>=2026.09.01.0000"
 
 
 def _connection_hub_requirement(filename: str) -> str:
