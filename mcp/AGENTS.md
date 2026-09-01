@@ -263,8 +263,8 @@ answering "run it for the whole team":
    deployment's secrets, callers are authorized as signed-in users with
    per-user consent and accounting, and the allowlist and LLM default
    are platform config (the app descriptor). This is the shape where no
-   secret exists on any user machine — its cost is running the KDCube
-   app server.
+   secret exists on any user machine — what it takes is a running
+   KDCube app server.
 
 ## Rules that hold throughout
 
