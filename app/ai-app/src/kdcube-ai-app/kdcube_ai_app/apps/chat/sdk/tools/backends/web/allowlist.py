@@ -78,6 +78,10 @@ class Allowlist:
     env_label: str = ALLOWLIST_ENV
     _entries: List[str] = field(default_factory=list)
     _mtime: Optional[float] = None
+    # For the YAML source only: whether the key was present at last read.
+    # A watched config whose key is absent counts as NOT configured, so
+    # adding the key later (or removing it entirely) applies live.
+    _yaml_key_present: bool = False
 
     @classmethod
     def from_env(cls) -> "Allowlist":
@@ -103,7 +107,10 @@ class Allowlist:
 
     @property
     def configured(self) -> bool:
-        return bool(self.yaml_path) or bool(self.file_path) or self.env_value is not None
+        if self.yaml_path:
+            self.refresh()
+            return self._yaml_key_present
+        return bool(self.file_path) or self.env_value is not None
 
     def _read_source_file(self, path: str, *, as_yaml: bool) -> None:
         try:
@@ -111,6 +118,7 @@ class Allowlist:
         except OSError:
             self._entries = []
             self._mtime = None
+            self._yaml_key_present = False
             return
         if mtime == self._mtime:
             return
@@ -126,6 +134,7 @@ class Allowlist:
                     raw = scope.get(self.yaml_key)
                 if raw is None:
                     raw = data.get(self.yaml_key)
+            self._yaml_key_present = isinstance(raw, (list, tuple))
             raw_lines = [str(v) for v in raw] if isinstance(raw, (list, tuple)) else []
             self._entries = parse_entries(raw_lines)
         else:

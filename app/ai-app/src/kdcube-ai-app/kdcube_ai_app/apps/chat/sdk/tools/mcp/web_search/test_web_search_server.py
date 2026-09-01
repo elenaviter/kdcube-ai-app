@@ -268,6 +268,39 @@ def test_yaml_config_applies_to_env(tmp_path, monkeypatch):
         monkeypatch.delenv(var, raising=False)
 
 
+def test_first_list_add_and_full_removal_are_live(tmp_path, monkeypatch):
+    """Regression for the e2e finding: a blocklist added to a config that
+    started without one must apply live, and removing the allowlist key
+    entirely must return to allow-all - both without a restart."""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("filter:\n  allowlist:\n    - example.org\n")
+    monkeypatch.setenv("WEB_SEARCH_CONFIG", str(cfg))
+    srv.load_config()
+
+    out = asyncio.run(srv.allowlist_status())
+    assert out["enforced"] is True
+    assert out["blocklist_entries"] == []
+
+    # first-ever blocklist add, same process
+    cfg.write_text(
+        "filter:\n  allowlist:\n    - example.org\n  blocklist:\n    - example.org\n"
+    )
+    os.utime(cfg, (os.path.getmtime(cfg) + 10, os.path.getmtime(cfg) + 10))
+    out = asyncio.run(srv.allowlist_status())
+    assert out["blocklist_entries"] == ["example.org"]
+    assert srv._get_filter().check("example.org") is False  # deny wins
+
+    # removing the allowlist key entirely returns to allow-all
+    cfg.write_text("filter:\n  blocklist:\n    - example.org\n")
+    os.utime(cfg, (os.path.getmtime(cfg) + 20, os.path.getmtime(cfg) + 20))
+    egress = srv._get_filter()
+    assert egress.allowlist.configured is False
+    assert egress.check("anything.example") is True
+    assert egress.check("example.org") is False  # still blocklisted
+
+    monkeypatch.delenv("WEB_SEARCH_CONFIG", raising=False)
+
+
 def test_yaml_config_env_wins(tmp_path, monkeypatch):
     monkeypatch.setenv("BRAVE_API_KEY", "from-env")
     cfg = tmp_path / "config.yaml"

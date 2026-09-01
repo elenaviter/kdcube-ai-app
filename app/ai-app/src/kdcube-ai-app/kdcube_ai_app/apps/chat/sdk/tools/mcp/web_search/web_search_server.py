@@ -32,8 +32,10 @@ import json
 import logging
 import os
 import pathlib
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
 from urllib.parse import urlsplit
+
+from pydantic import Field
 
 from kdcube_ai_app.infra.service_hub.inventory import ModelServiceBase, _build_model_service_from_env
 from kdcube_ai_app.infra.service_hub.cache import create_kv_cache_from_env
@@ -115,21 +117,25 @@ def apply_yaml_config(path: str | pathlib.Path) -> List[str]:
         os.environ[env_name] = str(value)
         applied.append(env_name)
 
+    # The config file is always armed as the live source for BOTH lists
+    # (unless a *_file source is chosen below): an Allowlist watching a
+    # YAML whose key is absent counts as not configured, so the first
+    # add of filter.allowlist or filter.blocklist mid-session applies
+    # live, exactly like any later edit.
+    filter_cfg = data.get("filter") if isinstance(data.get("filter"), dict) else {}
+    if filter_cfg.get("allowlist_file"):
+        _set(ALLOWLIST_FILE_ENV, filter_cfg.get("allowlist_file"))
+    else:
+        _set(ALLOWLIST_YAML_ENV, str(path))
+    if filter_cfg.get("blocklist_file"):
+        _set(BLOCKLIST_FILE_ENV, filter_cfg.get("blocklist_file"))
+    else:
+        _set(BLOCKLIST_YAML_ENV, str(path))
+    if "ssrf_guard" in filter_cfg:
+        _set("WEB_SSRF_GUARD", filter_cfg.get("ssrf_guard"))
+
     for section, value in data.items():
-        if section == "filter" and isinstance(value, dict):
-            if isinstance(value.get("allowlist"), (list, tuple)):
-                # the config file itself becomes the live allowlist source:
-                # edits to its filter.allowlist apply on the next call
-                _set(ALLOWLIST_YAML_ENV, str(path))
-            elif value.get("allowlist_file"):
-                _set(ALLOWLIST_FILE_ENV, value.get("allowlist_file"))
-            if isinstance(value.get("blocklist"), (list, tuple)):
-                # same live-source mechanics for the blocklist
-                _set(BLOCKLIST_YAML_ENV, str(path))
-            elif value.get("blocklist_file"):
-                _set(BLOCKLIST_FILE_ENV, value.get("blocklist_file"))
-            if "ssrf_guard" in value:
-                _set("WEB_SSRF_GUARD", value.get("ssrf_guard"))
+        if section == "filter":
             continue
         if section == "services" and isinstance(value, dict):
             secrets = value.get("secrets")
@@ -397,18 +403,64 @@ def _build_mcp_app():
         ),
     )
     async def _tool(
-        queries: str | List[str],
-        objective: Optional[str] = None,
-        refinement: str = "balanced",
-        n: int = 8,
-        fetch_content: bool = True,
-        include_binary_base64: bool = True,
-        freshness: Optional[str] = None,
-        country: Optional[str] = None,
-        safesearch: str = "moderate",
-        sites: Optional[List[str]] = None,
-        use_llm: bool = True,
-    ) -> List[Dict[str, Any]]:
+        queries: Annotated[str | List[str], Field(description=(
+            "Array of string queries (rephrases/synonyms) or a single query "
+            "string. Query results might be large; prefer max 2 queries at a time."
+        ))],
+        objective: Annotated[Optional[str], Field(description=(
+            "The search objective - the goal or question behind the search. "
+            "ALWAYS pass it when you have one (you almost always do): it drives "
+            "snippet relevance scoring and content refinement, and without it "
+            "results come unranked by relevance and pages stay untrimmed."
+        ))] = None,
+        refinement: Annotated[str, Field(description=(
+            "Post-fetch content refinement (objective-guided, needs use_llm): "
+            "'none' full pages; 'balanced' target + context (50-70%); 'recall' "
+            "content bodies, minimal chrome (80-95%); 'precision' directly "
+            "relevant sections only (20-50%, needs objective)."
+        ))] = "balanced",
+        n: Annotated[int, Field(ge=1, le=20, description=(
+            "Max unique results (1-20). Prefer max 5."
+        ))] = 8,
+        fetch_content: Annotated[bool, Field(description=(
+            "If true, fetch full page content for the results. If false, return "
+            "ranked snippets/URLs only - cheaper; fetch selected URLs yourself "
+            "with web_fetch."
+        ))] = True,
+        include_binary_base64: Annotated[bool, Field(description=(
+            "If true, attach base64 for binary/image/PDF results when size "
+            "limits allow."
+        ))] = True,
+        freshness: Annotated[Optional[str], Field(description=(
+            "Freshness window: 'day'|'week'|'month'|'year' or null."
+        ))] = None,
+        country: Annotated[Optional[str], Field(description=(
+            "Country ISO2 for the search, e.g. 'DE', 'US'."
+        ))] = None,
+        safesearch: Annotated[str, Field(description=(
+            "Safesearch: 'off'|'moderate'|'strict'."
+        ))] = "moderate",
+        sites: Annotated[Optional[List[str]], Field(description=(
+            "Scope the search WITHIN these domains (site: operators at the "
+            "provider, up to 8). Use when you know where the answer lives; "
+            "narrows inside the operator's egress filter, never widens it."
+        ))] = None,
+        use_llm: Annotated[bool, Field(description=(
+            "True runs the neural pipeline (snippet relevance scoring against "
+            "the objective, content refinement); false skips every LLM step - "
+            "cheaper, needs no model key, provider ranking only."
+        ))] = True,
+    ) -> Annotated[List[Dict[str, Any]], Field(description=(
+        "Array of result rows: [{title, url, text, objective_relevance?, "
+        "query_relevance?, content?, mime?, base64?, size_bytes?, "
+        "fetched_time_iso, published_time_iso?, ...}]. `text` is the search "
+        "snippet; `content` is full (possibly refined) page text when "
+        "fetch_content ran; non-HTML supported files carry mime/base64 "
+        "instead of content. Relevance scores are meaningful only when the "
+        "LLM reconciler ran - on backends with the reconciler off they "
+        "default to 1.0 and carry no signal. Rows from hosts the operator's "
+        "egress filter refuses are already gone."
+    ))]:
         return await web_search(
             queries=queries,
             objective=objective,
@@ -449,14 +501,49 @@ def _build_mcp_app():
         ),
     )
     async def _fetch_tool(
-        urls: str | List[str],
-        objective: Optional[str] = None,
-        refinement: str = "none",
-        max_content_length: int = -1,
-        include_binary_base64: bool = True,
-        use_archive_fallback: bool = False,
-        use_llm: bool = False,
-    ) -> Dict[str, Any]:
+        urls: Annotated[str | List[str], Field(description=(
+            "Array of absolute HTTP/HTTPS URLs you already know, or a single "
+            "URL string. This tool never searches; it only dereferences."
+        ))],
+        objective: Annotated[Optional[str], Field(description=(
+            "The goal or question behind the fetch. Pass it when you want "
+            "refinement (use_llm=true): it guides which spans of each page are "
+            "kept. Without it content stays full."
+        ))] = None,
+        refinement: Annotated[str, Field(description=(
+            "Post-fetch content refinement (needs use_llm=true and an "
+            "objective): 'none' full pages (default); 'balanced' target + "
+            "context (50-70%); 'recall' most body, minimal chrome (80-95%); "
+            "'precision' direct answers (20-50%). URLs are never dropped: "
+            "pages without reliable spans keep full content."
+        ))] = "none",
+        max_content_length: Annotated[int, Field(description=(
+            "Max characters of cleaned content per URL, truncated at a "
+            "sentence boundary. -1 = no limit."
+        ))] = -1,
+        include_binary_base64: Annotated[bool, Field(description=(
+            "If true, attach base64 for binary/image/PDF fetches when size "
+            "limits allow."
+        ))] = True,
+        use_archive_fallback: Annotated[bool, Field(description=(
+            "Try an archive mirror for blocked or paywalled pages. Forced off "
+            "while the operator's egress filter is configured: an archive host "
+            "is a different host."
+        ))] = False,
+        use_llm: Annotated[bool, Field(description=(
+            "True enables the objective-guided refinement path (spends model "
+            "tokens); false returns cleaned full content with no model call."
+        ))] = False,
+    ) -> Annotated[Dict[str, Any], Field(description=(
+        "JSON object mapping each input URL to its result: {status, "
+        "content?, content_length?, published_time_iso?, modified_time_iso?, "
+        "date_method?, date_confidence?, error?}. Statuses: success, timeout, "
+        "paywall (any hard block, a bot-blocking 403 included), error, "
+        "non_html, blocked_403, http_XXX, pdf_redirect, denied_by_allowlist, "
+        "denied_by_blocklist, denied_by_ssrf_guard - the denied_* entries "
+        "name the host and the reason, and other URLs in the same call still "
+        "fetch."
+    ))]:
         return await web_fetch(
             urls=urls,
             objective=objective,
@@ -475,7 +562,11 @@ def _build_mcp_app():
             "blocklisted host is refused even when the allowlist admits it."
         ),
     )
-    async def _status_tool() -> Dict[str, Any]:
+    async def _status_tool() -> Annotated[Dict[str, Any], Field(description=(
+        "{allowlist_source, allowlist_entries, entry_count, blocklist_source, "
+        "blocklist_entries, blocklist_count, ssrf_guard, enforced} - the "
+        "egress filter exactly as this server enforces it."
+    ))]:
         return await allowlist_status()
 
     return mcp

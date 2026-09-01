@@ -1025,6 +1025,11 @@ async def web_search(
             include_content_blocks=False
         )
         new_rows = fetched_rows
+        if llm_content_filtering and fetched_rows and len(fetched_rows) == 1:
+            logger.info(
+                "web_search: single fetched row - LLM content filter/segmenter "
+                "skipped (runs on 2+ rows); content returned unrefined"
+            )
         if llm_content_filtering and fetched_rows and len(fetched_rows) > 1:
             new_rows = copy.deepcopy(fetched_rows)
             new_rows = await filter_search_results_by_content(

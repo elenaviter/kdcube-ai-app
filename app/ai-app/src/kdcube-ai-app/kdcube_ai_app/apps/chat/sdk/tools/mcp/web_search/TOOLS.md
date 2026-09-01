@@ -71,6 +71,13 @@ deployment carries its own copy of that table.
 
 **Failure semantics.** Reconciler failure returns the raw ranked rows
 (nothing lost). Content-filter failure keeps every source. The
+filter+segment stage runs only when MORE THAN ONE fetched row survives
+the egress filter: a single-row result passes through unrefined with no
+model spend (logged, not marked in the result). And a caveat on the
+scores: `objective_relevance`/`query_relevance` carry signal only when
+the reconciler actually ran — on backends whose snippet reconciler is
+off by default (Brave), rows get 1.0 as a neutral placeholder, so a 1.0
+proves nothing about the pipeline. The
 filter+segment stage is stricter: a failed or empty span response drops
 the unsegmented sources from the result, and in refinement mode rows
 whose content fetch failed are dropped as well — with an allowlist this
@@ -137,9 +144,9 @@ fetch.
 
 No parameters. Returns `{allowlist_source, allowlist_entries,
 entry_count, blocklist_source, blocklist_entries, blocklist_count,
-enforced}` — the egress filter exactly as the server enforces it, so
-the model and the operator read the same truth. Deny wins: a
-blocklisted host is refused even when the allowlist admits it.
+ssrf_guard, enforced}` — the egress filter exactly as the server
+enforces it, so the model and the operator read the same truth. Deny
+wins: a blocklisted host is refused even when the allowlist admits it.
 
 ## Dependencies
 
@@ -150,8 +157,10 @@ entries exist because the server reuses the platform's real backends:
 `langchain-core`/`langchain-openai` and the model-key plumbing come with
 the model service (only exercised on `use_llm=true`), `connection-hub`
 comes with the config module, `redis` is imported by the optional cache
-(never connected while `REDIS_URL` is empty), and `ddgs` is the
-DuckDuckGo fallback backend.
+(the tool's cache stays disabled while `REDIS_URL` is empty; a shared
+client object may still be constructed lazily by platform imports, but
+nothing is read or written through it), and `ddgs` is the DuckDuckGo
+fallback backend.
 
 ## Configuration
 

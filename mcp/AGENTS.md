@@ -52,11 +52,14 @@ beside it. Never put the config (it holds API keys) inside the clone.
    one, and suggest a sensible default (for example
    `~/mcp-servers/web-search`). Everything below happens inside it.
 
-1. **Venv.** Check `which python3` first — on a machine with KDCube
-   installed it may resolve into a platform venv, whose package
+1. **Venv.** On a machine with KDCube installed, `python3` — and even
+   `python3.11` — may resolve into a platform venv, whose package
    versions break this server (an old `mcp` fails to import, a drifted
-   `anthropic` silently breaks the pipeline). Use an explicit
-   interpreter:
+   `anthropic` silently breaks the pipeline). Verify the interpreter you
+   picked is clean before using it
+   (`<interpreter> -c "import sys; print(sys.prefix)"` must not point
+   into a venvs directory); any Python 3.11+ works, a Homebrew or
+   system 3.12 is fine:
 
    ```bash
    mkdir <install-dir> && cd <install-dir>
@@ -287,10 +290,12 @@ answering "run it for the whole team":
 
 | Symptom | Cause and fix |
 | --- | --- |
-| `CERTIFICATE_VERIFY_FAILED`, or pages that open fine in a browser come back `paywall`/`error` | The machine's Python has no CA store wired. Set `tls.cert_file` in config.yaml to the path printed by `.venv/bin/python -m certifi`, retry. Do not touch fetch code. |
+| `CERTIFICATE_VERIFY_FAILED` on fetches | The machine's Python has no CA store wired. Set `tls.cert_file` in config.yaml to the path printed by `.venv/bin/python -m certifi`, retry. Do not touch fetch code. |
+| Pages that open fine in a browser come back `paywall`/`error`/`blocked_403` | Usually the site bot-blocking the fetcher (the `paywall` status labels any hard block, a 403 included) — en.wikipedia.org and www.usgs.gov are known to do this. It is the site's choice, not a tool or TLS problem; try `use_archive_fallback` (filter off) or another source. |
 | `Can not decode content-encoding: brotli` | The venv was not built from this requirements.txt (it includes `brotli`). Rebuild it. |
 | Second consecutive search reports a different provider | Free-tier Brave rate limit; the server fell back to DuckDuckGo transparently. Normal. |
 | Empty results with `use_llm=true` and a refinement mode | Failed fetches starve the segmenter (it drops unfetched rows). Check per-URL statuses with `refinement="none"` or `fetch_content=False` first. |
+| `use_llm=true` seemed to change nothing on a 1-row result | By design: the content filter/segmenter runs only on 2+ fetched rows; a single row passes through unrefined with no model spend. And relevance scores of exactly 1.0 are neutral placeholders on the default backend, not proof the pipeline ran. |
 | `from mcp.server import MCPServer` fails | Wrong venv (old `mcp` package). Rebuild from this requirements.txt. |
 | Server starts but the allowlist shows `enforced: false` | No config found: pass `--config` with the absolute path, or check the working directory. Unset allowlist = every host allowed — do not leave it this way. |
 | Fetch of an internal host returns `denied_by_ssrf_guard` | Working as designed: private, loopback, link-local, and metadata addresses are refused at the address level. Only a deployment that must fetch internal hosts sets `filter.ssrf_guard: false`, and the user owns that trade. |
