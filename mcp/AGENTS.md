@@ -222,8 +222,14 @@ talk to Claude normally, and Claude routes to the tools:
   `allowlist_status`; after any refusal, "why was that refused?" works
   because every denial names the host, the list, and the config the
   operator owns.
-- **Change the fence** ("allow noaa.gov too") — that is your job, one
-  live edit (next section).
+- **Change the fence** ("allow noaa.gov too") — a config edit, live on
+  the next call. YOU do it when the user asks you (next section). From
+  Claude Desktop this is the one thing Claude cannot do for them —
+  Desktop has no file access, and no tool edits the lists by design (a
+  call must never be able to widen the filter). Tell a Desktop-only user
+  the two ways: ask their coding agent, or open the `config.yaml` from
+  their registration's `--config` path in any text editor and add the
+  line themselves.
 - **Save money** ("search without the LLM steps") — `use_llm=false`:
   no model spend, provider ranking only.
 

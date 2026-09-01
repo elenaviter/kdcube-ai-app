@@ -73,7 +73,7 @@ Operator quick moves (config.yaml sits at the top of your install dir):
 
 | Do | How |
 | --- | --- |
-| Allow or ban a site | Edit `filter.allowlist` / `filter.blocklist` — **live on the next call**, no restart. |
+| Allow or ban a site | Edit `filter.allowlist` / `filter.blocklist` in config.yaml — **live on the next call**, no restart. Ask your coding agent, or use any text editor; Claude Desktop cannot do this one (no file access, and no tool edits the lists by design). |
 | Rotate a key | Edit `services.secrets`, then respawn the server: Claude Code `/mcp` reconnect or new session, Desktop quit and reopen. |
 | Upgrade | `git pull` in `kdcube/`, re-run pip on the same requirements.txt, respawn. Your config is untouched. |
 | Internal-network deployment | `filter.ssrf_guard: false` — only then are private hosts fetchable, and you own that trade. |
