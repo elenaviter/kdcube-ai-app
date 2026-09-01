@@ -228,6 +228,34 @@ overrides:
    launched from the dock do not read shell profiles — use 1 or 2
    there.
 
+## Deployment shapes
+
+Three ways this server serves people, in increasing strength of the
+secrets and identity story. Pick deliberately — especially before
+answering "run it for the whole team":
+
+1. **stdio, one install per user** (everything above). Simplest, and
+   the per-user allowlist model. The keys live on the user's account —
+   in config.yaml, the MCP registration's env block, or the shell env —
+   and anything the server can read at start, an agent running as the
+   same OS user can read too. That is inherent to same-account
+   deployment, not a config mistake to fix.
+2. **One `http`/`sse` instance run by an admin** (another OS user,
+   container, or host). Keys leave the users' machines; user configs
+   hold only a URL. **This transport has no caller authorization**:
+   whoever reaches the port uses the tool and spends the keys, so it is
+   acceptable only behind a real network boundary (localhost or a
+   controlled segment), and one instance carries one allowlist — one
+   instance per profile when profiles differ. Do not stand this up for
+   a team without saying this trade to the user.
+3. **Behind KDCube.** The same search and fetch ship as
+   `productivity_web_search` / `productivity_web_fetch` on the
+   kdcube-services app's productivity MCP surface: keys live in the
+   deployment's secrets, callers are authorized as signed-in users with
+   per-user consent and accounting, and the allowlist and LLM default
+   are platform config (the app descriptor). This is the shape where no
+   secret exists on any user machine — its cost is running KDCube.
+
 ## Rules that hold throughout
 
 - Key values never appear in output, logs, transcripts, or committed
