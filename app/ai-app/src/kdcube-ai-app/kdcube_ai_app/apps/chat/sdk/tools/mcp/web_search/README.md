@@ -22,6 +22,10 @@ Full reference — every tool's contract, how the pipeline works inside,
 and the complete config table — is in [TOOLS.md](TOOLS.md). An agent
 working on this folder starts at [AGENTS.md](AGENTS.md).
 
+The short way in is the repo-root launcher
+[`mcp/web-search/`](/mcp/web-search/): same server, no PYTHONPATH
+needed, one shallow path to point people at.
+
 ## Prerequisites
 
 - **Python 3.11+** and network access to PyPI for the install.

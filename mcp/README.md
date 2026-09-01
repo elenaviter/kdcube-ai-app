@@ -1,0 +1,9 @@
+# MCP servers
+
+Standalone MCP servers shipped in this repo, launchable from here
+without PYTHONPATH. Each launcher defers to its implementation inside
+the source tree, where the full documentation lives.
+
+| Server | Launcher | Documentation |
+| --- | --- | --- |
+| Web search + fetch with an operator-owned domain allowlist and an optional neural pipeline (relevance scoring, content filtering, span segmentation) | [`web-search/server.py`](web-search/server.py) | [README](../app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/tools/mcp/web_search/README.md) · [TOOLS](../app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/tools/mcp/web_search/TOOLS.md) · [AGENTS](../app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/tools/mcp/web_search/AGENTS.md) |

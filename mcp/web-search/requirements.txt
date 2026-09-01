@@ -1,0 +1,3 @@
+# The launcher shares the implementation's dependency set - one source
+# of truth, included by reference (pip resolves -r relative to this file).
+-r ../../app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/tools/mcp/web_search/requirements.txt
