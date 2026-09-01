@@ -6,6 +6,9 @@
 # leaves unpinned stay unpinned here.
 mcp==2.0.0
 aiohttp==3.12.15
+# aiohttp needs it to decode brotli-compressed (content-encoding: br)
+# responses, which common sites serve
+brotli
 pydantic==2.13.4
 pydantic-settings
 PyYAML==6.0.2

@@ -29,9 +29,15 @@ working on this folder starts at [AGENTS.md](AGENTS.md).
   not run the server from a preexisting platform venv: those may carry
   an older `mcp` package without the v2 `MCPServer`, and an older or
   newer `anthropic` than the pinned one (either breaks the neural
-  pipeline, the newer one silently).
+  pipeline, the newer one silently). Check `which python3` before
+  creating the venv — on a machine with KDCube installed, `python3`
+  itself may resolve into a platform venv; use an explicit interpreter
+  (`python3.11`, `python3.12`, or a full path) if it does.
 - **A Brave Search API key** for `web_search`; `web_fetch` and
-  `allowlist_status` need no key at all.
+  `allowlist_status` need no key at all. A free-tier Brave key
+  rate-limits quickly on consecutive searches; the server then falls
+  back to the DuckDuckGo backend transparently, so a first live check
+  may report a different provider on its second call.
 - **An Anthropic key** (or OpenAI/Google) only for `use_llm=true` — the
   neural pipeline. Everything runs without it at `use_llm=false`.
 - **A working CA store.** Some Python builds (pyenv, the macOS

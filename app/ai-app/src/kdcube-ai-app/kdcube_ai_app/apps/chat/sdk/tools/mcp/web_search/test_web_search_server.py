@@ -203,6 +203,16 @@ def test_yaml_config_env_wins(tmp_path, monkeypatch):
     assert "BRAVE_API_KEY" not in applied
 
 
+def test_load_config_discovers_and_applies(tmp_path, monkeypatch):
+    monkeypatch.delenv("BRAVE_API_KEY", raising=False)
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("services:\n  secrets:\n    brave:\n      api_key: k1\n")
+    monkeypatch.setenv("WEB_SEARCH_CONFIG", str(cfg))
+    assert srv.load_config() == cfg
+    assert os.environ["BRAVE_API_KEY"] == "k1"
+    monkeypatch.delenv("BRAVE_API_KEY", raising=False)
+
+
 def test_config_discovery_precedence(tmp_path, monkeypatch):
     cli = tmp_path / "cli.yaml"
     env_cfg = tmp_path / "env.yaml"

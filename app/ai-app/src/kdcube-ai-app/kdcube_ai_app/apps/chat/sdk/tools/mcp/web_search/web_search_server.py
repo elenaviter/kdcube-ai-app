@@ -86,10 +86,11 @@ def apply_yaml_config(path: str | pathlib.Path) -> List[str]:
 
     Every setting lives in a named section (see config.example.yaml):
     ``filter`` (allowlist inline - the config file itself becomes the
-    live, re-read allowlist source - or allowlist_file), ``services``
-    (per-provider api_key, the secrets.yaml shape), ``models``
-    (default_llm_model_id and role_models, the latter serialized into
-    ROLE_MODELS_JSON), ``cache``, ``server``, ``kdcube`` (a deployment's
+    live, re-read allowlist source - or allowlist_file),
+    ``services.secrets`` (per-provider api_key blocks, the secrets.yaml
+    shape), ``services.role_models`` (pinned provider+model per role,
+    serialized into ROLE_MODELS_JSON, with ``default`` covering unpinned
+    roles), ``cache``, ``server``, ``kdcube`` (a deployment's
     assembly/secrets YAMLs as the key source), ``tls``. Environment
     variables that are already set win over the file. Returns the names
     of the variables the file supplied; unknown keys are logged and
@@ -172,6 +173,24 @@ def _discover_config(cli_path: Optional[str]) -> Optional[pathlib.Path]:
         if candidate and pathlib.Path(candidate).is_file():
             return pathlib.Path(candidate)
     return None
+
+
+def load_config(path: Optional[str] = None) -> Optional[pathlib.Path]:
+    """Discover and apply the YAML config; the entry point for direct calls.
+
+    ``main()`` runs this automatically. Code that imports this module and
+    calls the tool functions directly MUST call it first (or set the env
+    vars itself): without it the allowlist is unconfigured, and
+    unconfigured means every host is allowed. Returns the applied config
+    path, or None when no config was found.
+    """
+    config_path = _discover_config(path)
+    if config_path is not None:
+        applied = apply_yaml_config(config_path)
+        _logger.info(
+            "config %s applied: %s", config_path, ", ".join(applied) or "nothing (env wins)"
+        )
+    return config_path
 
 
 async def _get_service() -> ModelServiceBase:
@@ -426,10 +445,7 @@ def main() -> int:
     if args.allowlist:
         os.environ[ALLOWLIST_FILE_ENV] = args.allowlist
 
-    config_path = _discover_config(args.config)
-    if config_path is not None:
-        applied = apply_yaml_config(config_path)
-        _logger.info("config %s applied: %s", config_path, ", ".join(applied) or "nothing (env wins)")
+    load_config(args.config)
 
     app = _build_mcp_app()
     if args.transport == "stdio":

@@ -64,8 +64,20 @@ PYTHONPATH=$PWD .venv-websearch/bin/python -m \
 ```
 
 The tool functions are directly callable for a live check without the
-MCP layer: import `web_search_server` and await `web_search(...)` /
-`web_fetch(...)` / `allowlist_status()` with the env from TOOLS.md set.
+MCP layer — but the YAML config is applied only by `main()`, so a direct
+caller MUST start with `load_config()` (or set the env vars from
+TOOLS.md itself), and then confirm `allowlist_status()` reports
+`enforced: true` with the expected entries BEFORE any live call. An
+unconfigured allowlist allows every host, so skipping this turns a
+"small live check" into unrestricted egress:
+
+```python
+import kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search.web_search_server as srv
+srv.load_config()                              # discovers config.yaml
+status = await srv.allowlist_status()
+assert status["enforced"] and status["allowlist_entries"], status
+rows = await srv.web_search(queries="...", n=5, fetch_content=False, use_llm=False)
+```
 When you add an import to the server or the backends it reaches, re-run
 the clean-venv setup and add what broke to `requirements.txt` — that
 file is part of the tool's contract.
