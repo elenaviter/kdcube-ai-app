@@ -29,8 +29,8 @@ server in its config and it then uses the tools like any MCP server.
 
 The install is a one-time action per user (one install directory per
 user; that is also how per-user allowlists work). Part 1 below is that
-first install and later upgrades; Part 2 is day-2 changes: the
-allowlist, the keys.
+first install and later upgrades; Part 2 is day-2 work: explaining
+daily use to the user, the lists, the keys.
 
 # Part 1 — First install
 
@@ -204,9 +204,33 @@ app. The next spawn runs the pulled code and re-reads the whole config,
 keys included. Only an `http`/`sse` deployment has a long-lived process
 the operator restarts themselves.
 
-# Part 2 — Day-2 changes
+# Part 2 — Day-2 work
 
-First, find the install: the MCP registration carries the config path.
+## Explaining daily use to the user
+
+When the user asks "how do I use this?", this is the whole story — they
+talk to Claude normally, and Claude routes to the tools:
+
+- **Ask a research question** ("what's the difference between X and
+  Y?") — Claude calls `web_search` with the question as the objective,
+  so results come relevance-scored and fetched pages trimmed to what
+  answers it.
+- **Name where the answer lives** ("...only on en.wikipedia.org") —
+  the `sites` scoping searches within those domains.
+- **Give a URL** ("fetch this and summarize") — `web_fetch`.
+- **Check the fence** ("show me my web whitelist") —
+  `allowlist_status`; after any refusal, "why was that refused?" works
+  because every denial names the host, the list, and the config the
+  operator owns.
+- **Change the fence** ("allow noaa.gov too") — that is your job, one
+  live edit (next section).
+- **Save money** ("search without the LLM steps") — `use_llm=false`:
+  no model spend, provider ranking only.
+
+## Finding the install
+
+For any config change, first find the install: the MCP registration
+carries the config path.
 `claude mcp list` / `claude mcp get web-search` (or the entry in
 `claude_desktop_config.json`) shows the `--config <path>` argument —
 that file is the single thing to edit, and its directory is the install
