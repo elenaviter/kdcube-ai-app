@@ -77,3 +77,4 @@ Operator quick moves (config.yaml sits at the top of your install dir):
 | Rotate a key | Edit `services.secrets`, then respawn the server: Claude Code `/mcp` reconnect or new session, Desktop quit and reopen. |
 | Upgrade | `git pull` in `kdcube/`, re-run pip on the same requirements.txt, respawn. Your config is untouched. |
 | Internal-network deployment | `filter.ssrf_guard: false` — only then are private hosts fetchable, and you own that trade. |
+| See what it does | The server narrates to stderr, and your MCP client keeps it: Claude Desktop in `~/Library/Logs/Claude/mcp-server-web-search.log` (`tail -f` it during a search: filter drops, pipeline models, denials with reasons), Claude Code via `/mcp` → the server's logs. Every tool result also explains itself in-band — "why was that refused?" works. |
