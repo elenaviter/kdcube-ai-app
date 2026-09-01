@@ -9,9 +9,11 @@ lives beside the implementation in
 setup.
 
 One server ships today: **web-search** — web search and fetch for MCP
-clients behind a domain allowlist the user owns, enforced server-side.
-Three tools: `web_search` (discovery), `web_fetch` (dereference known
-URLs), `allowlist_status` (the enforced list, as the server sees it).
+clients behind an egress filter the user owns (allowlist, optional
+blocklist — deny wins), enforced server-side. Three tools: `web_search`
+(discovery; the model can scope a search WITHIN chosen domains via its
+`sites` parameter), `web_fetch` (dereference known URLs),
+`allowlist_status` (both lists, exactly as the server enforces them).
 An optional neural pipeline (relevance scoring, content filtering,
 objective-guided span extraction) runs on the user's model key when
 `use_llm=true`; everything else works without any model key.
@@ -159,8 +161,8 @@ beside it. Never put the config (it holds API keys) inside the clone.
 
    Expected: every returned host is on the list; the outside URL comes
    back `status: "denied_by_allowlist"` with the host and the config
-   path named (relay that shape to the user — it is how the tool
-   explains itself). If the user paid for the pipeline, one more call
+   path named (a blocklisted host would say `denied_by_blocklist`).
+   Relay that shape to the user — it is how the tool explains itself. If the user paid for the pipeline, one more call
    with `use_llm=True, n=3` verifies it; expect real model spend.
 
 5. **Register** (this writes to the Claude config — confirm with the
@@ -204,9 +206,10 @@ First, find the install: the MCP registration carries the config path.
 that file is the single thing to edit, and its directory is the install
 dir.
 
-## Changing the allowlist
+## Changing the allowlist or blocklist
 
-Edit `filter.allowlist` in that config.yaml. **The change is live**: the
+Edit `filter.allowlist` (or `filter.blocklist` — always-refused hosts,
+deny wins over allow) in that config.yaml. **The change is live**: the
 server re-reads the file on the next call, no restart, no
 re-registration. Verify by calling the server's `allowlist_status` tool
 (you have it if the server is registered in your session) or by asking
@@ -269,9 +272,10 @@ answering "run it for the whole team":
   files. `config.yaml` stays out of every git repo.
 - The venv comes from `kdcube/mcp/web-search/requirements.txt` and
   nothing else; the pins are the contract.
-- A call can never widen the allowlist — only the user's config can.
-  One allowlist per server process: per-user setups are one install
-  dir (config + registration) per user.
+- A call can never widen the egress filter — the `sites` parameter
+  narrows inside it, and only the user's config changes it. One filter
+  per server process: per-user setups are one install dir (config +
+  registration) per user.
 - Known limit worth telling the user: the fetcher follows HTTP
   redirects, so a listed site that redirects off-domain can lead
   outside the list. List trusted sites.

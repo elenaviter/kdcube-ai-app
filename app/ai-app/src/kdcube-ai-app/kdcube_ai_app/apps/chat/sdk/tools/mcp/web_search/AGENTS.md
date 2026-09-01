@@ -6,34 +6,40 @@ debugging a deployment of it, or auditing what it does.
 ## What this folder is
 
 An MCP server exposing `web_search`, `web_fetch`, and `allowlist_status`
-over KDCube's web backends, with a server-side domain allowlist and
-optional LLM steps. Contracts and config: [TOOLS.md](TOOLS.md). Setup:
+over KDCube's web backends, with a server-side egress filter (allowlist
+plus blocklist, deny wins), per-call `sites` scoping, and optional LLM
+steps. Contracts and config: [TOOLS.md](TOOLS.md). Setup:
 [README.md](README.md).
 
 ## Layout and the code it stands on
 
 ```
-web_search_server.py      the MCP wrapper: tool registration, allowlist
-                          wiring, LLM on/off, per-URL fetch denials,
-                          and the YAML config loader (apply_yaml_config:
-                          scoped sections -> env, env wins on conflict)
+web_search_server.py      the MCP wrapper: tool registration, egress
+                          filter wiring, sites clamping, LLM on/off,
+                          per-URL fetch denials, and the YAML config
+                          loader (apply_yaml_config: scoped sections ->
+                          env, env wins on conflict)
 config.example.yaml       the YAML config template (the recommended
                           mode). The operator's config.yaml lives in
                           the INSTALL DIRECTORY, beside the clone, and
                           is passed with --config (discovery also finds
                           it in the working directory; one beside the
                           server file is the in-repo dev case only).
-                          Its inline filter.allowlist is the live
-                          allowlist source
+                          Its inline filter.allowlist / filter.blocklist
+                          are the live list sources
 .env.example              the same settings as raw environment variables
                           (the mode MCP client configs and CI speak)
 test_web_search_server.py contract tests (run with pytest)
 ../mcp_app_transport.py   stdio/sse/http runners (dependency-free)
 ../../backends/web/
   allowlist.py            entry parsing, hostname matching, Allowlist
-                          (env/file source, file re-read on mtime change)
-  search_backends.py      the search orchestrator; `use_llm` and
-                          `allowed_domains` parameters land here
+                          (env/file/yaml sources, re-read on mtime
+                          change) and EgressFilter (blocklist deny wins
+                          over allowlist; deny_reason for in-band
+                          denials)
+  search_backends.py      the search orchestrator; `use_llm`,
+                          `allowed_domains`/`blocked_domains`, and the
+                          `sites` query rewrite land here
   fetch_backends.py       fetch_url_contents (text extraction, dates)
   test_allowlist.py       matcher + source semantics tests
 ```
@@ -89,21 +95,25 @@ file is part of the tool's contract.
 ## Invariants to keep
 
 - **Enforcement lives in code, never in the model's instructions.** The
-  allowlist filter sits inside `search_backends.web_search` after
+  egress filter sits inside `search_backends.web_search` after
   deduplication and before any content fetch, and in `web_fetch` before
   any request. A tool call must not be able to widen the operator's
-  allowlist.
-- **Denials are explained in-band**: host, reason, allowlist source in
+  filter — the `sites` parameter only narrows inside it, and a call
+  whose every site is excluded fails with the per-site reasons named.
+- **Deny wins.** A blocklisted host is refused even when the allowlist
+  admits it, everywhere: search post-filter, fetch, sites clamping.
+- **Denials are explained in-band**: host, reason, the list's source in
   the result, so the calling agent can relay what the operator would
   need to change. Do not turn a denial into a silent drop or a bare
   exception.
 - **`use_llm=false` must stay key-free**: no model service is built and
   no LLM step runs. If you touch the orchestrator, keep the
   `_SERVICE=None` path working.
-- **Archive fallback stays off while an allowlist is configured** — an
-  archive mirror is a different host.
-- **Unset allowlist = allow all; configured-empty = deny all.** Existing
-  deployments without the config must keep working unchanged.
+- **Archive fallback stays off while the egress filter is configured** —
+  an archive mirror is a different host.
+- **Unset allowlist = allow all; configured-empty = deny all; unset
+  blocklist = block none.** Existing deployments without the config must
+  keep working unchanged.
 - **Tool descriptions follow the register of `sdk/tools/web_tools.py`**
   (selection rules, refinement modes with coverage, result shapes) but
   never mention resident-runtime concepts (sources pool, sids, react

@@ -1,8 +1,9 @@
 # Web search MCP server — launcher
 
-Web search and fetch for MCP clients, behind a domain allowlist the
-operator owns, with an optional neural pipeline (relevance scoring,
-content filtering, objective-guided span segmentation). This folder is
+Web search and fetch for MCP clients, behind an egress filter the
+operator owns (allowlist, optional blocklist — deny wins), with
+per-call site scoping and an optional neural pipeline (relevance
+scoring, content filtering, objective-guided span segmentation). This folder is
 the short way in; the implementation and the full documentation live in
 [`app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/tools/mcp/web_search`](../../app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/tools/mcp/web_search/)
 — read its README (prerequisites included), TOOLS.md (tool contracts and

@@ -3,20 +3,27 @@
 Web search and fetch as an MCP server, with two properties an operator
 controls server-side:
 
-- **Domain allowlist.** When configured, search results from hosts
-  outside the allowlist are dropped before any content fetch, and a
-  fetch of a host outside it is denied with a result naming the host and
-  the allowlist source. The allowlist is a plain config the operator
-  owns and can read; the model reaches the internet only through these
-  tools. When no allowlist is configured, every host is allowed.
+- **Egress filter: allowlist and blocklist.** When the allowlist is
+  configured, search results from hosts outside it are dropped before
+  any content fetch, and a fetch of an outside host is denied with a
+  result naming the host and the list's source. The optional blocklist
+  holds always-refused hosts, and deny wins over allow. Both are plain
+  config the operator owns and can read; the model reaches the internet
+  only through these tools. Allowlist unset = every host allowed;
+  blocklist unset = no host blocked.
 - **LLM on/off.** Every call takes `use_llm`. With `use_llm=false` the
   pipeline runs without LLM steps (no snippet reconciliation, no LLM
-  content filtering) and needs no model API keys: search, allowlist
+  content filtering) and needs no model API keys: search, egress
   filtering, and content fetch still work.
 
-Tools: `web_search`, `web_fetch`, `allowlist_status` (the allowlist
-exactly as the server enforces it, so the model and the operator read
-the same truth).
+The model can also scope one search WITHIN chosen domains through
+`web_search`'s `sites` parameter — the provider query is rewritten with
+`site:` operators, and the scoping narrows inside the operator's
+filter, never widens it.
+
+Tools: `web_search`, `web_fetch`, `allowlist_status` (the egress filter
+exactly as the server enforces it — both lists — so the model and the
+operator read the same truth).
 
 Full reference — every tool's contract, how the pipeline works inside,
 and the complete config table — is in [TOOLS.md](TOOLS.md). An agent
@@ -77,8 +84,6 @@ the clone, and it survives the clone being updated or replaced.
 
 ```bash
 mkdir web-search-mcp && cd web-search-mcp    # your install dir
-
-
 git clone https://github.com/kdcube/kdcube.git   # creates ./kdcube
 export REPO_SRC=$PWD/kdcube/app/ai-app/src/kdcube-ai-app
 
@@ -135,38 +140,42 @@ added under `env` overrides a YAML value:
 }
 ```
 
-The allowlist file is re-read whenever it changes, so edits apply to the
-next call without a restart. `WEB_ALLOWLIST` (comma-separated) is the
-inline alternative. Entry format:
-
-**Per-user allowlists.** The allowlist belongs to a server process, and
-with stdio every user's client launches its own process — so per-user
-lists are the natural deployment: give each user (or group) their own
-file, owned by the admin and readable by the user, and point that user's
-MCP config at it. Different users on the same machine, or different
-teams, simply get different files. A shared `http`/`sse` instance
-applies one allowlist to everyone it serves; run one instance per
-profile when profiles differ.
+The list sources are re-read whenever they change, so edits to
+`filter.allowlist` and `filter.blocklist` apply to the next call without
+a restart. Entry format, shared by both lists:
 
 ```
 example.org        # example.org and every subdomain
 *.example.org      # subdomains only
 ```
 
-Search needs a search-provider key (Brave by default) in the
-environment; see `.env.example`. `use_llm=true` additionally needs a
-model key and turns on the neural pipeline — snippet relevance scoring,
-content filtering, and objective-guided span segmentation of fetched
-pages, each stage on its own configured model role (Haiku-class by
-default; see TOOLS.md, "The neural pipeline"). `web_fetch` needs
-neither.
+**Per-user filters.** The filter belongs to a server process, and with
+stdio every user's client launches its own process — so per-user lists
+are the natural deployment: give each user (or group) their own config,
+owned by the admin and readable by the user, and point that user's MCP
+registration at it. Different users on the same machine, or different
+teams, simply get different configs. A shared `http`/`sse` instance
+applies one filter to everyone it serves; run one instance per profile
+when profiles differ.
+
+Search needs a search-provider key (Brave by default) — in
+`services.secrets` of config.yaml or the environment. `use_llm=true`
+additionally needs a model key and turns on the neural pipeline —
+snippet relevance scoring, content filtering, and objective-guided span
+segmentation of fetched pages, each stage on its own configured model
+role (Haiku-class by default; see TOOLS.md, "The neural pipeline").
+`web_fetch` needs neither.
 
 ## Enforcement notes
 
-- The allowlist is enforced in this server and in the search backend,
-  never by instructions to the model.
-- With an allowlist configured, `web_fetch`'s archive-mirror fallback
-  stays off: an archive host is a different host.
+- The egress filter is enforced in this server and in the search
+  backend, never by instructions to the model, and deny wins: a
+  blocklisted host is refused even when the allowlist admits it.
+- The `sites` scoping is clamped against the filter before the provider
+  is called; a call whose every site is excluded fails with the reasons
+  named.
+- With a filter configured, `web_fetch`'s archive-mirror fallback stays
+  off: an archive host is a different host.
 - The page fetcher follows HTTP redirects, so a listed site that
   redirects off-domain can lead outside the allowlist; list only sites
   you trust not to.

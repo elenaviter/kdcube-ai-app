@@ -16,12 +16,13 @@ backends:
 - `web_fetch` delegates to `fetch_backends.fetch_url_contents`: direct
   dereference of known URLs with article-style text extraction and date
   metadata.
-- The **domain allowlist** (`../../backends/web/allowlist.py`) is applied
-  server-side in both paths: search results from hosts outside it are
-  dropped inside the orchestrator after deduplication and **before any
-  content fetch** (no egress to outside hosts from the fetch stage), and
-  `web_fetch` denies an outside host per URL before any request. A call
-  cannot widen the allowlist; only the operator's config can.
+- The **egress filter** (`../../backends/web/allowlist.py`: allowlist
+  plus blocklist, deny wins) is applied server-side in both paths:
+  search results from refused hosts are dropped inside the orchestrator
+  after deduplication and **before any content fetch** (no egress to
+  refused hosts from the fetch stage), and `web_fetch` denies a refused
+  host per URL before any request. A call cannot widen the filter — the
+  `sites` parameter narrows inside it — only the operator's config can.
 - The **LLM steps are optional**. `use_llm=false` (search) runs the
   pipeline with no model calls and no model keys; `web_fetch` defaults to
   `use_llm=false`. What the LLM adds when on is the neural pipeline
@@ -91,8 +92,8 @@ Result: array of rows `{title, url, text, objective_relevance?,
 query_relevance?, content?, mime?, base64?, size_bytes?, fetched_time_iso,
 published_time_iso?, ...}`. `text` is the search snippet, `content` the
 fetched page text when fetch ran. Non-HTML supported files carry
-`mime`/`base64` instead of `content`. With an allowlist configured, rows
-from outside hosts are already gone.
+`mime`/`base64` instead of `content`. With the egress filter configured,
+rows from refused hosts are already gone.
 
 ## web_fetch
 
@@ -107,7 +108,7 @@ It never searches. Skip URLs whose `web_search` row already carries usable
 | `refinement` | `none` | Same modes as web_search; needs `use_llm=true` and an objective. URLs are never dropped by refinement; pages without reliable spans keep full content. |
 | `max_content_length` | -1 | Max characters of cleaned content per URL, truncated at a sentence boundary. -1 = no limit. |
 | `include_binary_base64` | true | Attach base64 for binary/PDF fetches within size limits. |
-| `use_archive_fallback` | false | Try an archive mirror for blocked/paywalled pages. Forced off while an allowlist is configured: an archive host is a different host. |
+| `use_archive_fallback` | false | Try an archive mirror for blocked/paywalled pages. Forced off while the egress filter is configured: an archive host is a different host. |
 | `use_llm` | false | Enables the refinement path (builds the model service). |
 
 Result: JSON object mapping each input URL to
@@ -181,7 +182,8 @@ CLI flags: `--config`, `--allowlist`, `--transport`/`--host`/`--port`.
 | `ASSEMBLY_YAML_DESCRIPTOR_PATH`, `GLOBAL_SECRETS_YAML` | Optional KDCube-deployment lane: point them at a deployment's `assembly.yaml` / `secrets.yaml` and keys resolve from there (`services.brave.api_key`, model keys) instead of individual env vars. |
 | `SSL_CERT_FILE` | CA bundle for verifying HTTPS certificates when fetching pages (`tls.cert_file` in YAML). Needed only on machines whose Python has no working CA store — point it at certifi's `cacert.pem`; otherwise leave unset. |
 
-Allowlist entry semantics (`../../backends/web/allowlist.py`):
+Entry semantics, shared by both lists
+(`../../backends/web/allowlist.py`):
 
 ```
 example.org        # example.org and every subdomain
@@ -195,11 +197,11 @@ unset** = every host allowed; **configured but empty** = every host
 denied: the server is closed until the operator lists what is allowed.
 **Blocklist unset** = no host blocked, and deny always wins over allow.
 
-**Scope: one allowlist per server process.** With stdio each user's
-client launches its own process, so per-user allowlists are a file per
-user (admin-owned, user-readable), pointed at by that user's MCP config.
-A shared `http`/`sse` instance applies its one allowlist to every caller
-— run separate instances for separate profiles.
+**Scope: one filter per server process.** With stdio each user's
+client launches its own process, so per-user filters are a config per
+user (admin-owned, user-readable), pointed at by that user's MCP
+registration. A shared `http`/`sse` instance applies its one filter to
+every caller — run separate instances for separate profiles.
 
 ## Accounting events
 
