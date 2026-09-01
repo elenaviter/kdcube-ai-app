@@ -57,6 +57,10 @@ from .productivity_sheets import (
     SHEETS_PRODUCTIVITY_TOOLS,
     register_google_sheets_tools,
 )
+from .productivity_web import (
+    WEB_PRODUCTIVITY_TOOLS,
+    register_web_tools,
+)
 
 ConfigFactory = Callable[[], Mapping[str, Any]]
 
@@ -69,7 +73,11 @@ Docs, use search when the document id is unknown, get before editing, and pass
 the returned document id and text indices to the edit and comment tools. For
 LinkedIn, list accounts first when several may be connected, then publish; pass
 the returned post_urn to the comment tool. LinkedIn exposes no feed, message or
-post-content reads here. Each tool names the account access it needs. When a call reports a consent requirement, relay the reason
+post-content reads here. Web search and web fetch run on no connected account:
+search finds and deduplicates pages (use it to FIND), fetch dereferences URLs
+you already know (use it to READ), and when the operator configures a domain
+allowlist, hosts outside it are dropped or denied server-side with the reason
+in the result. Each account tool names the account access it needs. When a call reports a consent requirement, relay the reason
 and connection_hub_url to the user instead of retrying blindly:
 connect_required, claim_upgrade_required, and reconnect_required are fixed by
 the user at connection_hub_url; account_required is fixed by resending the
@@ -117,6 +125,7 @@ PRODUCTIVITY_TOOLS: dict[str, dict[str, Any]] = {
     **SHEETS_PRODUCTIVITY_TOOLS,
     **DOCS_PRODUCTIVITY_TOOLS,
     **LINKEDIN_PRODUCTIVITY_TOOLS,
+    **WEB_PRODUCTIVITY_TOOLS,
 }
 
 
@@ -324,6 +333,12 @@ def build_productivity_mcp_app(
         mcp=mcp,
         tool_annotations_type=ToolAnnotations,
         enforce=_enforce,
+    )
+
+    register_web_tools(
+        mcp=mcp,
+        tool_annotations_type=ToolAnnotations,
+        config_factory=config_factory,
     )
 
     return mcp

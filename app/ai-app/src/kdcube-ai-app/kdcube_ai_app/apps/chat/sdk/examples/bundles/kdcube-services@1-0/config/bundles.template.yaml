@@ -36,6 +36,19 @@ bundles:
                   google: "gmail"
                   slack: "slack-demo"
                   linkedin: "demo"
+                # Web search + fetch (no connected account). Both knobs are
+                # operator-owned; a call cannot widen them.
+                web:
+                  # Domain allowlist. Unset = every host allowed. Entry format:
+                  # example.org (domain + subdomains), *.example.org (subdomains
+                  # only). allowlist_file points at a text file instead (one
+                  # entry per line, '#' comments, re-read on change).
+                  # allowlist:
+                  #   - example.org
+                  # allowlist_file: /path/to/web-allowlist.txt
+                  # Default for the tools' use_llm parameter: LLM snippet
+                  # relevance scoring and content refinement on search.
+                  use_llm_default: false
         connections:
           connection_hub:
             bundle_id: connection-hub@1-0

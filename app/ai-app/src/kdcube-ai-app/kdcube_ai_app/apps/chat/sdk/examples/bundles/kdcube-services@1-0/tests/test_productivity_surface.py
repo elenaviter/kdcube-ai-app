@@ -74,6 +74,14 @@ LINKEDIN_WRITE_TOOLS = {
     "productivity_linkedin_comment",
     "productivity_linkedin_post_image",
 }
+# Web search and fetch run on the platform's own search and fetch backends,
+# take no account_id, and touch no connected account — so they declare no
+# connected-account claims. Their operator knobs (domain allowlist, use_llm
+# default) live in the surface config, not in claims.
+WEB_TOOLS = {
+    "productivity_web_search",
+    "productivity_web_fetch",
+}
 ALL_TOOLS = {
     "productivity_slack_search",
     "productivity_mail_search",
@@ -86,6 +94,7 @@ ALL_TOOLS = {
     *LINKEDIN_READ_TOOLS,
     *LINKEDIN_DISCOVERY_TOOLS,
     *LINKEDIN_WRITE_TOOLS,
+    *WEB_TOOLS,
 }
 
 
@@ -137,7 +146,7 @@ def test_every_tool_declares_provider_claims():
     # Account discovery must stay claim-free: resolving a connected-account
     # claim here returns account_required once two accounts are connected, and
     # the tool takes no account_id, so the denial could never be satisfied.
-    for name in LINKEDIN_DISCOVERY_TOOLS:
+    for name in LINKEDIN_DISCOVERY_TOOLS | WEB_TOOLS:
         assert module.tool_requirements(name) == []
 
 
@@ -246,3 +255,6 @@ async def test_surface_builds_with_declared_tool_roster():
     assert schemas["productivity_docs_reply_comment"]["properties"]["comment_id"][
         "description"
     ]
+    assert schemas["productivity_web_search"]["properties"]["queries"]["description"]
+    assert schemas["productivity_web_search"]["properties"]["use_llm"]["description"]
+    assert schemas["productivity_web_fetch"]["properties"]["urls"]["description"]

@@ -54,6 +54,7 @@ from kdcube_ai_app.apps.chat.sdk.tools.web.with_llm import sources_reconciler, \
 from kdcube_ai_app.infra.accounting import track_web_search, with_accounting
 from kdcube_ai_app.infra.accounting.usage import ws_provider_extractor, ws_model_extractor, ws_usage_extractor, \
     ws_meta_extractor
+from kdcube_ai_app.apps.chat.sdk.tools.backends.web.allowlist import hostname_allowed
 from kdcube_ai_app.apps.chat.sdk.tools.backends.web.fetch_backends import fetch_search_results_content
 from kdcube_ai_app.apps.chat.sdk.tools.backends.web.ranking import apply_weighted_rank, \
     max_relevance_score, provider_rank
@@ -583,6 +584,14 @@ async def web_search(
         freshness: Annotated[Optional[str], "Canonical freshness: 'day'|'week'|'month'|'year' or null."] = None,
         country: Annotated[Optional[str], "Canonical country ISO2, e.g. 'DE', 'US'."] = None,
         safesearch: Annotated[str, "Canonical safesearch: 'off'|'moderate'|'strict'."] = "moderate",
+        use_llm: Annotated[Optional[bool], (
+                "False runs the pipeline without LLM steps: no snippet reconciliation, no "
+                "LLM content filtering. Search and content fetch still work; _SERVICE may be None."
+        )] = None,
+        allowed_domains: Annotated[Optional[List[str]], (
+                "Domain allowlist entries (see backends.web.allowlist). When set, results from "
+                "hosts outside the allowlist are dropped before any content fetch."
+        )] = None,
         artifact_id: str = None,
         enable_hybrid: bool = True,
         hybrid_mode: str = "sequential",
@@ -733,6 +742,10 @@ async def web_search(
     # We treat this as "do_segment path still allowed".
     use_external_refinement = bool(getattr(search_backend, "default_use_external_refinement", True))
 
+    llm_content_filtering = use_llm is not False
+    if use_llm is False:
+        reconciling = False
+
     from kdcube_ai_app.infra.accounting import _get_context
 
     context = _get_context()
@@ -792,6 +805,8 @@ async def web_search(
         )
         reconciling = bool(getattr(search_backend, "default_use_external_reconciler", True))
         use_external_refinement = bool(getattr(search_backend, "default_use_external_refinement", True))
+        if use_llm is False:
+            reconciling = False
         per_query_results = await _run_backend(search_backend, backend_name)
         backend_errors = getattr(search_backend, "_last_errors", None)
 
@@ -808,6 +823,22 @@ async def web_search(
 
     rows = dedup_round_robin_ranked(per_query_results=per_query_results,
                                     n=999,)
+
+    # --- Allowlist: drop hosts outside it before any reconciliation or fetch ---
+    if allowed_domains is not None:
+        from urllib.parse import urlsplit as _urlsplit
+        before_allowlist = len(rows)
+        rows = [
+            r for r in rows
+            if isinstance(r, dict)
+            and hostname_allowed(allowed_domains, _urlsplit(str(r.get("url") or "")).hostname)
+        ]
+        if len(rows) != before_allowlist:
+            logger.info(
+                f"web_search: allowlist dropped {before_allowlist - len(rows)} of "
+                f"{before_allowlist} results"
+            )
+
     # --- Reconcile ---
     if not reconciling:
         # No snippet-based LLM reconciliation.
@@ -969,7 +1000,7 @@ async def web_search(
             include_content_blocks=False
         )
         new_rows = fetched_rows
-        if fetched_rows and len(fetched_rows) > 1:
+        if llm_content_filtering and fetched_rows and len(fetched_rows) > 1:
             new_rows = copy.deepcopy(fetched_rows)
             new_rows = await filter_search_results_by_content(
                 _SERVICE=_SERVICE,
