@@ -175,8 +175,13 @@ cd .. && .venv/bin/pip install -r kdcube/mcp/web-search/requirements.txt
 ```
 
 Re-run the offline sanity check (Part 1, step 3), then restart the
-server (in practice: restart or reconnect the MCP client — it owns the
-server process).
+server. Nobody manages that process by hand in the stdio setup: the MCP
+client spawns it on connect and kills it on exit, so restarting means
+reconnecting the client — in Claude Code, `/mcp` and reconnect the
+server (or start a new session); in Claude Desktop, quit and reopen the
+app. The next spawn runs the pulled code and re-reads the whole config,
+keys included. Only an `http`/`sse` deployment has a long-lived process
+the operator restarts themselves.
 
 # Part 2 — Day-2 changes
 
@@ -199,8 +204,9 @@ too", "remove example.org"), this one edit is the whole task.
 ## Rotating or moving the keys
 
 Keys are applied to the server's environment **at start**, so unlike
-the allowlist a key change needs the server restarted (restart or
-reconnect the MCP client). Three places a key can live — the file wins
+the allowlist a key change needs the server respawned — reconnect the
+MCP client as described under "Upgrading later" (Claude Code: `/mcp`
+reconnect or a new session; Desktop: quit and reopen). Three places a key can live — the file wins
 only where the environment is silent, an env var set at launch always
 overrides:
 
