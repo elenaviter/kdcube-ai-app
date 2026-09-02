@@ -372,6 +372,23 @@ provider's.
 all providers). After a search returns a handful of turn/file refs, the agent reads
 them in one round trip instead of N.
 
+## Query shape for `conv`
+
+The `conv` search runs the same engine as the in-app `react.memsearch`, and
+the same rules apply to the query an external agent sends. The lexical arm ANDs
+every unquoted word, a `"quoted phrase"` must occur verbatim, `OR` separates
+alternatives, `-word` excludes, the fuzzy arm averages over the query tokens,
+and a same-day turn is lifted about 2x over a month-old one at equal match. So
+`query` is a compact bag of content words as they would appear in the stored
+text (names, file names, identifiers, the user's wording), one topic per call;
+time words go to `from`/`to`, never into `query`; `"last time we worked on the
+excel file"` finds nothing lexically, `excel forecast` or
+`"Forecast-Q2-2026.xlsx"` finds the turn. The full guide is returned to the
+client in two places it already reads: `provider.about` and the `object.search`
+schema view (`schema.search.query_guide`), both rendered from
+`CONVERSATION_QUERY_GUIDE` in `sdk/solutions/conversation/instructions.py`, the
+same text the native tool spec carries.
+
 ## Scenarios
 
 Recall a discussion and show the chart the user made:

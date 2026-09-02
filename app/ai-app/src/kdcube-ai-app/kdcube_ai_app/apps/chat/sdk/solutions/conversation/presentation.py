@@ -14,6 +14,7 @@ from typing import Any
 
 from kdcube_ai_app.apps.chat.sdk.solutions.conversation.instructions import (
     CONVERSATION_NAMED_SERVICE_NAMESPACE,
+    CONVERSATION_QUERY_GUIDE,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace.references import qualify_conversation_ref
 
@@ -281,13 +282,23 @@ def conversation_schema_payload(
                 "back would help: an explicit recall request, or when the user refers to something from "
                 "before, says it was clearer earlier, can't re-locate something, or resumes a dropped thread."
             ),
+            # The same query guide every door renders (react.memsearch spec, the
+            # hosted-agent recovery guide, provider.about): how ranking works and
+            # therefore what shape `query` must have. This view is the one the
+            # named-services MCP tells an external client to read before searching,
+            # so the guide has to be here, not only in provider.about.
+            "query_guide": CONVERSATION_QUERY_GUIDE,
             # Single source of truth: the provider's authoritative search filter schema
             # (same object surfaced via provider.about's search_scopes).
             "filters": dict(search_filters or {}),
             "behavior": {
-                "topic": "set query -> hybrid semantic+lexical+recency search",
-                "topic_in_window": "query + from/to",
+                "topic": (
+                    "set query -> semantic + lexical + fuzzy arms fused, recency-lifted; "
+                    "query is content words only, shaped per query_guide"
+                ),
+                "topic_in_window": "query + from/to (time words go here, never into query)",
                 "date_window": "from/to, no query -> turns in that window",
+                "nth_turn": "ordinal, no query -> that turn",
                 "overview": "no query, no bounds, targets=['summary'] -> working summaries",
             },
             "returns": (

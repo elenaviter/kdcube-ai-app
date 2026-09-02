@@ -84,6 +84,26 @@ def test_named_service_carries_the_query_guide_and_the_catalog_filters():
         assert key in CONVERSATION_SEARCH_FILTERS, key
 
 
+def test_external_mcp_schema_view_carries_the_query_guide():
+    # The named-services MCP tells an external client to read the object.search
+    # view (ret.extra.schema.search) before searching. That view must carry the
+    # same guide the native react.memsearch spec carries, or the two doors drift.
+    from kdcube_ai_app.apps.chat.sdk.solutions.conversation.presentation import (
+        conversation_schema_payload,
+    )
+    payload = conversation_schema_payload(
+        grant_hints={}, scopes=["self", "user"], search_filters=CONVERSATION_SEARCH_FILTERS
+    )
+    search = payload["search"]
+    assert search["operation"] == "object.search"
+    assert search["query_guide"] == CONVERSATION_QUERY_GUIDE
+    assert QUERY_GUIDE_SENTINEL in search["query_guide"]
+    assert "content words only" in search["behavior"]["topic"]
+    assert "never into query" in search["behavior"]["topic_in_window"]
+    for key in ("ordinal", "order", "top_k"):
+        assert key in search["filters"], key
+
+
 def test_hosted_agent_recovery_guide_carries_the_query_guide():
     block = conversation_recovery_guide(namespace="conv", pull_tool="pull_files")
     assert "[CONVERSATION RECOVERY — `conv` namespace]" in block
