@@ -510,6 +510,7 @@ def test_default_initializer_runs_prepare_only_without_console_or_prompt(
 
 def test_cli_start_and_stop_adapters_use_public_local_target(monkeypatch, tmp_path):
     calls = []
+    maintenance_phases = []
 
     class FakeTarget:
         def __init__(self, reference, **kwargs):
@@ -547,6 +548,11 @@ def test_cli_start_and_stop_adapters_use_public_local_target(monkeypatch, tmp_pa
             )
 
     monkeypatch.setattr(cli_mod, "LocalDeploymentTarget", FakeTarget)
+    monkeypatch.setattr(
+        cli_mod,
+        "_maintain_docker_build_storage",
+        lambda console, *, phase: maintenance_phases.append(phase),
+    )
     console = cli_mod.Console(
         file=cli_mod.io.StringIO(), force_terminal=False, width=500
     )
@@ -568,6 +574,7 @@ def test_cli_start_and_stop_adapters_use_public_local_target(monkeypatch, tmp_pa
     assert calls[1][1].build is True
     assert isinstance(calls[3][1], LocalStopRequest)
     assert calls[3][1].remove_volumes is True
+    assert maintenance_phases == ["before", "after"]
     output = console.file.getvalue()
     assert "$ docker compose up -d --build" in output
     assert "Docker compose started." in output

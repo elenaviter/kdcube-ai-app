@@ -1,5 +1,12 @@
+x-kdcube-logging: &kdcube-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "3"
+
 services:
   postgres-setup:
+    logging: *kdcube-logging
     image: kdcube-postgres-setup:latest
     container_name: kdcube-local-postgres-setup
     build:
@@ -19,6 +26,7 @@ services:
     restart: "no"
 
   postgres-db:
+    logging: *kdcube-logging
     container_name: kdcube-local-postgres
     image: pgvector/pgvector:pg16
     env_file:
@@ -45,6 +53,7 @@ services:
       retries: 10
 
   redis:
+    logging: *kdcube-logging
     container_name: kdcube-local-redis
     image: redis:latest
     env_file:
@@ -117,6 +126,7 @@ services:
 #      retries: 20
 
   clamav:
+    logging: *kdcube-logging
     image: mkodockx/docker-clamav:alpine
     container_name: kdcube-local-clamav
     restart: unless-stopped
@@ -133,6 +143,7 @@ services:
       - "3310:3310"
 
   proxylogin:
+    logging: *kdcube-logging
     image: proxylogin:latest
     build:
       dockerfile: ./Dockerfile_ProxyLogin

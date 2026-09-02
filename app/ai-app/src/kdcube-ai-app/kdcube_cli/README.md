@@ -454,6 +454,19 @@ aligned with the same source tree while preserving staged descriptors.
 `kdcube init` for the first run, then use `refresh` for every subsequent
 re-init.
 
+Source builds maintain the Docker host's disposable storage before and after
+the build. The CLI removes dangling images, including the old generations left
+when a KDCube `latest` tag moves, and bounds BuildKit's retained cache while
+preserving recent layers for the next build. Every maintained local Compose
+stack rotates Docker-managed container logs at 20 MB with three files per
+container. The policy uses Docker CLI and Compose contracts and applies to
+Docker Engine and Docker Desktop on every host OS.
+
+The automatic maintenance does not remove named images, containers, volumes,
+or data under the runtime workdir. `kdcube clean` remains the explicit,
+broader command for removing all unused KDCube image tags and disposable build
+cache.
+
 ---
 
 ## Persistent defaults
@@ -503,7 +516,7 @@ kdcube defaults \
 | `kdcube info --workdir <path>` | Show resolved runtime info for a specific workdir |
 | `kdcube info --tenant <t> --project <p>` | Show runtime info for tenant/project under the default runtime base |
 | `kdcube init --reset-config` | (Legacy) Re-prompt for config values on a fresh init. Not applicable to already-initialized workdirs; use `kdcube refresh` for re-init. |
-| `kdcube clean` | Clean local Docker cache and unused KDCube images |
+| `kdcube clean` | Explicitly remove unused KDCube image tags and all disposable Docker build cache; persistent volumes and runtime workdir data remain intact |
 
 ---
 

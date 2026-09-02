@@ -1,6 +1,13 @@
+x-kdcube-logging: &kdcube-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "3"
+
 services:
 
   postgres-setup:
+    logging: *kdcube-logging
     image: kdcube-postgres-setup:latest
     build:
       context: ../../..
@@ -18,6 +25,7 @@ services:
     restart: "no"
 
   clamav:
+    logging: *kdcube-logging
     image: clamav/clamav:stable
     platform: linux/amd64
     restart: unless-stopped
@@ -38,6 +46,7 @@ services:
       - "127.0.0.1:3310:3310"
 
   kdcube-secrets:
+    logging: *kdcube-logging
     image: kdcube-secrets:latest
     build:
       context: ../../..
@@ -55,6 +64,7 @@ services:
       - kdcube-secrets
 
   chat-ingress:
+    logging: *kdcube-logging
     image: kdcube-chat-ingress:latest
     build:
       context: ../../..
@@ -100,6 +110,7 @@ services:
       - "127.0.0.1:${CHAT_APP_PORT:-8010}:8010"
 
   chat-proc:
+    logging: *kdcube-logging
     image: kdcube-chat-proc:latest
     build:
       context: ../../..
@@ -164,6 +175,7 @@ services:
       start_period: 180s
 
   metrics:
+    logging: *kdcube-logging
     image: kdcube-metrics:latest
     build:
       context: ../../..
@@ -188,6 +200,7 @@ services:
       - "127.0.0.1:${METRICS_PORT:-8090}:8090"
 
   web-ui:
+    logging: *kdcube-logging
     image: ${KDCUBE_UI_IMAGE:-kdcube-web-ui:latest}
     build:
       context: ${UI_BUILD_CONTEXT}
@@ -208,6 +221,7 @@ services:
       - ${PATH_TO_FRONTEND_CONFIG_JSON}:/usr/share/nginx/html/config.json:ro
 
   proxylogin:
+    logging: *kdcube-logging
     image: proxylogin:latest
     build:
       no_cache: true
@@ -225,6 +239,7 @@ services:
         read_only: true
 
   web-proxy:
+    logging: *kdcube-logging
     image: kdcube-web-proxy:latest
     build:
       context: ${PROXY_BUILD_CONTEXT}

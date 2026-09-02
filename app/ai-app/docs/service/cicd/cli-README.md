@@ -515,9 +515,24 @@ Behaviour:
   selectors;
 - stops the stack if it is running;
 - rebuilds platform Docker images when `--build` is given;
+- removes superseded dangling images and bounds disposable BuildKit cache
+  before and after a source build;
 - restarts the stack (unless `--no-restart` is passed);
 - never modifies `assembly.yaml`, `secrets.yaml`, `bundles.yaml`,
   `bundles.secrets.yaml`, `gateway.yaml`, or `economics.yaml`.
+
+The build-storage policy is host-independent. It applies to the Docker host's
+disposable objects through commands supported by Docker Engine and Docker
+Desktop. Modern builders retain at most 12 GB of disposable cache while
+preserving at least 8 GB of free Docker filesystem space when cache can be
+reclaimed. Older builders use their supported storage limit or expire cache
+older than 24 hours. Every maintained local Compose stack also rotates each
+container's Docker-managed stdout/stderr log at 20 MB with three files.
+
+This maintenance never prunes volumes, named images, running containers, or
+the KDCube runtime workdir. `kdcube clean` is still available for an explicit
+full removal of unused KDCube image tags and build cache, but repeated source
+refreshes should not require it as routine upkeep.
 
 This replaces the older pattern of re-running `kdcube init` on an existing
 workdir, which used to silently reseed descriptors under some flag

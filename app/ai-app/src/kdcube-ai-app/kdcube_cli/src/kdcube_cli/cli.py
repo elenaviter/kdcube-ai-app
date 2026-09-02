@@ -25,6 +25,7 @@ from rich.text import Text
 
 from kdcube_cli.banner import print_cli_banner
 from kdcube_cli import installer as installer_mod
+from kdcube_cli.docker_storage import build_storage_maintenance_commands
 from kdcube_cli.control import (
     AmbiguousTargetError,
     ControlEvent,
@@ -328,6 +329,8 @@ def start_compose_stack(
         lock_file=CLI_LOCK_FILE,
         stream_process_output=True,
     )
+    if build:
+        _maintain_docker_build_storage(console, phase="before")
     try:
         result = target.start(
             LocalStartRequest(build=build),
@@ -335,6 +338,9 @@ def start_compose_stack(
         )
     except KDCubeControlError as exc:
         raise SystemExit(exc.summary) from exc
+    finally:
+        if build:
+            _maintain_docker_build_storage(console, phase="after")
     console.print("[green]Docker compose started.[/green]")
     console.print("Open the UI:")
     console.print(f"  [link={result.url}]{result.url}[/link]")
@@ -348,6 +354,28 @@ def _control_event_renderer(console: Console):
             console.print(event.message)
 
     return _render
+
+
+def _maintain_docker_build_storage(console: Console, *, phase: str) -> None:
+    builder_help = _docker_output_soft(
+        ["docker", "builder", "prune", "--help"],
+        timeout=DOCKER_STATUS_TIMEOUT_SECONDS,
+    )
+    console.print(f"[dim]Docker storage maintenance ({phase} build)...[/dim]")
+    for command in build_storage_maintenance_commands(builder_help or ""):
+        try:
+            output = _docker_output(
+                list(command),
+                timeout=DOCKER_CLEAN_TIMEOUT_SECONDS,
+            )
+            lines = [line.strip() for line in output.splitlines() if line.strip()]
+            if lines:
+                console.print(f"[dim]{lines[-1]}[/dim]")
+        except SystemExit as exc:
+            console.print(
+                f"[yellow]Docker storage maintenance could not run "
+                f"`{shlex.join(command)}`: {exc}[/yellow]"
+            )
 
 
 def build_compose_images(
@@ -390,16 +418,20 @@ def build_compose_images(
     if not (ui_image_override and not installer_mod.is_placeholder(ui_image_override)):
         build_services.append("web-ui")
 
-    _run_compose(
-        console,
-        ["docker", "compose", "--env-file", str(env_file), "build", *build_services],
-        cwd=ctx.docker_dir,
-    )
-    _run_compose(
-        console,
-        ["docker", "build", "--progress=plain", "-t", "py-code-exec:latest", "-f", "Dockerfile_Exec", "../../.."],
-        cwd=ctx.docker_dir,
-    )
+    _maintain_docker_build_storage(console, phase="before")
+    try:
+        _run_compose(
+            console,
+            ["docker", "compose", "--env-file", str(env_file), "build", *build_services],
+            cwd=ctx.docker_dir,
+        )
+        _run_compose(
+            console,
+            ["docker", "build", "--progress=plain", "-t", "py-code-exec:latest", "-f", "Dockerfile_Exec", "../../.."],
+            cwd=ctx.docker_dir,
+        )
+    finally:
+        _maintain_docker_build_storage(console, phase="after")
     console.print("[green]Docker images built. The stack was not started.[/green]")
 
 
