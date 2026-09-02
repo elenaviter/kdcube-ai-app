@@ -164,7 +164,12 @@ def bind_delegated_card_persistence(app: FastAPI, *, redis, storage_root) -> Non
     )
 
     def _build():
+        from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.serving import (
+            SERVING_RESOLVERS_ATTR,
+        )
+
         store = getattr(app.state, "oauth_grant_store", None)
+        resolvers = getattr(app.state, SERVING_RESOLVERS_ATTR)
         return AutomationAccessService(
             redis=getattr(store, "redis", None),
             tenant=cfg.tenant,
@@ -172,6 +177,7 @@ def bind_delegated_card_persistence(app: FastAPI, *, redis, storage_root) -> Non
             config=cfg,
             grant_store=store,
             card_persistence=persistence,
+            catalog_resolver=resolvers.catalog,
         )
 
     app.state.automation_access_factory = _build
@@ -191,6 +197,26 @@ def mount_test_oauth_adapter(app: FastAPI) -> FastAPI:
         app.state.connection_hub_authority_registry = registry
     if registry.get("delegated_client") is None:
         registry.register(OAuthDelegatedClientAuthorityProvider())
+    if not callable(getattr(app.state, "automation_access_factory", None)):
+        from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.automation_access import (
+            AutomationAccessService,
+        )
+        from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.serving import (
+            SERVING_RESOLVERS_ATTR,
+        )
+
+        def _build_consent_access():
+            store = getattr(app.state, "oauth_grant_store", None)
+            resolvers = getattr(app.state, SERVING_RESOLVERS_ATTR)
+            return AutomationAccessService(
+                redis=getattr(store, "redis", None),
+                tenant=oauth_delegated_config(app).tenant,
+                project=oauth_delegated_config(app).project,
+                config=oauth_delegated_config(app),
+                catalog_resolver=resolvers.catalog,
+            )
+
+        app.state.automation_access_factory = _build_consent_access
     app.include_router(discovery_router, tags=["oauth-delegated-credential discovery"])
     app.include_router(oauth_routes_router, tags=["oauth-delegated-credential authorize"])
     return app

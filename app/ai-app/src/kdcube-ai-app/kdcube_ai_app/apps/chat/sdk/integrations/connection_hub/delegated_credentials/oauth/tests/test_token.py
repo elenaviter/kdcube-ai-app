@@ -67,6 +67,7 @@ def _seed_live_card(
     *,
     operations=("records_export",),
     resource_grants=None,
+    resource_operations=None,
 ) -> str:
     """Establish the live card projection the refresh path reads.
 
@@ -87,6 +88,7 @@ def _seed_live_card(
         resource_grants=(
             resource_grants if resource_grants is not None else {resource: ("records:read",)}
         ),
+        resource_operations=resource_operations or {},
         named_service_operations=NamedServiceSelection.unknown(),
         expires_at=int(time.time()) + 3600,
     )
@@ -158,11 +160,13 @@ async def test_access_token_grant_binds_consented_tools(ctx):
     assert grant_record["credential"]["issuer_authenticator_id"] == DELEGATED_CLIENT_AUTHENTICATOR_ID
     assert grant_record["credential"]["audience"] == "kdcube:delegated_client"
     assert grant_record["credential"]["attrs"]["identity_scope"] == "grantor"
+    assert grant_record["resource_operations"] == {}
     assert "grantor_roles" not in grant_record["credential"]["attrs"]
     assert grant_record["grantor_authority"]["grantor_roles"] == ["kdcube:role:super-admin"]
     assert grant_record["grantor_authority"]["economics_budget_bypass"] is True
     refresh_record = await store.validate_refresh_token(body["refresh_token"])
     assert refresh_record["operations"] == []
+    assert refresh_record["resource_operations"] == {}
     assert refresh_record["credential"]["issuer_authority_id"] == DELEGATED_CLIENT_AUTHORITY_ID
     assert refresh_record["grantor_authority"]["grantor_permissions"] == ["kdcube:*:records:*;read"]
 
@@ -187,9 +191,84 @@ async def test_authorization_code_exchange_succeeds(ctx):
     assert body["refresh_token"]
     refresh_record = await store.validate_refresh_token(body["refresh_token"])
     assert refresh_record["credential"]["subject"] == "integration:claude:google:admin@example.test"
+    assert refresh_record["resource_operations"] == {"*": ["records_export"]}
+    assert refresh_record["credential"]["attrs"]["resource_operations"] == {
+        "*": ["records_export"]
+    }
     assert refresh_record["identity_scope"] == "grantor_identity_family"
     assert refresh_record["credential"]["attrs"]["identity_scope"] == "grantor_identity_family"
     assert r.headers.get("Cache-Control") == "no-store"
+
+
+@pytest.mark.asyncio
+async def test_owner_connector_authority_survives_oauth_exchange_and_refresh(ctx):
+    client, store = ctx
+    proxy = "https://hub.example.test/mcp/remote_mcp_proxy"
+    connector = "urn:connection-hub:remote-mcp:mcp_0123456789abcdef01234567"
+    resource_grants = {
+        proxy: ["external_mcp:use"],
+        connector: ["external_mcp:use"],
+    }
+    resource_operations = {
+        proxy: [],
+        connector: ["records.search"],
+    }
+    code = await store.create_auth_code(
+        client_id="openclaw",
+        redirect_uri="http://127.0.0.1:9000/callback",
+        code_challenge=CHALLENGE,
+        sub="google:admin@example.test",
+        scopes=["external_mcp:use"],
+        operations=["records.search"],
+        resource=proxy,
+        resource_grants=resource_grants,
+        resource_operations=resource_operations,
+    )
+
+    first = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": "http://127.0.0.1:9000/callback",
+        "client_id": "openclaw",
+        "code_verifier": VERIFIER,
+    })
+
+    assert first.status_code == 200
+    first_body = first.json()
+    first_access = await store.get_access_grant_record(first_body["access_token"])
+    first_refresh = await store.validate_refresh_token(first_body["refresh_token"])
+    assert first_access["resource_grants"] == resource_grants
+    assert first_access["resource_operations"] == resource_operations
+    assert first_refresh["resource_grants"] == resource_grants
+    assert first_refresh["credential"]["attrs"]["resource_grants"] == resource_grants
+
+    _seed_live_card(
+        store,
+        first_refresh,
+        operations=("records.search",),
+        resource_grants={key: tuple(value) for key, value in resource_grants.items()},
+        resource_operations={
+            key: tuple(value) for key, value in resource_operations.items()
+        },
+    )
+    refreshed = client.post("/oauth/token", data={
+        "grant_type": "refresh_token",
+        "refresh_token": first_body["refresh_token"],
+        "client_id": "openclaw",
+    })
+
+    assert refreshed.status_code == 200
+    refreshed_body = refreshed.json()
+    refreshed_access = await store.get_access_grant_record(
+        refreshed_body["access_token"]
+    )
+    refreshed_record = await store.validate_refresh_token(
+        refreshed_body["refresh_token"]
+    )
+    assert refreshed_access["resource_grants"] == resource_grants
+    assert refreshed_access["resource_operations"] == resource_operations
+    assert refreshed_record["resource_grants"] == resource_grants
+    assert refreshed_record["resource_operations"] == resource_operations
 
 
 @pytest.mark.asyncio
@@ -306,6 +385,7 @@ async def test_refresh_token_rotates_and_issues_new_access(ctx):
     refresh_record = await store.validate_refresh_token(body["refresh_token"])
     assert refresh_record["identity_scope"] == "grantor_identity_family"
     assert refresh_record["credential"]["attrs"]["identity_scope"] == "grantor_identity_family"
+    assert refresh_record["resource_operations"] == {"*": ["records_export"]}
 
     # Old refresh token no longer works.
     again = client.post("/oauth/token", data={

@@ -789,7 +789,10 @@ class AgentIO:
                         alias=provider,
                         tool_name=name,
                         params=final_params,
-                        trace_id=str(call_reason or ""),
+                        # The reserved record identifies this logical tool
+                        # attempt. Human call_reason text can repeat and must
+                        # never be used as an idempotency identity.
+                        trace_id=rel,
                     )
                 else:
                     raise ValueError("tool_call: fn cannot be None in local/supervisor mode")

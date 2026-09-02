@@ -35,6 +35,7 @@ class MCPServerSpec:
     auth_profile: Optional[Dict[str, Any]] = None
     protocol_mode: str = "auto"
     read_timeout_seconds: Optional[float] = None
+    follow_redirects: bool = True
 
 
 @dataclass
@@ -99,7 +100,17 @@ class PythonSDKMCPAdapter:
         logger.info("MCP adapter call_tool: server=%s tool=%s opening session", self.server.server_id, tool_id)
         async with self._session() as session:
             logger.info("MCP adapter call_tool: server=%s tool=%s session ready, calling", self.server.server_id, tool_id)
-            result = await session.call_tool(tool_id, params or {})
+            call_kwargs: Dict[str, Any] = {}
+            invocation_id = str(trace_id or "").strip()
+            if invocation_id:
+                # MCP request metadata is transport context, not a tool
+                # argument. A Connection Hub proxy uses this stable id to
+                # replay the result of an uncertain allow-once call without
+                # dispatching the upstream operation twice.
+                call_kwargs["meta"] = {
+                    "connection_hub/invocation_id": invocation_id,
+                }
+            result = await session.call_tool(tool_id, params or {}, **call_kwargs)
             logger.info("MCP adapter call_tool: server=%s tool=%s call completed", self.server.server_id, tool_id)
             return normalize_mcp_tool_result(result)
 
@@ -225,6 +236,7 @@ async def _adapter_client_context(adapter: PythonSDKMCPAdapter):
         headers=await adapter._auth_headers(),
         mode=server.protocol_mode,
         read_timeout_seconds=server.read_timeout_seconds,
+        follow_redirects=server.follow_redirects,
     ) as client:
         yield client
 

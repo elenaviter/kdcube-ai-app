@@ -4,8 +4,8 @@ title: "Authenticated MCP: The Full Configuration Chain"
 summary: "The single authoritative reference for configuring authenticated MCP in KDCube: every configuration layer in order (managed door, delegated resource ceiling, delegable capabilities, OAuth client registration, namespace boundary grants), the provider connected-accounts self-description contract, the two consent gates, and the three scenarios this chain enables."
 status: active
 tags: ["sdk", "connections", "connection-hub", "mcp", "managed-auth", "delegated-credentials", "delegated-accounts", "named-services", "consent", "connected-accounts", "automation", "agents"]
-updated_at: 2026-08-27
-keywords: ["mode: managed", "authority_id", "delegated_client", "resources", "grants", "capabilities", "delegable_roles", "delegable_permissions", "Client ID Metadata Document", "dynamic_client_registration", "allowed_redirect_uris", "named_services.namespaces", "connected_accounts", "claims_by_operation", "claim_labels", "delegated_consent_required", "needs_connected_account_consent", "connect_required", "agent_grant_required", "retry_hint", "candidates", "kdcube-agent", "automation access", "TTL", "enforce_tool_requirements", "plain mcp tools", "productivity"]
+updated_at: 2026-09-02
+keywords: ["mode: managed", "authority_id", "delegated_client", "resources", "grants", "capabilities", "resource_operations", "invocation policy", "allow once", "allow always", "delegable_roles", "delegable_permissions", "Client ID Metadata Document", "dynamic_client_registration", "allowed_redirect_uris", "named_services.namespaces", "connected_accounts", "claims_by_operation", "claim_labels", "delegated_consent_required", "delegated_capability_not_granted", "needs_connected_account_consent", "connect_required", "agent_grant_required", "retry_hint", "candidates", "kdcube-agent", "automation access", "TTL", "enforce_tool_requirements", "plain mcp tools", "productivity"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/delegated-authority-and-admission-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/configuring-agent-service-access/configuring-agent-service-access-README.md
@@ -172,6 +172,13 @@ All three registration paths enter the same authorization-code, consent,
 refresh, revocation, resource, and per-operation grant machinery. Single-use
 OAuth state changes are atomic across workers, and a pointer-backed credential
 resolves its current Connection Hub card on every managed call and refresh.
+For a resource marked `resource_selection: true`, such as the external MCP
+proxy, anonymous discovery remains deployment-scoped. After platform login,
+consent adds only the grantor's resource overlay and lets the user select exact
+operations under those resources. The authorization code, token binding,
+refresh record, and live card preserve that resource-qualified selection. The
+full decision contract is owned by
+[Delegated Authority And Admission](../../../../arch/delegated-authority-and-admission-README.md).
 The protocol support boundary and conformance gates are owned by
 [OAuth Delegated Credential Protocol Adapter](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/package/oauth-delegated-credential-protocol.md#mcp-2026-07-28-support-boundary).
 
@@ -424,6 +431,18 @@ the user's connected account plus the per-account binding. The gate diagram
 and the configuration of each side are in
 [Configuring Agent Access To Services And Accounts](../configuring-agent-service-access/configuring-agent-service-access-README.md);
 here is the complete error vocabulary each gate answers with.
+
+The managed MCP guard first checks the protected resource and its outer tool.
+Card schema v2 stores those selections as
+`resource_operations[resource][]`; the flat `operations` list is a derived
+compatibility union. When the catalog still offers a tool but this card does
+not select it, the guard returns `delegated_capability_not_granted` with the
+exact resource and `outer_operation`. Its consent block carries a focused
+Connection Hub route. For a hosted agent it also carries a one-click
+`delegated_agent_grant_create` payload whose `resource_operations` map selects
+only that tool. The focused view requires **Allow once** or **Allow always**;
+the operation and initial invocation policy commit together. Grant completion
+reports back to the matching conversation and does not replay the refused call.
 
 **Gate 1 denies with `delegated_consent_required`** - the caller's delegated
 credential lacks a grant the operation needs. The denial names the exact

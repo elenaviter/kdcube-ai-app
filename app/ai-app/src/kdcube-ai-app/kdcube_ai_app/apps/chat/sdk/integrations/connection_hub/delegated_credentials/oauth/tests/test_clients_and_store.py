@@ -194,6 +194,59 @@ async def test_auth_code_consume_returns_bound_payload(store):
 
 
 @pytest.mark.asyncio
+async def test_multi_resource_authority_survives_code_refresh_and_access_binding(store):
+    proxy = "https://hub.example.test/mcp/proxy"
+    connector = "urn:connection-hub:remote-mcp:mcp_0123456789abcdef01234567"
+    resource_grants = {
+        proxy: ["external_mcp:use"],
+        connector: ["external_mcp:use"],
+    }
+    resource_operations = {
+        proxy: [],
+        connector: ["records.search"],
+    }
+    code = await store.create_auth_code(
+        client_id="openclaw",
+        redirect_uri="http://localhost:9999/callback",
+        code_challenge=make_s256_challenge("v" * 50),
+        sub="user-1",
+        scopes=["external_mcp:use"],
+        operations=["records.search"],
+        resource=proxy,
+        resource_grants=resource_grants,
+        resource_operations=resource_operations,
+    )
+    code_payload = await store.consume_auth_code(code)
+    assert code_payload["resource_grants"] == resource_grants
+    assert code_payload["resource_operations"] == resource_operations
+
+    refresh = await store.create_refresh_token(
+        client_id="openclaw",
+        sub="user-1",
+        scopes=["external_mcp:use"],
+        operations=["records.search"],
+        resource=proxy,
+        resource_grants=resource_grants,
+        resource_operations=resource_operations,
+    )
+    rotated = await store.rotate_refresh_token(refresh)
+    refresh_payload = await store.validate_refresh_token(rotated)
+    assert refresh_payload["resource_grants"] == resource_grants
+    assert refresh_payload["resource_operations"] == resource_operations
+
+    await store.bind_access_grant(
+        "access-token",
+        ["records.search"],
+        60,
+        resource_grants=resource_grants,
+        resource_operations=resource_operations,
+    )
+    access_payload = await store.get_access_grant_record("access-token")
+    assert access_payload["resource_grants"] == resource_grants
+    assert access_payload["resource_operations"] == resource_operations
+
+
+@pytest.mark.asyncio
 async def test_auth_code_is_single_use(store):
     code = await store.create_auth_code(
         client_id="claude", redirect_uri="http://localhost:9999/callback",

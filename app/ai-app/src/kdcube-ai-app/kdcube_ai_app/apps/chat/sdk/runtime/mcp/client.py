@@ -24,6 +24,9 @@ async def open_mcp_client(
     headers: Optional[Mapping[str, str]] = None,
     mode: str = MCP_CLIENT_MODE_AUTO,
     read_timeout_seconds: Optional[float] = None,
+    follow_redirects: bool = True,
+    http_transport: Any = None,
+    trust_env: bool = True,
 ) -> AsyncIterator[Any]:
     """Open an MCP SDK v2 client with modern discovery and legacy fallback.
 
@@ -41,7 +44,13 @@ async def open_mcp_client(
     elif normalized == "sse":
         target = _sse_transport(endpoint=endpoint, headers=headers)
     elif normalized in {"streamable-http", "streamable_http", "http", ""}:
-        target = _streamable_http_transport(endpoint=endpoint, headers=headers)
+        target = _streamable_http_transport(
+            endpoint=endpoint,
+            headers=headers,
+            follow_redirects=follow_redirects,
+            http_transport=http_transport,
+            trust_env=trust_env,
+        )
     else:
         raise ValueError(f"Unsupported MCP transport: {transport!r}")
 
@@ -187,6 +196,9 @@ async def _streamable_http_transport(
     *,
     endpoint: str,
     headers: Optional[Mapping[str, str]],
+    follow_redirects: bool = True,
+    http_transport: Any = None,
+    trust_env: bool = True,
 ) -> AsyncIterator[Any]:
     import httpx2
 
@@ -198,7 +210,9 @@ async def _streamable_http_transport(
     async with httpx2.AsyncClient(
         headers=dict(headers or {}),
         timeout=timeout,
-        follow_redirects=True,
+        follow_redirects=bool(follow_redirects),
+        transport=http_transport,
+        trust_env=bool(trust_env),
     ) as http_client:
         async with streamable_http_client(
             endpoint,

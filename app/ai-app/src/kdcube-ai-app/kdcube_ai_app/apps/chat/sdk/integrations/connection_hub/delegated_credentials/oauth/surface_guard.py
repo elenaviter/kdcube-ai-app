@@ -13,14 +13,16 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, Mapping, Optional
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 
 from connection_hub.delegated_credentials.oauth.surface_policy import (
+    DELEGATED_PROXY_AUTH_MODE,
     MANAGED_AUTH_MODE,
+    DelegatedProxyAuthPolicy,
     ManagedMcpAuthPolicy,
     ManagedMcpToolPolicy,
     ManagedRestAuthPolicy,
@@ -30,10 +32,12 @@ from connection_hub.delegated_credentials.oauth.surface_policy import (
     as_list as _as_list,
     auth_mode,
     authorize_credential_boundary,
+    authorize_credential_identity_boundary,
     authorize_mcp_capabilities,
     authorize_principal_boundary,
     authorize_rest_capabilities,
     decode_json_body as _decode_json_body,
+    delegated_proxy_auth_policy,
     extract_mcp_tool_calls,
     managed_mcp_auth_policy,
     managed_rest_auth_policy,
@@ -81,6 +85,7 @@ from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.named_service_admis
 
 
 MANAGED_MCP_AUTH_MODE = MANAGED_AUTH_MODE
+DELEGATED_PROXY_MCP_AUTH_MODE = DELEGATED_PROXY_AUTH_MODE
 LOGGER = logging.getLogger("kdcube.connection_hub.oauth.mcp_guard")
 REST_LOGGER = logging.getLogger("kdcube.connection_hub.oauth.rest_guard")
 
@@ -343,6 +348,80 @@ def _surface_policy_denial_response(
     )
 
 
+def _grant_record_client_id(grant_record: Mapping[str, Any] | None) -> str:
+    record = grant_record if isinstance(grant_record, Mapping) else {}
+    direct = str(record.get("client_id") or "").strip()
+    if direct:
+        return direct
+    credential = record.get("credential")
+    credential = credential if isinstance(credential, Mapping) else {}
+    attrs = credential.get("attrs")
+    attrs = attrs if isinstance(attrs, Mapping) else {}
+    return str(attrs.get("client_id") or "").strip()
+
+
+def _outer_operation_consent_payload(
+    payload: Mapping[str, Any],
+    *,
+    request: Request,
+    auth: Mapping[str, Any] | None,
+    grant_record: Mapping[str, Any] | None,
+    resource: str,
+    operation: str,
+) -> dict[str, Any]:
+    """Add the exact recovery facts to an outer-operation card denial.
+
+    The catalog denial remains intact. The consent block gives chat clients and
+    external MCP clients one concrete route to extend this caller's live card.
+    """
+    client_id = _grant_record_client_id(grant_record)
+    if not client_id or not resource or not operation:
+        return dict(payload)
+    from connection_hub.delegated_credentials.consent_denial import (
+        AGENT_CLIENT_PREFIX,
+        connection_hub_grant_url,
+    )
+
+    tenant, project = oauth_tenant_project(request)
+    auth = auth if isinstance(auth, Mapping) else {}
+    hub_bundle_id = str(
+        auth.get("connection_hub_bundle_id")
+        or auth.get("connectionHubBundleId")
+        or "connection-hub@1-0"
+    ).strip()
+    hub_url = connection_hub_grant_url(
+        tenant=tenant,
+        project=project,
+        client_id=client_id,
+        resource=resource,
+        claims=(),
+        hub_bundle_id=hub_bundle_id,
+        outer_operation=operation,
+    )
+    consent: dict[str, Any] = {
+        "kind": "delegated_agent_grant",
+        "reason": "delegated_capability_not_granted",
+        "agent_client_id": client_id,
+        "resource": resource,
+        "claims": [],
+        "tool_name": operation,
+        "outer_operation": operation,
+    }
+    if hub_url:
+        consent["connection_hub_url"] = hub_url
+    if client_id.startswith(AGENT_CLIENT_PREFIX):
+        consent["grant"] = {
+            "operation": "delegated_agent_grant_create",
+            "payload": {
+                "client_id": client_id,
+                "resource": resource,
+                "claims": [],
+                "resource_operations": {resource: [operation]},
+            },
+        }
+    return {**dict(payload), "consent": consent}
+
+
 async def _default_grant_store(request: Request) -> GrantStore:
     override = getattr(request.app.state, "oauth_grant_store", None)
     if override is not None:
@@ -463,6 +542,10 @@ async def _live_grant_record(request: Any, grant_record: Optional[Dict[str, Any]
     attrs["scopes"] = all_grants
     attrs["grants"] = all_grants
     attrs["operations"] = list(card.operations)
+    attrs["resource_operations"] = {
+        resource: list(operations or ())
+        for resource, operations in card.resource_operations.items()
+    }
     attrs["account_scope"] = {
         provider: {account_id: list(claims) for account_id, claims in accounts.items()}
         for provider, accounts in card.account_scope.items()
@@ -477,6 +560,10 @@ async def _live_grant_record(request: Any, grant_record: Optional[Dict[str, Any]
     resolved["expires_at"] = int(card.expires_at or 0)
     resolved["source"] = str(card.source or "")
     resolved["operations"] = list(card.operations)
+    resolved["resource_operations"] = {
+        resource: list(operations or ())
+        for resource, operations in card.resource_operations.items()
+    }
     resolved["grants"] = all_grants
     # Carry the card's per-agent account binding so the door can enforce it
     # (which connected account(s) this client may use per provider).
@@ -547,7 +634,12 @@ def _delegated_runtime_projection(
     user = user if isinstance(user, Mapping) else {}
     effective_resource = request_resource or _request_resource(request)
     grants = sorted(_credential_grants_for_resource(envelope, effective_resource))
-    operations = _as_list(grant_record.get("operations")) or _as_list(attrs.get("operations"))
+    credential_view = DelegatedCredentialView.from_parts(credential, grant_record)
+    resource_operations = {
+        resource: list(operations)
+        for resource, operations in credential_view.resource_operations.items()
+    }
+    operations = sorted(credential_view.operations_for_resource(effective_resource))
     grantor_user_id = str(projection.get("grantor_user_id") or delegated_primary_user_id(envelope)).strip()
     delegate_identity = str(projection.get("delegate_identity") or envelope.subject or "").strip()
     economics = projection.get("economics")
@@ -572,6 +664,7 @@ def _delegated_runtime_projection(
             "grants": grants,
             "scopes": grants,
             "operations": list(operations),
+            "resource_operations": resource_operations,
             "resource_grants": resource_grants,
             "identity_scope": normalize_delegated_identity_scope(attrs.get("identity_scope")),
             "delegation": dict(projection.get("delegation") or {}),
@@ -610,6 +703,7 @@ def _delegated_runtime_projection(
         "identity_scope": identity_authority.get("identity_scope") or "",
         "grants": grants,
         "operations": list(operations),
+        "resource_operations": resource_operations,
     }
 
 
@@ -729,6 +823,7 @@ async def _authorize_delegated_managed_request(
     surface_label: str,
     token: str = "",
     request_resource: str = "",
+    match_request_resource: bool = True,
 ) -> tuple[JSONResponse | None, dict[str, Any], CredentialEnvelope, Mapping[str, Any]]:
     effective_token = token or _extract_bearer(request)
     effective_resource = request_resource or _request_resource(request)
@@ -828,16 +923,27 @@ async def _authorize_delegated_managed_request(
     except Exception:
         pass
 
-    boundary = authorize_credential_boundary(
-        authority_id=authority_id,
-        required_roles=(),
-        required_permissions=(),
-        user_roles=user.get("roles") or (),
-        user_permissions=user.get("permissions") or (),
-        envelope=envelope,
-        grant_record=grant_record,
-        request_resource=effective_resource,
-    )
+    if match_request_resource:
+        boundary = authorize_credential_boundary(
+            authority_id=authority_id,
+            required_roles=(),
+            required_permissions=(),
+            user_roles=user.get("roles") or (),
+            user_permissions=user.get("permissions") or (),
+            envelope=envelope,
+            grant_record=grant_record,
+            request_resource=effective_resource,
+        )
+    else:
+        boundary = authorize_credential_identity_boundary(
+            authority_id=authority_id,
+            required_roles=(),
+            required_permissions=(),
+            user_roles=user.get("roles") or (),
+            user_permissions=user.get("permissions") or (),
+            envelope=envelope,
+            grant_record=grant_record,
+        )
     if not boundary.allowed:
         assert boundary.denial is not None
         logger.info(
@@ -854,6 +960,54 @@ async def _authorize_delegated_managed_request(
         )
 
     return None, user, envelope, grant_record or {}
+
+
+async def authorize_delegated_mcp_proxy_request(
+    *,
+    request: Request,
+    body: bytes,
+    auth: Mapping[str, Any] | None,
+) -> Response | None:
+    """Authenticate a live delegated card for a governed inner-resource proxy.
+
+    This entrance intentionally does not match the card against the proxy URL.
+    The proxy application must resolve and enforce an exact card resource,
+    grant, and operation before calling any upstream service.
+    """
+
+    policy = delegated_proxy_auth_policy(auth)
+    if policy is None:
+        return None
+    if isinstance(_decode_json_body(body), list):
+        return _json_response(
+            400,
+            "invalid_request",
+            "JSON-RPC batch requests are not supported by this MCP transport",
+        )
+    denial, user, envelope, grant_record = await _authorize_delegated_managed_request(
+        request=request,
+        auth=auth,
+        authority_id=policy.authority_id,
+        roles=policy.roles,
+        permissions=policy.permissions,
+        logger=LOGGER,
+        surface_label="mcp_proxy",
+        match_request_resource=False,
+    )
+    if denial is not None:
+        return denial
+    view = DelegatedCredentialView.from_envelope(envelope, grant_record)
+    LOGGER.info(
+        "[connection-hub.oauth.mcp_proxy_guard] accepted subject=%s grantor=%s "
+        "delegate=%s authority=%s card=%s resources=%s",
+        user.get("sub") or "",
+        view.grantor_user_id,
+        view.subject,
+        envelope.issuer_authority_id,
+        view.registry_access_id,
+        sorted(view.resources),
+    )
+    return None
 
 
 async def authorize_delegated_mcp_request(
@@ -924,7 +1078,24 @@ async def authorize_delegated_mcp_request(
             decision.denial.reason,
             request_resource,
         )
-        return _surface_policy_denial_response(decision.denial)
+        policy_denial = decision.denial
+        if (
+            policy_denial.reason == "operation_not_consented"
+            and isinstance(policy_denial.payload, Mapping)
+            and tool_calls
+        ):
+            policy_denial = replace(
+                policy_denial,
+                payload=_outer_operation_consent_payload(
+                    policy_denial.payload,
+                    request=request,
+                    auth=auth,
+                    grant_record=grant_record,
+                    resource=decision.matched_resource or request_resource,
+                    operation=tool_calls[0][1],
+                ),
+            )
+        return _surface_policy_denial_response(policy_denial)
 
     try:
         store_managed_named_service_admission_snapshot(
@@ -1131,12 +1302,15 @@ async def authorize_delegated_rest_request(
 
 
 __all__ = [
+    "DELEGATED_PROXY_MCP_AUTH_MODE",
     "MANAGED_MCP_AUTH_MODE",
+    "DelegatedProxyAuthPolicy",
     "ManagedMcpAuthPolicy",
     "ManagedMcpToolPolicy",
     "ManagedRestAuthPolicy",
     "ManagedRestOperationPolicy",
     "DelegatedRestAdmissionResult",
+    "authorize_delegated_mcp_proxy_request",
     "authorize_delegated_mcp_request",
     "authorize_delegated_rest_request",
     "delegated_request_resource",

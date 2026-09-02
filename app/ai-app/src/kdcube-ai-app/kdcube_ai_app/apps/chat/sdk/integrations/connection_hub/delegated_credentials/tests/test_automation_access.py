@@ -1111,6 +1111,10 @@ async def test_agent_regrant_with_merge_existing_false_REPLACES_the_record(card_
         resources=["https://example.test/mcp"],
     )
     assert token["resource_grants"]["https://example.test/mcp"] == ["records:read"]
+    assert token["resource_operations"] == {
+        "https://example.test/mcp": ["records_export"]
+    }
+    assert token["operations"] == ["records_export"]
     assert len((await service.list_access(writer))["items"]) == 1
 
 
@@ -1992,8 +1996,51 @@ async def test_manual_automation_keeps_random_client_and_no_stored_token(card_pe
     # No client_id -> unchanged manual behavior: random automation:… client, source=manual,
     # token returned to the caller but NOT persisted in the record for reuse.
     assert created["access"]["client_id"].startswith("automation:")
+    assert created["access"]["access_id"] not in created["access"]["client_id"]
     assert created["access"]["source"] == "manual"
     assert (await only_stored_card(service)).get("access_token", "") == ""
+
+
+@pytest.mark.asyncio
+async def test_manual_card_can_be_extended_by_its_exact_identity(card_persistence):
+    service = _agent_service(card_persistence)
+    resource = "https://example.test/mcp"
+    created = await service.create_access(
+        _AGENT_USER,
+        label="Manual caller",
+        resource_grants={resource: ["records:read"]},
+        resource_operations={resource: []},
+    )
+    card = created["access"]
+
+    extended = await service.extend_client_access(
+        _AGENT_USER,
+        client_id=card["client_id"],
+        access_id=card["access_id"],
+        resource=resource,
+        claims=["records:read"],
+        resource_operations={resource: ["records_export"]},
+    )
+
+    assert extended["ok"] is True
+    assert extended["access_id"] == card["access_id"]
+    assert extended["access"]["source"] == "manual"
+    assert extended["access"]["resource_operations"] == {
+        resource: ["records_export"]
+    }
+
+    mismatched = await service.extend_client_access(
+        _AGENT_USER,
+        client_id="another-client",
+        access_id=card["access_id"],
+        resource=resource,
+        claims=["records:read"],
+    )
+    assert mismatched == {
+        "ok": False,
+        "error": "delegated_access_client_mismatch",
+        "status": 409,
+    }
 
 
 @pytest.mark.asyncio

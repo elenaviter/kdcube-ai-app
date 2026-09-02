@@ -49,9 +49,16 @@ from connection_hub.delegated_credentials.oauth.consent import (
     named_service_selection_rows,
     platform_edge_grants_for_scopes,
     render_consent_html,
+    resource_selection_rows,
     tools_for_scopes,
 )
 from connection_hub.delegated_credentials.oauth.authority import build_delegated_client_credential
+from connection_hub.delegated_credentials.resource_operations import (
+    normalize_resource_grants,
+    normalize_resource_operations,
+    operation_union,
+    project_legacy_operations,
+)
 from connection_hub.delegated_credentials.cards.resolver import (
     CardUnavailable,
 )
@@ -212,6 +219,7 @@ def _consent_payload(
     connected_accounts: list | None = None,
     seeded_account_scope: Mapping[str, Any] | None = None,
     seeded_named_service_operations: Mapping[str, Any] | None = None,
+    seeded_resource_operations: Mapping[str, Iterable[str]] | None = None,
 ) -> dict[str, Any]:
     authorize_request = {
         "client_id": req.client_id,
@@ -254,6 +262,12 @@ def _consent_payload(
             }
             for tool in cfg.tools_for_scopes(req.scopes, resource=req.resource)
         ],
+        "resources": resource_selection_rows(
+            req.scopes,
+            config=cfg,
+            resource=req.resource,
+            seeded_operations=seeded_resource_operations,
+        ),
         "named_service_operations": named_service_selection_rows(
             req.scopes,
             config=cfg,
@@ -267,6 +281,10 @@ def _consent_payload(
         "seeded_named_service_operations": {
             str(namespace): [str(op) for op in (operations or ())]
             for namespace, operations in dict(seeded_named_service_operations or {}).items()
+        },
+        "seeded_resource_operations": {
+            str(selector): [str(operation) for operation in (operations or ())]
+            for selector, operations in dict(seeded_resource_operations or {}).items()
         },
     }
 
@@ -333,6 +351,7 @@ async def _render_custom_consent_if_configured(
     connected_accounts: list | None = None,
     seeded_account_scope: Mapping[str, Any] | None = None,
     seeded_named_service_operations: Mapping[str, Any] | None = None,
+    seeded_resource_operations: Mapping[str, Iterable[str]] | None = None,
 ) -> Response | None:
     endpoint = _custom_consent_endpoint(request, cfg)
     if not endpoint:
@@ -375,6 +394,7 @@ async def _render_custom_consent_if_configured(
         connected_accounts=connected_accounts,
         seeded_account_scope=seeded_account_scope,
         seeded_named_service_operations=seeded_named_service_operations,
+        seeded_resource_operations=seeded_resource_operations,
     )
     try:
         result = await call_bundle_operation(
@@ -475,6 +495,50 @@ def _selected_named_service_operations(
     return {resource or "*": picked}
 
 
+def _selected_resource_authority(
+    form: Any,
+    *,
+    scopes: Iterable[str],
+    cfg: OAuthDelegatedClientConfig,
+    resource: str,
+) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """Validate owner-resource operation picks against the live consent offer."""
+    rows = resource_selection_rows(scopes, config=cfg, resource=resource)
+    allowed: dict[tuple[str, str], dict[str, Any]] = {}
+    row_grants: dict[str, list[str]] = {}
+    for row in rows:
+        selector = str(row.get("resource") or "").strip()
+        if not selector:
+            continue
+        row_grants[selector] = [str(grant) for grant in row.get("grants") or ()]
+        for operation in row.get("operations") or ():
+            name = str(operation.get("name") or "").strip()
+            if name:
+                allowed[(selector, name)] = operation
+
+    selected_operations: dict[str, list[str]] = {}
+    for raw in form.getlist("resource_operations"):
+        try:
+            value = json.loads(str(raw or ""))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("resource operation selection is malformed") from exc
+        if not isinstance(value, Mapping):
+            raise ValueError("resource operation selection is malformed")
+        selector = str(value.get("resource") or "").strip()
+        operation = str(value.get("operation") or "").strip()
+        if (selector, operation) not in allowed:
+            raise ValueError("resource operation was not offered to this user")
+        held = selected_operations.setdefault(selector, [])
+        if operation not in held:
+            held.append(operation)
+
+    selected_grants = {
+        selector: row_grants[selector]
+        for selector in selected_operations
+    }
+    return selected_grants, selected_operations
+
+
 async def _active_catalog_document(request: Request) -> Any | None:
     resolvers = delegated_serving_resolvers(request)
     if resolvers is None:
@@ -491,11 +555,34 @@ async def _active_catalog_version_for_consent(request: Request) -> str:
     return str(getattr(document, "version", "") or "")
 
 
-async def _consent_config(request: Request) -> OAuthDelegatedClientConfig | None:
+async def _consent_config(
+    request: Request,
+    *,
+    owner_subject: str = "",
+) -> OAuthDelegatedClientConfig | None:
     """What the consent page may offer: the registered catalog, the same
     document the card writer decides against. ``None`` when no catalog can be
     established — a card cannot be written then either, so offering the
     descriptor would promise what token exchange refuses."""
+    owner = str(owner_subject or "").strip()
+    if owner:
+        try:
+            return await get_automation_access(request).oauth_consent_config(
+                grantor_subject=owner
+            )
+        except (AutomationAccessUnavailable, CardUnavailable):
+            LOGGER.warning(
+                "[connection-hub.oauth] owner-scoped consent catalog unavailable subject=%s",
+                owner,
+                exc_info=True,
+            )
+            return None
+        except Exception:
+            LOGGER.exception(
+                "[connection-hub.oauth] owner-scoped consent catalog failed subject=%s",
+                owner,
+            )
+            return None
     document = await _active_catalog_document(request)
     if document is None:
         return None
@@ -865,6 +952,23 @@ async def authorize(request: Request) -> Response:
             return RedirectResponse(f"/signin/?next={quote(return_to, safe='')}", status_code=302)
         return denied
 
+    subject = _user_subject(user or {})
+    if not subject:
+        return JSONResponse(status_code=401, content={"error": "login_required"})
+    owner_cfg = await _consent_config(request, owner_subject=subject)
+    if owner_cfg is None:
+        return _catalog_unavailable_response()
+    try:
+        req = parse_authorize_request(
+            params,
+            client_resolver=resolver,
+            public_client_resolver=lambda cid: get_client(cid, request),
+            supported_scopes=owner_cfg.supported_scopes(params.get("resource")),
+        )
+    except AuthorizeError as err:
+        return _error_response(err, issuer)
+    cfg = owner_cfg
+
     inventory = await _platform_grant_inventory(user or {}, req.scopes, cfg=cfg, resource=req.resource)
     _log_inventory(stage="authorize", user=user or {}, scopes=req.scopes, inventory=inventory, resource=req.resource)
     visible_scopes = [scope for scope in req.scopes if scope in set(inventory.grant_names())]
@@ -887,9 +991,6 @@ async def authorize(request: Request) -> Response:
         return delegation_denied
 
     # Synchronizer CSRF token bound to the consenting user, embedded in the form.
-    subject = _user_subject(user or {})
-    if not subject:
-        return JSONResponse(status_code=401, content={"error": "login_required"})
     csrf_context = {
         "client_id": req.client_id,
         "client_metadata_digest": (
@@ -921,6 +1022,9 @@ async def authorize(request: Request) -> Response:
     seeded_named_service_operations = await _seed_named_service_operations_for_consent(
         request, subject=subject, client_id=req.client_id, resource=req.resource,
     )
+    seeded_resource_operations = await _seed_resource_operations_for_consent(
+        request, subject=subject, client_id=req.client_id, resource=req.resource,
+    )
     catalog_version = await _active_catalog_version_for_consent(request)
     custom = await _render_custom_consent_if_configured(
         request,
@@ -935,6 +1039,7 @@ async def authorize(request: Request) -> Response:
         connected_accounts=connected_accounts,
         seeded_account_scope=seeded_account_scope,
         seeded_named_service_operations=seeded_named_service_operations,
+        seeded_resource_operations=seeded_resource_operations,
     )
     if custom is not None:
         return custom
@@ -956,6 +1061,7 @@ async def authorize(request: Request) -> Response:
             connected_accounts=connected_accounts,
             seeded_account_scope=seeded_account_scope,
             seeded_named_service_operations=seeded_named_service_operations,
+            seeded_resource_operations=seeded_resource_operations,
             accounts_needed=accounts_needed,
             catalog_version=catalog_version,
         )
@@ -1106,6 +1212,22 @@ async def _seed_named_service_operations_for_consent(
         return {}
 
 
+async def _seed_resource_operations_for_consent(
+    request, *, subject: str, client_id: str, resource: str
+) -> dict[str, list[str]]:
+    """Pre-check owner-resource operations held by this OAuth client."""
+    try:
+        service = get_automation_access(request)
+        return await service.oauth_seed_resource_operations(
+            grantor_subject=subject,
+            client_id=client_id,
+            resource=str(resource or ""),
+        )
+    except Exception:
+        LOGGER.exception("[connection-hub.oauth] consent resource-operation seed failed")
+        return {}
+
+
 @router.post("/oauth/authorize/consent", include_in_schema=False)
 @_normalize_grant_store_unavailable
 async def authorize_consent(request: Request) -> Response:
@@ -1154,6 +1276,19 @@ async def authorize_consent(request: Request) -> Response:
     subject = _user_subject(user or {})
     if not subject:
         return JSONResponse(status_code=401, content={"error": "login_required"})
+    owner_cfg = await _consent_config(request, owner_subject=subject)
+    if owner_cfg is None:
+        return _catalog_unavailable_response()
+    try:
+        req = parse_authorize_request(
+            params,
+            client_resolver=resolver,
+            public_client_resolver=lambda cid: get_client(cid, request),
+            supported_scopes=owner_cfg.supported_scopes(params.get("resource")),
+        )
+    except AuthorizeError as err:
+        return _error_response(err, issuer)
+    cfg = owner_cfg
 
     # CSRF: the consent POST must carry the single-use token minted for THIS user
     # at GET /oauth/authorize. Blocks a forged cross-site POST riding the session
@@ -1281,7 +1416,31 @@ async def authorize_consent(request: Request) -> Response:
         return delegation_denied
 
     valid_tools = {name for name, _, _ in tools_for_scopes(selected_scopes, config=cfg, resource=req.resource)}
-    selected_operations = [t for t in form.getlist("tools") if t in valid_tools]
+    direct_operations = [t for t in form.getlist("tools") if t in valid_tools]
+    try:
+        child_resource_grants, child_resource_operations = _selected_resource_authority(
+            form,
+            scopes=selected_scopes,
+            cfg=cfg,
+            resource=req.resource,
+        )
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "invalid_request",
+                "error_description": str(exc),
+            },
+        )
+    resource_grants = {
+        req.resource: list(selected_scopes),
+        **child_resource_grants,
+    }
+    resource_operations = {
+        req.resource: direct_operations,
+        **child_resource_operations,
+    }
+    selected_operations = list(operation_union(resource_operations))
     resource_cfg = cfg.resource_config(req.resource)
     named_services = dict(resource_cfg.named_services or {}) if resource_cfg is not None else {}
     named_service_operations = _selected_named_service_operations(
@@ -1305,8 +1464,9 @@ async def authorize_consent(request: Request) -> Response:
             held.append(claim)
     LOGGER.info(
         "[connection-hub.oauth] consent approved client_id=%s scopes=%d tools=%d "
-        "account_scope_providers=%s",
+        "resources=%d account_scope_providers=%s",
         req.client_id, len(selected_scopes), len(selected_operations),
+        len(child_resource_operations),
         sorted(account_scope.keys()) or "-",
     )
     code = await store.create_auth_code(
@@ -1316,6 +1476,8 @@ async def authorize_consent(request: Request) -> Response:
         sub=subject,
         scopes=selected_scopes,
         operations=selected_operations,
+        resource_grants=resource_grants,
+        resource_operations=resource_operations,
         resource=req.resource,
         identity_scope=resource_cfg.identity_scope if resource_cfg is not None else "",
         grantor_authority=grantor_authority,
@@ -1381,6 +1543,8 @@ async def _issue_tokens(
     scopes,
     client_id,
     operations,
+    resource_grants=None,
+    resource_operations=None,
     resource=None,
     identity_scope="",
     grantor_authority=None,
@@ -1393,6 +1557,18 @@ async def _issue_tokens(
     client_metadata=None,
 ) -> JSONResponse:
     tenant, project = oauth_tenant_project(request)
+    grant_map = normalize_resource_grants(resource_grants)
+    if not grant_map and str(resource or "").strip():
+        grant_map = normalize_resource_grants({str(resource): list(scopes or [])})
+    operation_map = (
+        normalize_resource_operations(resource_operations)
+        if resource_operations is not None
+        else project_legacy_operations(
+            {str(resource): list(scopes or [])} if str(resource or "").strip() else {},
+            operations or (),
+        )
+    )
+    operations = list(operation_union(operation_map))
     # This is the common credential envelope understood by the Connection Hub
     # authority SDK. The access token remains a real kst1 session token; the
     # envelope is the routing/verification hint carried inside that token and in
@@ -1402,6 +1578,10 @@ async def _issue_tokens(
         client_id=client_id,
         scopes=scopes,
         operations=operations,
+        resource_operations=operation_map,
+        resources=list(grant_map),
+        resource_grants=grant_map,
+        account_scope=account_scope,
         tenant=tenant,
         project=project,
         resource=resource,
@@ -1428,6 +1608,10 @@ async def _issue_tokens(
             client_id=client_id,
             scopes=scopes,
             operations=operations,
+            resource_operations=operation_map,
+            resources=list(grant_map),
+            resource_grants=grant_map,
+            account_scope=account_scope,
             tenant=tenant,
             project=project,
             resource=resource,
@@ -1451,11 +1635,15 @@ async def _issue_tokens(
         grantor_authority=dict(grantor_authority or {}),
         delegation_edges=list(delegation_edges or []),
         named_services=dict(named_services or {}),
+        resource_grants=grant_map,
+        resource_operations=operation_map,
         registry_access_id=registry_access_id,
     )
     if refresh_token is None:
         refresh_token = await store.create_refresh_token(
             client_id=client_id, sub=sub, scopes=scopes, operations=operations,
+            resource_grants=grant_map,
+            resource_operations=operation_map,
             resource=resource,
             identity_scope=identity_scope,
             credential=credential.to_dict(),
@@ -1507,6 +1695,8 @@ async def _issue_tokens(
             client_label=client_label,
             scopes=scopes,
             operations=operations,
+            resource_grants=grant_map,
+            resource_operations=operation_map,
             resource=str(resource or ""),
             identity_scope=identity_scope,
             access_token=access_token,
@@ -1581,6 +1771,8 @@ async def token(request: Request) -> Response:
             request, store,
             sub=payload["sub"], scopes=payload["scopes"], client_id=client_id,
             operations=payload.get("operations") or [],
+            resource_grants=payload.get("resource_grants"),
+            resource_operations=payload.get("resource_operations"),
             resource=payload.get("resource"),
             identity_scope=payload.get("identity_scope") or "",
             grantor_authority=payload.get("grantor_authority") or {},
@@ -1609,6 +1801,8 @@ async def token(request: Request) -> Response:
         # session. Records without a pointer keep their frozen scopes.
         scopes = rec["scopes"]
         operations = list(rec.get("operations") or [])
+        resource_grants = rec.get("resource_grants")
+        resource_operations = rec.get("resource_operations")
         account_scope: Mapping[str, Mapping[str, list[str] | tuple[str, ...]]] | None = None
         card_pointer = str(rec.get("registry_access_id") or "").strip()
         if card_pointer:
@@ -1647,11 +1841,15 @@ async def token(request: Request) -> Response:
                 return _token_error("invalid_grant", "delegated consent no longer covers this resource")
             scopes = list(live_scopes)
             operations = list(card.operations)
+            resource_grants = dict(card.resource_grants)
+            resource_operations = dict(card.resource_operations)
             account_scope = card.account_scope
         new_rt = await store.rotate_refresh_token(
             rt,
             scopes=list(scopes),
             operations=list(operations),
+            resource_grants=resource_grants,
+            resource_operations=resource_operations,
             state=refresh_state,
         )
         if not new_rt:
@@ -1660,6 +1858,8 @@ async def token(request: Request) -> Response:
             request, store,
             sub=rec["sub"], scopes=scopes, client_id=rec["client_id"],
             operations=operations,
+            resource_grants=resource_grants,
+            resource_operations=resource_operations,
             resource=rec.get("resource"),
             identity_scope=rec.get("identity_scope") or "",
             grantor_authority=rec.get("grantor_authority") or {},

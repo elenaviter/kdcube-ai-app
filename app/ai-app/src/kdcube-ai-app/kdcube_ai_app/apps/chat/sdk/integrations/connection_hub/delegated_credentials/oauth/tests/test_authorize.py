@@ -29,6 +29,7 @@ from connection_hub.delegated_credentials.oauth.consent import (
     CONSENT_CONTRACT_VERSION,
     named_service_selection_rows,
     render_consent_html,
+    resource_selection_rows,
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.oauth.config import oauth_delegated_config
 from connection_hub.delegated_credentials.oauth.store import GrantStore
@@ -156,6 +157,66 @@ def test_consent_html_uses_configured_brand():
 
     default = render_consent_html(req, issuer=ISSUER)
     assert "Authorize an MCP connection to KDCube" in default     # default brand
+
+
+def test_consent_html_lists_exact_owner_resource_operations():
+    proxy = "https://connector.example.test/public/mcp/remote_mcp_proxy"
+    connector = "urn:connection-hub:remote-mcp:mcp_0123456789abcdef01234567"
+    app = FastAPI()
+    publish_delegated_config(app, {
+        "enabled": True,
+        "capabilities": [
+            {"grant": "external_mcp:use", "label": "Use external MCP"},
+        ],
+        "resources": [
+            {
+                "resource": proxy,
+                "grants": ["external_mcp:use"],
+                "resource_selection": True,
+            },
+            {
+                "resource": connector,
+                "label": "External MCP: Customer records",
+                "grants": ["external_mcp:use"],
+                "tools": {
+                    "records.search": {
+                        "label": "Search records",
+                        "grants": ["external_mcp:use"],
+                    },
+                    "records.delete": {
+                        "label": "Delete records",
+                        "grants": ["external_mcp:use"],
+                    },
+                },
+            },
+        ],
+    })
+    cfg = oauth_delegated_config(app)
+    req = parse_authorize_request(
+        _params(scope="external_mcp:use", resource=proxy),
+        supported_scopes=cfg.supported_scopes(proxy),
+    )
+
+    rows = resource_selection_rows(
+        req.scopes,
+        config=cfg,
+        resource=proxy,
+        seeded_operations={connector: ["records.search"]},
+    )
+    html = render_consent_html(
+        req,
+        issuer=ISSUER,
+        config=cfg,
+        seeded_resource_operations={connector: ["records.search"]},
+    )
+
+    assert rows[0]["resource"] == connector
+    assert {
+        item["name"]: item["held"] for item in rows[0]["operations"]
+    } == {"records.search": True, "records.delete": False}
+    assert "External MCP: Customer records" in html
+    assert "Search records" in html
+    assert 'name="resource_operations"' in html
 
 
 def test_consent_html_shows_platform_account_and_logout():
@@ -388,7 +449,9 @@ def test_authorize_rejects_user_without_delegable_grant(client):
 
 def test_authorize_can_render_bundle_hosted_consent(client, monkeypatch):
     captured = {}
-    publish_delegated_config(client.app, {
+    proxy = "https://connector.example.test/public/mcp/remote_mcp_proxy"
+    connector = "urn:connection-hub:remote-mcp:mcp_0123456789abcdef01234567"
+    static_config = {
         "enabled": True,
         "issuer": ISSUER,
         "capabilities": [
@@ -407,8 +470,9 @@ def test_authorize_can_render_bundle_hosted_consent(client, monkeypatch):
         ],
         "resources": [
             {
-                "resource": "*",
+                "resource": proxy,
                 "grants": ["records:read"],
+                "resource_selection": True,
                 "tools": {
                     "records_export": {
                         "label": "Export records",
@@ -424,7 +488,44 @@ def test_authorize_can_render_bundle_hosted_consent(client, monkeypatch):
                 "operation": "delegated_consent",
             },
         },
-    })
+    }
+    publish_delegated_config(client.app, static_config)
+
+    owner_config_app = FastAPI()
+    owner_config_app.state.oauth_delegated_config = {
+        **static_config,
+        "resources": [
+            *static_config["resources"],
+            {
+                "resource": connector,
+                "label": "External MCP: Customer records",
+                "grants": ["records:read"],
+                "tools": {
+                    "records.search": {
+                        "label": "Search records",
+                        "grants": ["records:read"],
+                    },
+                },
+            },
+        ],
+    }
+    owner_config = oauth_delegated_config(owner_config_app)
+
+    class OwnerAccess:
+        async def oauth_consent_config(self, *, grantor_subject):
+            assert grantor_subject == "google:admin@example.test"
+            return owner_config
+
+        async def oauth_seed_account_scope(self, **_kwargs):
+            return {}
+
+        async def oauth_seed_named_service_operations(self, **_kwargs):
+            return {}
+
+        async def oauth_seed_resource_operations(self, **_kwargs):
+            return {}
+
+    client.app.state.automation_access_factory = OwnerAccess
 
     async def fake_call_bundle_operation(**kwargs):
         captured.update(kwargs)
@@ -441,9 +542,12 @@ def test_authorize_can_render_bundle_hosted_consent(client, monkeypatch):
         # The renderer sees the whole view model, including the dimensions the
         # built-in page used to receive on its own.
         assert data["consent_contract"]["version"] == CONSENT_CONTRACT_VERSION
+        assert data["resources"][0]["resource"] == connector
+        assert data["resources"][0]["operations"][0]["name"] == "records.search"
         assert "named_service_operations" in data
         assert "connected_accounts" in data
         assert "seeded_account_scope" in data
+        assert "seeded_resource_operations" in data
         return {
             "consent_contract_version": CONSENT_CONTRACT_VERSION,
             "delegated_consent": {"html": "<html><body>Custom consent</body></html>"},
@@ -453,7 +557,7 @@ def test_authorize_can_render_bundle_hosted_consent(client, monkeypatch):
 
     response = client.get(
         "/oauth/authorize",
-        params=_params(),
+        params=_params(resource=proxy),
         headers={"Authorization": "Bearer admin-tok"},
     )
 
@@ -625,6 +729,116 @@ def test_consent_approve_issues_code_bound_to_selection(client):
     assert payload["scopes"] == ["records:read"]
     assert payload["delegation_edges"][0]["authority_id"] == "platform"
     assert payload["delegation_edges"][0]["grants"] == ["records:read"]
+
+
+def test_oauth_consent_grants_an_authenticated_owners_exact_connector_tool(client):
+    import json
+
+    proxy = "https://connector.example.test/public/mcp/remote_mcp_proxy"
+    connector = "urn:connection-hub:remote-mcp:mcp_0123456789abcdef01234567"
+    static_config = {
+        "enabled": True,
+        "issuer": ISSUER,
+        "capabilities": [
+            {
+                "grant": "external_mcp:use",
+                "label": "Use external MCP",
+                "delegable_roles": ["kdcube:role:registered"],
+            },
+        ],
+        "resources": [
+            {
+                "resource": proxy,
+                "label": "Connected external MCP tools",
+                "grants": ["external_mcp:use"],
+                "resource_selection": True,
+            },
+        ],
+    }
+    publish_delegated_config(client.app, static_config)
+    owner_config_app = FastAPI()
+    owner_config_app.state.oauth_delegated_config = {
+        **static_config,
+        "resources": [
+            *static_config["resources"],
+            {
+                "resource": connector,
+                "label": "External MCP: Customer records",
+                "grants": ["external_mcp:use"],
+                "tools": {
+                    "records.search": {
+                        "label": "Search records",
+                        "grants": ["external_mcp:use"],
+                    },
+                    "records.delete": {
+                        "label": "Delete records",
+                        "grants": ["external_mcp:use"],
+                    },
+                },
+            },
+        ],
+    }
+    owner_config = oauth_delegated_config(owner_config_app)
+    seen_subjects: list[str] = []
+
+    class OwnerAccess:
+        async def oauth_consent_config(self, *, grantor_subject):
+            seen_subjects.append(grantor_subject)
+            return owner_config
+
+        async def oauth_seed_account_scope(self, **_kwargs):
+            return {}
+
+        async def oauth_seed_named_service_operations(self, **_kwargs):
+            return {}
+
+        async def oauth_seed_resource_operations(self, **_kwargs):
+            return {}
+
+    client.app.state.automation_access_factory = OwnerAccess
+    params = _params(scope="external_mcp:use", resource=proxy)
+
+    get_response = client.get(
+        "/oauth/authorize",
+        params=params,
+        headers={"Authorization": "Bearer admin-tok"},
+    )
+    assert get_response.status_code == 200
+    assert "External MCP: Customer records" in get_response.text
+    assert "Search records" in get_response.text
+
+    form = dict(params)
+    form.update({
+        "decision": "approve",
+        "consent_contract_version": CONSENT_CONTRACT_VERSION,
+        "platform_grants": ["external_mcp:use"],
+        "resource_operations": [json.dumps({
+            "resource": connector,
+            "operation": "records.search",
+        })],
+        "csrf_token": _csrf_token(client, params=params),
+    })
+    response = client.post(
+        "/oauth/authorize/consent",
+        data=form,
+        headers={"Authorization": "Bearer admin-tok"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    code = dict(up.parse_qsl(up.urlsplit(response.headers["location"]).query))["code"]
+    store = client.app.state.oauth_grant_store
+    payload = json.loads(store._r.values[store._key("code", code)])
+    assert payload["resource_grants"] == {
+        proxy: ["external_mcp:use"],
+        connector: ["external_mcp:use"],
+    }
+    assert payload["resource_operations"] == {
+        proxy: [],
+        connector: ["records.search"],
+    }
+    assert payload["operations"] == ["records.search"]
+    assert set(seen_subjects) == {"google:admin@example.test"}
 
 
 def test_consent_recovers_missing_authorize_fields_from_same_origin_referrer(client):

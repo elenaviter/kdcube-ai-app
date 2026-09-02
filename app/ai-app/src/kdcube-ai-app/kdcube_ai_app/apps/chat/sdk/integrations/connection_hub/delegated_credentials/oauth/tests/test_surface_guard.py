@@ -209,6 +209,18 @@ def test_managed_policy_parses_per_tool_grants():
     assert policy.tool_policies["records_export"].grants == ("records:read",)
 
 
+def test_delegated_proxy_policy_is_explicit_and_has_no_tool_policy():
+    policy = surface_guard.delegated_proxy_auth_policy({
+        "mode": "delegated_proxy",
+        "authority_id": "delegated_client",
+        "roles": ["kdcube:role:delegated-client"],
+    })
+
+    assert policy is not None
+    assert policy.authority_id == "delegated_client"
+    assert policy.roles == ("kdcube:role:delegated-client",)
+
+
 def test_extract_mcp_tool_calls_returns_the_singular_supported_call():
     calls = surface_guard.extract_mcp_tool_calls(
         b'{"jsonrpc":"2.0","id":2,"method":"tools/call",'
@@ -370,6 +382,87 @@ def _rest_client(
     return TestClient(app)
 
 
+def _proxy_client(monkeypatch, *, grant_record, auth=None):
+    async def fake_authenticate(token: str):
+        if token != "reader":
+            return None
+        return {
+            "sub": "integration:claude:admin",
+            "roles": ["kdcube:role:delegated-client"],
+            "permissions": [],
+        }
+
+    monkeypatch.setattr(
+        surface_guard,
+        "_authenticate_delegated_client_access_token",
+        fake_authenticate,
+    )
+    app = FastAPI()
+    app.state.oauth_grant_store = _GrantStore(grant_record)
+    app.state.oauth_delegated_config = {"tenant": "home", "project": "demo"}
+    auth = auth or {
+        "mode": "delegated_proxy",
+        "authority_id": "delegated_client",
+    }
+
+    @app.post("/guard")
+    async def guard(request: Request):
+        denial = await surface_guard.authorize_delegated_mcp_proxy_request(
+            request=request,
+            body=await request.body(),
+            auth=auth,
+        )
+        view = surface_guard.DelegatedCredentialView.from_request(request)
+        return denial or JSONResponse({
+            "ok": True,
+            "grantor": view.grantor_user_id,
+            "resources": list(view.resources),
+        })
+
+    return TestClient(app)
+
+
+def test_delegated_proxy_guard_authenticates_live_card_without_matching_proxy_url(
+    monkeypatch,
+):
+    connector_resource = "urn:connection-hub:remote-mcp:mcp_0123456789abcdef01234567"
+    client = _proxy_client(
+        monkeypatch,
+        grant_record={
+            "credential": _authority(
+                scopes=["external_mcp:use"], resource=connector_resource
+            ),
+        },
+    )
+
+    response = client.post(
+        "/guard",
+        json=_rpc_tool_call("mcp_0123456789abcdef01234567__search_123"),
+        headers={"Authorization": "Bearer reader"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["resources"] == [connector_resource]
+
+
+def test_delegated_proxy_guard_still_enforces_issuer_authority(monkeypatch):
+    credential = _authority(
+        scopes=["external_mcp:use"],
+        resource="urn:connection-hub:remote-mcp:mcp_0123456789abcdef01234567",
+    )
+    credential["issuer_authority_id"] = "some_other_authority"
+    client = _proxy_client(monkeypatch, grant_record={"credential": credential})
+
+    response = client.post(
+        "/guard",
+        json=_rpc_tool_call(),
+        headers={"Authorization": "Bearer reader"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error_description"] == "delegated credential authority mismatch"
+
+
 def _pointer_grant(access_id: str = "oauth-access-1") -> dict:
     return {
         "registry_access_id": access_id,
@@ -383,6 +476,7 @@ def _live_card(
     access_id: str = "oauth-access-1",
     operations=("records_export",),
     resource_grants=None,
+    resource_operations=None,
     named_service_operations=None,
     named_services=None,
     expires_at=None,
@@ -401,6 +495,7 @@ def _live_card(
             if resource_grants is not None
             else {GUARD_RESOURCE: ("records:read",)}
         ),
+        resource_operations=resource_operations,
         named_service_operations=(
             NamedServiceSelection.exact(named_service_operations)
             if named_service_operations
@@ -514,6 +609,77 @@ def test_managed_mcp_guard_applies_live_operation_narrowing(monkeypatch):
     body = json.loads(result["content"][0]["text"])
     assert body["error"]["code"] == "delegated_capability_not_granted"
     assert body["ret"]["requested_capability"]["kind"] == "outer_operation"
+
+
+def test_live_card_does_not_share_an_equal_tool_name_between_resources(monkeypatch):
+    other_resource = "https://other.example/mcp"
+    redis = _Redis()
+    _store_live_card(
+        redis,
+        _live_card(
+            resource_grants={
+                GUARD_RESOURCE: ("records:read",),
+                other_resource: ("records:read",),
+            },
+            resource_operations={
+                GUARD_RESOURCE: (),
+                other_resource: ("records_export",),
+            },
+        ),
+    )
+    client = _client(
+        monkeypatch,
+        grant_record=_pointer_grant(),
+        redis=redis,
+    )
+
+    response = client.post(
+        "/guard",
+        json=_rpc_tool_call(),
+        headers={"Authorization": "Bearer reader"},
+    )
+
+    assert response.status_code == 200
+    result = response.json()["result"]
+    assert result["isError"] is True
+    body = json.loads(result["content"][0]["text"])
+    assert body["error"]["code"] == "delegated_capability_not_granted"
+    requested = body["ret"]["requested_capability"]
+    assert requested["kind"] == "outer_operation"
+    assert requested["outer_operation"] == "records_export"
+    assert requested["request_resource"] == GUARD_RESOURCE
+    assert body["consent"]["agent_client_id"] == "claude"
+    assert body["consent"]["resource"] == GUARD_RESOURCE
+    assert body["consent"]["outer_operation"] == "records_export"
+    assert "grant" not in body["consent"]
+
+
+def test_hosted_agent_outer_operation_denial_carries_exact_grant_action(monkeypatch):
+    client_id = "kdcube-agent:workspace@1-0:main"
+    client = _client(
+        monkeypatch,
+        grant_record={
+            "client_id": client_id,
+            "operations": [],
+            "credential": _authority(),
+        },
+    )
+
+    response = client.post(
+        "/guard",
+        json=_rpc_tool_call(name="records_export"),
+        headers={"Authorization": "Bearer reader"},
+    )
+
+    assert response.status_code == 200
+    body = json.loads(response.json()["result"]["content"][0]["text"])
+    consent = body["consent"]
+    assert consent["agent_client_id"] == client_id
+    assert consent["outer_operation"] == "records_export"
+    assert consent["claims"] == []
+    assert consent["grant"]["payload"]["resource_operations"] == {
+        GUARD_RESOURCE: ["records_export"]
+    }
 
 
 def test_managed_guard_uses_connection_hub_resource_policy(monkeypatch):

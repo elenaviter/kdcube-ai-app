@@ -2,8 +2,14 @@
 # Copyright (c) 2025 Elena Viter
 
 import asyncio
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
-from kdcube_ai_app.apps.chat.sdk.runtime.mcp.mcp_adapter import MCPServerSpec, MCPToolSchema
+from kdcube_ai_app.apps.chat.sdk.runtime.mcp.mcp_adapter import (
+    MCPServerSpec,
+    MCPToolSchema,
+    PythonSDKMCPAdapter,
+)
 from kdcube_ai_app.apps.chat.sdk.runtime.mcp.mcp_tools_subsystem import MCPToolsSubsystem
 
 
@@ -178,6 +184,45 @@ def test_build_entries_and_execute():
         assert out.get("ok") is True
 
     asyncio.run(_run())
+
+
+def test_sdk_adapter_sends_stable_invocation_id_as_request_metadata():
+    adapter = PythonSDKMCPAdapter(
+        MCPServerSpec(server_id="hub", display_name="Connection Hub")
+    )
+    calls = []
+
+    class Session:
+        async def call_tool(self, name, arguments, **kwargs):
+            calls.append({"name": name, "arguments": arguments, **kwargs})
+            return SimpleNamespace(structured_content={"ok": True})
+
+    @asynccontextmanager
+    async def session():
+        yield Session()
+
+    adapter._session = session
+
+    async def _run():
+        result = await adapter.call_tool(
+            "restart",
+            {"service": "api"},
+            trace_id="mcp_hub_restart-20260901203000000.json",
+        )
+        assert result == {"ok": True}
+
+    asyncio.run(_run())
+    assert calls == [
+        {
+            "name": "restart",
+            "arguments": {"service": "api"},
+            "meta": {
+                "connection_hub/invocation_id": (
+                    "mcp_hub_restart-20260901203000000.json"
+                )
+            },
+        }
+    ]
 
 
 def test_tools_cache_key_includes_auth_fingerprint(monkeypatch):

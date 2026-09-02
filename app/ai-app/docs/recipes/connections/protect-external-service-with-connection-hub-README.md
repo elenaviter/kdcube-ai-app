@@ -1,11 +1,11 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/protect-external-service-with-connection-hub-README.md
 title: "Protect An External Service With Connection Hub"
-summary: "Hosts Connection Hub direct admission in KDCube so a registered backend outside KDCube can enforce a user's current delegated card and capability catalog on each operation."
+summary: "Hosts Connection Hub direct admission in KDCube so a registered backend outside KDCube can enforce current delegated card, invocation policy, and pairwise caller identity on each operation."
 status: active
 tags: ["recipes", "connections", "connection-hub", "connection-hub", "delegated-access", "protected-service"]
-keywords: ["direct admission", "external backend", "opaque bearer", "workload proof", "resource server"]
-updated_at: 2026-08-30
+keywords: ["direct admission", "external backend", "opaque bearer", "workload proof", "pairwise identity", "invocation policy", "idempotency", "resource server"]
+updated_at: 2026-09-02
 see_also:
   - https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/recipes/direct-protected-service.md
   - https://github.com/elenaviter/app-ecosystem/tree/main/examples/connection-hub/direct-admission-service
@@ -106,6 +106,12 @@ against that endpoint. The external service receives only its own workload
 secret. KDCube retains app secrets, replay state, current card/catalog storage,
 and provider credentials.
 
+For every domain request, the service also supplies one stable invocation id
+and a canonical request digest. Connection Hub uses them for `once` policy and
+admission replay. A service that changes domain state keeps its own idempotency
+ledger under the same id; Connection Hub records the decision but does not
+execute or record the external service's effect.
+
 ## 5. Verify the live boundary
 
 Exercise the deployed HTTP route, not only package tests:
@@ -115,5 +121,15 @@ Exercise the deployed HTTP route, not only package tests:
 - changing the operation, resource, bearer, or body invalidates the signature
   or current-authority decision;
 - narrowing or revoking the card changes the next fresh decision;
+- an ungranted operation returns exact recovery for `Allow once` or
+  `Allow always`;
+- `once` admits one new invocation id, denies a second, and replays the same
+  decision for the successful id and digest;
+- changing the request under a used invocation id is denied;
+- a write fixture applies its provider-side effect once across a retry;
 - unavailable replay or authority storage fails closed with a retryable 503;
-- no response contains a provider credential or internal platform user id.
+- the same service/user/profile receives stable pairwise `sub` and `client_id`;
+- another caller profile changes only the pairwise caller-profile id, and
+  another service correlates neither id;
+- no response contains a raw caller id, card access id, provider credential,
+  or internal platform user id.

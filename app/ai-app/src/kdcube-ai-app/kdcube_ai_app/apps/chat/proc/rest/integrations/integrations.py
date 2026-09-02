@@ -140,6 +140,9 @@ from kdcube_ai_app.apps.chat.sdk.solutions.sites import (
     application_site_catalog_runtime,
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.oauth.surface_guard import (
+    DELEGATED_PROXY_MCP_AUTH_MODE,
+    MANAGED_MCP_AUTH_MODE,
+    authorize_delegated_mcp_proxy_request,
     authorize_delegated_mcp_request,
     authorize_delegated_rest_request,
     delegated_mcp_runtime_projection,
@@ -4992,13 +4995,24 @@ async def _call_bundle_mcp_inner(
         raise HTTPException(status_code=404, detail=f"Bundle MCP endpoint {endpoint_alias} is not available")
 
     mcp_request_body: bytes | None = None
-    if mcp_auth_mode(endpoint_spec.auth) == "managed":
+    endpoint_auth_mode = mcp_auth_mode(endpoint_spec.auth)
+    if endpoint_auth_mode in {
+        MANAGED_MCP_AUTH_MODE,
+        DELEGATED_PROXY_MCP_AUTH_MODE,
+    }:
         mcp_request_body = await request.body()
-        denial = await authorize_delegated_mcp_request(
-            request=request,
-            body=mcp_request_body,
-            auth=endpoint_spec.auth,
-        )
+        if endpoint_auth_mode == DELEGATED_PROXY_MCP_AUTH_MODE:
+            denial = await authorize_delegated_mcp_proxy_request(
+                request=request,
+                body=mcp_request_body,
+                auth=endpoint_spec.auth,
+            )
+        else:
+            denial = await authorize_delegated_mcp_request(
+                request=request,
+                body=mcp_request_body,
+                auth=endpoint_spec.auth,
+            )
         if denial is not None:
             return denial
         _apply_delegated_mcp_runtime_projection(

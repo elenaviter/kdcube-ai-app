@@ -353,6 +353,51 @@ test('a named-service grant demand carries its namespace and operation to the pa
   assert.equal(banner.consent.params.operation, 'object.search')
 })
 
+test('an external MCP tool demand preserves its card and invocation-policy choice', () => {
+  const resource = 'urn:connection-hub:remote-mcp:mcp_0123456789abcdef01234567'
+  const env = {
+    type: 'chat.step',
+    timestamp: '2026-09-01T20:00:00.000Z',
+    service: { request_id: 'req:turn-1' },
+    conversation: { session_id: 'session-1', conversation_id: 'conv-1', turn_id: 'turn-1' },
+    event: { step: 'delegated_to_kdcube.consent', status: 'completed', title: 'Consent', agent: null },
+    data: {
+      error: { code: 'needs_connected_account_consent', message: 'delete needs delegated access.' },
+      consent: {
+        kind: 'delegated_agent_grant',
+        claims: ['external_mcp:use'],
+        resource,
+        agent_client_id: 'claude-code',
+        access_id: 'access-1',
+        outer_operation: 'delete',
+        invocation_policy: 'choose',
+        invocation_change_id: 'invoke-delete-1',
+        available_choices: ['allow_once', 'allow_always'],
+        grant: {
+          operation: 'delegated_agent_grant_create',
+          payload: {
+            client_id: 'claude-code',
+            access_id: 'access-1',
+            resource,
+            claims: ['external_mcp:use'],
+            resource_operations: { [resource]: ['delete'] },
+            invocation_change_id: 'invoke-delete-1',
+          },
+        },
+      },
+    },
+  }
+
+  const banner = applyChatStep(baseState(), env).banners[0]
+  assert.equal(banner.consent.tab, 'delegated_by_kdcube')
+  assert.equal(banner.consent.params.agent_client_id, 'claude-code')
+  assert.equal(banner.consent.params.access_id, 'access-1')
+  assert.equal(banner.consent.params.resource, resource)
+  assert.equal(banner.consent.params.outer_operation, 'delete')
+  assert.equal(banner.consent.params.invocation_policy, 'choose')
+  assert.equal(banner.consent.params.invocation_change_id, 'invoke-delete-1')
+})
+
 test('a new named-service operation raises a banner after the previous operation was dismissed', () => {
   function operationDemand(operation) {
     return {

@@ -54,12 +54,21 @@ def _hidden_input(name: str, value: Any) -> str:
     )
 
 
-def _checkbox_row(*, name: str, value: str, title: str, description: str = "", detail: str = "") -> str:
+def _checkbox_row(
+    *,
+    name: str,
+    value: str,
+    title: str,
+    description: str = "",
+    detail: str = "",
+    checked: bool = True,
+) -> str:
     desc_html = f'<span class="desc">{html.escape(description)}</span>' if description else ""
     detail_html = f'<code>{html.escape(detail)}</code>' if detail else ""
+    checked_attr = " checked" if checked else ""
     return (
         f'<label class="row">'
-        f'<input type="checkbox" name="{html.escape(name)}" value="{html.escape(value)}" checked>'
+        f'<input type="checkbox" name="{html.escape(name)}" value="{html.escape(value)}"{checked_attr}>'
         f'<span><b>{html.escape(title or value)}</b>{desc_html}{detail_html}</span>'
         f'</label>'
     )
@@ -161,6 +170,60 @@ def delegated_consent_page(
         if isinstance(item, Mapping) and _str(item.get("name"))
     ) or '<p class="empty">No individual tools requested.</p>'
 
+    resources = data.get("resources") if isinstance(data.get("resources"), list) else []
+    resource_blocks: list[str] = []
+    for item in resources:
+        if not isinstance(item, Mapping):
+            continue
+        resource_ref = _str(item.get("resource"))
+        resource_label = _str(item.get("label")) or resource_ref
+        resource_operations = (
+            item.get("operations") if isinstance(item.get("operations"), list) else []
+        )
+        valid_operations = [
+            operation
+            for operation in resource_operations
+            if (
+                resource_ref
+                and isinstance(operation, Mapping)
+                and _str(operation.get("name"))
+            )
+        ]
+        resource_operation_rows = "\n".join(
+            _checkbox_row(
+                name="resource_operations",
+                value=json.dumps(
+                    {"resource": resource_ref, "operation": _str(operation.get("name"))},
+                    separators=(",", ":"),
+                ),
+                title=_str(operation.get("label") or operation.get("name")),
+                description=_str(operation.get("description")),
+                detail=", ".join(
+                    _str(grant) for grant in (operation.get("grants") or []) if _str(grant)
+                ),
+                checked=bool(operation.get("held")),
+            )
+            for operation in valid_operations
+        )
+        if not resource_operation_rows:
+            continue
+        resource_blocks.append(
+            '<section class="resource-group">'
+            f'<div class="resource-head"><b>{html.escape(resource_label)}</b>'
+            f'<span>{len(valid_operations)} operations</span></div>'
+            f'<code class="resource-ref">{html.escape(resource_ref)}</code>'
+            f'{resource_operation_rows}'
+            '</section>'
+        )
+    resource_operations_html = ""
+    if resource_blocks:
+        resource_operations_html = f"""
+          <h2>Services and operations for this connection</h2>
+          <p class="hint">Select the exact operations this client may use. An
+          unchecked operation stays outside its delegated card.</p>
+{chr(10).join(resource_blocks)}
+"""
+
     operations = (
         data.get("named_service_operations")
         if isinstance(data.get("named_service_operations"), list)
@@ -240,6 +303,11 @@ def delegated_consent_page(
     .row input {{ margin-top: 3px; accent-color: var(--blue); }}
     .row b {{ display: block; }}
     .desc {{ display: block; color: var(--muted); font-size: 13px; margin: 2px 0 4px; }}
+    .resource-group {{ border: 1px solid var(--line); border-radius: 8px; background: #fbfdff; padding: 12px; margin: 10px 0; }}
+    .resource-head {{ display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }}
+    .resource-head span {{ color: var(--muted); font-size: 12px; }}
+    .resource-ref {{ margin: 6px 0 10px; word-break: break-all; }}
+    .resource-group .row {{ background: #fff; }}
     .empty {{ border: 1px dashed var(--line); border-radius: 8px; padding: 12px; }}
     .actions {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 22px; }}
     button {{ border: 0; border-radius: 8px; padding: 12px 14px; font-weight: 800; cursor: pointer; }}
@@ -275,6 +343,7 @@ def delegated_consent_page(
           <h2>Tool access</h2>
           <p class="hint">Select the concrete tools this client may call.</p>
 {tool_rows}
+{resource_operations_html}
 {operations_html}
           <div class="actions">
             <button class="primary" type="submit" name="decision" value="approve">Approve</button>

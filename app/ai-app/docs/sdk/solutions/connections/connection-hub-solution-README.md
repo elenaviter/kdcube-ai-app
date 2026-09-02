@@ -1,11 +1,11 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
 title: "Connection Hub Solution"
-summary: "Canonical KDCube host map for Connection Hub identity, connected-account, delegated-card, managed-boundary, and registered external-service admission roles."
+summary: "Canonical KDCube host map for Connection Hub identity, connected-account, delegated-card, invocation-policy, external-MCP proxy, managed-boundary, and direct-admission roles."
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "identity", "auth", "authority", "delegated-connections"]
-keywords: ["Connection Hub", "Connection Hub", "delegated access cards", "connected accounts", "authority registry", "request authenticators", "connection edges", "OAuth MCP", "direct admission"]
-updated_at: 2026-08-30
+keywords: ["Connection Hub", "delegated access cards", "invocation policy", "external MCP proxy", "connected accounts", "authority registry", "request authenticators", "connection edges", "OAuth MCP", "direct admission"]
+updated_at: 2026-09-02
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/delegated-authority-and-admission-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/tenant-project-user-and-execution-boundaries-README.md
@@ -43,7 +43,7 @@ in the `connection-hub` package in that repository. KDCube imports Connection Hu
 and owns only the host bindings under
 `kdcube_ai_app.apps.chat.sdk.integrations.connection_hub`.
 
-It has nine roles:
+It has eleven roles:
 
 ```text
 Connection Hub
@@ -70,9 +70,15 @@ Connection Hub
   +-- Link Flows
   |     platform-first and channel-first linking
   |
+  +-- Invocation Policy
+  |     exact granted operation -> once or always + invocation idempotency
+  |
+  +-- User-Owned External MCP Proxy
+  |     exact caller card + accepted tool -> server-side credential injection
+  |
   +-- Direct Protected-Service Admission
   |     registered workload + delegated bearer -> current card/catalog decision
-  |     bounded pairwise subject; no provider credential
+  |     pairwise user and caller-profile ids; no provider credential
   |
   +-- Widget/Auth Context Transport
         host iframe/server config -> promoted auth headers
@@ -220,7 +226,9 @@ authority_registry:
 The consent renderer is presentation only. Connection Hub calls the configured
 bundle operation with a payload that includes `form_action`, `csrf_token`,
 `request.client_id`, `request.redirect_uri`, `request.scope`, `request.resource`,
-PKCE fields, selectable grants, and selectable tools. The built-in page also
+PKCE fields, selectable grants, selectable tools, and owner-resource operation
+rows when the requested resource enables them. Those rows are produced only
+after login from the authenticated grantor's catalog overlay. The built-in page also
 renders the consenting user's connected provider accounts with per-claim
 checkboxes (`account_scope` picks — nothing pre-checked on a first connect;
 default-closed, so an unticked account stays unusable by this client) and
@@ -499,7 +507,10 @@ Connected-provider boundary, when required
 ```
 
 The OAuth MCP connector presents the descriptor-backed catalog through its
-OAuth authorization/consent flow. Manual **Delegated by KDCube -> Create
+OAuth authorization/consent flow. A resource that enables owner-resource
+selection also presents only the authenticated grantor's dynamic connector
+overlay and persists exact `resource_operations` on the OAuth card. Manual
+**Delegated by KDCube -> Create
 automation access** presents exact namespace-operation checkboxes and persists
 a narrowed copy of the same `named_services` tree on the access card, which the
 managed guard carries to the bridge on every call. These are separate issuance
@@ -539,6 +550,7 @@ grantor's full platform session.
 | Understand delegated representatives, manual automation selection, and OAuth grants | [Delegated Connections](delegated-connections/delegated-connections-README.md) |
 | Understand Delegated by KDCube card storage, rendering, edit semantics, runtime enforcement, and catalog drift | [Delegated Access Cards](delegated-cards/delegated-cards-README.md) |
 | Understand the complete card/catalog decision across managed REST/MCP, plain account-backed tools, and nested named services | [Delegated Authority And Admission](../../../arch/delegated-authority-and-admission-README.md) |
+| Understand user-owned external MCP proxying and once-or-always policy | [Connection Hub Architecture](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/connection-hub-architecture.md) |
 | Protect a registered backend outside KDCube with current delegated authority | [Protect An External Service With Connection Hub](../../../recipes/connections/protect-external-service-with-connection-hub-README.md) |
 | See and revoke access a user granted to automations and external clients | [Delegated Connections](delegated-connections/delegated-connections-README.md) |
 | Build an app that exposes a governed service over MCP (uses Gmail + your own OAuth server) | [Expose a Governed Service over MCP](../../../recipes/quickstart/expose-governed-service-mcp-README.md) |

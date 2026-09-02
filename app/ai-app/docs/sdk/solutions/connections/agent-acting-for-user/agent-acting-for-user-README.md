@@ -1,11 +1,11 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/agent-acting-for-user/agent-acting-for-user-README.md
 title: "Agents Acting On Behalf Of The User"
-summary: "How a hosted or external agent calls KDCube services under a user's delegated authority: resource grants are per caller, provider-account bindings are separately default-closed, and Connection Hub remains the live authority for both."
+summary: "How a hosted or external agent calls services under a user's delegated authority: resources and operations are per caller, invocation policy is once or always, provider-account bindings stay separately default-closed, and Connection Hub resolves current authority for each call."
 status: active
 tags: ["sdk", "connections", "delegated-credentials", "agents", "mcp", "consent", "connection-hub", "governance"]
-updated_at: 2026-08-07
-keywords: ["agent delegated identity", "per-agent grant", "provider account binding", "account_scope", "Connection Hub recovery", "hosted agent consent"]
+updated_at: 2026-09-02
+keywords: ["agent delegated identity", "per-agent grant", "resource_operations", "allow once", "allow always", "provider account binding", "account_scope", "Connection Hub recovery", "hosted agent consent"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/configuring-agent-service-access/configuring-agent-service-access-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/claim-driven-consent/claim-driven-consent-README.md
@@ -83,6 +83,9 @@ await automation_access.create_access(
     user,
     label="lg-react (memories)",
     resource_grants={"https://…/user-memories@…/public/mcp/memories": ["memories:read"]},
+    resource_operations={
+        "https://…/user-memories@…/public/mcp/memories": ["memory_search"]
+    },
     client_id="kdcube-agent:<app>:<agent>",   # the agent identity
 )
 ```
@@ -98,8 +101,9 @@ revoked there like any other.
 Users never call `create_access` directly for an agent. Two surfaces do:
 
 - **Connection Hub REST** — the `delegated_agent_grant_create` operation
-  (client_id + resource + claims). It accepts only the `kdcube-agent:` client
-  family; other client kinds consent through their own flows.
+  (`client_id`, resource, claims, and exact outer or named-service operations).
+  It creates or merges a hosted `kdcube-agent:` card and extends an existing
+  external OAuth client's card selected by that client's own consent flow.
 - **The chat consent banner** — see the demand chain below.
 
 ## Per-turn use: reuse the consented token
@@ -146,9 +150,10 @@ three coordinated things:
    the same nested consent-event shape connected-account tools raise, carrying
    the claims and a one-click **grant action**
    (`{operation: delegated_agent_grant_create, payload: {client_id, resource,
-   claims}}`). The chat UI renders "Grant access"; the action deep-links the
-   Connection Hub "Delegated by KDCube" tab pre-loaded with the pending
-   request, where one click creates the grant.
+   claims, resource_operations?}}`). The chat UI deep-links the Connection Hub
+   "Delegated by KDCube" tab pre-loaded with the pending request. An exact
+   operation demand lets the user choose **Allow once** or **Allow always**;
+   that choice and the operation grant commit as one fail-closed change.
 2. **An agent-explainable block.** The exception's message tells the model what
    is blocked, which claims to ask the user for, and that retrying before the
    grant is pointless. The hosting app also appends a `[Pending consent]` note
@@ -226,3 +231,7 @@ surface; see
   caller reaches a service, not an object inside the external provider.
 - **For how long** — grants carry a TTL (agent grants default to the delegated
   session ceiling) and re-consent refreshes the same record.
+- **How many invocations** — a separate policy keyed to this card, resource,
+  and operation is `always` or `once`. Consuming one use does not rewrite the
+  card. A one-use call requires a stable invocation id so a retry can be
+  distinguished from a second action.

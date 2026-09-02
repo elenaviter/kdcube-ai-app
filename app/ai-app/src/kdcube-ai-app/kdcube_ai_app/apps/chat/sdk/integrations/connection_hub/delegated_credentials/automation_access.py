@@ -53,6 +53,7 @@ class AutomationAccessService(_core.AutomationAccessService):
         authority_factory: Any | None = None,
         named_service_discovery_factory: Any | None = None,
         relay_factory: Any | None = None,
+        resource_overlay_provider: Any | None = None,
     ) -> None:
         super().__init__(
             redis=redis,
@@ -71,6 +72,7 @@ class AutomationAccessService(_core.AutomationAccessService):
                 or _kdcube_named_service_discovery_factory
             ),
             relay_factory=relay_factory or _kdcube_relay_factory,
+            resource_overlay_provider=resource_overlay_provider,
         )
 
 

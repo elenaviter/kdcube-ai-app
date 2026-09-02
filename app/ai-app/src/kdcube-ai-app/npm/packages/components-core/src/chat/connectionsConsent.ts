@@ -102,6 +102,10 @@ export function agentGrantConsentOpen(args: {
   claims: string[]
   namespace?: string
   operation?: string
+  outerOperation?: string
+  accessId?: string
+  invocationPolicy?: string
+  invocationChangeId?: string
   accountId?: string
   accountClaim?: string
   url?: string
@@ -119,6 +123,14 @@ export function agentGrantConsentOpen(args: {
   if (namespace) params.namespace = namespace
   const operation = String(args.operation || '').trim()
   if (operation) params.operation = operation
+  const outerOperation = String(args.outerOperation || '').trim()
+  if (outerOperation) params.outer_operation = outerOperation
+  const accessId = String(args.accessId || '').trim()
+  if (accessId) params.access_id = accessId
+  const invocationPolicy = String(args.invocationPolicy || '').trim()
+  if (invocationPolicy) params.invocation_policy = invocationPolicy
+  const invocationChangeId = String(args.invocationChangeId || '').trim()
+  if (invocationChangeId) params.invocation_change_id = invocationChangeId
   const accountId = String(args.accountId || '').trim()
   if (accountId) params.account_id = accountId
   const accountClaim = String(args.accountClaim || '').trim()

@@ -271,6 +271,22 @@ function connectedAccountConsentBanner(data: Record<string, unknown> | undefined
     // these, so dropping them opens the grant with nothing selected.
     const grantNamespace = firstString(consent.namespace, urlParams.namespace)
     const grantOperation = firstString(consent.operation, urlParams.operation)
+    const grantOuterOperation = firstString(
+      consent.outer_operation,
+      grantPayload?.outer_operation,
+      urlParams.outer_operation,
+    )
+    const accessId = firstString(consent.access_id, grantPayload?.access_id, urlParams.access_id)
+    const invocationPolicy = firstString(
+      consent.invocation_policy,
+      grantPayload?.invocation_policy,
+      urlParams.invocation_policy,
+    )
+    const invocationChangeId = firstString(
+      consent.invocation_change_id,
+      grantPayload?.invocation_change_id,
+      urlParams.invocation_change_id,
+    )
     const explicitGrantClaims = firstStringList(grant?.claims, grantPayload?.claims, urlParams.claims)
     const grantClaims = explicitGrantClaims.length ? explicitGrantClaims : (accountClaim ? [] : claims)
     const displayClaims = accountClaim ? [accountClaim] : grantClaims
@@ -290,6 +306,10 @@ function connectedAccountConsentBanner(data: Record<string, unknown> | undefined
         claims: grantClaims,
         namespace: grantNamespace,
         operation: grantOperation,
+        outerOperation: grantOuterOperation,
+        accessId,
+        invocationPolicy,
+        invocationChangeId,
         accountId,
         accountClaim,
         url,
@@ -300,7 +320,7 @@ function connectedAccountConsentBanner(data: Record<string, unknown> | undefined
       // bridge). The exact signature also identifies the inner operation: a
       // dismissed post_message demand must not hide a later object.schema or
       // upload_file demand on the same named-services resource.
-      signature: `agent:${agentClientId}:${resource}|${grantNamespace}|${grantOperation}|${[...new Set([...grantClaims, ...displayClaims])].sort().join(',')}|${accountId}|${accountClaim}`,
+      signature: `agent:${agentClientId}:${resource}|${grantNamespace}|${grantOperation}|${grantOuterOperation}|${[...new Set([...grantClaims, ...displayClaims])].sort().join(',')}|${accountId}|${accountClaim}|${invocationPolicy}|${invocationChangeId}`,
       tools: blockedTools,
       claims: displayClaims,
     }
