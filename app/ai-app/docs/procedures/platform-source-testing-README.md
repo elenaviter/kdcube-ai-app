@@ -4,7 +4,7 @@ title: "Run Platform Source Tests"
 summary: "Contributor procedure for selecting the correct checkout, Python environment, extracted package sources, bundle fixture, and verification depth when testing KDCube platform code."
 tags: ["procedures", "contributors", "testing", "pytest", "frontend", "pull-requests"]
 keywords: ["platform source tests", "python interpreter", "PYTHONPATH", "connection hub source overlay", "bundle under test", "bundle path", "regression test", "pull request head"]
-updated_at: 2026-08-31
+updated_at: 2026-09-02
 see_also:
   - repo:kdcube-ai-app/AGENTS.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-test-bundle-README.md
@@ -174,35 +174,45 @@ the selected fixture and is not a passing behavioral assertion.
 
 ## 5. Run the broader backend checks
 
-After focused and neighboring tests pass, run the package test tree with an
-explicit app fixture:
+After focused and neighboring tests pass, set the explicit app fixture for the
+grouped package-tree runs below:
 
 ```bash
 export BUNDLE_UNDER_TEST="$REFERENCE_BUNDLE"
-
-"$PY" -m pytest -q -rs \
-  "$KDCUBE_SRC/kdcube_ai_app"
 ```
 
 The ReAct v2 and v3 tool tests currently contain matching module basenames.
-When collection reports an import mismatch, exclude both directories from the
-broad pass and then run each directory in its own pytest invocation. Together,
-the three commands still cover the complete backend tree:
+The SDK's `examples/mcp` package also has the same top-level name as the
+installed `mcp` distribution when pytest collects it below namespace-package
+parents. Preload the installed SDK with `-p mcp`, and collect the example and
+the MCP v2 conformance file in separate processes so each resolves the
+intended `mcp` package. Together, the commands below still cover the complete
+backend tree:
 
 ```bash
 export REACT_V2_TOOLS="$KDCUBE_SRC/kdcube_ai_app/apps/chat/sdk/solutions/react/v2/tools/tests"
 export REACT_V3_TOOLS="$KDCUBE_SRC/kdcube_ai_app/apps/chat/sdk/solutions/react/v3/tools/tests"
+export MCP_EXAMPLE_TESTS="$KDCUBE_SRC/kdcube_ai_app/apps/chat/sdk/examples/mcp"
+export MCP_V2_CONFORMANCE="$KDCUBE_SRC/kdcube_ai_app/apps/chat/sdk/runtime/mcp/test_mcp_v2_conformance.py"
 
-"$PY" -m pytest -q -rs \
+"$PY" -m pytest -q -rs -p mcp \
   "$KDCUBE_SRC/kdcube_ai_app" \
   --ignore="$REACT_V2_TOOLS" \
-  --ignore="$REACT_V3_TOOLS"
+  --ignore="$REACT_V3_TOOLS" \
+  --ignore="$MCP_EXAMPLE_TESTS" \
+  --ignore="$MCP_V2_CONFORMANCE"
 
 "$PY" -m pytest -q -rs \
   "$REACT_V2_TOOLS"
 
 "$PY" -m pytest -q -rs \
   "$REACT_V3_TOOLS"
+
+"$PY" -m pytest -q -rs \
+  "$MCP_EXAMPLE_TESTS"
+
+"$PY" -m pytest -q -rs \
+  "$MCP_V2_CONFORMANCE"
 ```
 
 Some integration tests use Redis, Postgres, Docker, browser, or provider
