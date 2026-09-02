@@ -125,6 +125,50 @@ def test_build_ui_url_uses_routes_prefix():
     assert build_ui_url("80", None) == "http://localhost/platform/chat"
 
 
+def test_default_install_exposes_governed_external_mcp_proxy():
+    descriptor_path = (
+        Path(__file__).resolve().parents[4] / "deployment" / "bundles.yaml"
+    )
+    descriptor = yaml.safe_load(descriptor_path.read_text())
+    items = {
+        item["id"]: item for item in descriptor["bundles"]["items"]
+    }
+    config = items["connection-hub@1-0"]["config"]
+
+    assert config["surfaces"]["as_provider"]["mcp"]["remote_mcp_proxy"][
+        "auth"
+    ] == {
+        "mode": "delegated_proxy",
+        "authority_id": "delegated_client",
+    }
+    remote_mcp = config["connections"]["remote_mcp"]
+    assert remote_mcp["oauth"]["enabled"] is True
+    assert remote_mcp["oauth"]["public_base_url"] == ""
+    assert remote_mcp["outbound"] == {
+        "allow_http": False,
+        "allow_private_networks": False,
+        "allowed_hosts": [],
+    }
+
+    delegated = config["connections"]["delegated_credentials"]["oauth"]
+    capabilities = {
+        item["grant"]: item for item in delegated["capabilities"]
+    }
+    assert "external_mcp:use" in capabilities
+    proxy_resource = next(
+        item
+        for item in delegated["resources"]
+        if "remote_mcp_proxy" in item["resource"]
+    )
+    assert proxy_resource == {
+        "resource": "*/api/integrations/bundles/*/*/connection-hub@1-0/public/mcp/remote_mcp_proxy*",
+        "label": "Connected external MCP tools",
+        "identity_scope": "grantor",
+        "grants": ["external_mcp:use"],
+        "resource_selection": True,
+    }
+
+
 def test_init_prompt_mode_defaults_to_terminal_and_preserves_automation():
     assert _init_interactive_mode(
         explicit_interactive=False,

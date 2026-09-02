@@ -40,7 +40,9 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--fixture-image", default="kdcube-chat-proc:latest")
     parser.add_argument("--fixture-port", type=int, default=8765)
     parser.add_argument(
-        "--registration-mode", choices=("dcr", "cimd"), default="dcr"
+        "--registration-mode",
+        choices=("dcr", "cimd", "provisioned"),
+        default="dcr",
     )
     parser.add_argument("--source-root", type=Path, default=None)
     return parser.parse_args()
@@ -113,17 +115,35 @@ async def _run(args: argparse.Namespace) -> None:
         )
         owner.wait_ready()
 
+        start_payload: dict[str, Any] = {
+            "label": f"OAuth fixture ({args.registration_mode})",
+            "endpoint": fixture.endpoint,
+            "return_hint": args.base_url,
+        }
+        if args.registration_mode == "provisioned":
+            start_payload.update(
+                {
+                    "oauth_client_mode": "provisioned",
+                    "oauth_client": {
+                        "client_id": "fixture-provisioned-client",
+                        "client_secret": "fixture-provisioned-secret",
+                        "token_endpoint_auth_method": "client_secret_post",
+                    },
+                }
+            )
         started = owner.call(
             "POST",
             "remote_mcp_connector_start_oauth",
-            {
-                "label": f"OAuth fixture ({args.registration_mode})",
-                "endpoint": fixture.endpoint,
-                "return_hint": args.base_url,
-            },
+            start_payload,
         )
         assert started.get("ok") is True, started
         _assert_no_oauth_secrets(started)
+        expected_source = {
+            "cimd": "client_metadata_document",
+            "dcr": "dynamic_registration",
+            "provisioned": "provisioned",
+        }[args.registration_mode]
+        assert started.get("oauth_client_source") == expected_source, started
         authorize_url = str(started["authorize_url"])
         authorize_query = parse_qs(urlsplit(authorize_url).query)
         if args.registration_mode == "cimd":
@@ -133,6 +153,10 @@ async def _run(args: argparse.Namespace) -> None:
             assert "remote_mcp_oauth_client_metadata" in (
                 authorize_query["client_id"][0]
             )
+        elif args.registration_mode == "provisioned":
+            assert authorize_query["client_id"] == [
+                "fixture-provisioned-client"
+            ], authorize_query
         _complete_browser_flow(authorize_url)
 
         inventory = owner.call("GET", "remote_mcp_connectors_list")
@@ -172,6 +196,8 @@ async def _run(args: argparse.Namespace) -> None:
             assert _structured(result).get("upstream_credential_verified") is True
         before_reconnect = _fixture_state(args.fixture_port)
         assert before_reconnect["oauth"]["refresh"] >= 1, before_reconnect
+        if args.registration_mode == "provisioned":
+            assert before_reconnect["oauth"]["register"] == 0, before_reconnect
         print("PASS refresh-token rotation before an upstream MCP call")
 
         reconnect = owner.call(
@@ -186,6 +212,7 @@ async def _run(args: argparse.Namespace) -> None:
             },
         )
         assert reconnect.get("ok") is True, reconnect
+        assert reconnect.get("oauth_client_source") == expected_source, reconnect
         _complete_browser_flow(str(reconnect["authorize_url"]))
         inventory = owner.call("GET", "remote_mcp_connectors_list")
         connector = dict(inventory["items"][0])

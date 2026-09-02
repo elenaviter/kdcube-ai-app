@@ -16,9 +16,14 @@ from urllib.parse import quote_plus, urlencode, urljoin, urlsplit, urlunsplit
 from connection_hub.remote_mcp import (
     AUTH_OAUTH,
     BundleStorageRemoteMCPOAuthStateStore,
+    OAUTH_CLIENT_SOURCE_CIMD,
+    OAUTH_CLIENT_SOURCE_DCR,
+    OAUTH_CLIENT_SOURCE_PROVISIONED,
     RemoteMCPConnectorService,
     RemoteMCPEndpointPolicy,
     RemoteMCPOAuthCredential,
+    RemoteMCPProvisionedOAuthClient,
+    RemoteMCPRecordError,
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.remote_mcp.host import (
     GuardedRemoteMCPNetworkBackend,
@@ -27,6 +32,8 @@ from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.remote_mcp.host imp
 
 DEFAULT_OAUTH_STATE_TTL_SECONDS = 900
 DEFAULT_OAUTH_CLIENT_NAME = "KDCube Connection Hub"
+OAUTH_CLIENT_MODE_AUTOMATIC = "automatic"
+OAUTH_CLIENT_MODE_PROVISIONED = "provisioned"
 
 
 class RemoteMCPOAuthFlowError(ValueError):
@@ -96,6 +103,17 @@ def _positive_int(value: Any, default: int) -> int:
     return parsed if parsed > 0 else default
 
 
+def _provisioned_client(
+    value: Mapping[str, Any] | None,
+) -> RemoteMCPProvisionedOAuthClient | None:
+    if not value:
+        return None
+    try:
+        return RemoteMCPProvisionedOAuthClient.from_mapping(value)
+    except RemoteMCPRecordError as exc:
+        raise RemoteMCPOAuthFlowError(exc.reason) from exc
+
+
 class KDCubeRemoteMCPOAuthService:
     def __init__(
         self,
@@ -152,6 +170,8 @@ class KDCubeRemoteMCPOAuthService:
         return_hint: str = "",
         connector_id: str = "",
         expected_revision: int = 0,
+        oauth_client_mode: str = "",
+        oauth_client: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not self._enabled:
             raise RemoteMCPOAuthFlowError("remote_mcp_oauth_disabled")
@@ -161,6 +181,7 @@ class KDCubeRemoteMCPOAuthService:
             raise RemoteMCPOAuthFlowError("oauth_owner_missing")
         existing_connector_id = _clean(connector_id)
         existing_revision = 0
+        current_oauth: RemoteMCPOAuthCredential | None = None
         if existing_connector_id:
             current = await self._connector_service.get(
                 owner_subject=owner,
@@ -171,16 +192,59 @@ class KDCubeRemoteMCPOAuthService:
                 raise RemoteMCPOAuthFlowError("connector_revision_moved")
             connector_label = current.label
             endpoint = current.endpoint
+            existing_credential = await self._connector_service.resolve_credential(
+                owner_subject=owner,
+                connector_id=existing_connector_id,
+            )
+            if existing_credential.mode != AUTH_OAUTH:
+                raise RemoteMCPOAuthFlowError("connector_oauth_credential_required")
+            try:
+                current_oauth = RemoteMCPOAuthCredential.from_json(
+                    existing_credential.value
+                )
+            except RemoteMCPRecordError as exc:
+                raise RemoteMCPOAuthFlowError(exc.reason) from exc
         if not connector_label or len(connector_label) > 160:
             raise RemoteMCPOAuthFlowError("connector_label_invalid")
+        client_mode = _clean(oauth_client_mode).lower()
+        if client_mode not in {
+            "",
+            OAUTH_CLIENT_MODE_AUTOMATIC,
+            OAUTH_CLIENT_MODE_PROVISIONED,
+        }:
+            raise RemoteMCPOAuthFlowError("oauth_client_mode_invalid")
+        provisioned = _provisioned_client(oauth_client)
+        if provisioned is not None and client_mode == OAUTH_CLIENT_MODE_AUTOMATIC:
+            raise RemoteMCPOAuthFlowError("oauth_client_unexpected")
+        if provisioned is not None:
+            client_mode = OAUTH_CLIENT_MODE_PROVISIONED
+        should_reuse = client_mode != OAUTH_CLIENT_MODE_AUTOMATIC
+        if (
+            provisioned is None
+            and should_reuse
+            and current_oauth is not None
+            and current_oauth.client_source == OAUTH_CLIENT_SOURCE_PROVISIONED
+        ):
+            provisioned = _provisioned_client(
+                {
+                    "client_id": current_oauth.client_id,
+                    "client_secret": current_oauth.client_secret,
+                    "token_endpoint_auth_method": (
+                        current_oauth.token_endpoint_auth_method
+                    ),
+                }
+            )
+        if client_mode == OAUTH_CLIENT_MODE_PROVISIONED and provisioned is None:
+            raise RemoteMCPOAuthFlowError("oauth_provisioned_client_required")
         canonical_endpoint = await self._endpoint_policy.validate(endpoint)
         canonical_callback = _validated_callback_url(callback_url)
         await self._state_store.purge_expired()
 
-        discovery, client_info = await self._discover_and_register(
+        discovery, client_info, client_source = await self._discover_and_register(
             endpoint=canonical_endpoint,
             callback_url=canonical_callback,
             client_metadata_url=_clean(client_metadata_url),
+            provisioned_client=provisioned,
         )
         from mcp.client.auth import PKCEParameters
 
@@ -207,6 +271,7 @@ class KDCubeRemoteMCPOAuthService:
             "token_endpoint_auth_method": (
                 _clean(client_info.get("token_endpoint_auth_method")) or "none"
             ),
+            "client_source": client_source,
             "code_verifier": pkce.code_verifier,
         }
         handle = await self._state_store.create(
@@ -234,6 +299,7 @@ class KDCubeRemoteMCPOAuthService:
             "expires_at": handle.expires_at,
             "endpoint": canonical_endpoint,
             "authorization_server": discovery.authorization_server,
+            "oauth_client_source": client_source,
         }
 
     def client_metadata(self, *, callback_url: str) -> dict[str, Any]:
@@ -300,7 +366,8 @@ class KDCubeRemoteMCPOAuthService:
         endpoint: str,
         callback_url: str,
         client_metadata_url: str,
-    ) -> tuple[RemoteMCPOAuthDiscovery, dict[str, Any]]:
+        provisioned_client: RemoteMCPProvisionedOAuthClient | None,
+    ) -> tuple[RemoteMCPOAuthDiscovery, dict[str, Any], str]:
         from mcp.client.auth.oauth2 import (
             build_oauth_authorization_server_metadata_discovery_urls,
             build_protected_resource_metadata_discovery_urls,
@@ -417,11 +484,35 @@ class KDCubeRemoteMCPOAuthService:
                 else ""
             )
             registration_url = ""
-            if should_use_client_metadata_url(oauth_metadata, metadata_url or None):
+            client_source = ""
+            if provisioned_client is not None:
+                supported_methods = tuple(
+                    str(item)
+                    for item in (
+                        oauth_metadata.token_endpoint_auth_methods_supported or ()
+                    )
+                )
+                if (
+                    supported_methods
+                    and provisioned_client.token_endpoint_auth_method
+                    not in supported_methods
+                ):
+                    raise RemoteMCPOAuthFlowError(
+                        "oauth_provisioned_client_auth_method_unsupported"
+                    )
+                client_info_payload = provisioned_client.to_client_info()
+                client_source = OAUTH_CLIENT_SOURCE_PROVISIONED
+            elif should_use_client_metadata_url(
+                oauth_metadata, metadata_url or None
+            ):
                 client_info = create_client_info_from_metadata_url(
                     metadata_url,
                     redirect_uris=client_metadata.redirect_uris,
                 )
+                client_info_payload = client_info.model_dump(
+                    by_alias=True, mode="json", exclude_none=True
+                )
+                client_source = OAUTH_CLIENT_SOURCE_CIMD
             else:
                 registration_url = (
                     str(oauth_metadata.registration_endpoint)
@@ -452,8 +543,13 @@ class KDCubeRemoteMCPOAuthService:
                     raise RemoteMCPOAuthFlowError(
                         "oauth_dynamic_client_registration_invalid"
                     ) from exc
+                client_info_payload = client_info.model_dump(
+                    by_alias=True, mode="json", exclude_none=True
+                )
+                client_source = OAUTH_CLIENT_SOURCE_DCR
             registered_redirects = {
-                str(item) for item in (client_info.redirect_uris or ())
+                str(item)
+                for item in (client_info_payload.get("redirect_uris") or ())
             }
             if registered_redirects and callback_url not in registered_redirects:
                 raise RemoteMCPOAuthFlowError(
@@ -476,9 +572,7 @@ class KDCubeRemoteMCPOAuthService:
                     oauth_metadata.authorization_response_iss_parameter_supported
                 ),
             )
-            return discovery, client_info.model_dump(
-                by_alias=True, mode="json", exclude_none=True
-            )
+            return discovery, client_info_payload, client_source
 
     async def _probe(self, *, client: Any, endpoint: str) -> Any:
         from mcp.types import LATEST_PROTOCOL_VERSION
@@ -590,6 +684,7 @@ class KDCubeRemoteMCPOAuthService:
             client_id=client_id,
             client_secret=client_secret,
             token_endpoint_auth_method=method,
+            client_source=_clean(transaction.get("client_source")),
             issued_at=moment,
         )
         token.verify()
@@ -619,6 +714,8 @@ __all__ = [
     "DEFAULT_OAUTH_CLIENT_NAME",
     "DEFAULT_OAUTH_STATE_TTL_SECONDS",
     "KDCubeRemoteMCPOAuthService",
+    "OAUTH_CLIENT_MODE_AUTOMATIC",
+    "OAUTH_CLIENT_MODE_PROVISIONED",
     "RemoteMCPOAuthDiscovery",
     "RemoteMCPOAuthFlowError",
     "build_remote_mcp_oauth_service",

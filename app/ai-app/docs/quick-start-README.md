@@ -5,7 +5,7 @@ summary: "Install the published KDCube CLI, initialize a tenant/project from the
 status: active
 tags: [docs, quickstart, local, docker-compose, cli, authentication]
 keywords: [install kdcube, kdcube init, local runtime, latest release, Google login, tenant project, runtime workdir]
-updated_at: 2026-08-26
+updated_at: 2026-09-02
 see_also:
   - repo:kdcube/app/ai-app/docs/what-you-can-do-with-kdcube-README.md
   - repo:kdcube/app/ai-app/docs/recipes/operations/install-clean-README.md
@@ -14,6 +14,7 @@ see_also:
   - repo:kdcube/app/ai-app/docs/service/cicd/cli-README.md
   - repo:kdcube/app/ai-app/docs/runtime/harness/README.md
   - repo:kdcube/app/ai-app/docs/sdk/bundle/build/how-to-write-bundle-README.md
+  - https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/quick-start-local.md
 ---
 
 # Quick Start: Run KDCube Locally
@@ -152,6 +153,12 @@ The base installation includes the workspace app, Connection Hub, managed
 KDCube services, and user memory. From there you can use the native ReAct
 Agent, connect an existing agent, or add ordinary application surfaces without
 an agent.
+
+To use Connection Hub from an external agent, continue with
+[Run Connection Hub Locally With KDCube](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/quick-start-local.md).
+That workflow connects an external MCP, creates a caller profile with exact
+tool permissions, provides the proxy endpoint and one-time credential, and
+proves live narrowing or revocation from the running client.
 
 ## What `init` Creates
 

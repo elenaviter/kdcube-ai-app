@@ -8,13 +8,20 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 from connection_hub.remote_mcp import (
+    AUTH_OAUTH,
+    OAUTH_CLIENT_SOURCE_DCR,
+    OAUTH_CLIENT_SOURCE_PROVISIONED,
     BundleStorageRemoteMCPOAuthStateStore,
+    RemoteMCPCredential,
     RemoteMCPEndpointPolicy,
     RemoteMCPOAuthCredential,
     RemoteMCPOAuthStateError,
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.remote_mcp.oauth import (
     KDCubeRemoteMCPOAuthService,
+    OAUTH_CLIENT_MODE_AUTOMATIC,
+    OAUTH_CLIENT_MODE_PROVISIONED,
+    RemoteMCPOAuthFlowError,
 )
 
 
@@ -47,9 +54,20 @@ class _Response:
 
 
 class _OAuthHttpClient:
-    def __init__(self, *, client_metadata_supported: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        client_metadata_supported: bool = False,
+        registration_supported: bool = True,
+        token_auth_methods: tuple[str, ...] = (
+            "none",
+            "client_secret_post",
+        ),
+    ) -> None:
         self.calls: list[dict] = []
         self.client_metadata_supported = client_metadata_supported
+        self.registration_supported = registration_supported
+        self.token_auth_methods = token_auth_methods
 
     async def __aenter__(self):
         return self
@@ -81,15 +99,14 @@ class _OAuthHttpClient:
                     "refresh_token",
                 ],
                 "code_challenge_methods_supported": ["S256"],
-                "token_endpoint_auth_methods_supported": [
-                    "none",
-                    "client_secret_post",
-                ],
+                "token_endpoint_auth_methods_supported": list(
+                    self.token_auth_methods
+                ),
                 "authorization_response_iss_parameter_supported": True,
             }
             if self.client_metadata_supported:
                 metadata["client_id_metadata_document_supported"] = True
-            else:
+            elif self.registration_supported:
                 metadata["registration_endpoint"] = (
                     "https://auth.example.test/register"
                 )
@@ -139,8 +156,20 @@ class _OAuthHttpClient:
 
 
 class _ConnectorService:
-    def __init__(self) -> None:
+    def __init__(
+        self, *, existing_oauth: RemoteMCPOAuthCredential | None = None
+    ) -> None:
         self.calls: list[dict] = []
+        self.existing_oauth = existing_oauth or RemoteMCPOAuthCredential(
+            access_token="existing-access",
+            refresh_token="existing-refresh",
+            token_endpoint="https://auth.example.test/token",
+            authorization_server="https://auth.example.test",
+            client_id="dynamic-client",
+            client_secret="dynamic-secret",
+            token_endpoint_auth_method="client_secret_post",
+            client_source=OAUTH_CLIENT_SOURCE_DCR,
+        )
 
     async def create(self, **kwargs):
         self.calls.append(kwargs)
@@ -156,6 +185,13 @@ class _ConnectorService:
             label="Existing records",
             endpoint="https://mcp.example.test/mcp",
             revision=7,
+        )
+
+    async def resolve_credential(self, **kwargs):
+        self.calls.append({"method": "resolve_credential", **kwargs})
+        return RemoteMCPCredential(
+            mode=AUTH_OAUTH,
+            value=self.existing_oauth.to_json(),
         )
 
     async def replace_credential(self, **kwargs):
@@ -303,6 +339,188 @@ async def test_upstream_oauth_uses_client_metadata_url_without_dynamic_registrat
     assert oauth.client_metadata(
         callback_url="https://hub.example.test/oauth/callback"
     )["redirect_uris"] == ["https://hub.example.test/oauth/callback"]
+
+
+@pytest.mark.asyncio
+async def test_upstream_oauth_uses_provisioned_client_without_cimd_or_dcr(
+    tmp_path,
+    monkeypatch,
+):
+    secrets_store = _Secrets()
+    connector_service = _ConnectorService()
+    state_store = BundleStorageRemoteMCPOAuthStateStore(
+        tmp_path, secret_store=secrets_store
+    )
+    oauth = KDCubeRemoteMCPOAuthService(
+        connector_service=connector_service,
+        state_store=state_store,
+        endpoint_policy=RemoteMCPEndpointPolicy(resolver=_public_resolver),
+        connections={},
+    )
+    http = _OAuthHttpClient(
+        registration_supported=False,
+        token_auth_methods=("client_secret_basic",),
+    )
+    monkeypatch.setattr(oauth, "_http_client", lambda: http)
+
+    started = await oauth.start(
+        owner_subject="user-1",
+        label="Provider console records",
+        endpoint="https://mcp.example.test/mcp",
+        callback_url="https://hub.example.test/oauth/callback",
+        oauth_client_mode=OAUTH_CLIENT_MODE_PROVISIONED,
+        oauth_client={
+            "client_id": "provider-client",
+            "client_secret": "provider-secret",
+            "token_endpoint_auth_method": "client_secret_basic",
+        },
+    )
+
+    assert started["oauth_client_source"] == OAUTH_CLIENT_SOURCE_PROVISIONED
+    assert "provider-secret" not in repr(started)
+    query = parse_qs(urlsplit(started["authorize_url"]).query)
+    assert query["client_id"] == ["provider-client"]
+    assert not any(call["url"].endswith("/register") for call in http.calls)
+    assert "provider-secret" not in "".join(
+        path.read_text(encoding="utf-8") for path in state_store.root.glob("*.json")
+    )
+
+    await oauth.complete(
+        state=query["state"][0],
+        code="authorization-code",
+        callback_url="https://hub.example.test/oauth/callback",
+        issuer="https://auth.example.test",
+    )
+
+    created = connector_service.calls[-1]
+    credential = RemoteMCPOAuthCredential.from_json(created["credential_value"])
+    assert credential.client_id == "provider-client"
+    assert credential.client_secret == "provider-secret"
+    assert credential.client_source == OAUTH_CLIENT_SOURCE_PROVISIONED
+    token_call = next(
+        call for call in http.calls if call["url"] == "https://auth.example.test/token"
+    )
+    assert token_call["headers"]["Authorization"].startswith("Basic ")
+    assert "client_secret" not in token_call["data"]
+    assert secrets_store.values == {}
+
+
+@pytest.mark.asyncio
+async def test_upstream_oauth_reconnect_reuses_stored_provisioned_client(
+    tmp_path,
+    monkeypatch,
+):
+    stored = RemoteMCPOAuthCredential(
+        access_token="existing-access",
+        refresh_token="existing-refresh",
+        token_endpoint="https://auth.example.test/token",
+        authorization_server="https://auth.example.test",
+        client_id="provider-client",
+        client_secret="provider-secret",
+        token_endpoint_auth_method="client_secret_post",
+        client_source=OAUTH_CLIENT_SOURCE_PROVISIONED,
+    )
+    connector_service = _ConnectorService(existing_oauth=stored)
+    oauth = KDCubeRemoteMCPOAuthService(
+        connector_service=connector_service,
+        state_store=BundleStorageRemoteMCPOAuthStateStore(
+            tmp_path, secret_store=_Secrets()
+        ),
+        endpoint_policy=RemoteMCPEndpointPolicy(resolver=_public_resolver),
+        connections={},
+    )
+    http = _OAuthHttpClient(registration_supported=False)
+    monkeypatch.setattr(oauth, "_http_client", lambda: http)
+
+    started = await oauth.start(
+        owner_subject="user-1",
+        label="ignored",
+        endpoint="https://ignored.example.test/mcp",
+        callback_url="https://hub.example.test/oauth/callback",
+        connector_id="mcp_0123456789abcdef01234567",
+        expected_revision=7,
+    )
+
+    query = parse_qs(urlsplit(started["authorize_url"]).query)
+    assert query["client_id"] == ["provider-client"]
+    assert started["oauth_client_source"] == OAUTH_CLIENT_SOURCE_PROVISIONED
+    assert not any(call["url"].endswith("/register") for call in http.calls)
+
+
+@pytest.mark.asyncio
+async def test_upstream_oauth_can_replace_provisioned_client_with_automatic_registration(
+    tmp_path,
+    monkeypatch,
+):
+    stored = RemoteMCPOAuthCredential(
+        access_token="existing-access",
+        refresh_token="existing-refresh",
+        token_endpoint="https://auth.example.test/token",
+        authorization_server="https://auth.example.test",
+        client_id="provider-client",
+        client_secret="provider-secret",
+        token_endpoint_auth_method="client_secret_post",
+        client_source=OAUTH_CLIENT_SOURCE_PROVISIONED,
+    )
+    oauth = KDCubeRemoteMCPOAuthService(
+        connector_service=_ConnectorService(existing_oauth=stored),
+        state_store=BundleStorageRemoteMCPOAuthStateStore(
+            tmp_path, secret_store=_Secrets()
+        ),
+        endpoint_policy=RemoteMCPEndpointPolicy(resolver=_public_resolver),
+        connections={},
+    )
+    http = _OAuthHttpClient()
+    monkeypatch.setattr(oauth, "_http_client", lambda: http)
+
+    started = await oauth.start(
+        owner_subject="user-1",
+        label="ignored",
+        endpoint="https://ignored.example.test/mcp",
+        callback_url="https://hub.example.test/oauth/callback",
+        connector_id="mcp_0123456789abcdef01234567",
+        expected_revision=7,
+        oauth_client_mode=OAUTH_CLIENT_MODE_AUTOMATIC,
+    )
+
+    query = parse_qs(urlsplit(started["authorize_url"]).query)
+    assert query["client_id"] == ["dynamic-client"]
+    assert started["oauth_client_source"] == OAUTH_CLIENT_SOURCE_DCR
+    assert any(call["url"].endswith("/register") for call in http.calls)
+
+
+@pytest.mark.asyncio
+async def test_upstream_oauth_rejects_unadvertised_provisioned_auth_method(
+    tmp_path,
+    monkeypatch,
+):
+    oauth = KDCubeRemoteMCPOAuthService(
+        connector_service=_ConnectorService(),
+        state_store=BundleStorageRemoteMCPOAuthStateStore(
+            tmp_path, secret_store=_Secrets()
+        ),
+        endpoint_policy=RemoteMCPEndpointPolicy(resolver=_public_resolver),
+        connections={},
+    )
+    http = _OAuthHttpClient(registration_supported=False)
+    monkeypatch.setattr(oauth, "_http_client", lambda: http)
+
+    with pytest.raises(
+        RemoteMCPOAuthFlowError,
+        match="oauth_provisioned_client_auth_method_unsupported",
+    ):
+        await oauth.start(
+            owner_subject="user-1",
+            label="Records",
+            endpoint="https://mcp.example.test/mcp",
+            callback_url="https://hub.example.test/oauth/callback",
+            oauth_client_mode=OAUTH_CLIENT_MODE_PROVISIONED,
+            oauth_client={
+                "client_id": "provider-client",
+                "client_secret": "provider-secret",
+                "token_endpoint_auth_method": "client_secret_basic",
+            },
+        )
 
 
 @pytest.mark.asyncio

@@ -48,6 +48,8 @@ def build_app() -> Any:
     refresh_tokens: dict[str, str] = {}
     dynamic_client_id = "fixture-dynamic-client"
     dynamic_client_secret = "fixture-dynamic-secret"
+    provisioned_client_id = "fixture-provisioned-client"
+    provisioned_client_secret = "fixture-provisioned-secret"
     server = KDCubeMCPServer(
         "Connection Hub acceptance fixture",
         version=version,
@@ -111,7 +113,7 @@ def build_app() -> Any:
         }
         if registration_mode == "cimd":
             metadata["client_id_metadata_document_supported"] = True
-        else:
+        elif registration_mode == "dcr":
             metadata["registration_endpoint"] = f"{public_base}/register"
         return metadata
 
@@ -142,9 +144,14 @@ def build_app() -> Any:
             client_id = data.get("client_id") or ""
             parsed = urlsplit(client_id)
             return parsed.scheme == "https" and parsed.path not in {"", "/"}
+        if registration_mode == "dcr":
+            return (
+                data.get("client_id") == dynamic_client_id
+                and data.get("client_secret") == dynamic_client_secret
+            )
         return (
-            data.get("client_id") == dynamic_client_id
-            and data.get("client_secret") == dynamic_client_secret
+            data.get("client_id") == provisioned_client_id
+            and data.get("client_secret") == provisioned_client_secret
         )
 
     async def app(scope: Any, receive: Any, send: Any) -> None:
@@ -229,8 +236,13 @@ def build_app() -> Any:
                     or not query.get("code_challenge")
                     or query.get("code_challenge_method") != "S256"
                     or (
-                        registration_mode == "dcr"
-                        and query.get("client_id") != dynamic_client_id
+                        registration_mode in {"dcr", "provisioned"}
+                        and query.get("client_id")
+                        != (
+                            dynamic_client_id
+                            if registration_mode == "dcr"
+                            else provisioned_client_id
+                        )
                     )
                 ):
                     response = JSONResponse(

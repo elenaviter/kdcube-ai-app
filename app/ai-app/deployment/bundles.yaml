@@ -30,11 +30,18 @@ bundles:
   - id: connection-hub@1-0
     name: Connection Hub
     repo: https://github.com/elenaviter/app-ecosystem.git
-    ref: 2026.09.02.0515
+    ref: 2026.09.02.1410
     subdir: products/connection-hub/apps/connection-hub@1-0
     module: entrypoint
     singleton: false
     config:
+      surfaces:
+        as_provider:
+          mcp:
+            remote_mcp_proxy:
+              auth:
+                mode: delegated_proxy
+                authority_id: delegated_client
       connections:
         oauth:
           public_base_url: https://<PUBLIC_HOST>
@@ -44,7 +51,9 @@ bundles:
           oauth:
             enabled: true
             client_name: KDCube Connection Hub
-            public_base_url: https://<PUBLIC_HOST>
+            # Empty derives the callback origin from the authenticated owner
+            # request, which keeps the default localhost install usable.
+            public_base_url: ''
             state_ttl_seconds: 900
             expiry_leeway_seconds: 60
           outbound:
@@ -162,6 +171,14 @@ bundles:
               - kdcube:role:super-admin
               delegable_permissions:
               - canvas:write
+            - grant: external_mcp:use
+              label: Use connected external MCP tools
+              description: Call only the external MCP tools selected on this delegated access card.
+              delegable_roles:
+              - kdcube:role:registered
+              - kdcube:role:paid
+              - kdcube:role:privileged
+              - kdcube:role:super-admin
             - grant: named_services:use
               label: Use KDCube named services
               description: Discover and call configured KDCube named-service namespaces through delegated MCP tools.
@@ -318,6 +335,12 @@ bundles:
               admin_only: true
               grants:
               - kdcube:role:super-admin
+            - resource: '*/api/integrations/bundles/*/*/connection-hub@1-0/public/mcp/remote_mcp_proxy*'
+              label: Connected external MCP tools
+              identity_scope: grantor
+              grants:
+              - external_mcp:use
+              resource_selection: true
             - resource: '*/api/integrations/bundles/*/*/kdcube-services@1-0/public/mcp/conversations*'
               label: KDCube conversations MCP
               tools:

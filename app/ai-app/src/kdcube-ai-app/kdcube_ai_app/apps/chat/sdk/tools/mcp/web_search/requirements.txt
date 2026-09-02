@@ -18,7 +18,7 @@ Pillow
 redis==6.2.0
 langchain-core==1.2.6
 langchain-openai==1.1.6
-connection-hub>=2026.09.02.0515
+connection-hub>=2026.09.02.1410
 certifi
 # provider client for the neural roles (see TOOLS.md, "The neural
 # pipeline"). Keep this exact pin: anthropic 1.x changed the streaming
