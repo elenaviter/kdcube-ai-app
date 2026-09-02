@@ -38,7 +38,8 @@ filter:
 # --- Services: provider secrets and the neural pipeline models ---
 # secrets carries per-provider api_key blocks, the same shape a KDCube
 # deployment's secrets.yaml nests under services:, so the block can be
-# carried over verbatim. brave serves the search; anthropic (or
+# carried over verbatim. brave serves the search (optional: without
+# a key, search runs on the keyless DuckDuckGo backend); anthropic (or
 # openai/google) serves the neural pipeline on use_llm=true.
 #
 # role_models pins the pipeline roles (see TOOLS.md, "The neural

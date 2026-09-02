@@ -104,7 +104,8 @@ git -C kdcube sparse-checkout set mcp app/ai-app/src/kdcube-ai-app
    services:
      secrets:
        brave:
-         api_key: "<the user's Brave key - serves web_search>"
+         api_key: "<the user's Brave key - optional: without it
+                       search runs on DuckDuckGo, keyless>"
        anthropic:
          api_key: "<the user's Anthropic key - only for use_llm=true>"
      role_models:          # the pipeline's models; Haiku is the

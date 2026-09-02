@@ -50,11 +50,12 @@ the usage cheatsheet (what to say to Claude, operator quick moves).
   creating the venv — on a machine with KDCube installed, `python3`
   itself may resolve into a platform venv; use an explicit interpreter
   (`python3.11`, `python3.12`, or a full path) if it does.
-- **A Brave Search API key** for `web_search`; `web_fetch` and
-  `allowlist_status` need no key at all. A free-tier Brave key
-  rate-limits quickly on consecutive searches; the server then falls
-  back to the DuckDuckGo backend transparently, so a first live check
-  may report a different provider on its second call.
+- **A Brave Search API key is optional.** Without one, `web_search`
+  runs on the DuckDuckGo backend (no key, no signup); a Brave key
+  gives better results and limits. A free-tier Brave key rate-limits
+  quickly on consecutive searches, and the server falls back to
+  DuckDuckGo transparently either way. `web_fetch` and
+  `allowlist_status` need no key at all.
 - **An Anthropic key** (or OpenAI/Google) only for `use_llm=true` — the
   neural pipeline. Everything runs without it at `use_llm=false`.
 - **A working CA store.** Some Python builds (pyenv, the macOS
