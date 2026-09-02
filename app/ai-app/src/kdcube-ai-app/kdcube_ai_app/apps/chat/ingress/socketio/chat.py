@@ -11,13 +11,10 @@ uses a standardized ExternalEventPayload schema (chat/sdk/protocol.py).
 from __future__ import annotations
 import os
 import uuid
-from pathlib import Path
 import logging
 from kdcube_ai_app.apps.chat.sdk.config import get_settings
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-import hashlib
-import re
 
 import socketio
 from fastapi import HTTPException
@@ -130,10 +127,6 @@ class SocketIOChatHandler:
         self._session_refcounts: Dict[str, int] = {}
         self._sid_to_session_id: Dict[str, str] = {}
         self._sid_to_tenant_project: Dict[str, dict] = {}
-
-        # TODO: remove!
-        self.upload_dir = Path(os.environ.get("CHAT_UPLOAD_DIR", "/tmp/chat_uploads"))
-        self.upload_dir.mkdir(parents=True, exist_ok=True)
 
     # ---------- Socket.IO core ----------
 
@@ -430,33 +423,6 @@ class SocketIOChatHandler:
 
 
     # ---------- CHAT MESSAGE with GATING (restored) ----------
-
-    async def _save_attachment(self, raw: bytes, orig_name: str, mime: str) -> Dict[str, Any]:
-        # sanitise name
-        name = (orig_name or "file.pdf").strip()
-        name = re.sub(r"[^A-Za-z0-9._ -]+", "", name) or "file.pdf"
-
-        data = bytes(raw)  # handle memoryview/bytearray
-        sha = hashlib.sha256(data).hexdigest()
-        fname = f"{uuid.uuid4().hex}_{name}"
-        fpath = self.upload_dir / fname
-
-        # lazy import to avoid hard dep if not used
-        aiofiles = __import__("aiofiles")
-        async with await aiofiles.open(fpath, "wb") as f:
-            await f.write(data)
-
-        # If you serve static files elsewhere, make this a real URL
-        return {
-            "id": fname,
-            "name": name,
-            "mime": mime or "application/pdf",
-            "size": len(data),
-            "sha256": sha,
-            "storage": "local",
-            "path": str(fpath),     # workers on same host can read this
-            "url": None,            # optionally set e.g. "/uploads/{fname}"
-        }
 
     async def _handle_chat_message(self, sid, *args):
         if not args:

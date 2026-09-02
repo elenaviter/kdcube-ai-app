@@ -328,6 +328,7 @@ async def lifespan(app: FastAPI):
     # ================================
 
     # Create modular Socket.IO chat handler. Share communicator & queue manager.
+    socketio_handler = None
     try:
         socketio_handler = create_socketio_chat_handler(
             app=app,
@@ -347,9 +348,10 @@ async def lifespan(app: FastAPI):
             logger.info("Socket.IO chat handler mounted successfully")
         else:
             logger.warning("Socket.IO not available - chat handler disabled")
+            app.state.socketio_handler = None
 
     except Exception as e:
-        logger.error(f"Failed to setup Socket.IO chat handler: {e}")
+        logger.exception("Failed to setup Socket.IO chat handler: %s", e)
         app.state.socketio_handler = None
 
     app.state.sse_hub = SSEHub(
@@ -426,10 +428,11 @@ async def lifespan(app: FastAPI):
 
         # Link-preview is lazy-initialized on first use; no pre-warm at ingress startup.
         app.state.link_preview_instance = None
-        try:
-            await socketio_handler.start()  # communicator subscribes internally
-        except Exception as e:
-            logger.error(f"Failed to start chat relay listener: {e}")
+        if socketio_handler is not None:
+            try:
+                await socketio_handler.start()  # communicator subscribes internally
+            except Exception as e:
+                logger.exception("Failed to start chat relay listener: %s", e)
 
         # Bundles registry is loaded on demand from the active runtime registry.
         #

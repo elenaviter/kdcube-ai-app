@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import errno
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -175,6 +177,52 @@ def _prompt_event(text: str = "hello") -> dict:
             "event": {"text": text},
         },
     }
+
+
+def test_socketio_handler_startup_has_no_local_upload_directory_dependency(monkeypatch):
+    def fail_if_directory_is_created(*args, **kwargs):
+        del args, kwargs
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    fake_sio = object()
+    monkeypatch.setenv("CHAT_UPLOAD_DIR", "/tmp/chat_uploads")
+    monkeypatch.setattr(Path, "mkdir", fail_if_directory_is_created)
+    monkeypatch.setattr(
+        socket_chat,
+        "get_settings",
+        lambda: SimpleNamespace(
+            PLATFORM=SimpleNamespace(
+                SERVICE=SimpleNamespace(CB_RELAY_IDENTITY="chat-ingress"),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        socket_chat,
+        "ChatRelayCommunicator",
+        lambda **kwargs: SimpleNamespace(config=kwargs),
+    )
+    monkeypatch.setattr(
+        socket_chat.SocketIOChatHandler,
+        "_create_socketio_server",
+        lambda self: fake_sio,
+    )
+    monkeypatch.setattr(
+        socket_chat.SocketIOChatHandler,
+        "_setup_event_handlers",
+        lambda self: None,
+    )
+
+    handler = socket_chat.SocketIOChatHandler(
+        app=SimpleNamespace(),
+        gateway_adapter=SimpleNamespace(),
+        chat_queue_manager=SimpleNamespace(),
+        allowed_origins=["https://app.example"],
+        instance_id="ingress-1",
+        redis_url="redis://localhost:6379/0",
+    )
+
+    assert handler.sio is fake_sio
+    assert not hasattr(handler, "upload_dir")
 
 
 def _manifest():
