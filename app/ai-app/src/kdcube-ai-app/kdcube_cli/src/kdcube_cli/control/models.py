@@ -240,6 +240,26 @@ class LocalInitializationRequest:
     release_ref: Optional[str] = None
     docker_namespace: Optional[str] = None
     parameterize_defaults: bool = False
+    auth_type: Optional[str] = None
+    auth_provider: Optional[str] = None
+    auth_client_id: Optional[str] = None
+    bootstrap_admin_email: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class LocalPlatformSourceRequest:
+    repository: str = "https://github.com/kdcube/kdcube.git"
+    release_ref: Optional[str] = None
+    upstream: bool = False
+    build: bool = False
+
+
+@dataclass(frozen=True)
+class PreparedPlatformSource:
+    repo_root: Path
+    descriptor_source: Path
+    release_ref: str
+    install_mode: str
 
 
 @dataclass(frozen=True)

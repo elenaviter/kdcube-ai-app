@@ -2191,16 +2191,23 @@ def parameterize_default_bundle_descriptors(
     return sorted(remaining)
 
 
-def report_unfilled_descriptor_slots(config_dir: Path, unfilled: List[str]) -> None:
+def report_unfilled_descriptor_slots(
+    config_dir: Path,
+    unfilled: List[str],
+    *,
+    console: Optional[Console] = None,
+) -> None:
     if not unfilled:
         return
-    console = Console()
-    console.print("\n[bold yellow]First-run checklist — descriptor slots to fill:[/bold yellow]")
-    console.print(
+    selected_console = console or Console()
+    selected_console.print(
+        "\n[bold yellow]First-run checklist — descriptor slots to fill:[/bold yellow]"
+    )
+    selected_console.print(
         f"[yellow]The staged defaults in {config_dir} still carry placeholders: "
         f"{', '.join(unfilled)}.[/yellow]"
     )
-    console.print(
+    selected_console.print(
         "[yellow]Fill them in bundles.yaml / bundles.secrets.yaml (each slot has a comment saying "
         "where the value comes from), or via the AI Bundles dashboard after start. "
         "Affected features stay inactive until their slots are filled; everything else runs.[/yellow]"
@@ -5886,7 +5893,7 @@ def run_setup(
                 public_host=os.getenv("KDCUBE_PUBLIC_HOST", "").strip() or None,
                 admin_email=os.getenv("KDCUBE_ADMIN_EMAIL", "").strip() or None,
             )
-            report_unfilled_descriptor_slots(config_dir, unfilled)
+            report_unfilled_descriptor_slots(config_dir, unfilled, console=console)
         meta = {
             "install_mode": install_mode or "upstream",
             "platform_ref": release_ref or "",

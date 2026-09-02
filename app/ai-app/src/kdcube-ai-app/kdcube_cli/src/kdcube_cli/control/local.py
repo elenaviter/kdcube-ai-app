@@ -24,18 +24,14 @@ from kdcube_cli.control.initialization import (
 from kdcube_cli.control.local_lifecycle import LocalLifecycleController
 from kdcube_cli.control.local_runtime import (
     DEFAULT_CLI_LOCK,
-    DEFAULT_RUNTIME_ROOT,
     LocalRuntimeContext,
     build_local_context,
-    discover_local_targets,
     local_paths,
     local_public_base_url,
     local_target_identity,
     read_json,
-    resolve_local_workdir,
     resolve_repo_root,
     runtime_env_exists,
-    select_local_target,
 )
 from kdcube_cli.control.models import (
     ApplicationRef,
@@ -45,9 +41,11 @@ from kdcube_cli.control.models import (
     Diagnostic,
     DiagnosticSeverity,
     LocalInitializationRequest,
+    LocalPlatformSourceRequest,
     LocalStartRequest,
     LocalStopRequest,
     OperationResult,
+    PreparedPlatformSource,
     ReleaseCoordinates,
     SurfaceSelector,
     TargetCapabilities,
@@ -55,6 +53,7 @@ from kdcube_cli.control.models import (
     TargetKind,
     TargetStatus,
 )
+from kdcube_cli.control.source import prepare_local_platform_source
 from kdcube_cli.control.surfaces import application_inventory, load_descriptor
 
 
@@ -168,6 +167,20 @@ class LocalDeploymentTarget:
             operation="initialize",
             changed=True,
             running=False,
+        )
+
+    def prepare_source(
+        self,
+        request: LocalPlatformSourceRequest = LocalPlatformSourceRequest(),
+        *,
+        event_sink: Optional[EventSink] = None,
+    ) -> PreparedPlatformSource:
+        self._require(TargetCapability.INITIALIZE)
+        return prepare_local_platform_source(
+            self.reference,
+            request,
+            runner=self._runner,
+            event_sink=event_sink,
         )
 
     def status(self, *, probe_runtime: bool = True) -> TargetStatus:

@@ -33,10 +33,12 @@ from kdcube_cli.control.models import (
     Diagnostic,
     DiagnosticSeverity,
     LocalInitializationRequest,
+    LocalPlatformSourceRequest,
     LocalStartRequest,
     LocalStopRequest,
     LocalTargetPaths,
     OperationResult,
+    PreparedPlatformSource,
     ReleaseCoordinates,
     SurfaceKind,
     SurfaceSelector,
@@ -46,6 +48,7 @@ from kdcube_cli.control.models import (
     TargetStatus,
 )
 from kdcube_cli.control.remote import EndpointDeploymentTarget
+from kdcube_cli.control.source import prepare_local_platform_source
 from kdcube_cli.control.target import DeploymentTarget
 
 __all__ = [
@@ -71,12 +74,14 @@ __all__ = [
     "KDCubeControlError",
     "LocalDeploymentTarget",
     "LocalInitializationRequest",
+    "LocalPlatformSourceRequest",
     "LocalStartRequest",
     "LocalStopRequest",
     "LocalTargetPaths",
     "MissingTargetError",
     "OperationFailedError",
     "OperationResult",
+    "PreparedPlatformSource",
     "ReleaseCoordinates",
     "RuntimeInitializer",
     "SurfaceKind",
@@ -88,5 +93,6 @@ __all__ = [
     "UnsupportedCapabilityError",
     "discover_local_targets",
     "resolve_local_workdir",
+    "prepare_local_platform_source",
     "select_local_target",
 ]
