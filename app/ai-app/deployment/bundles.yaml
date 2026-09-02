@@ -30,7 +30,7 @@ bundles:
   - id: connection-hub@1-0
     name: Connection Hub
     repo: https://github.com/elenaviter/app-ecosystem.git
-    ref: main
+    ref: 2026.09.02.0515
     subdir: products/connection-hub/apps/connection-hub@1-0
     module: entrypoint
     singleton: false
@@ -38,6 +38,19 @@ bundles:
       connections:
         oauth:
           public_base_url: https://<PUBLIC_HOST>
+        remote_mcp:
+          read_timeout_seconds: 60
+          max_result_bytes: 2097152
+          oauth:
+            enabled: true
+            client_name: KDCube Connection Hub
+            public_base_url: https://<PUBLIC_HOST>
+            state_ttl_seconds: 900
+            expiry_leeway_seconds: 60
+          outbound:
+            allow_http: false
+            allow_private_networks: false
+            allowed_hosts: []
         delegated_credentials:
           catalog:
             active_cache_seconds: 300

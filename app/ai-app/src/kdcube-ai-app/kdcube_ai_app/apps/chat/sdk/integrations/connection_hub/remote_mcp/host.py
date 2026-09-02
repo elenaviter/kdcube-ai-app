@@ -5,17 +5,24 @@
 
 from __future__ import annotations
 
+import base64
 import json
+import time
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from typing import Any, Mapping
+from urllib.parse import quote_plus
 
 from connection_hub.remote_mcp import (
+    AUTH_OAUTH,
     BundleStorageRemoteMCPConnectorStore,
     RemoteMCPConnectorConflict,
     RemoteMCPConnectorService,
     RemoteMCPDiscovery,
     RemoteMCPEndpointPolicy,
+    RemoteMCPOAuthCredential,
 )
+from connection_hub.remote_mcp.store import owner_hash_for
 from kdcube_ai_app.apps.chat.sdk.config import (
     delete_user_secret,
     get_secret,
@@ -33,6 +40,8 @@ from kdcube_ai_app.storage.observed_file_locks import (
 
 DEFAULT_MAX_RESULT_BYTES = 2 * 1024 * 1024
 DEFAULT_READ_TIMEOUT_SECONDS = 60.0
+DEFAULT_OAUTH_EXPIRY_LEEWAY_SECONDS = 60
+OAUTH_REFRESH_LOCK_FILENAME = ".oauth-refresh.lock"
 
 
 def _bool(value: Any, default: bool = False) -> bool:
@@ -41,6 +50,10 @@ def _bool(value: Any, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
 
 
 def _positive_int(value: Any, default: int) -> int:
@@ -164,12 +177,18 @@ class KDCubeRemoteMCPTransport:
         self,
         *,
         endpoint_policy: RemoteMCPEndpointPolicy,
+        secret_store: KDCubeRemoteMCPSecretStore | None = None,
+        connector_store: BundleStorageRemoteMCPConnectorStore | None = None,
         read_timeout_seconds: float = DEFAULT_READ_TIMEOUT_SECONDS,
         max_result_bytes: int = DEFAULT_MAX_RESULT_BYTES,
+        oauth_expiry_leeway_seconds: int = DEFAULT_OAUTH_EXPIRY_LEEWAY_SECONDS,
     ) -> None:
         self._endpoint_policy = endpoint_policy
+        self._secret_store = secret_store
+        self._connector_store = connector_store
         self._read_timeout_seconds = float(read_timeout_seconds)
         self._max_result_bytes = int(max_result_bytes)
+        self._oauth_expiry_leeway_seconds = int(oauth_expiry_leeway_seconds)
 
     def _http_transport(self) -> Any:
         import httpx2
@@ -246,6 +265,229 @@ class KDCubeRemoteMCPTransport:
             raise ValueError("remote_mcp_result_too_large")
         return result
 
+    async def prepare_headers(
+        self,
+        *,
+        connector_id: str,
+        credential: Any,
+        owner_subject: str,
+        credential_ref: str,
+    ) -> dict[str, str]:
+        if str(getattr(credential, "mode", "") or "").strip().lower() != AUTH_OAUTH:
+            return dict(credential.request_headers())
+        oauth = RemoteMCPOAuthCredential.from_json(
+            str(getattr(credential, "value", "") or "")
+        )
+        if not oauth.is_expiring(
+            now=int(time.time()),
+            leeway_seconds=self._oauth_expiry_leeway_seconds,
+        ):
+            return oauth.request_headers()
+        if (
+            not owner_subject
+            or not credential_ref
+            or self._secret_store is None
+            or self._connector_store is None
+        ):
+            raise RemoteMCPConnectorConflict(
+                "connector_oauth_reauthorization_required"
+            )
+        lock_path = (
+            self._connector_store.connector_path(
+                owner_hash=owner_hash_for(owner_subject),
+                connector_id=connector_id,
+            )
+            / OAUTH_REFRESH_LOCK_FILENAME
+        )
+        try:
+            async with observed_file_lock_async(
+                lock_path=lock_path,
+                resource_id=f"remote-mcp-oauth:{connector_id}",
+                operation="remote-mcp-oauth-refresh",
+                wait_seconds=30.0,
+            ):
+                latest_raw = await self._secret_store.get(
+                    owner_subject=owner_subject,
+                    secret_ref=credential_ref,
+                )
+                if not latest_raw:
+                    raise RemoteMCPConnectorConflict(
+                        "connector_credential_unavailable"
+                    )
+                latest = RemoteMCPOAuthCredential.from_json(latest_raw)
+                if latest.is_expiring(
+                    now=int(time.time()),
+                    leeway_seconds=self._oauth_expiry_leeway_seconds,
+                ):
+                    latest = await self._refresh_oauth(latest)
+                    await self._secret_store.set(
+                        owner_subject=owner_subject,
+                        secret_ref=credential_ref,
+                        value=latest.to_json(),
+                    )
+                return latest.request_headers()
+        except ObservedFileLockTimeout as exc:
+            raise RemoteMCPConnectorConflict(
+                "connector_oauth_refresh_lock_timeout"
+            ) from exc
+
+    async def revoke_credential(
+        self,
+        *,
+        connector_id: str,
+        endpoint: str,
+        transport: str,
+        credential: Any,
+        owner_subject: str,
+        credential_ref: str,
+    ) -> bool:
+        del connector_id, endpoint, transport
+        if str(getattr(credential, "mode", "") or "").strip().lower() != AUTH_OAUTH:
+            return False
+        if self._secret_store is None or not owner_subject or not credential_ref:
+            return False
+        latest_raw = await self._secret_store.get(
+            owner_subject=owner_subject,
+            secret_ref=credential_ref,
+        )
+        oauth = RemoteMCPOAuthCredential.from_json(
+            latest_raw or str(getattr(credential, "value", "") or "")
+        )
+        if not oauth.revocation_endpoint:
+            return False
+        import httpx2
+
+        revocation_endpoint = await self._endpoint_policy.validate(
+            oauth.revocation_endpoint
+        )
+        tokens = [
+            (oauth.refresh_token, "refresh_token"),
+            (oauth.access_token, "access_token"),
+        ]
+        attempted = False
+        async with httpx2.AsyncClient(
+            timeout=httpx2.Timeout(30.0, read=60.0),
+            follow_redirects=False,
+            transport=self._http_transport(),
+            trust_env=False,
+        ) as client:
+            for token, hint in tokens:
+                if not token:
+                    continue
+                data = {
+                    "token": token,
+                    "token_type_hint": hint,
+                    "client_id": oauth.client_id,
+                }
+                headers = {"Content-Type": "application/x-www-form-urlencoded"}
+                if oauth.token_endpoint_auth_method == "client_secret_post":
+                    data["client_secret"] = oauth.client_secret
+                elif oauth.token_endpoint_auth_method == "client_secret_basic":
+                    encoded = base64.b64encode(
+                        (
+                            f"{quote_plus(oauth.client_id, safe='')}:"
+                            f"{quote_plus(oauth.client_secret, safe='')}"
+                        ).encode("utf-8")
+                    ).decode("ascii")
+                    headers["Authorization"] = f"Basic {encoded}"
+                response = await client.post(
+                    revocation_endpoint,
+                    data=data,
+                    headers=headers,
+                )
+                await response.aread()
+                attempted = True
+                if response.status_code not in {200, 201, 204}:
+                    raise RemoteMCPConnectorConflict(
+                        "connector_oauth_upstream_revocation_failed"
+                    )
+        return attempted
+
+    async def _refresh_oauth(
+        self, credential: RemoteMCPOAuthCredential
+    ) -> RemoteMCPOAuthCredential:
+        import httpx2
+
+        if not credential.refresh_token:
+            raise RemoteMCPConnectorConflict(
+                "connector_oauth_reauthorization_required"
+            )
+        token_endpoint = await self._endpoint_policy.validate(
+            credential.token_endpoint
+        )
+        data = {
+            "grant_type": "refresh_token",
+            "refresh_token": credential.refresh_token,
+            "client_id": credential.client_id,
+        }
+        if credential.resource:
+            data["resource"] = credential.resource
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        method = credential.token_endpoint_auth_method
+        if method == "client_secret_post":
+            data["client_secret"] = credential.client_secret
+        elif method == "client_secret_basic":
+            encoded = base64.b64encode(
+                (
+                    f"{quote_plus(credential.client_id, safe='')}:"
+                    f"{quote_plus(credential.client_secret, safe='')}"
+                ).encode("utf-8")
+            ).decode("ascii")
+            headers["Authorization"] = f"Basic {encoded}"
+        elif method != "none":
+            raise RemoteMCPConnectorConflict(
+                "connector_oauth_reauthorization_required"
+            )
+        async with httpx2.AsyncClient(
+            timeout=httpx2.Timeout(30.0, read=60.0),
+            follow_redirects=False,
+            transport=self._http_transport(),
+            trust_env=False,
+        ) as client:
+            response = await client.post(
+                token_endpoint,
+                data=data,
+                headers=headers,
+            )
+            raw = await response.aread()
+        if response.status_code not in {200, 201}:
+            raise RemoteMCPConnectorConflict(
+                "connector_oauth_reauthorization_required"
+            )
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            raise RemoteMCPConnectorConflict(
+                "connector_oauth_reauthorization_required"
+            ) from exc
+        if not isinstance(payload, Mapping) or not str(
+            payload.get("access_token") or ""
+        ).strip():
+            raise RemoteMCPConnectorConflict(
+                "connector_oauth_reauthorization_required"
+            )
+        try:
+            expires_in = int(payload.get("expires_in") or 0)
+        except (TypeError, ValueError):
+            expires_in = 0
+        moment = int(time.time())
+        refreshed = replace(
+            credential,
+            access_token=str(payload.get("access_token") or "").strip(),
+            token_type=str(payload.get("token_type") or "Bearer").strip(),
+            refresh_token=(
+                str(payload.get("refresh_token") or "").strip()
+                or credential.refresh_token
+            ),
+            expires_at=moment + expires_in if expires_in > 0 else 0,
+            scope=(
+                str(payload.get("scope") or "").strip() or credential.scope
+            ),
+            issued_at=moment,
+        )
+        refreshed.verify()
+        return refreshed
+
 
 @asynccontextmanager
 async def _kdcube_remote_mcp_mutation_lock(**kwargs: Any):
@@ -264,16 +506,24 @@ def build_remote_mcp_connector_service(
 ) -> RemoteMCPConnectorService:
     config = _remote_mcp_config(connections)
     endpoint_policy = remote_mcp_endpoint_policy(connections)
+    connector_store = BundleStorageRemoteMCPConnectorStore(storage_root)
+    secret_store = KDCubeRemoteMCPSecretStore(bundle_id=bundle_id)
     return RemoteMCPConnectorService(
-        store=BundleStorageRemoteMCPConnectorStore(storage_root),
-        secret_store=KDCubeRemoteMCPSecretStore(bundle_id=bundle_id),
+        store=connector_store,
+        secret_store=secret_store,
         transport=KDCubeRemoteMCPTransport(
             endpoint_policy=endpoint_policy,
+            secret_store=secret_store,
+            connector_store=connector_store,
             read_timeout_seconds=_positive_float(
                 config.get("read_timeout_seconds"), DEFAULT_READ_TIMEOUT_SECONDS
             ),
             max_result_bytes=_positive_int(
                 config.get("max_result_bytes"), DEFAULT_MAX_RESULT_BYTES
+            ),
+            oauth_expiry_leeway_seconds=_positive_int(
+                _mapping(config.get("oauth")).get("expiry_leeway_seconds"),
+                DEFAULT_OAUTH_EXPIRY_LEEWAY_SECONDS,
             ),
         ),
         endpoint_policy=endpoint_policy,
@@ -284,9 +534,11 @@ def build_remote_mcp_connector_service(
 __all__ = [
     "DEFAULT_MAX_RESULT_BYTES",
     "DEFAULT_READ_TIMEOUT_SECONDS",
+    "DEFAULT_OAUTH_EXPIRY_LEEWAY_SECONDS",
     "GuardedRemoteMCPNetworkBackend",
     "KDCubeRemoteMCPSecretStore",
     "KDCubeRemoteMCPTransport",
+    "OAUTH_REFRESH_LOCK_FILENAME",
     "build_remote_mcp_connector_service",
     "remote_mcp_endpoint_policy",
 ]

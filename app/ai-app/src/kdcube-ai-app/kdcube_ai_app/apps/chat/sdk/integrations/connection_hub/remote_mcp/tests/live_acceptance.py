@@ -84,7 +84,14 @@ class Fixture:
     def endpoint(self) -> str:
         return f"http://host.docker.internal:{self.args.fixture_port}/mcp"
 
-    def start(self, version: int) -> None:
+    def start(
+        self,
+        version: int,
+        *,
+        auth_mode: str = "bearer",
+        registration_mode: str = "dcr",
+        access_ttl: int = 2,
+    ) -> None:
         self.stop()
         fixture_path = (
             "/source/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/"
@@ -102,6 +109,17 @@ class Fixture:
             f"REMOTE_MCP_FIXTURE_BEARER={self.bearer}",
             "-e",
             f"REMOTE_MCP_FIXTURE_VERSION={version}",
+            "-e",
+            f"REMOTE_MCP_FIXTURE_AUTH={auth_mode}",
+            "-e",
+            f"REMOTE_MCP_FIXTURE_CLIENT_REGISTRATION={registration_mode}",
+            "-e",
+            f"REMOTE_MCP_FIXTURE_ACCESS_TTL={access_ttl}",
+            "-e",
+            (
+                "REMOTE_MCP_FIXTURE_PUBLIC_BASE="
+                f"http://host.docker.internal:{self.args.fixture_port}"
+            ),
             "-v",
             f"{self.source_root}:/source:ro",
             self.args.fixture_image,

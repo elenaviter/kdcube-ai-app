@@ -5,8 +5,11 @@ from types import SimpleNamespace
 
 import pytest
 from connection_hub.remote_mcp import (
+    BundleStorageRemoteMCPConnectorStore,
+    RemoteMCPCredential,
     RemoteMCPEndpointDenied,
     RemoteMCPEndpointPolicy,
+    RemoteMCPOAuthCredential,
 )
 
 from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.remote_mcp import host
@@ -267,3 +270,174 @@ async def test_transport_installs_guarded_backend_on_httpx2_pool():
         assert http_transport._pool._network_backend._endpoint_policy is policy
     finally:
         await http_transport.aclose()
+
+
+@pytest.mark.asyncio
+async def test_oauth_transport_refreshes_once_under_lock_and_persists_rotation(
+    tmp_path,
+    monkeypatch,
+):
+    import httpx2
+
+    class _Secrets:
+        def __init__(self, raw: str) -> None:
+            self.raw = raw
+            self.set_calls: list[str] = []
+
+        async def get(self, **_kwargs):
+            return self.raw
+
+        async def set(self, *, value: str, **_kwargs):
+            self.raw = value
+            self.set_calls.append(value)
+
+    class _Response:
+        status_code = 200
+
+        async def aread(self):
+            return b'{"access_token":"rotated-access","expires_in":3600}'
+
+    class _Client:
+        def __init__(self, **_kwargs) -> None:
+            self.calls: list[dict] = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, url, **kwargs):
+            self.calls.append({"url": url, **kwargs})
+            return _Response()
+
+    clients: list[_Client] = []
+
+    def client_factory(**kwargs):
+        client = _Client(**kwargs)
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(httpx2, "AsyncClient", client_factory)
+    oauth = RemoteMCPOAuthCredential(
+        access_token="expired-access",
+        refresh_token="refresh-value",
+        expires_at=1,
+        scope="records.read",
+        resource="https://mcp.example.test/mcp",
+        authorization_server="https://auth.example.test",
+        token_endpoint="https://auth.example.test/token",
+        client_id="dynamic-client",
+        client_secret="dynamic-secret",
+        token_endpoint_auth_method="client_secret_post",
+        issued_at=1,
+    )
+    secrets_store = _Secrets(oauth.to_json())
+
+    async def resolver(_host: str, _port: int):
+        return ("93.184.216.34",)
+
+    transport = host.KDCubeRemoteMCPTransport(
+        endpoint_policy=RemoteMCPEndpointPolicy(resolver=resolver),
+        secret_store=secrets_store,
+        connector_store=BundleStorageRemoteMCPConnectorStore(tmp_path),
+    )
+    monkeypatch.setattr(transport, "_http_transport", lambda: object())
+
+    headers = await transport.prepare_headers(
+        connector_id="mcp_0123456789abcdef01234567",
+        credential=RemoteMCPCredential(mode="oauth", value=oauth.to_json()),
+        owner_subject="user-1",
+        credential_ref="remote_mcp.oauth.1",
+    )
+
+    assert headers == {"Authorization": "Bearer rotated-access"}
+    assert len(secrets_store.set_calls) == 1
+    stored = RemoteMCPOAuthCredential.from_json(secrets_store.raw)
+    assert stored.access_token == "rotated-access"
+    assert stored.refresh_token == "refresh-value"
+    assert clients[0].calls[0]["data"]["client_secret"] == "dynamic-secret"
+
+
+@pytest.mark.asyncio
+async def test_oauth_transport_revokes_refresh_and_access_tokens(monkeypatch):
+    import httpx2
+
+    oauth = RemoteMCPOAuthCredential(
+        access_token="access-value",
+        refresh_token="refresh-value",
+        expires_at=1_900_000_000,
+        authorization_server="https://auth.example.test",
+        token_endpoint="https://auth.example.test/token",
+        revocation_endpoint="https://auth.example.test/revoke",
+        client_id="dynamic-client",
+        client_secret="dynamic-secret",
+        token_endpoint_auth_method="client_secret_post",
+        issued_at=1,
+    )
+
+    class _Secrets:
+        async def get(self, **_kwargs):
+            return oauth.to_json()
+
+    class _Response:
+        status_code = 200
+
+        async def aread(self):
+            return b""
+
+    class _Client:
+        def __init__(self, **_kwargs) -> None:
+            self.calls: list[dict] = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, url, **kwargs):
+            self.calls.append({"url": url, **kwargs})
+            return _Response()
+
+    clients: list[_Client] = []
+
+    def client_factory(**kwargs):
+        client = _Client(**kwargs)
+        clients.append(client)
+        return client
+
+    async def resolver(_host: str, _port: int):
+        return ("93.184.216.34",)
+
+    monkeypatch.setattr(httpx2, "AsyncClient", client_factory)
+    transport = host.KDCubeRemoteMCPTransport(
+        endpoint_policy=RemoteMCPEndpointPolicy(resolver=resolver),
+        secret_store=_Secrets(),
+    )
+    monkeypatch.setattr(transport, "_http_transport", lambda: object())
+
+    attempted = await transport.revoke_credential(
+        connector_id="mcp_0123456789abcdef01234567",
+        endpoint="https://mcp.example.test/mcp",
+        transport="streamable-http",
+        credential=RemoteMCPCredential(mode="oauth", value=oauth.to_json()),
+        owner_subject="user-1",
+        credential_ref="remote_mcp.oauth.1",
+    )
+
+    assert attempted is True
+    assert [call["data"] for call in clients[0].calls] == [
+        {
+            "token": "refresh-value",
+            "token_type_hint": "refresh_token",
+            "client_id": "dynamic-client",
+            "client_secret": "dynamic-secret",
+        },
+        {
+            "token": "access-value",
+            "token_type_hint": "access_token",
+            "client_id": "dynamic-client",
+            "client_secret": "dynamic-secret",
+        },
+    ]
