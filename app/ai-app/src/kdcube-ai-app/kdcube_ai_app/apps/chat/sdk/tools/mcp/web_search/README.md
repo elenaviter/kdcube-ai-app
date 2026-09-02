@@ -90,7 +90,9 @@ the clone, and it survives the clone being updated or replaced.
 
 ```bash
 mkdir web-search-mcp && cd web-search-mcp    # your install dir
-git clone https://github.com/kdcube/kdcube.git   # creates ./kdcube
+# a sparse clone: the repo is large and this tool needs two dirs of it
+git clone --depth 1 --filter=blob:none --sparse https://github.com/kdcube/kdcube.git
+git -C kdcube sparse-checkout set mcp app/ai-app/src/kdcube-ai-app
 export REPO_SRC=$PWD/kdcube/app/ai-app/src/kdcube-ai-app
 
 python3.11 -m venv .venv    # explicit interpreter, see Prerequisites

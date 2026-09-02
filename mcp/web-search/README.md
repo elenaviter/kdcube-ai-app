@@ -16,7 +16,9 @@ it:
 
 ```bash
 mkdir web-search-mcp && cd web-search-mcp    # your install dir
-git clone https://github.com/kdcube/kdcube.git   # creates ./kdcube
+# a sparse clone: the repo is large and this tool needs two dirs of it
+git clone --depth 1 --filter=blob:none --sparse https://github.com/kdcube/kdcube.git
+git -C kdcube sparse-checkout set mcp app/ai-app/src/kdcube-ai-app
 
 python3.11 -m venv .venv    # explicit interpreter, see the README's prerequisites
 .venv/bin/pip install -r kdcube/mcp/web-search/requirements.txt
