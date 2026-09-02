@@ -422,21 +422,40 @@ The targets the agent selects determine which row families come back:
 **Retrieval function.** When `query` is set, semantic, lexical, and
 trigram-fuzzy retrievals run in parallel and are fused by Reciprocal Rank
 Fusion (`k=60`) per target with a
-multiplicative recency lift (`1 + 0.25 × recency`, half-life 7 days). A turn
-does not have to appear in both lists — single-side matches still count, they
+multiplicative recency lift (`1 + 1.0 × recency`, half-life 7 days: a turn
+from today is worth about 2x a month-old turn at the same fused rank). A turn
+does not have to appear in all lists — single-side matches still count, they
 just contribute one RRF term. Catalog routing (no-query / ordinal / date-only
 window) bypasses the hybrid path and uses the deterministic turn catalog.
 
+**Query shape.** The lexical arm hands `query` to `websearch_to_tsquery`, so
+every unquoted word is an AND-term that must occur in the stored text, a
+`"quoted phrase"` must occur verbatim, `OR` separates alternatives, and `-word`
+excludes. The trigram arm averages word similarity over the query tokens. Both
+punish conversational framing: `last time i worked with excel on the forecast`
+finds nothing lexically and dilutes the fuzzy score, while `excel forecast` or
+`"Forecast-Q2-2026.xlsx"` finds the turn. The rule the agent is taught, on
+every surface that exposes this search: `query` is a compact bag of content
+words as they would appear in the stored text, one topic per call; time words
+go to `from`/`to`, never into `query`. As a safety net, when the AND pass
+returns nothing the lexical arm reruns once with the terms OR'd (quoted
+phrases intact, stop words dropped), and the trigram arm drops stop words and
+recall framing before averaging. The shared text lives in
+`sdk/solutions/conversation/instructions.py` (`CONVERSATION_QUERY_GUIDE`) and
+is rendered by this tool's spec, by the `conv` named service, and by the
+hosted-agent recovery guide.
+
 Inputs:
 
-- `query`: natural-language query. Set it for topic search (hybrid). Omit it for catalog routing.
+- `query`: content words only, as they would appear in the stored text (names, files, identifiers, the user's wording, exact strings in double quotes, `OR` between synonyms). Set it for topic search (hybrid). Omit it for catalog routing.
 - `targets`: list of snippet families to return. Defaults to `["assistant", "user", "attachment", "summary"]`. Use `"notes"` explicitly when looking for internal beacons.
 - `scope`: `conversation` (default) or `user`.
 - `ordinal`: 1-based turn number in the selected scope/window. Set this to look up the N-th turn.
 - `from` / `to`: ISO timestamps. `to` is exclusive. Set without `query` to scan a date window; set with `query` to narrow hybrid search to that window.
 - `order`: `asc` (default) or `desc` for catalog results.
 - `top_k`: maximum turn hits (default 5).
-- `days`: lookback limit (default 365 for topic queries, wider for catalog).
+- `days`: lookback limit (default 365 for topic queries, wider for catalog). Widen for material older than a year.
+- `rank_weights`: optional `{semantic, lexical, recency}` multipliers on the fused ranking (default 1.0 each). `recency: 0` when hunting old material with no time clue; `lexical: 2` when the query holds exact phrases or filenames.
 
 The tool infers routing from which fields are set; there is no `mode` knob.
 

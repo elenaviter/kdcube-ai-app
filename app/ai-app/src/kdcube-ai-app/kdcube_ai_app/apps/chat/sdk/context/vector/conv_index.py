@@ -2160,6 +2160,19 @@ class ConvIndex:
 
         async with self._pool.acquire() as con:
             rows = await con.fetch(q, *args)
+            if not rows:
+                # websearch_to_tsquery ANDs every unquoted word, so one filler
+                # word ("last time i worked with excel") empties the result.
+                # Second pass: the same SQL with the query in OR form (quoted
+                # phrases intact, stop words dropped). Runs only on an empty
+                # first pass, so a query that already matched is unaffected.
+                from kdcube_ai_app.apps.chat.sdk.context.vector.query_terms import (
+                    lexical_or_fallback_query,
+                )
+                or_query = lexical_or_fallback_query(q_text)
+                if or_query and or_query != q_text:
+                    args[2] = or_query
+                    rows = await con.fetch(q, *args)
 
         return [dict(r) for r in rows]
 
@@ -2214,9 +2227,12 @@ class ConvIndex:
         if not q_text:
             return []
 
-        # Tokenize on non-word boundaries and keep tokens of length ≥ 3 — shorter
-        # tokens generate too-noisy trigram matches.
-        tokens = [t for t in re.split(r"\W+", q_text) if t and len(t) >= 3]
+        # Tokenize on non-word boundaries, keep tokens of length ≥ 3 (shorter
+        # tokens generate too-noisy trigram matches), and drop stop words and
+        # recall framing ("last", "time", "worked", "with") so filler cannot
+        # pull the per-token AVG below the threshold for a real match.
+        from kdcube_ai_app.apps.chat.sdk.context.vector.query_terms import trigram_query_tokens
+        tokens = trigram_query_tokens(q_text)
         if not tokens:
             return []
 

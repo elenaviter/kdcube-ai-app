@@ -17,6 +17,9 @@ from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace.references import (
     build_logical_artifact_path,
     split_logical_artifact_ref,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.conversation.instructions import (
+    CONVERSATION_QUERY_GUIDE,
+)
 from kdcube_ai_app.apps.chat.sdk.solutions.conversation.api import (
     ConversationSearchContext,
     ConversationSearchParams,
@@ -28,42 +31,26 @@ LOGGER = logging.getLogger("kdcube.sdk.react.memsearch")
 TOOL_SPEC = {
     "id": "react.memsearch",
     "purpose": (
-        "Conversations are one of the user's memory realms - what was actually said in chat - "
-        "alongside durable memories (`mem`) and context boards (`cnv`); together they are districts "
-        "of the user's memory. Searches what the USER said (prompts and follow-ups), what the ASSISTANT "
-        "said (replies and working summaries), and the user's UPLOADED attachments (their indexed "
-        "summaries): pick `targets` by what the user is recalling ('I said...' -> user/attachment; "
-        "'you said...' -> assistant). Reach for it whenever a look back would likely help: on an explicit "
-        "recall request, AND when the user's intent implies earlier context matters - they refer to "
-        "something from before, say it was clearer earlier, can't find or re-locate something, or resume "
-        "a dropped thread. "
-        "Search prior conversation memory and return turn-level recovery handles. "
-        "Use only when the exact needed path is not already visible. "
-        "Behavior is inferred from which fields you set: "
-        "topic clue -> set `query` (hybrid semantic+lexical+recency search); "
-        "topic inside a time window -> `query` + `from`/`to`; "
-        "second/first/nth turn -> `ordinal` (no `query`); "
-        "date-only clue with no topic -> `from`/`to` (no `query`); "
-        "broad conversation overview -> no `query`, no `ordinal`, no bounds, with `targets=['summary']`. "
-        "Scope: the default `scope=\"conversation\"` only searches the CURRENT conversation. "
-        "To recover material from another conversation the same user has had with you "
-        "(\"last week we talked about ...\", \"yesterday you helped me with ...\", a topic "
-        "the user clearly worked on before but not in this conversation), pass `scope=\"user\"`. "
-        "Recovery path: memsearch -> read returned refs; if refs are incomplete, "
-        "read conv:ar:conv_<conversation_id>.turn_<id>.react.turn.index, then batch-read/pull exact conv:ar:/conv:tc:/conv:fi:/conv:so: refs. "
-        "The `conv_<conversation_id>` segment in a returned path names the conversation the ref lives in; "
-        "pass returned paths exactly as supplied to react.read/react.pull/react.checkout/react.rg."
+        "Search the conversation store: prior turns of this conversation, or of the user's other conversations with you. "
+        "Conversations are one of the user's memory realms, beside durable memories (`mem`) and context boards (`cnv`). "
+        "Use it when the target is not visible and may sit in an earlier turn: an explicit recall request, or an intent that implies earlier context (the user refers to something from before, resumes a dropped thread, cannot re-locate something). Never search what is already visible; use the visible content or `react.read` its path. "
+        + CONVERSATION_QUERY_GUIDE + " "
+        "The `summary` target is your own channel:summary texts: query them with the kind of terms you were told to write there. "
+        "Default `scope=\"conversation\"` searches only the CURRENT conversation. Pass `scope=\"user\"` to also search the same user's other conversations with you (\"last week we talked about ...\", \"yesterday you helped me with ...\"). "
+        "Recovery path: memsearch -> read returned refs; if refs are incomplete, read conv:ar:conv_<conversation_id>.turn_<id>.react.turn.index, then batch-read/pull exact conv:ar:/conv:tc:/conv:fi:/conv:so: refs. "
+        "The `conv_<conversation_id>` segment in a returned path names the conversation the ref lives in; pass returned paths exactly as supplied to react.read/react.pull/react.checkout/react.rg."
     ),
     "args": {
-        "query": "str (FIRST FIELD). Natural-language query. Required for topic search. Omit when you only want a catalog lookup (ordinal/date-window/overview).",
+        "query": "str (FIRST FIELD). Content words only, as they would appear in the stored text (see purpose): names, files, identifiers, the user's wording, exact strings in double quotes, synonyms joined with OR; no conversational framing, no time words. Required for topic search. Omit for a catalog lookup (ordinal/date-window/overview).",
         "targets": "list[str] (SECOND FIELD). Any of: assistant|user|attachment|summary|notes. Defaults to all except notes.",
         "scope": "str (optional). conversation|user. Default `conversation` searches only this conversation. Set `user` to also search the same user's other conversations with you — required for cross-conversation recall.",
-        "from": "ISO timestamp (optional). Start of temporal window.",
+        "from": "ISO timestamp (optional). Start of temporal window. Time words in the user's request (yesterday, last week, in March) belong here, never in `query`.",
         "to": "ISO timestamp (optional). End of temporal window, exclusive.",
         "ordinal": "int (optional). 1-based turn ordinal in the selected scope/window.",
         "order": "str (optional). asc|desc for catalog results. Default asc.",
         "top_k": "int (optional). Max hits to return (default 5).",
-        "days": "int (optional). Lookback window in days (default 365).",
+        "days": "int (optional). Lookback window in days (default 365). Widen for material older than a year.",
+        "rank_weights": "object (optional). {semantic, lexical, recency} multipliers for the fused ranking, default 1.0 each. Set recency to 0 when hunting old material with no time clue (recency otherwise lifts a fresh turn about 2x); set lexical to 2 when you hold exact phrases or filenames.",
         "include_recovery_sessions": "bool (optional). Default false. Working summaries from turns where you only called memsearch/read/pull (no new artifact produced) are excluded by default, because they self-reference the search topic and would dominate future searches for it. Set true ONLY when explicitly asked to introspect prior memsearch activity.",
     },
     "returns": "turn hits with conversation_id, turn_id, turn_index_path, working_summary_path, snippets, timestamps, and scores/ordinals when available",

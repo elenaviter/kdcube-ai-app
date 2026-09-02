@@ -195,8 +195,9 @@ REACT_LITE_REACT_READ_RECOVERY = """
 REACT_LITE_MEMORY_SEARCH_RECOVERY = """
 [RECOVERY WITH react.memsearch]
 - Use `react.memsearch` when no exact path is known and the target may be in prior turns. Never memsearch what is already visible — use the visible content or `react.read` its path.
-- Modes: semantic (natural-language query), ordinal ("second turn"), temporal (from/to ISO time range), timeline (ordered overview — no query; never a generic filler query). For topic + time, combine query with from/to and omit the mode.
-- Targets: `summary`, `user`, `assistant`, `attachment`. Use `scope=user` only for intended cross-conversation recovery.
+- Modes by clue: topic -> `query`; n-th turn -> `ordinal`; a period -> `from`/`to`; topic in a period -> `query` + `from`/`to`; overview -> no query, `targets=["summary"]`, never a generic filler query.
+- `query` is content words as they would appear in the stored text (names, files, identifiers, the user's wording, exact strings in double quotes, synonyms joined with OR), one topic per call. No conversational framing, no time words (time goes to `from`/`to`): each such word is a lexical AND-term that fails and dilutes the other arms. Every unquoted word must match, so fewer, surer words beat more.
+- `summary` rows are your own channel:summary texts: query them with the kind of terms you were told to write there. `user`/`attachment` rows carry the user's wording and filenames. Use `scope=user` only for intended cross-conversation recovery.
 - Results return turn ids and recovery paths (`turn_index_path`, `working_summary_path`) — read the exact refs after searching.
 """
 

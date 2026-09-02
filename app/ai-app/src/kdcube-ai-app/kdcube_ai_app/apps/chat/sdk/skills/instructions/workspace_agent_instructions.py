@@ -34,6 +34,10 @@ from kdcube_ai_app.apps.chat.sdk.skills.instructions.shared_instructions import 
     TECH_EVOLUTION_CAVEAT,
     USER_GENDER_ASSUMPTIONS,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.conversation.instructions import (
+    CONVERSATION_QUERY_GUIDE,
+    turn_summary_writing_guide,
+)
 
 
 _EXEC_CAPABILITY_TEMPLATE = """
@@ -57,14 +61,15 @@ _CONVERSATION_RECOVERY_TEMPLATE = """
 [CONVERSATION RECOVERY — `{namespace}` namespace]
 - Your visible history window is finite: older turns compact into summaries. The full conversation record lives on beyond the window and is searchable through the `{namespace}` namespace operations — turns, messages, and files from any earlier point.
 - When the user references something older than what you can see — a past decision, an exact phrase, an earlier file — search the `{namespace}` namespace before guessing or asking them to repeat it. A file found there is retrievable by its link{pull_hint}.
+- How to query it: {query_guide}
 """.strip()
 
 
 _TURN_SUMMARY_CONTRIBUTION_TEMPLATE = """
 [SHARED TURN CONTEXT — `{tool_name}`]
-- When this turn produces a reusable result, call `{tool_name}` once near completion. Capture the outcome, durable facts and decisions, and the refs needed to recover its products later. Skip trivial greetings and acknowledgements.
-- Put exact phrases a person may search for in `phrases`, and stable names or identifiers in `entities`. The summary remains useful without them, but these anchors improve lexical and fuzzy retrieval.
+- When this turn produces a reusable result, call `{tool_name}` once near completion, with the summary text, the refs needed to recover its products, and the retrieval anchors as `phrases` and `entities`. Skip trivial greetings and acknowledgements.
 - This contributes to KDCube's shared conversation record; it does not replace or expose your framework's private checkpoint or session memory. A later call replaces your earlier draft, and only the final draft of a successfully completed turn becomes durable.
+{writing_guide}
 """.strip()
 
 
@@ -103,15 +108,25 @@ def conversation_recovery_guide(
     return _CONVERSATION_RECOVERY_TEMPLATE.format(
         namespace=str(namespace or "conv").strip(),
         pull_hint=pull_hint,
+        query_guide=CONVERSATION_QUERY_GUIDE,
     )
 
 
 def turn_summary_contribution_guide(
-    *, tool_name: str = "record_turn_summary"
+    *,
+    tool_name: str = "record_turn_summary",
+    search_ref: str | None = None,
 ) -> str:
-    """Teach an optional agent-authored shared conversation summary capability."""
+    """Teach an optional agent-authored shared conversation summary capability.
+
+    ``search_ref`` names, in the host's own words, the search surface that reads
+    these summaries (for example "the `conv` search with targets summary"). Leave
+    it unset when the host binds no conversation search; the shared writing
+    guide then speaks of the conversation search in class vocabulary.
+    """
     return _TURN_SUMMARY_CONTRIBUTION_TEMPLATE.format(
-        tool_name=str(tool_name or "record_turn_summary").strip()
+        tool_name=str(tool_name or "record_turn_summary").strip(),
+        writing_guide=turn_summary_writing_guide(search_ref),
     )
 
 

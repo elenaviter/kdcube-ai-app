@@ -40,6 +40,17 @@ record_turn_summary(
   locator, not a credential; this tool does not resolve it or widen authority.
 - `phrases` and `entities` become retrieval anchors for lexical and fuzzy
   discovery. The summary remains searchable without them.
+- The writing rules are the same for every host and live in one place,
+  `turn_summary_writing_guide` in `sdk/solutions/conversation/instructions.py`:
+  name things by their searchable names (the user's wording, file names,
+  identifiers), say what is new in this turn versus the earlier turns the model
+  can see, and put verbatim re-quotable strings in `phrases` and
+  turn-identifying proper nouns in `entities`. The hosted-agent prompt block
+  `[SHARED TURN CONTEXT — record_turn_summary]` renders that guide and names the
+  host's own search surface as the reader of the summary; the native ReAct
+  `<channel:summary>` protocol renders the identical guide. See
+  [Conversational Memory Search](../../../sdk/memory/conversational-memory-search-README.md)
+  for why the query side depends on it.
 - One draft exists per turn. Calling the tool again replaces the earlier draft.
 - Trivial greetings and acknowledgements do not need a contribution.
 

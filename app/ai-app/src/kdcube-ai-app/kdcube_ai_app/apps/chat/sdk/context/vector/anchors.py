@@ -141,3 +141,71 @@ def parse_retrieval_anchors(summary_text: str) -> str:
         if cleaned:
             tokens.append(cleaned)
     return " ".join(tokens)
+
+
+# Attachment summaries are telegraphic, pipe-separated field lists produced by
+# the attachment summarizer:
+#   semantic:<...> | structural:<...> | inventory:<...> | anomalies:<...> |
+#   safety:<...> | lookup_keys:<k1, k2, ...> | filename:<name> | artifact_name:<id>
+# `lookup_keys`, `filename`, and `artifact_name` are that summary's own
+# retrieval anchors. Without this parser they were indexed as body text only
+# (english-stemmed, weight B); with it they reach `anchors_text` (verbatim,
+# weight A) exactly like a turn summary's phrases and entities.
+_ATTACHMENT_FIELD_RE = re.compile(
+    r"(?is)(?:^|\|)\s*(lookup_keys|filename|artifact_name)\s*:\s*(.*?)(?=\s*\|\s*[a-z_]+\s*:|$)"
+)
+
+
+def _split_lookup_keys(raw: str) -> List[str]:
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+    if raw.startswith("[") and raw.endswith("]"):
+        return _parse_inline_list(raw)
+    parts = re.split(r"[;,]", raw)
+    return [p.strip().strip("\"'").strip() for p in parts if p.strip().strip("\"'").strip()]
+
+
+def parse_attachment_anchors(
+    summary_text: str,
+    *,
+    filename: str = "",
+    artifact_name: str = "",
+) -> str:
+    """Return the anchors_text for an uploaded attachment's index row.
+
+    Takes the `lookup_keys`, `filename`, and `artifact_name` fields out of the
+    telegraphic attachment summary and adds the caller-known `filename` and
+    `artifact_name` (the payload values win over what the summary text says).
+    Multi-word keys are double-quoted, single tokens go bare, duplicates are
+    dropped, order is keys first, then filename, then artifact name. Empty
+    input yields "" and the row falls back to body-only weighting.
+    """
+    keys: List[str] = []
+    text_filename = ""
+    text_artifact = ""
+    for m in _ATTACHMENT_FIELD_RE.finditer(summary_text or ""):
+        field = m.group(1).lower()
+        value = (m.group(2) or "").strip()
+        if field == "lookup_keys":
+            keys.extend(_split_lookup_keys(value))
+        elif field == "filename":
+            text_filename = value.strip().strip("\"'")
+        else:
+            text_artifact = value.strip().strip("\"'")
+    names = [
+        (filename or "").strip() or text_filename,
+        (artifact_name or "").strip() or text_artifact,
+    ]
+    tokens: List[str] = []
+    seen: set[str] = set()
+    for raw in [*keys, *names]:
+        cleaned = (raw or "").replace('"', "").replace("\n", " ").strip()
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        tokens.append(f'"{cleaned}"' if " " in cleaned else cleaned)
+    return " ".join(tokens)

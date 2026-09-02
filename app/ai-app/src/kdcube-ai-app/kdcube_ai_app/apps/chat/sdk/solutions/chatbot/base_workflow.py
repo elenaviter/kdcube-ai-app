@@ -1742,8 +1742,21 @@ class BaseWorkflow():
                         [embedding] = await self.model_service.embed_texts([summary])
                     except Exception:
                         embedding = None
+                # The attachment summary's own anchors (lookup_keys, filename,
+                # artifact_name) go to the verbatim top-weight field, like a
+                # turn summary's phrases/entities, so an upload is found by its
+                # exact name or key with the same strength.
+                attachment_anchors = ""
+                try:
+                    from kdcube_ai_app.apps.chat.sdk.context.vector.anchors import parse_attachment_anchors
+                    attachment_anchors = parse_attachment_anchors(
+                        summary, filename=filename, artifact_name=artifact_name
+                    )
+                except Exception:
+                    attachment_anchors = ""
                 await self.ctx_browser.save_artifact(
                     kind="user.attachment",
+                    anchors_text=attachment_anchors,
                     tenant=self.runtime_ctx.tenant,
                     project=self.runtime_ctx.project,
                     user_id=self.runtime_ctx.user_id,

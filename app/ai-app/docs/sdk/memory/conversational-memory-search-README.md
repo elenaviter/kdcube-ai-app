@@ -358,6 +358,43 @@ temporal date-window without query, timeline overview) use the persisted turn
 catalog and a deterministic ordering — see [Catalog Routing](#catalog-routing)
 below.
 
+## Query Shape
+
+The three arms take the one `query` string as-is, and two of them are
+unforgiving about its shape:
+
+- **Lexical**: `websearch_to_tsquery` ANDs every unquoted word. The `english`
+  side drops stop words and stems; the `simple` side keeps every word. A
+  document matches if either side matches in full. So `last time i worked with
+  excel on the forecast` requires `last`, `time`, `work`, `excel`, `forecast`
+  all in one row and returns nothing, while `excel forecast` or
+  `"Forecast-Q2-2026.xlsx"` finds the turn. `"quoted phrase"` is verbatim
+  adjacency, `OR` separates alternatives, `-word` excludes.
+- **Trigram**: the score is the AVG of `word_similarity` over the query tokens,
+  so every filler token pulls a real match toward the 0.2 threshold.
+- **Semantic**: the query embedding carries whatever the query says; framing
+  words shift it away from the topic.
+
+The agent is therefore taught one rule on every surface that exposes this
+search: `query` is a compact bag of content words as they would appear in the
+stored text, one topic per call, exact strings in double quotes, synonyms
+joined with `OR`, no conversational framing, and no time words (time goes to
+`from`/`to`). The text is `CONVERSATION_QUERY_GUIDE` in
+`sdk/solutions/conversation/instructions.py`, rendered by the `react.memsearch`
+spec, the `conv` named-service search description (external MCP clients), and
+the hosted-agent recovery guide (LangGraph and similar). It also tells the
+agent which words each target holds: the user's wording and filenames on the
+`user`/`attachment` side, the agent's own summary wording and anchors on the
+`summary` side.
+
+Two safety nets in `conv_index.py` cover the case where the query still
+arrives badly shaped: when the AND pass returns no rows, the lexical arm reruns
+once with the query in OR form (quoted phrases intact, stop words dropped,
+`context/vector/query_terms.py::lexical_or_fallback_query`); and the trigram
+arm drops stop words and recall framing from its token list before averaging
+(`trigram_query_tokens`). Neither changes the result of a query that matched on
+the first pass.
+
 ## The Working Summary Contract
 
 The lexical side is only as good as what is in the index. The semantic side
@@ -445,10 +482,47 @@ The `'A'` weight on anchors gives them a strong rank multiplier in
 `ts_rank_cd`, so a query whose tokens match the anchors outranks a query whose
 tokens only appear in the body.
 
+### Writing for the reader: one guide, every host
+
+The anchors are the machine-parsed half. The prose half decides whether the
+semantic arm and the body side of the lexical arm can find the turn at all,
+and two rules govern it, taught in `turn_summary_writing_guide` in
+`sdk/solutions/conversation/instructions.py`:
+
+- **Searchable names, not references.** "Continued the previous task" and
+  "the file" embed and index nothing a future query would contain. The
+  summary names the user's words for the task, file names, artifact titles,
+  identifiers, dates, numbers, domain nouns.
+- **Distinguishable from the earlier turns the model can see.** The model
+  writes each summary with the earlier turns (in full or as summary cards)
+  visible above it, so it can say what is NEW in this turn: which sub-topic,
+  artifact, state change, error. Ten turns summarised as "updated the forecast
+  spreadsheet" are ten turns a query cannot tell apart.
+
+The guide is host-neutral and is the same text on every writing surface. The
+native ReAct protocol wraps it with the `<channel:summary>` mechanics
+(`skills/instructions/react_summary_channel.py`) and names
+`react.memsearch(targets=["summary"])` as the reader when that tool is bound. A
+hosted foreign agent (LangGraph, Claude Code) receives it inside the
+`[SHARED TURN CONTEXT — record_turn_summary]` block
+(`skills/instructions/workspace_agent_instructions.py`), which names the `conv`
+namespace search instead. Both paths land in the same `conv.working.summary`
+row with the same `anchors_text`, so the writing rule and the query rule above
+describe one mechanism from two sides. `test_memory_guides.py` asserts that
+every carrier still contains both sentinel sentences.
+
+Uploaded attachments have their own anchors. The attachment summarizer emits
+`lookup_keys`, `filename`, and `artifact_name`; at index time
+`parse_attachment_anchors` moves them into the row's `anchors_text` (via
+`save_artifact(anchors_text=...)`), so an upload is found by its exact name or
+key with the same weight-A precision as a turn summary is found by its phrases.
+
 ### Producer responsibility and failure modes
 
-The agent's prompt — specifically the v3 multi/single-action and v2 decision
-protocols in `chat/sdk/solutions/react/v*/agents/decision.py` — is the contract.
+The agent's prompt — the shared writing guide as rendered by the v3
+multi/single-action and v2 decision protocols in
+`chat/sdk/solutions/react/v*/agents/decision.py`, or by the hosted-agent
+turn-context block — is the contract.
 If the agent ignores it, retrieval degrades in predictable ways. There is no
 runtime validation that *forces* the agent to produce useful anchors; only the
 prompt discipline does. Operators reviewing recall regressions should check

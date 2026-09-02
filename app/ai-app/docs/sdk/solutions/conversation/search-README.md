@@ -81,6 +81,21 @@ The engine routes each request one of two ways:
   the response. A blank query with no catalog signal is a contract error
   (`missing_query`); the REST door turns it into a 400.
 
+**Query shape** is part of the contract, not a hint. The lexical arm ANDs
+every unquoted word of `query` (`websearch_to_tsquery`), treats a
+`"quoted phrase"` as verbatim, honours `OR` and `-word`, and the fuzzy arm
+averages similarity over the query tokens, so conversational framing ("last
+time I worked with excel on ...") empties the lexical result and dilutes the
+rest. Every door renders the same guidance to its agent: content words as they
+would appear in the stored text, one topic per call, exact strings quoted,
+synonyms joined with `OR`, time words moved to `from`/`to`. The text is
+`CONVERSATION_QUERY_GUIDE` in `sdk/solutions/conversation/instructions.py`,
+carried by the `react.memsearch` spec, this namespace's search description,
+and the hosted-agent recovery guide; its writing-side twin
+(`turn_summary_writing_guide`) shapes the summaries the `summary` target
+searches. When the AND pass returns nothing, the lexical arm reruns once with
+the terms OR'd as a safety net.
+
 Results are turn-level hits carrying recovery paths (`conv:ar:…`,
 `conv:ws:…`), snippets, and ranking telemetry — never the raw transcript. In
 the hybrid path at most **two hits per source conversation** survive

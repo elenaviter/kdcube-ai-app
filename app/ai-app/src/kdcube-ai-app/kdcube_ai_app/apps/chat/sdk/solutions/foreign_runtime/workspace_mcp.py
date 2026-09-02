@@ -190,8 +190,12 @@ def build_app() -> Any:
         """Stage one searchable summary of this turn's reusable result.
 
         State the outcome, durable facts, decisions, and relevant object/file
-        refs. ``phrases`` are exact ways a person may search for it; ``entities``
-        are names or identifiers. Call again to replace the earlier draft. The
+        refs, naming things by their searchable names (the user's wording, file
+        names, identifiers) and saying what is new in this turn versus earlier
+        ones. ``phrases`` are verbatim strings a person may search for;
+        ``entities`` are proper nouns or identifiers that single this turn out.
+        Your system instructions carry the full writing guide under
+        [SHARED TURN CONTEXT]. Call again to replace the earlier draft. The
         trusted parent persists only the final draft, and only if the turn
         completes successfully. This does not alter the agent's private session.
         """

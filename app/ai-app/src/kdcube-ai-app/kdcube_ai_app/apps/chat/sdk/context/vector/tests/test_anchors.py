@@ -85,3 +85,51 @@ def test_header_case_insensitive_and_underscore():
         '  entities: ["X"]\n'
     )
     assert "X" in parse_retrieval_anchors(text)
+
+
+# --- attachment anchors -------------------------------------------------------
+
+from kdcube_ai_app.apps.chat.sdk.context.vector.anchors import parse_attachment_anchors  # noqa: E402
+
+
+ATTACHMENT_SUMMARY = (
+    "semantic: Q2 revenue forecast by region; ARR contribution per product | "
+    "structural: xlsx, 3 sheets, 14 columns | inventory: Summary sheet, Regions sheet, ARR pivot | "
+    "anomalies: none | safety: benign | "
+    "lookup_keys: Q2 forecast, ARR contribution, monthly revenue, regions pivot | "
+    "filename: Forecast-Q2-2026.xlsx | artifact_name: forecast_q2_2026"
+)
+
+
+def test_attachment_anchors_take_lookup_keys_filename_and_artifact_name():
+    out = parse_attachment_anchors(ATTACHMENT_SUMMARY)
+    assert out == (
+        '"Q2 forecast" "ARR contribution" "monthly revenue" "regions pivot" '
+        "Forecast-Q2-2026.xlsx forecast_q2_2026"
+    )
+
+
+def test_attachment_anchors_payload_names_win_over_summary_text():
+    out = parse_attachment_anchors(
+        ATTACHMENT_SUMMARY, filename="renamed.xlsx", artifact_name="renamed"
+    )
+    assert out.endswith("renamed.xlsx renamed")
+    assert "Forecast-Q2-2026.xlsx" not in out
+
+
+def test_attachment_anchors_dedupe_and_quote_multiword():
+    out = parse_attachment_anchors(
+        "lookup_keys: budget, Budget, annual budget | filename: budget.csv",
+    )
+    assert out == 'budget "annual budget" budget.csv'
+
+
+def test_attachment_anchors_accept_bracketed_key_list():
+    out = parse_attachment_anchors('lookup_keys: ["alpha", "beta gamma"] | filename: a.pdf')
+    assert out == 'alpha "beta gamma" a.pdf'
+
+
+def test_attachment_anchors_empty_without_fields():
+    assert parse_attachment_anchors("semantic: a note | structural: text") == ""
+    assert parse_attachment_anchors("") == ""
+    assert parse_attachment_anchors("", filename="only.txt") == "only.txt"

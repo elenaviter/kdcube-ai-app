@@ -59,6 +59,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.conversation.api import (
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.conversation.instructions import (
     CONVERSATION_NAMESPACE_INTRO,
+    CONVERSATION_QUERY_GUIDE,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.conversation.read import (
     SCOPE_SELF as READ_SCOPE_SELF,
@@ -203,9 +204,12 @@ CONVERSATION_SEARCH_FILTERS: dict[str, Any] = {
         ),
         "default": SCOPE_USER,
     },
-    "from": {"type": "string", "description": "ISO timestamp. Start of the temporal window (date-window recall)."},
+    "from": {"type": "string", "description": "ISO timestamp. Start of the temporal window (date-window recall). Time words in the request (yesterday, last week, in March) belong here, never in the query."},
     "to": {"type": "string", "description": "ISO timestamp. End of the temporal window, exclusive."},
-    "days": {"type": "integer", "description": "Lookback window in days. Default 365 for topic search, 3650 for temporal."},
+    "ordinal": {"type": "integer", "description": "1-based turn number in the selected scope/window. Set it with an empty query to fetch the n-th turn."},
+    "order": {"type": "string", "enum": ["asc", "desc"], "description": "Order of catalog results (ordinal/temporal/timeline lookups). Default asc."},
+    "top_k": {"type": "integer", "description": "Maximum turn hits to return. Default 5."},
+    "days": {"type": "integer", "description": "Lookback window in days. Default 365 for topic search, 3650 for temporal. Widen for material older than a year."},
     "include_recovery_sessions": {
         "type": "boolean",
         "description": (
@@ -226,7 +230,7 @@ CONVERSATION_SEARCH_SCOPES: tuple[NamedServiceSearchScope, ...] = (
             "Search the conversation memory realm — what the user said, what the assistant "
             "said, and the user's uploaded attachment summaries. Returns turn-level recovery "
             "handles (paths to read or pull). Empty query is valid for ordinal/temporal/timeline "
-            "catalog lookups."
+            "catalog lookups. " + CONVERSATION_QUERY_GUIDE
         ),
         filters_schema=CONVERSATION_SEARCH_FILTERS,
     ),
@@ -239,7 +243,7 @@ SERVICE_ABOUT: dict[str, Any] = {
         "(user prompts/follow-ups, assistant replies/working summaries) and the user's uploaded "
         "attachment summaries — not bot-produced files. Default scope searches across the user's "
         "conversations; narrow to a single conversation by passing scope=conversation with a "
-        "conversation_id."
+        "conversation_id. " + CONVERSATION_QUERY_GUIDE
     ),
     "search_scopes": [scope.to_dict() for scope in CONVERSATION_SEARCH_SCOPES],
 }

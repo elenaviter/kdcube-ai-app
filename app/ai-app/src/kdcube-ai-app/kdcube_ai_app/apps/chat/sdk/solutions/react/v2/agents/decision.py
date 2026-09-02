@@ -23,6 +23,10 @@ from kdcube_ai_app.apps.chat.sdk.solutions.react.decision_prompt import (
 from kdcube_ai_app.apps.chat.sdk.skills.instructions.shared_instructions import (
     SINGLE_ACTION_CAUSALITY,
 )
+from kdcube_ai_app.apps.chat.sdk.skills.instructions.react_summary_channel import (
+    MEMSEARCH_TOOL_ID,
+    react_summary_channel_details,
+)
 
 _LOG = logging.getLogger("agent.react.v2.decision")
 
@@ -184,7 +188,7 @@ def build_decision_system_text(
             if exec_present else
             "[SUMMARY CHANNEL DETAILS]\n"
         )
-        + "For call_tool rounds, omit `channel:summary` entirely. For complete/exit rounds, include exactly one `channel:summary` with: Goal, Outcome, Key facts, Refs, Retrieval-anchors. Scale the summary to the turn: for trivial exchanges (greeting, acknowledgment, tiny answer), one line or a few words per field. Refs should be logical paths for the user prompt, decisive tool calls/results, produced artifacts, and the assistant completion when known. Retrieval-anchors feed a lexical (BM25F-style) retrieval layer that runs ALONGSIDE semantic search: each anchor is indexed as a high-weight token, so future searches by the user's LITERAL phrasing find this turn even when the prose summary paraphrased it. Discipline: `phrases` = verbatim strings the user might re-quote (exact filenames, exact error messages, exact titles, the user's exact wording — never paraphrases); `entities` = high-IDF proper nouns (product/tool/project/person/bundle ids — would this token uniquely identify this turn among hundreds? if no, drop it; never generic nouns like \"file\"/\"data\"/\"report\"). Both keys are optional; emit empty lists or omit the block entirely for trivial turns. Concrete example for a turn that built a Q2 forecast spreadsheet and hit an openpyxl error while renaming a column: phrases: [\"Forecast-Q2-2026.xlsx\", \"openpyxl IndexError\", \"rename ARR contribution column\"]; entities: [\"Forecast-Q2-2026.xlsx\", \"openpyxl\", \"ARR contribution\"]. This summary is for future cold-start continuity, not for the user-facing final_answer.\n"
+        + react_summary_channel_details(memsearch_bound=(MEMSEARCH_TOOL_ID in protocol_tool_ids), tick_style=True) + "\n"
         "\n"
         "[CHANNEL CITATION] (CRITICAL — streaming infra sensitive)\n"
         + (

@@ -574,7 +574,11 @@ def _prebuilt_system_prompt(
         ))
 
     if "record_turn_summary" in names:
-        parts.append(turn_summary_contribution_guide())
+        parts.append(turn_summary_contribution_guide(
+            search_ref=(
+                f"the `{conv_ns}` namespace search with targets summary" if conv_ns else None
+            ),
+        ))
 
     prompt = "\n\n".join(part for part in parts if part)
     if str(additional_instructions or "").strip():

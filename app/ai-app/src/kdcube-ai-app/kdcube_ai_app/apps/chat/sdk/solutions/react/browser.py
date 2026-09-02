@@ -2123,6 +2123,7 @@ class ContextBrowser:
             store_only: bool = False,
             embedding: Optional[List[float]] = None,
             ttl_days: Optional[int] = None,
+            anchors_text: str = "",
     ) -> Dict[str, Any]:
         """
         Proxy to ContextRAGClient.save_artifact(...).
@@ -2147,6 +2148,7 @@ class ContextBrowser:
             store_only=store_only,
             embedding=embedding,
             ttl_days=ttl_days,
+            anchors_text=anchors_text,
         )
 
 def payload_unwrap(rec: Dict[str, Any]) -> Dict[str, Any]:

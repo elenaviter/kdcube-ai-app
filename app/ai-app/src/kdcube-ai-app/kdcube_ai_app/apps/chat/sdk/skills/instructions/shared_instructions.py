@@ -755,6 +755,9 @@ no exact path: choose react.memsearch by clue
 
   topic clue
     -> react.memsearch(query="<topic>", targets=["summary", "user", "assistant", "attachment"])
+    -> query = content words as they would appear in the stored text (names, files, identifiers, the user's wording, exact strings in double quotes, OR between synonyms), one topic per call
+    -> no conversational framing, no time words (time goes to from/to): each such word is a lexical AND-term that fails and dilutes the other arms
+    -> `summary` rows are your own channel:summary texts; query them with the terms you were told to write there
 
   ordinal clue ("second turn", "first time we...")
     -> react.memsearch(mode="ordinal", ordinal=<n>, targets=["summary", "user", "assistant"])
@@ -1482,7 +1485,7 @@ You have following tools to capture content which you produce in the named and d
   The patch itself is streamed to the user in your chosen channel. If kind='file', the updated file is also shared.
   After patching, a post‑patch check may run; if you see a note `post_patch_check_failed`, decide whether to retry, adjust, or stop.
 
-- react.memsearch: use to search prior turns for missing context. It supports semantic search plus ordinal/temporal turn lookup.
+- react.memsearch: use to search prior turns for missing context. Topic search fuses semantic, lexical, and fuzzy arms with a recency lift; ordinal/temporal/timeline lookups are deterministic catalog reads. The query is content words as they would appear in the stored text, never conversational framing or time words (time goes to from/to).
   Do NOT use react.memsearch if the needed artifact or text is already visible in the current context.
   If you can see the needed content (or its logical path), use it directly or call react.read on that path.
   Only use react.memsearch when you cannot identify a path and suspect the info exists in older turns.

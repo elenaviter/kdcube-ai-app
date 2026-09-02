@@ -2049,11 +2049,15 @@ class ContextRAGClient:
             store_only: bool = False,
             embedding: Optional[List[float]] = None,
             ttl_days: Optional[int] = None,
+            anchors_text: str = "",
     ) -> Dict[str, Any]:
         """Writes artifact to store and/or index.
 
         Notes:
           - content_str is the text persisted into the index row (conv_messages.text).
+          - anchors_text is the row's verbatim, top-weight lexical field (the same
+            field a turn summary's Retrieval-anchors land in); empty keeps the
+            row body-only.
           - index_only=True  => skip blob store, write index only (hosted_uri="index_only").
           - store_only=True  => write blob store only, skip index row.
         """
@@ -2093,7 +2097,8 @@ class ContextRAGClient:
                 bundle_id=bundle_id, agent_id=agent_id, role="artifact",
                 text=content_str, hosted_uri=hosted_uri, ts=datetime.datetime.utcnow().isoformat()+"Z",
                 tags=tags,
-                ttl_days=ttl_days, user_type=user_type, embedding=embedding, message_id=message_id
+                ttl_days=ttl_days, user_type=user_type, embedding=embedding, message_id=message_id,
+                anchors_text=str(anchors_text or ""),
             )
         return {"hosted_uri": hosted_uri, "message_id": message_id, "rn": rn}
 
