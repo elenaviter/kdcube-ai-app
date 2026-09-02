@@ -26,6 +26,13 @@ streaming conversation endpoint. Embed the ready-made chat in your site. Add
 managed integrations or isolated execution later. You do not need to adopt
 the whole platform at once.
 
+For governed delegated access to services and accounts, the base installation
+includes **Connection Hub**. Connect a remote MCP or protect a service you own,
+give each caller its own revocable profile, select the exact operations it may
+use, and keep upstream and connected-account credentials in server-side
+storage. Start with the
+[local Connection Hub workflow](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/quick-start-local.md).
+
 <p align="center">
   <img src="assets/topology.svg" alt="KDCube topology: users and external operators reach apps that provide and consume governed surfaces" width="820">
 </p>
@@ -69,8 +76,9 @@ kdcube start --tenant acme --project local
 The `kdcube init` wizard uses the latest published release, offers Google
 login by default, and lets you skip optional model and private-Git credentials.
 `init` prepares the tenant/project workdir; `start` launches its local Docker
-Compose runtime. See the [Quick Start](app/ai-app/docs/quick-start-README.md)
-for prerequisites, Google OAuth setup, source/version choices, and the generated
+Compose runtime. The base runtime includes the workspace app and Connection
+Hub. See the [Quick Start](app/ai-app/docs/quick-start-README.md) for
+prerequisites, Google OAuth setup, source/version choices, and the generated
 workdir layout.
 
 Working with a coding agent? Point it at [AGENTS.md](AGENTS.md) — it routes
@@ -82,13 +90,45 @@ It equips the agent as both a KDCube app engineer and runtime DevOps operator:
 it can bootstrap and operate runtimes, scaffold and configure apps, inspect
 status and logs, test integrations, and run approved release workflows.
 
+## Govern delegated access now
+
+[Connection Hub](https://github.com/elenaviter/app-ecosystem/tree/main/products/connection-hub)
+runs in the base KDCube installation. Its source and
+[product documentation](https://github.com/elenaviter/app-ecosystem/tree/main/docs/connection-hub)
+live in the public
+[App Ecosystem repository](https://github.com/elenaviter/app-ecosystem).
+
+A complete local workflow has four steps:
+
+1. Add a Streamable HTTP MCP under **External MCP**. The remote service may be
+   public or protected by a bearer, custom header, or OAuth login.
+2. Create a caller profile for an agent, automation, MCP client, or service
+   process. Select its exact remote tools and choose **Once** or **Always** for
+   each operation.
+3. Connect the MCP client with the proxy endpoint and its separate caller
+   credential, or use Connection Hub's caller OAuth flow.
+4. Narrow or revoke the profile while the client remains connected. The next
+   covered call resolves the current card, connector, accepted tool descriptor,
+   invocation policy, and upstream credential.
+
+For an existing remote MCP, Connection Hub discovers and filters its tools,
+checks the caller profile, and invokes the admitted tool with the upstream
+credential held for the service owner. A service that integrates the
+`connection-hub` package can instead request a live admission decision and
+execute its operation directly. Both paths use the same delegated-card and
+invocation-policy model.
+
+[Run Connection Hub locally](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/quick-start-local.md) ·
+[Read the architecture](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/connection-hub-architecture.md) ·
+[Browse the implementation](https://github.com/elenaviter/app-ecosystem/tree/main/products/connection-hub)
+
 ## Choose your starting point
 
 | You already have | Add with KDCube |
 | --- | --- |
 | A LangGraph, CrewAI, Claude Agent SDK, Claude Code, or custom agent | A small execution adapter, ordered multi-user delivery, streaming, persistence hooks, budgets, and deployment |
 | A website or product UI | The configurable chat widget, or native integration through streaming and operations APIs |
-| Tools and provider integrations | Trackable tools, scoped credentials, user consent, REST/MCP boundaries, and isolated execution |
+| Tools and provider integrations | Connection Hub caller profiles, exact per-resource tool grants, once-or-repeated invocation policy, server-side provider credentials, live revocation, REST/MCP boundaries, and isolated execution |
 | A new AI feature to build quickly | Ready chat, ReAct Agent, web search, files, conversation storage, user memory, knowledge access, and configurable tools and skills |
 | Several AI services or frontends | Independently deployable apps that provide and consume APIs, tools, MCP services, events, and UI surfaces |
 
@@ -109,11 +149,12 @@ Apps may have no UI and no agent, or may host several agents and frontends.
   networkless executor with narrow mounts. Approved tools run on the trusted
   supervisor side under the current request identity and policy.
 - **Connect users and systems.** OIDC and application authority, external
-  accounts, Telegram identity linking, managed grants, revocable automation
-  access, and protected REST or MCP surfaces.
-- **Track economics.** Attribute LLM, embedding, web-search, and tool work to
-  the user, app, conversation, and turn; enforce budgets before covered calls
-  run.
+  accounts, Telegram identity linking, Connection Hub caller profiles,
+  revocable delegated access, external MCP proxying, direct service admission,
+  and protected REST or MCP surfaces.
+- **Track economics.** Attribute LLM, embedding, web-search, and instrumented
+  service work to the user, app, conversation, and turn; enforce budgets before
+  covered calls run.
 - **Compose a product.** Ready chat and workspace components, custom widgets,
   scenes, canvases, app-hosted websites, APIs, jobs, and domain services.
 
@@ -187,6 +228,8 @@ ask you to discard either.
 - [How to integrate with KDCube apps](app/ai-app/docs/how-to-integrate-with-kdcube-apps-README.md)
 - [Architecture](app/ai-app/docs/arch/architecture-of-what-we-built-README.md)
 - [Security and trust model](app/ai-app/docs/arch/security-and-trust-model-README.md)
+- [Run Connection Hub locally](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/quick-start-local.md)
+- [Connection Hub source and product documentation](https://github.com/elenaviter/app-ecosystem/tree/main/products/connection-hub)
 - [Docs index](app/ai-app/docs/README.md)
 - [Builder navigation](app/ai-app/docs/sdk/bundle/build/how-to-navigate-kdcube-docs-README.md)
 

@@ -139,6 +139,8 @@ encodes everything below plus the details.
   [Quick Start](app/ai-app/docs/quick-start-README.md). The runtime workdir
   (`~/.kdcube/kdcube-runtime/<tenant>__<project>`) holds staged descriptors
   (`config/`) and a staged platform copy (`repo/`).
+- To give an external MCP client bounded access through Connection Hub, follow
+  [Run Connection Hub Locally With KDCube](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/quick-start-local.md).
 - Change configuration by editing descriptors and applying them
   (`kdcube bundle config apply`, `kdcube bundle reload <bundle-id>`), never
   by editing runtime state directly. Redis and generated files are derived
