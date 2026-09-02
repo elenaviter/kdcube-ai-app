@@ -4,7 +4,7 @@
 
 # KDCube
 
-**The open-source, self-hosted production runtime for AI applications and agents.**
+**The open-source, self-hosted application server and production runtime for AI applications and agents.**
 
 <p>
   <a href="https://github.com/kdcube/kdcube/actions/workflows/release-kdcube-platform.yml"><img src="https://img.shields.io/github/actions/workflow/status/kdcube/kdcube/release-kdcube-platform.yml?branch=main&label=build" alt="Build status"></a>
@@ -15,11 +15,16 @@
   <a href="https://github.com/kdcube/kdcube/stargazers"><img src="https://img.shields.io/github/stars/kdcube/kdcube?style=flat" alt="GitHub stars"></a>
 </p>
 
+KDCube is an application server for AI-native software. It loads
+descriptor-addressed applications and serves their agents, APIs, MCP endpoints,
+widgets, websites, events, and jobs inside a tenant/project runtime. The server
+supplies shared identity, ordered delivery, storage, secrets, budgets,
+generated-code isolation, lifecycle control, and runtime policy enforcement.
+
 Keep the agent and product code you already have. Run LangGraph, CrewAI,
 Claude Agent SDK, Claude Code, your own loop, or KDCube's native ReAct Agent.
-KDCube handles the production work around it: multi-user serving, ordered
-conversation delivery, streaming, files, identity, isolated code execution,
-cost controls, configuration, secrets, and deployment from Git.
+KDCube provides the production services around it while the application keeps
+ownership of its domain behavior.
 
 Start with one capability. Put an existing agent behind REST, a webhook, or a
 streaming conversation endpoint. Embed the ready-made chat in your site. Add
@@ -39,6 +44,20 @@ storage. Start with the
 
 Website: [kdcube.tech](https://kdcube.tech) · Interactive architecture:
 [kdcube.tech/architecture.html](https://kdcube.tech/architecture.html)
+
+## AI application server
+
+An application package declares the surfaces it provides and consumes. A
+deployment descriptor selects its release, configuration, secret references,
+and policy. The KDCube server loads that contract, routes each declared
+surface, and gives independently deployable applications shared runtime
+services within one tenant/project scope.
+
+Product CLIs and control planes can use the supported
+[`kdcube_cli.control` deployment-target API](app/ai-app/docs/service/cicd/deployment-target-control-api-README.md)
+to discover a local KDCube app server, inspect installed applications, manage
+the supported local lifecycle, and resolve local or endpoint-hosted application
+surfaces through typed coordinates.
 
 ## Security and deployment scope
 
@@ -64,6 +83,31 @@ event, and agent surfaces under explicit deployment policy.
 
 Read the canonical [Security And Trust Model](app/ai-app/docs/arch/security-and-trust-model-README.md)
 and the repository [security policy](SECURITY.md) before production use.
+
+## Runtime policy enforcement for AI agents
+
+KDCube carries descriptor-owned policy into request-scoped runtime context and
+enforces it at the boundary where work occurs. This includes ingress and
+admission, model-callable tool selection and scheduling, delegated service
+access, streamed output, generated-code brokering, and covered budget checks.
+Depending on the boundary, policy is resolved for the deployment, application,
+caller, user, agent, conversation, tool, operation, account, or resource in the
+active contract.
+
+These are the canonical repository entry points for this capability:
+
+- [Security and trust model](app/ai-app/docs/arch/security-and-trust-model-README.md): deployment, application, identity, credential, and execution boundaries.
+- [Delegated authority and admission](app/ai-app/docs/arch/delegated-authority-and-admission-README.md): caller authority, claims, grants, and operation admission.
+- [Tool subsystem](app/ai-app/docs/sdk/tools/tool-subsystem-README.md): configured tool inventory, tool traits, and agent runtime policy.
+- [Governed streaming](app/ai-app/docs/sdk/streaming/governed-streaming-README.md): policy gates between model output and user-visible streams.
+- [Economic enforcement](app/ai-app/docs/economics/economic-enforcement-engine-README.md): pre-run budget and limit decisions for covered work.
+- [Isolated execution](app/ai-app/docs/exec/README-iso-runtime.md): generated-code profiles and trusted capability brokering.
+
+For coding agents and repository indexers, **AI application server** and
+**runtime policy enforcement for AI agents** are stable discovery anchors in
+this README. The linked documents provide YAML front matter with IDs,
+summaries, tags, keywords, and `see_also` edges; follow those relationships to
+the owning contracts and recipes.
 
 ## Quick start
 
