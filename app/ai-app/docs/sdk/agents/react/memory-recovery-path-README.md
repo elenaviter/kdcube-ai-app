@@ -46,8 +46,25 @@ needs a local file.
 
 | Family | Use when | Required input | Backing store |
 |---|---|---|---|
-| Semantic | the model remembers a topic or phrase | `query`, optional `scope` | conversation index over user/assistant/artifact rows; `scope=user` searches this user across conversations |
+| Topic (hybrid) | the model remembers a topic, a name, or a phrase | `query`, optional `scope`, optional `from`/`to` | conversation index over user/assistant/artifact rows: semantic, lexical, and trigram arms fused by reciprocal rank and lifted by recency; `scope=user` searches this user across conversations |
 | Turn catalog | the model needs turns by order or time | `mode`, `ordinal` and/or `from`/`to`, optional `scope` | Postgres turn-log rows with timestamp ordering |
+
+The topic family is why the query has a shape. The lexical arm is
+`websearch_to_tsquery`, so every unquoted word must occur in the stored text, a
+`"quoted phrase"` must occur verbatim, `OR` separates alternatives; the trigram
+arm averages similarity over the query tokens; recency lifts a same-day turn
+about 2x over a month-old one. A query written the way a person talks ("last
+time I worked with the excel file") therefore finds nothing lexically and
+dilutes the other two arms, while `excel forecast` or the exact filename finds
+the turn. The rule the agent is taught on every surface: `query` is a compact
+bag of content words as they would appear in the stored text, one topic per
+call, exact strings in double quotes, time words moved to `from`/`to`. The
+intuition behind it: the search runs against what was written down, in the
+words it was written in, so the query must speak the landscape's language, and
+time is a filter on that landscape, not a word in it. The full text is
+`CONVERSATION_QUERY_GUIDE` in `sdk/solutions/conversation/instructions.py`; the
+retrieval mechanics are in
+[Conversational Memory Search](../../memory/conversational-memory-search-README.md).
 
 The turn catalog is backed by persisted `kind:turn.log` rows. It uses
 Postgres timestamps and window-function ordinals, not timestamp-shaped
@@ -58,7 +75,7 @@ Supported `react.memsearch` modes:
 
 | Mode | Query needed? | Typical question | Parameters |
 |---|---:|---|---|
-| `semantic` | yes | "Find the Anthropic invoice ZIP attempt" | `query`, optional `from`/`to` |
+| topic (no `mode`; legacy alias `semantic`) | yes | "Find the Anthropic invoice ZIP attempt" | `query` as content words (`"invoice" Anthropic zip`), optional `from`/`to`, optional `rank_weights` |
 | `ordinal` | no | "What was the second turn about?" | `ordinal`, optional `scope` |
 | `temporal` | no | "What did we discuss in March?" | `from`, `to`, optional `scope` |
 | `timeline` | no | "What have we talked about so far?" | `targets=["summary"]`, broad `top_k`, `order` |
@@ -416,6 +433,23 @@ The model is responsible for the semantic content:
 
 This is why summary quality matters. The model knows why a tool result or file
 was important, so it should name the refs that make future recovery cheap.
+
+The intuition behind the summary contract: the summary is a memory stone the
+model leaves for its own future self, who will hold only a query. Two
+properties decide whether that future self finds it. First, it must be
+written in the words a query will contain: the user's own words for the task,
+file names, identifiers, dates, domain nouns, never "the file" or "as
+discussed". Second, it must be distinguishable from the summaries of the
+earlier turns, which the model can see above it while writing (in full or as
+summary cards), so it can say what is NEW in this turn: which sub-topic,
+artifact, state change, or error. Ten turns summarised as "updated the
+forecast spreadsheet" are ten turns a query cannot tell apart, however good
+the search is. The Retrieval-anchors block adds the verbatim strings and the
+proper nouns that single the turn out for the lexical arm. Writing and
+querying are two halves of one mechanism, taught from one place
+(`turn_summary_writing_guide` and `CONVERSATION_QUERY_GUIDE` in
+`sdk/solutions/conversation/instructions.py`) to the native protocol and to
+hosted agents that write the same row through `record_turn_summary`.
 
 ### React runtime
 

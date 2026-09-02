@@ -20,6 +20,29 @@ its own tool, so the writing side and the reading side cannot drift apart per
 host. ``SUMMARY_GUIDE_SENTINEL`` and ``QUERY_GUIDE_SENTINEL`` are the
 sentences a regression test looks for on every carrier.
 
+The intuition behind the two texts, so that a later edit keeps it:
+
+- The summary is a memory stone the model leaves for its own future self,
+  who will hold only a query. It is found by two properties: it is written
+  in the words a query will contain (searchable names, never references such
+  as "the file"), and it is distinguishable from the summaries of the earlier
+  turns, which the model can see above it while writing, so it says what is
+  NEW in this turn. Ten identical summaries are ten unfindable turns however
+  good the search is. The Retrieval-anchors block is the verbatim, top-weight
+  half of that for the lexical arm.
+- The query must speak the landscape's language. The store holds text in the
+  words it was written in, the lexical arm ANDs every unquoted word, the fuzzy
+  arm averages over the query tokens, and recency lifts fresh turns. So the
+  query is content words as they would appear in the stored text, exact
+  strings quoted, and time is a filter (``from``/``to``), not a word. A query
+  shaped like speech ("last time I worked with the excel file") finds nothing
+  lexically and dilutes the rest; that observed failure is what these texts
+  exist to prevent.
+- The two halves are taught from one place because each is useless without
+  the other: a well-shaped query cannot find a summary that never named the
+  thing, and a well-named summary is not found by a query that carries the
+  wrong words.
+
 This module imports nothing from the SDK so any surface can import it.
 """
 

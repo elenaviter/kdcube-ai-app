@@ -484,6 +484,15 @@ tokens only appear in the body.
 
 ### Writing for the reader: one guide, every host
 
+The intuition first. The summary is a memory stone the model leaves for its
+own future self, who will arrive holding nothing but a query. Whether that
+future self finds the stone depends on how it was cut, not on how good the
+search is: a summary written in the words a query will contain is found, a
+summary that reads like its neighbours is not. And because the model writes
+each summary with the earlier turns visible above it, it can cut each stone
+to differ from the ones before. That is the whole reason the writing rules
+exist beside the search mechanics, and why both are taught from one module.
+
 The anchors are the machine-parsed half. The prose half decides whether the
 semantic arm and the body side of the lexical arm can find the turn at all,
 and two rules govern it, taught in `turn_summary_writing_guide` in
