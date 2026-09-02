@@ -1,3 +1,13 @@
+---
+id: repo:kdcube/app/ai-app/src/kdcube-ai-app/kdcube_cli/README.md
+title: "KDCube CLI"
+summary: "Installs, initializes, and operates local KDCube runtimes and exposes the typed deployment-target control API used by application-specific CLIs."
+tags: ["kdcube", "cli", "runtime", "deployment-target", "python-api"]
+keywords: ["kdcube-cli", "kdcube init", "kdcube start", "kdcube stop", "kdcube_cli.control"]
+see_also:
+  - repo:kdcube/app/ai-app/docs/service/cicd/cli-README.md
+  - repo:kdcube/app/ai-app/docs/service/cicd/deployment-target-control-api-README.md
+---
 # KDCube CLI
 
 ![KDCube CLI](https://raw.githubusercontent.com/kdcube/kdcube-ai-app/main/app/ai-app/src/kdcube-ai-app/kdcube_cli/pixel-cubes.png)
@@ -17,6 +27,28 @@ Or with pipx (recommended):
 ```bash
 pipx install kdcube-cli
 ```
+
+## Python control API
+
+Application-specific CLIs can import `kdcube_cli.control` instead of importing
+private command helpers or launching the `kdcube` executable. The typed API
+selects local or endpoint-only targets, reports capabilities, controls the
+supported local lifecycle, and resolves an installed app's public surfaces.
+
+```python
+from pathlib import Path
+
+from kdcube_cli.control import ApplicationRef, LocalDeploymentTarget, select_local_target
+
+reference = select_local_target(Path("~/.kdcube/kdcube-runtime/acme__prod"))
+target = LocalDeploymentTarget(reference)
+url = target.application_url(ApplicationRef("connection-hub@1-0"))
+```
+
+See the
+[deployment-target control API](../../../docs/service/cicd/deployment-target-control-api-README.md)
+for capabilities, explicit surface selection, endpoint-only behavior, and
+structured errors.
 ---
 
 ## What You Build

@@ -8,6 +8,7 @@ see_also:
   - repo:kdcube/app/ai-app/docs/service/cicd/release-README.md
   - repo:kdcube/app/ai-app/docs/service/cicd/descriptors-README.md
   - repo:kdcube/app/ai-app/docs/service/cicd/design/cli--as-control-plane-README.md
+  - repo:kdcube/app/ai-app/docs/service/cicd/deployment-target-control-api-README.md
   - repo:kdcube/app/ai-app/docs/configuration/assembly-descriptor-README.md
   - repo:kdcube/app/ai-app/docs/configuration/secrets-descriptor-README.md
   - repo:kdcube/app/ai-app/docs/configuration/bundles-descriptor-README.md
@@ -31,6 +32,13 @@ operations): `docs/recipes/operations/`. In a terminal, a plain `kdcube init`
 collects tenant/project, defaults to the latest platform release, offers Google
 login by default, stages Connection Hub, KDCube Services, User Memories, and
 workspace, and ends with a first-run checklist of unfilled placeholder slots.
+
+Product CLIs and Python automation use the typed
+[deployment-target control API](deployment-target-control-api-README.md).
+That API owns local target selection, status, prepare-only initialization,
+lifecycle, and application-surface coordinates. The executable keeps parsing,
+interactive choices, terminal rendering, and process exit behavior at its
+outer boundary.
 
 ---
 

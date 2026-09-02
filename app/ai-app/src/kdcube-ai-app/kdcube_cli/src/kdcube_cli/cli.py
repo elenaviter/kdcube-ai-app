@@ -25,6 +25,19 @@ from rich.text import Text
 
 from kdcube_cli.banner import print_cli_banner
 from kdcube_cli import installer as installer_mod
+from kdcube_cli.control import (
+    AmbiguousTargetError,
+    ControlEvent,
+    ControlEventKind,
+    DeploymentTargetRef,
+    KDCubeControlError,
+    LocalDeploymentTarget,
+    LocalInitializationRequest,
+    LocalStartRequest,
+    LocalStopRequest,
+    discover_local_targets,
+    resolve_local_workdir,
+)
 from kdcube_cli.export_live_bundles import export_live_bundle_descriptors
 from kdcube_cli.local_python_packages import (
     clear_local_python_package_sources,
@@ -283,30 +296,19 @@ def stop_compose_stack(
     workdir: Path,
     remove_volumes: bool = False,
 ) -> None:
-    ctx = _build_paths_for_repo(repo_root, workdir)
-    env_file = ctx.config_dir / ".env"
-    if not env_file.exists():
-        raise SystemExit(
-            f"Compose env file not found: {env_file}. "
-            "Pass --workdir for the runtime you want to stop or re-run the installer first."
+    target = LocalDeploymentTarget(
+        DeploymentTargetRef.local(workdir),
+        repo_root=repo_root,
+        lock_file=CLI_LOCK_FILE,
+        stream_process_output=True,
+    )
+    try:
+        target.stop(
+            LocalStopRequest(remove_volumes=remove_volumes),
+            event_sink=_control_event_renderer(console),
         )
-
-    _ensure_docker_responsive()
-    _check_before_stop(workdir, env_file, ctx.docker_dir)
-
-    cmd = [
-        "docker",
-        "compose",
-        "--env-file",
-        str(env_file),
-        "down",
-        "--remove-orphans",
-    ]
-    if remove_volumes:
-        cmd.append("-v")
-
-    _run_compose(console, cmd, cwd=ctx.docker_dir)
-    _clear_cli_lock()
+    except KDCubeControlError as exc:
+        raise SystemExit(exc.summary) from exc
     console.print("[green]Docker compose stopped.[/green]")
     console.print(f"[dim]Workdir:[/dim] {workdir}")
     if not remove_volumes:
@@ -320,46 +322,32 @@ def start_compose_stack(
     workdir: Path,
     build: bool = False,
 ) -> None:
-    ctx = _build_paths_for_repo(repo_root, workdir)
-    env_file = ctx.config_dir / ".env"
-    if not env_file.exists():
-        raise SystemExit(
-            f"Compose env file not found: {env_file}.\n"
-            "Initialize the workdir first:\n"
-            "  kdcube init"
-        )
-    _ensure_docker_responsive()
-    env_main = installer_mod.load_env_file(env_file)
-    installer_mod.ensure_compose_log_dirs(_compose_logs_dir_from_env(env_file, ctx.workdir))
-    token_overrides = installer_mod.generate_runtime_tokens()
-    runtime_env = installer_mod.write_env_overlay(env_file, token_overrides)
-    _tenant, _project = _parse_workdir_namespace(workdir)
-    build_flag = ["--build"] if build else []
+    target = LocalDeploymentTarget(
+        DeploymentTargetRef.local(workdir),
+        repo_root=repo_root,
+        lock_file=CLI_LOCK_FILE,
+        stream_process_output=True,
+    )
     try:
-        _write_cli_lock(
-            tenant=_tenant, project=_project, workdir=workdir,
-            docker_dir=ctx.docker_dir, env_file=env_file,
+        result = target.start(
+            LocalStartRequest(build=build),
+            event_sink=_control_event_renderer(console),
         )
-        _run_compose(
-            console,
-            ["docker", "compose", "--env-file", str(runtime_env), "up", "-d", *build_flag],
-            cwd=ctx.docker_dir,
-        )
-        console.print("[green]Docker compose started.[/green]")
-        proxy_http_port = (
-            env_main.entries.get("KDCUBE_PROXY_HTTP_PORT", (None, None))[1]
-            or env_main.entries.get("KDCUBE_UI_PORT", (None, None))[1]
-            or "80"
-        )
-        routes_prefix = installer_mod.resolve_frontend_routes_prefix(
-            env_main.entries.get("PATH_TO_FRONTEND_CONFIG_JSON", (None, None))[1]
-        )
-        proxy_url = installer_mod.build_ui_url(proxy_http_port, routes_prefix)
-        console.print("Open the UI:")
-        console.print(f"  [link={proxy_url}]{proxy_url}[/link]")
-    finally:
-        if runtime_env.exists():
-            runtime_env.unlink(missing_ok=True)
+    except KDCubeControlError as exc:
+        raise SystemExit(exc.summary) from exc
+    console.print("[green]Docker compose started.[/green]")
+    console.print("Open the UI:")
+    console.print(f"  [link={result.url}]{result.url}[/link]")
+
+
+def _control_event_renderer(console: Console):
+    def _render(event: ControlEvent) -> None:
+        if event.kind == ControlEventKind.COMMAND:
+            console.print(f"[dim]{event.message}[/dim]")
+        else:
+            console.print(event.message)
+
+    return _render
 
 
 def build_compose_images(
@@ -518,13 +506,11 @@ def _runtime_env_exists(workdir: Path) -> bool:
 
 
 def _runtime_candidates(base_workdir: Path) -> list[Path]:
-    if not base_workdir.exists() or not base_workdir.is_dir():
-        return []
-    candidates: list[Path] = []
-    for child in base_workdir.iterdir():
-        if child.is_dir() and _runtime_env_exists(child):
-            candidates.append(child.resolve())
-    return sorted(candidates)
+    return [
+        target.workdir
+        for target in discover_local_targets(base_workdir)
+        if target.workdir is not None
+    ]
 
 
 def _descriptor_context_hint(
@@ -549,31 +535,19 @@ def _resolve_cli_workdir(
     tenant: str | None = None,
     project: str | None = None,
 ) -> Path:
-    workdir = workdir.expanduser().resolve()
-    if _runtime_env_exists(workdir) or (workdir / "config").exists():
-        return workdir
-
-    # Explicit tenant/project take priority over descriptor hints
-    if tenant or project:
-        return installer_mod.workspace_runtime_dir(workdir, tenant, project).resolve()
-
-    tenant_hint, project_hint = _descriptor_context_hint(
-        descriptors_location=descriptors_location,
-        assembly_path=assembly_path,
-    )
-    namespace = installer_mod.workspace_namespace(tenant_hint, project_hint)
-    if workdir.name == namespace or "__" in workdir.name:
-        return workdir
-
-    if descriptors_location is not None or assembly_path is not None:
-        return installer_mod.workspace_runtime_dir(workdir, tenant_hint, project_hint).resolve()
-
-    candidates = _runtime_candidates(workdir)
-    if len(candidates) == 1:
-        return candidates[0]
-    if len(candidates) > 1:
-        raise _AmbiguousWorkdirError(workdir, candidates)
-    return installer_mod.workspace_runtime_dir(workdir, tenant_hint, project_hint).resolve()
+    try:
+        return resolve_local_workdir(
+            workdir,
+            descriptor_source=descriptors_location,
+            assembly_path=assembly_path,
+            tenant=tenant,
+            project=project,
+        )
+    except AmbiguousTargetError as exc:
+        raise _AmbiguousWorkdirError(
+            Path(exc.target_id),
+            [Path(candidate) for candidate in exc.candidates],
+        ) from exc
 
 
 def _is_git_repo(path: Path) -> bool:
@@ -1061,62 +1035,48 @@ def _resolve_live_bundle_export_sources(
 
 
 def _collect_runtime_info(*, repo_root: Path, workdir: Path) -> dict[str, object]:
-    ctx = _build_paths_for_repo(repo_root, workdir)
-    env_main_path = ctx.config_dir / ".env"
-    env_main = installer_mod.load_env_file(env_main_path) if env_main_path.exists() else None
-    assembly_path = ctx.config_dir / "assembly.yaml"
-    assembly = installer_mod.load_release_descriptor_soft(assembly_path)
-    bundles_path = ctx.config_dir / "bundles.yaml"
-    bundles_data = installer_mod.load_release_descriptor_soft(bundles_path)
-    bundles = bundles_data.get("bundles") if isinstance(bundles_data, dict) and "bundles" in bundles_data else bundles_data
-    bundle_items = []
-    default_bundle_id = None
-    if isinstance(bundles, dict):
-        default_bundle_id = bundles.get("default_bundle_id")
-        items = bundles.get("items")
-        if isinstance(items, list):
-            bundle_items = [item for item in items if isinstance(item, dict)]
-        else:
-            for key, value in bundles.items():
-                if key in {"version", "default_bundle_id"}:
-                    continue
-                if isinstance(value, dict):
-                    spec = dict(value)
-                    spec.setdefault("id", str(key))
-                    bundle_items.append(spec)
-    install_meta = _read_install_meta_raw(ctx.workdir) or {}
-    env_entries = env_main.entries if env_main is not None else {}
-
-    def _env_value(name: str) -> str | None:
-        raw = env_entries.get(name, (None, None))[1] if env_entries else None
-        value = _strip_env_value(raw)
-        return value or None
-
+    target = LocalDeploymentTarget(
+        DeploymentTargetRef.local(workdir),
+        repo_root=repo_root,
+        lock_file=CLI_LOCK_FILE,
+    )
+    try:
+        status = target.status(probe_runtime=False)
+    except KDCubeControlError as exc:
+        raise SystemExit(exc.summary) from exc
+    paths = status.local_paths
+    if paths is None:
+        diagnostic = next(
+            (item.summary for item in status.diagnostics if item.severity.value == "error"),
+            "Local runtime paths could not be resolved.",
+        )
+        raise SystemExit(diagnostic)
+    install_meta = _read_install_meta_raw(paths.workdir) or {}
     return {
-        "workdir": str(ctx.workdir),
-        "config_dir": str(ctx.config_dir),
-        "data_dir": str(ctx.data_dir),
-        "logs_dir": _env_value("KDCUBE_LOGS_DIR") or str(ctx.workdir / "logs"),
-        "docker_dir": str(ctx.docker_dir),
+        "workdir": str(paths.workdir),
+        "config_dir": str(paths.config_dir),
+        "data_dir": str(paths.data_dir),
+        "logs_dir": str(paths.logs_dir),
+        "docker_dir": str(paths.docker_dir),
         "repo_root": str(repo_root),
         "install_meta": install_meta,
-        "assembly_path": str(assembly_path) if assembly_path.exists() else None,
-        "bundles_path": str(bundles_path) if bundles_path.exists() else None,
-        "default_bundle_id": default_bundle_id,
-        "bundle_count": len(bundle_items),
-        "host_bundles_path": _env_value("HOST_BUNDLES_PATH"),
-        "container_bundles_root": _env_value("BUNDLES_ROOT"),
-        "host_managed_bundles_path": _env_value("HOST_MANAGED_BUNDLES_PATH"),
-        "container_managed_bundles_root": _env_value("MANAGED_BUNDLES_ROOT"),
-        "host_bundle_storage_path": _env_value("HOST_BUNDLE_STORAGE_PATH"),
-        "container_bundle_storage_root": _env_value("BUNDLE_STORAGE_ROOT"),
-        "host_exec_workspace_path": _env_value("HOST_EXEC_WORKSPACE_PATH"),
-        "container_exec_workspace_root": _env_value("EXEC_WORKSPACE_ROOT"),
-        "host_react_debug_path": _env_value("HOST_REACT_DEBUG_PATH"),
-        "container_react_debug_root": _env_value("REACT_DEBUG_ROOT"),
-        "compose_mode": _env_value("KDCUBE_COMPOSE_MODE"),
-        "tenant": _get_nested(assembly, "context", "tenant"),
-        "project": _get_nested(assembly, "context", "project"),
+        "assembly_path": str(paths.assembly_path) if paths.assembly_path else None,
+        "bundles_path": str(paths.bundles_path) if paths.bundles_path else None,
+        "default_bundle_id": status.default_application_id,
+        "bundle_count": len(status.applications),
+        "host_bundles_path": paths.host_bundles_path,
+        "container_bundles_root": paths.container_bundles_root,
+        "host_managed_bundles_path": paths.host_managed_bundles_path,
+        "container_managed_bundles_root": paths.container_managed_bundles_root,
+        "host_bundle_storage_path": paths.host_bundle_storage_path,
+        "container_bundle_storage_root": paths.container_bundle_storage_root,
+        "host_exec_workspace_path": paths.host_exec_workspace_path,
+        "container_exec_workspace_root": paths.container_exec_workspace_root,
+        "host_react_debug_path": paths.host_react_debug_path,
+        "container_react_debug_root": paths.container_react_debug_root,
+        "compose_mode": paths.compose_mode,
+        "tenant": status.reference.tenant,
+        "project": status.reference.project,
     }
 
 
@@ -5537,7 +5497,27 @@ def main() -> None:
             if not args.interactive:
                 os.environ["KDCUBE_CLI_NONINTERACTIVE"] = "1"
             os.environ["KDCUBE_INIT_PREPARE_ONLY"] = "1"
-            run_installer(console, _init_repo, _init_resolved, _init_mode, _init_release_ref, None, True)
+            _init_target = LocalDeploymentTarget(
+                DeploymentTargetRef.local(
+                    _init_resolved,
+                    tenant=_init_preset_tenant or _init_tenant,
+                    project=_init_preset_project or _init_project,
+                ),
+                repo_root=_init_repo,
+                lock_file=CLI_LOCK_FILE,
+            )
+            try:
+                _init_target.initialize(
+                    LocalInitializationRequest(
+                        descriptor_source=(_init_resolved / "config").resolve(),
+                        install_mode=_init_mode,
+                        release_ref=_init_release_ref,
+                        parameterize_defaults=_init_uses_default_descriptors,
+                    ),
+                    event_sink=_control_event_renderer(console),
+                )
+            except KDCubeControlError as exc:
+                raise SystemExit(exc.summary) from exc
             if args.build:
                 build_compose_images(console, repo_root=_init_repo, workdir=_init_resolved)
             return

@@ -151,6 +151,7 @@ Curated index of platform, service, and SDK documentation.
 * Application Startup, Health, And Readiness: [application-startup-health-and-readiness-README.md](arch/proc/application-startup-health-and-readiness-README.md)
 * Application-Hosted Website Architecture: [application-hosted-websites-README.md](arch/application-hosted-websites-README.md)
 * Current CLI: [cli-README.md](service/cicd/cli-README.md)
+* Deployment Target Control API: [deployment-target-control-api-README.md](service/cicd/deployment-target-control-api-README.md)
 * Descriptors And CI/CD: [descriptors-README.md](service/cicd/descriptors-README.md)
 * Custom CI/CD: [custom-cicd-README.md](service/cicd/custom-cicd-README.md)
 * Auth Overview: [auth-README.md](service/auth/auth-README.md)
