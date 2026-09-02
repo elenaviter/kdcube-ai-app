@@ -1,47 +1,55 @@
 platform:
   repo: "kdcube-ai-app"
-  ref: "2026.09.01.110"
+  ref: "2026.09.02.1429"
   description: |
-    This release follows 2026.08.19.120.
+    This release follows 2026.09.01.110.
 
-    Connection Hub delegation now uses a registered catalog and durable,
-    revisioned caller cards. Every operation, named service, resource, account,
-    and account claim is bounded by both the published catalog and the user's
-    current card. Managed REST, MCP, and named-service calls resolve that card
-    on every invocation, so extending, narrowing, expiring, or revoking access
-    takes effect without restarting the caller. Consent responses preserve the
-    exact denied operation and can resume an active named-service call.
+    Connection Hub can now govern MCP services registered by an individual
+    owner. It discovers each service's tools, projects only the operations on a
+    delegated caller's current access card, detects changes to accepted tool
+    descriptors, and keeps upstream credentials in server-side custody. Calls
+    pass through the governed proxy with exact owner, connector, tool, card,
+    and invocation-policy checks before dispatch.
 
-    Delegated-client OAuth credentials carry their verified identity and grant
-    attributes into the signed KDCube session claim. The access token remains
-    tied to the external caller identity while the live card supplies current
-    authority. Catalog versions and card revisions make stale selections
-    visible and reconcilable instead of silently broadening access.
+    Delegated operations support Once and Always invocation policies. A
+    one-use grant is consumed atomically, repeated delivery of the same
+    invocation id replays its recorded result without another upstream call,
+    and exhausted, revoked, disabled, or changed authority is denied before
+    dispatch. Integrated services can apply the same live authority through
+    direct admission while authenticating their own workload independently.
 
-    Hosted agents share one workspace lifecycle across native ReAct, Claude
-    Code, and ported agent frameworks. Turn workspaces are rebuilt from durable
-    references, generated projects can be published through the workspace
-    boundary, and configurable turn summaries plus searchable turn records make
-    work available to later turns without relying on process-local state.
+    Upstream MCP OAuth supports Client ID Metadata Documents, dynamic client
+    registration, and provisioned clients registered through a provider
+    console. Provider client secrets and access or refresh tokens stay in
+    owner-scoped secret storage. PKCE, refresh rotation, reconnect,
+    replacement, revocation, deletion cleanup, and resource-qualified consent
+    are covered across the supported registration paths.
 
-    Relay communicators now release their owned Redis PubSub listener when the
-    last session, project, and subscription reference is gone. Repeated turns
-    can create and retire communicators without exhausting the shared asyncio
-    client pool. Regression tests cover the exact teardown and reuse lifecycle.
+    The default descriptors expose the complete governed connector and OAuth
+    configuration, and the quick start includes a KDCube-backed localhost path
+    for external MCP clients. Runtime requirements consume the released
+    calendar-versioned Connection Hub package through a compatible release
+    family floor.
 
-    Scene delivery waits for explicit receiver readiness before sending queued
-    commands. ReAct artifact handling preserves valid image bytes and rejects
-    malformed images before model delivery. File-lock wait reporting is
-    rate-limited while retaining evidence for prolonged contention.
+    The Web Search MCP surface now has a repository-root launcher and an
+    operator-owned YAML configuration. Operators can set persistent domain
+    allowlists and blocklists, while callers can narrow a permitted search per
+    invocation. Configuration editing is exposed as an explicit operation,
+    and the install and client procedures cover stdio and hosted deployment
+    shapes.
 
-    The CLI can stage local maintainer package sources alongside the platform,
-    including Connection Hub from its product-scoped repository layout. First
-    run guidance and the public platform-source testing procedure now describe
-    the same reproducible import and fixture checks used by contributors.
+    Web requests enforce address-level SSRF checks across resolution and
+    redirects. Search and fetch results leave the service in a normalized
+    public shape, content filtering tolerates missing objectives, and optional
+    LLM processing keeps keyless search usable. The stdio launcher keeps
+    protocol output clean, accepts practical scalar input forms, and reports
+    parameter and return schemas at full fidelity.
 
-    The KDCube services bundle adds Telegram text and image delivery through
-    the caller's connected account. The governed service boundary resolves the
-    connection and its claims before delivery.
+    KDCube's governed services inventory includes the Productivity Web surface
+    so the same authority model can expose it to agents. Contributor testing
+    documentation now isolates packages whose source names overlap third-party
+    MCP modules, preserving deterministic imports during broad platform test
+    runs.
 
 config:
-  version: "2026.09.01.110"
+  version: "2026.09.02.1429"
