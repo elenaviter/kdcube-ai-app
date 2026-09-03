@@ -377,6 +377,9 @@ def _outer_operation_consent_payload(
     client_id = _grant_record_client_id(grant_record)
     if not client_id or not resource or not operation:
         return dict(payload)
+    ret = payload.get("ret")
+    ret = ret if isinstance(ret, Mapping) else {}
+    missing_grants = sorted(set(_as_list(ret.get("missing_grants"))))
     from connection_hub.delegated_credentials.consent_denial import (
         AGENT_CLIENT_PREFIX,
         connection_hub_grant_url,
@@ -394,7 +397,7 @@ def _outer_operation_consent_payload(
         project=project,
         client_id=client_id,
         resource=resource,
-        claims=(),
+        claims=missing_grants,
         hub_bundle_id=hub_bundle_id,
         outer_operation=operation,
     )
@@ -403,7 +406,7 @@ def _outer_operation_consent_payload(
         "reason": "delegated_capability_not_granted",
         "agent_client_id": client_id,
         "resource": resource,
-        "claims": [],
+        "claims": missing_grants,
         "tool_name": operation,
         "outer_operation": operation,
     }
@@ -415,7 +418,7 @@ def _outer_operation_consent_payload(
             "payload": {
                 "client_id": client_id,
                 "resource": resource,
-                "claims": [],
+                "claims": missing_grants,
                 "resource_operations": {resource: [operation]},
             },
         }

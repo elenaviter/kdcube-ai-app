@@ -36,6 +36,7 @@ class EffectLedger(Protocol):
     async def reserve(
         self,
         *,
+        access_id: str,
         resource: str,
         operation: str,
         invocation_id: str,
@@ -46,6 +47,7 @@ class EffectLedger(Protocol):
     async def finish(
         self,
         *,
+        access_id: str,
         resource: str,
         operation: str,
         invocation_id: str,
@@ -88,9 +90,16 @@ return 1
         self._pending_seconds = max(1.0, float(pending_seconds))
         self._clock = clock
 
-    def _key(self, *, resource: str, operation: str, invocation_id: str) -> str:
+    def _key(
+        self,
+        *,
+        access_id: str,
+        resource: str,
+        operation: str,
+        invocation_id: str,
+    ) -> str:
         identity = hashlib.sha256(
-            f"{resource}\n{operation}\n{invocation_id}".encode("utf-8")
+            f"{access_id}\n{resource}\n{operation}\n{invocation_id}".encode("utf-8")
         ).hexdigest()
         return (
             "kdcube:management:effects:"
@@ -109,6 +118,7 @@ return 1
     async def reserve(
         self,
         *,
+        access_id: str,
         resource: str,
         operation: str,
         invocation_id: str,
@@ -116,6 +126,7 @@ return 1
         audit: Mapping[str, Any],
     ) -> EffectReservation:
         key = self._key(
+            access_id=access_id,
             resource=resource,
             operation=operation,
             invocation_id=invocation_id,
@@ -124,6 +135,7 @@ return 1
         owner = uuid.uuid4().hex
         record = {
             "schema": EFFECT_SCHEMA,
+            "access_id": access_id,
             "resource": resource,
             "operation": operation,
             "invocation_id": invocation_id,
@@ -140,6 +152,7 @@ return 1
         raw = await self._redis.get(key)
         if raw is None:
             return await self.reserve(
+                access_id=access_id,
                 resource=resource,
                 operation=operation,
                 invocation_id=invocation_id,
@@ -158,6 +171,7 @@ return 1
     async def finish(
         self,
         *,
+        access_id: str,
         resource: str,
         operation: str,
         invocation_id: str,
@@ -168,6 +182,7 @@ return 1
         failed: bool = False,
     ) -> None:
         key = self._key(
+            access_id=access_id,
             resource=resource,
             operation=operation,
             invocation_id=invocation_id,

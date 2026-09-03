@@ -661,7 +661,7 @@ def test_hosted_agent_outer_operation_denial_carries_exact_grant_action(monkeypa
         grant_record={
             "client_id": client_id,
             "operations": [],
-            "credential": _authority(),
+            "credential": _authority(scopes=["records:write"]),
         },
     )
 
@@ -676,7 +676,8 @@ def test_hosted_agent_outer_operation_denial_carries_exact_grant_action(monkeypa
     consent = body["consent"]
     assert consent["agent_client_id"] == client_id
     assert consent["outer_operation"] == "records_export"
-    assert consent["claims"] == []
+    assert consent["claims"] == ["records:read"]
+    assert consent["grant"]["payload"]["claims"] == ["records:read"]
     assert consent["grant"]["payload"]["resource_operations"] == {
         GUARD_RESOURCE: ["records_export"]
     }

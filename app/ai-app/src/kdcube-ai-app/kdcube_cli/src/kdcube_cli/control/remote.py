@@ -70,10 +70,15 @@ class EndpointDeploymentTarget:
                     code="remote.endpoint_only",
                     severity=DiagnosticSeverity.INFO,
                     summary=(
-                        "This target resolves application endpoints; remote status and management "
-                        "are not defined."
+                        "This target resolves application endpoints. Its target-control "
+                        "capabilities are endpoint discovery and browser opening."
                     ),
-                    recovery={"management": "Use a target with an authorized management API."},
+                    recovery={
+                        "management": (
+                            "Use an authenticated client for a management API exposed by "
+                            "the deployment."
+                        )
+                    },
                 ),
             ),
             public_base_url=self.reference.endpoint,

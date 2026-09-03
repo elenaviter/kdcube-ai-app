@@ -1737,6 +1737,7 @@ async def _issue_tokens(
             "expires_in": expires_in,
             "refresh_token": refresh_token,
             "scope": " ".join(scopes),
+            "access_id": registry_access_id,
         },
         headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
     )
@@ -1898,17 +1899,16 @@ async def revoke(request: Request) -> Response:
     card_pointer = ""
     grantor_subject = ""
     refresh_rec = await store.validate_refresh_token(token)
+    grant_rec = None
     if refresh_rec is not None:
         card_pointer = str(refresh_rec.get("registry_access_id") or "").strip()
         grantor_subject = str(refresh_rec.get("sub") or "").strip()
-        await store.revoke_refresh_token(token)
     else:
         grant_rec = await store.get_access_grant_record(token)
         if grant_rec is not None:
             card_pointer = str(grant_rec.get("registry_access_id") or "").strip()
             credential = grant_rec.get("credential") or {}
             grantor_subject = str(credential.get("grantor_subject") or "").strip()
-            await store.revoke_access_grant(token)
     LOGGER.info(
         "[connection-hub.oauth] rfc7009 revoke resolved kind=%s card=%s subject_present=%s",
         "refresh" if refresh_rec is not None else ("access" if card_pointer or grantor_subject else "unknown"),
@@ -1919,13 +1919,43 @@ async def revoke(request: Request) -> Response:
     if card_pointer and grantor_subject:
         try:
             service = get_automation_access(request)
-            await service.revoke_access({"user_id": grantor_subject}, access_id=card_pointer)
-            LOGGER.info(
-                "[connection-hub.oauth] rfc7009 revocation retired card=%s", card_pointer
+            card_result = await service.revoke_access(
+                {"user_id": grantor_subject},
+                access_id=card_pointer,
             )
         except Exception:
             LOGGER.exception(
                 "[connection-hub.oauth] rfc7009 card retirement failed card=%s", card_pointer
             )
+            return _token_error(
+                "temporarily_unavailable",
+                "Delegated access revocation is temporarily unavailable.",
+                status=503,
+            )
+        if not isinstance(card_result, Mapping) or card_result.get("ok") is not True:
+            LOGGER.warning(
+                "[connection-hub.oauth] rfc7009 card retirement refused card=%s code=%s",
+                card_pointer,
+                str(
+                    card_result.get("error")
+                    if isinstance(card_result, Mapping)
+                    else "invalid_result"
+                ),
+            )
+            return _token_error(
+                "temporarily_unavailable",
+                "Delegated access revocation is temporarily unavailable.",
+                status=503,
+            )
+        LOGGER.info(
+            "[connection-hub.oauth] rfc7009 revocation retired card=%s", card_pointer
+        )
+
+    # Keep the submitted record until durable card retirement succeeds. This
+    # preserves the card pointer for a retry when its owning store is down.
+    if refresh_rec is not None:
+        await store.revoke_refresh_token(token)
+    elif grant_rec is not None:
+        await store.revoke_access_grant(token)
     # 200 with an empty JSON body whether or not the token was known.
     return JSONResponse({}, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})

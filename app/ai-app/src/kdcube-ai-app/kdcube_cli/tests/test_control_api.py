@@ -303,6 +303,14 @@ def test_endpoint_target_has_no_workdir_and_fails_closed_for_management():
     )
     assert target.describe().reachable is None
     assert target.describe().initialized is None
+    diagnostic = target.describe().diagnostics[0]
+    assert diagnostic.summary == (
+        "This target resolves application endpoints. Its target-control capabilities "
+        "are endpoint discovery and browser opening."
+    )
+    assert diagnostic.recovery["management"] == (
+        "Use an authenticated client for a management API exposed by the deployment."
+    )
     with pytest.raises(UnsupportedCapabilityError) as captured:
         target.status()
     assert captured.value.code.value == "target.unsupported_capability"

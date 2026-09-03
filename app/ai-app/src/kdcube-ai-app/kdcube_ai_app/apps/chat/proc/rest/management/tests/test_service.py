@@ -106,11 +106,15 @@ class _Admission:
 
 class _Ledger:
     def __init__(self) -> None:
-        self.records: dict[tuple[str, str], dict[str, Any]] = {}
+        self.records: dict[tuple[str, str, str], dict[str, Any]] = {}
         self.lock = asyncio.Lock()
 
     async def reserve(self, **kwargs: Any) -> EffectReservation:
-        key = (kwargs["operation"], kwargs["invocation_id"])
+        key = (
+            kwargs["access_id"],
+            kwargs["operation"],
+            kwargs["invocation_id"],
+        )
         async with self.lock:
             current = self.records.get(key)
             if current is None:
@@ -128,7 +132,11 @@ class _Ledger:
             return EffectReservation(ACTION_PENDING, record=current)
 
     async def finish(self, **kwargs: Any) -> None:
-        key = (kwargs["operation"], kwargs["invocation_id"])
+        key = (
+            kwargs["access_id"],
+            kwargs["operation"],
+            kwargs["invocation_id"],
+        )
         async with self.lock:
             self.records[key] = {
                 **self.records[key],
@@ -298,6 +306,27 @@ async def test_same_invocation_replays_without_second_effect() -> None:
 
 
 @pytest.mark.asyncio
+async def test_allowed_admission_requires_card_and_caller_identity() -> None:
+    class _IncompleteAdmission(_Admission):
+        async def evaluate(self, **kwargs: Any) -> AdmissionDecision:
+            self.calls.append(kwargs)
+            return AdmissionDecision(200, {"allowed": True, "decision_id": "decision-1"})
+
+    ledger = _Ledger()
+    runtime = _Runtime()
+    response = await _service(_IncompleteAdmission(), ledger, runtime).execute(
+        operation=INSPECT_OPERATION,
+        delegated_bearer="opaque-bearer",
+        invocation_id="inspect-1",
+    )
+
+    assert response.status_code == 503
+    assert response.payload["error"]["code"] == "delegated_admission_invalid"
+    assert ledger.records == {}
+    assert runtime.inspect_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_concurrent_duplicate_performs_one_effect() -> None:
     admission = _Admission()
     release = asyncio.Event()
@@ -445,7 +474,8 @@ async def test_effect_audit_is_complete_and_contains_no_bearer(caplog) -> None:
         application_id="app-a@1-0",
     )
 
-    audit = ledger.records[(RELOAD_OPERATION, "reload-1")]["audit"]
+    key = ("access-1", RELOAD_OPERATION, "reload-1")
+    audit = ledger.records[key]["audit"]
     assert audit == {
         "decision_id": "decision-1",
         "caller_profile": "caller-profile-1",
@@ -461,9 +491,7 @@ async def test_effect_audit_is_complete_and_contains_no_bearer(caplog) -> None:
         "operation": RELOAD_OPERATION,
         "application_id": "app-a@1-0",
         "invocation_id": "reload-1",
-        "request_digest": ledger.records[(RELOAD_OPERATION, "reload-1")][
-            "request_digest"
-        ],
+        "request_digest": ledger.records[key]["request_digest"],
         "runtime_instance": "proc-1",
     }
     assert bearer not in str(response.payload)

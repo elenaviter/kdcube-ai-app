@@ -84,6 +84,7 @@ async def test_redis_effect_ledger_is_shared_idempotency_authority() -> None:
         clock=lambda: now[0],
     )
     args = {
+        "access_id": "access-1",
         "resource": "urn:kdcube:management:deployment:tenant-a:project-a",
         "operation": INSPECT_OPERATION,
         "invocation_id": "inspect-1",
@@ -97,6 +98,7 @@ async def test_redis_effect_ledger_is_shared_idempotency_authority() -> None:
     now[0] = 1011.0
     unknown = await ledger.reserve(**args)
     await ledger.finish(
+        access_id=args["access_id"],
         resource=args["resource"],
         operation=args["operation"],
         invocation_id=args["invocation_id"],
@@ -113,3 +115,34 @@ async def test_redis_effect_ledger_is_shared_idempotency_authority() -> None:
     assert unknown.action == ACTION_UNKNOWN
     assert replay.action == ACTION_REPLAY
     assert replay.record["response"] == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_redis_effect_ledger_scopes_invocation_ids_to_access_id() -> None:
+    redis = _Redis()
+    ledger = RedisEffectLedger(
+        redis,
+        tenant="tenant-a",
+        project="project-a",
+    )
+    common = {
+        "resource": "urn:kdcube:management:deployment:tenant-a:project-a",
+        "operation": INSPECT_OPERATION,
+        "invocation_id": "shared-by-two-callers",
+        "request_digest": "a" * 64,
+    }
+
+    first = await ledger.reserve(
+        **common,
+        access_id="access-1",
+        audit={"access_id": "access-1"},
+    )
+    second = await ledger.reserve(
+        **common,
+        access_id="access-2",
+        audit={"access_id": "access-2"},
+    )
+
+    assert first.action == ACTION_EXECUTE
+    assert second.action == ACTION_EXECUTE
+    assert len(redis.values) == 2

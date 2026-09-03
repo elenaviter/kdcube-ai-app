@@ -57,7 +57,7 @@ def test_metadata_publishes_resource_authorization_server_and_operations(
     payload = response.json()
     assert payload["resource"] == RESOURCE
     assert payload["authorization_servers"] == [
-        "http://testserver/api/integrations/bundles/tenant-a/project-a/"
+        "https://testserver/api/integrations/bundles/tenant-a/project-a/"
         "connection-hub@1-0/public/oauth"
     ]
     assert payload["bearer_methods_supported"] == ["header"]
@@ -66,6 +66,38 @@ def test_metadata_publishes_resource_authorization_server_and_operations(
         "kdcube.management.application.surfaces.read",
         RELOAD_OPERATION,
     }
+
+
+def test_metadata_uses_public_https_origin_behind_tunnel(monkeypatch) -> None:
+    response = _client(monkeypatch).get(
+        "/api/integrations/management/v1/.well-known/oauth-protected-resource",
+        headers={
+            "Host": "runtime.example.test",
+            "X-Forwarded-Host": "public.example.test",
+            "X-Forwarded-Proto": "http",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["authorization_servers"] == [
+        "https://public.example.test/api/integrations/bundles/tenant-a/project-a/"
+        "connection-hub@1-0/public/oauth"
+    ]
+
+
+def test_metadata_preserves_explicit_local_http_origin(monkeypatch) -> None:
+    response = _client(monkeypatch).get(
+        "/api/integrations/management/v1/.well-known/oauth-protected-resource",
+        headers={"Host": "localhost:5173", "X-Forwarded-Proto": "http"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["authorization_servers"] == [
+        "http://localhost:5173/api/integrations/bundles/tenant-a/project-a/"
+        "connection-hub@1-0/public/oauth"
+    ]
 
 
 def test_missing_bearer_points_to_protected_resource_metadata(monkeypatch) -> None:
@@ -77,7 +109,7 @@ def test_missing_bearer_points_to_protected_resource_metadata(monkeypatch) -> No
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "delegated_bearer_missing"
     assert response.headers["www-authenticate"] == (
-        'Bearer resource_metadata="http://testserver/api/integrations/'
+        'Bearer resource_metadata="https://testserver/api/integrations/'
         'management/v1/.well-known/oauth-protected-resource"'
     )
 

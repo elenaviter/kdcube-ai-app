@@ -11,6 +11,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from connection_hub.connection_edges import request_origin
 
 from kdcube_ai_app.apps.chat.proc.rest.management.admission import (
     ConnectionHubAdmissionClient,
@@ -43,7 +44,7 @@ router = APIRouter(prefix="/management/v1")
 
 
 def _origin(request: Request) -> str:
-    return f"{request.url.scheme}://{request.url.netloc}".rstrip("/")
+    return request_origin(request).rstrip("/")
 
 
 def _bearer(request: Request) -> str:

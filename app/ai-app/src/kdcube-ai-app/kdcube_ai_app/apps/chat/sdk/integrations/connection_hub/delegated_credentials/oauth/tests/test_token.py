@@ -8,7 +8,6 @@ unit tests independent of the bundle-session authority.
 """
 from __future__ import annotations
 
-import json
 import os
 import time
 
@@ -190,6 +189,7 @@ async def test_authorization_code_exchange_succeeds(ctx):
     assert body["scope"] == "records:read"
     assert body["refresh_token"]
     refresh_record = await store.validate_refresh_token(body["refresh_token"])
+    assert body["access_id"] == refresh_record["registry_access_id"]
     assert refresh_record["credential"]["subject"] == "integration:claude:google:admin@example.test"
     assert refresh_record["resource_operations"] == {"*": ["records_export"]}
     assert refresh_record["credential"]["attrs"]["resource_operations"] == {

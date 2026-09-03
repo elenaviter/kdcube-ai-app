@@ -263,6 +263,24 @@ class DelegatedManagementService:
             )
 
         authority = _authority_evidence(decision.payload)
+        access_id = str(authority.get("access_id") or "").strip()
+        caller_profile = str(authority.get("caller_profile") or "").strip()
+        if not access_id or not caller_profile:
+            LOGGER.error(
+                "delegated management admission omitted caller identity "
+                "operation=%s application=%s invocation=%s",
+                operation,
+                application_id or "<deployment>",
+                invocation_id,
+            )
+            return self._error(
+                operation=operation,
+                invocation_id=invocation_id,
+                code="delegated_admission_invalid",
+                message="Connection Hub returned incomplete caller authority.",
+                status_code=503,
+                retryable=True,
+            )
         audit = {
             **authority,
             "tenant": self._tenant,
@@ -276,6 +294,7 @@ class DelegatedManagementService:
         }
         try:
             reservation = await self._ledger.reserve(
+                access_id=access_id,
                 resource=self._resource,
                 operation=operation,
                 invocation_id=invocation_id,
@@ -333,7 +352,6 @@ class DelegatedManagementService:
                 status_code=409,
             )
 
-        caller_profile = str(authority.get("caller_profile") or "delegated-caller")
         try:
             if operation == INSPECT_OPERATION:
                 result = await self._runtime.inspect_deployment()
@@ -356,6 +374,7 @@ class DelegatedManagementService:
             )
             await self._settle(
                 reservation=reservation,
+                access_id=access_id,
                 operation=operation,
                 invocation_id=invocation_id,
                 request_digest=request_digest,
@@ -374,6 +393,7 @@ class DelegatedManagementService:
             )
             await self._settle(
                 reservation=reservation,
+                access_id=access_id,
                 operation=operation,
                 invocation_id=invocation_id,
                 request_digest=request_digest,
@@ -398,6 +418,7 @@ class DelegatedManagementService:
             )
             await self._settle(
                 reservation=reservation,
+                access_id=access_id,
                 operation=operation,
                 invocation_id=invocation_id,
                 request_digest=request_digest,
@@ -420,6 +441,7 @@ class DelegatedManagementService:
         )
         settled = await self._settle(
             reservation=reservation,
+            access_id=access_id,
             operation=operation,
             invocation_id=invocation_id,
             request_digest=request_digest,
@@ -449,6 +471,7 @@ class DelegatedManagementService:
         self,
         *,
         reservation: Any,
+        access_id: str,
         operation: str,
         invocation_id: str,
         request_digest: str,
@@ -457,6 +480,7 @@ class DelegatedManagementService:
     ) -> bool:
         try:
             await self._ledger.finish(
+                access_id=access_id,
                 resource=self._resource,
                 operation=operation,
                 invocation_id=invocation_id,
