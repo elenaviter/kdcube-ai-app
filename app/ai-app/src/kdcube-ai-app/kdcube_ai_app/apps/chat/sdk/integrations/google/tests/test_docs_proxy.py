@@ -743,6 +743,112 @@ def test_import_uploads_multipart_and_converts():
     assert out["ok"] is True and out["ret"]["document_id"] == "NEW"
 
 
+def test_import_places_into_parent_folder_when_named():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/upload/drive/v3/files"
+        assert b'"parents": ["FOLDER1"]' in request.content
+        return _json_response(
+            request,
+            {"id": "NEW", "name": "T", "webViewLink": "http://x", "parents": ["FOLDER1"]},
+        )
+
+    out = _run(
+        "import",
+        {
+            "title": "T",
+            "content": "# hi",
+            "source_format": "markdown",
+            "parent_id": "FOLDER1",
+        },
+        handler,
+    )
+    assert out["ok"] is True
+    assert out["ret"]["parent_ids"] == ["FOLDER1"]
+
+
+def test_drive_upload_is_resumable_without_conversion():
+    """The surfaced steuer case: a .docx must land in Drive AS a .docx, in a
+    named folder — import always converts, so uploads have their own lane."""
+    raw = b"PK docx bytes"
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/upload/drive/v3/files":
+            seen.append("initiate")
+            assert request.url.params["uploadType"] == "resumable"
+            body = json.loads(request.content.decode("utf-8"))
+            assert body["name"] == "26_007.docx"
+            assert body["parents"] == ["FOLDER1"]
+            assert "vnd.google-apps.document" not in body["mimeType"]
+            return httpx.Response(
+                200,
+                headers={"Location": "https://upload.example/session-1"},
+                json={},
+                request=request,
+            )
+        seen.append("put")
+        assert request.method == "PUT"
+        assert request.content == raw
+        return _json_response(
+            request,
+            {
+                "id": "F1",
+                "name": "26_007.docx",
+                "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "size": str(len(raw)),
+                "webViewLink": "http://file",
+                "parents": ["FOLDER1"],
+            },
+        )
+
+    out = _run(
+        "drive_upload",
+        {
+            "name": "26_007.docx",
+            "content_base64": base64.b64encode(raw).decode("ascii"),
+            "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "parent_id": "FOLDER1",
+        },
+        handler,
+    )
+    assert seen == ["initiate", "put"]
+    assert out["ok"] is True
+    assert out["ret"]["file_id"] == "F1"
+    assert out["ret"]["parent_ids"] == ["FOLDER1"]
+
+
+def test_drive_upload_requires_bytes_and_bounds_size():
+    out = _run("drive_upload", {"name": "x.pdf"}, lambda request: _json_response(request, {}))
+    assert out["ok"] is False and out["error"]["code"] == "content_required"
+
+
+def test_drive_list_folder_returns_children():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/drive/v3/files"
+        assert "'FOLDER1' in parents" in request.url.params["q"]
+        return _json_response(
+            request,
+            {
+                "files": [
+                    {
+                        "id": "F1",
+                        "name": "26_007.docx",
+                        "mimeType": "application/x",
+                        "size": "10",
+                        "modifiedTime": "2026-09-03T10:00:00Z",
+                        "webViewLink": "http://f1",
+                    }
+                ],
+                "nextPageToken": "cursor-2",
+            },
+        )
+
+    out = _run("drive_list", {"folder_id": "FOLDER1"}, handler)
+    assert out["ok"] is True
+    assert out["ret"]["files"][0]["file_id"] == "F1"
+    assert out["ret"]["next_cursor"] == "cursor-2"
+
+
 def test_list_comments_filters_resolved_by_default():
     body = {
         "comments": [

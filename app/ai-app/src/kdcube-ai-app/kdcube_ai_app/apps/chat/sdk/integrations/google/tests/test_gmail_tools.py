@@ -165,3 +165,57 @@ def test_disabled_gmail_api_preserves_provider_reason(caplog):
     assert result["ret"]["provider_status"] == 403
     assert result["ret"]["provider_reason"] == "SERVICE_DISABLED"
     assert "provider_reason=SERVICE_DISABLED" in caplog.text
+
+
+def test_load_inline_attachments_accepts_base64_and_bounds_size():
+    """The automation lane for drafts: no KDCube workspace exists there, so
+    attachment bytes ride the call itself and must be validated in place."""
+    payload = [
+        {
+            "filename": "letter.zip",
+            "content_base64": base64.b64encode(b"zip bytes").decode("ascii"),
+            "mime_type": "application/zip",
+        },
+        {"filename": "broken.pdf", "content_base64": "not-base64!!"},
+        {"filename": "empty.pdf"},
+        "not-an-object",
+    ]
+    attachments, errors = gmail_tools._load_inline_attachments(payload)
+    assert [item["filename"] for item in attachments] == ["letter.zip"]
+    assert attachments[0]["data"] == b"zip bytes"
+    assert attachments[0]["mime_type"] == "application/zip"
+    assert attachments[0]["source_path"] == "inline:0"
+    assert sorted(err["code"] for err in errors) == [
+        "attachment_content_required",
+        "attachment_invalid",
+        "attachment_invalid_base64",
+    ]
+
+    oversized = [{
+        "filename": "big.bin",
+        "content_base64": base64.b64encode(
+            b"x" * (gmail_tools.MAX_ATTACHMENT_BYTES + 1)
+        ).decode("ascii"),
+    }]
+    attachments, errors = gmail_tools._load_inline_attachments(oversized)
+    assert attachments == []
+    assert errors[0]["code"] == "attachment_too_large"
+
+    # JSON-string form (how an MCP string parameter arrives) parses the same.
+    import json as _json
+
+    attachments, errors = gmail_tools._load_inline_attachments(
+        _json.dumps([{"filename": "a.txt", "content_base64": base64.b64encode(b"hi").decode("ascii")}])
+    )
+    assert not errors and attachments[0]["data"] == b"hi"
+
+
+def test_create_gmail_draft_is_registered_with_compose_claim():
+    """Drafts must exist as their own tool (send authority is exactly what the
+    human-in-the-loop flow may not hold), gated by gmail:compose alone."""
+    assert gmail_tools.GMAIL_COMPOSE_CLAIM == "gmail:compose"
+    tool = getattr(gmail_tools.tools, "create_gmail_draft", None)
+    assert tool is not None
+    assert callable(tool)
+    description = getattr(tool, "__kernel_function_description__", "")
+    assert "without sending" in description or "DRAFT" in description

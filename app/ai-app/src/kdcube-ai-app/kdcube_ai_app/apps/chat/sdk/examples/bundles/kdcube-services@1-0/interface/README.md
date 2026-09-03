@@ -430,6 +430,15 @@ account, split into three claims:
 | Find and read | `productivity_docs_search`, `productivity_docs_get`, `productivity_docs_export`, `productivity_docs_list_comments`, `productivity_docs_get_comment` | `docs:read` |
 | Edit | `productivity_docs_create`, `productivity_docs_copy`, `productivity_docs_insert_text`, `productivity_docs_append_text`, `productivity_docs_replace_text`, `productivity_docs_apply_text_style`, `productivity_docs_insert_page_break`, `productivity_docs_embed_image`, `productivity_docs_import` | `docs:read`, `docs:write` |
 | Comment | `productivity_docs_create_comment`, `productivity_docs_reply_comment`, `productivity_docs_resolve_comment`, `productivity_docs_delete_comment` | `docs:read`, `docs:comment` |
+| Drive files as themselves | `productivity_drive_upload_file` (no conversion, optional folder placement), `productivity_drive_list_folder` | `drive:write` / `drive:read` |
+
+Import accepts an optional `parent_id` Drive folder; placement into a
+pre-existing folder additionally needs `drive:write` on the connected account,
+because `docs:write` carries only the `drive.file` scope, which cannot reach
+folders the connector app never created or opened. The mail group gains
+`productivity_mail_draft` (`gmail:compose`): it creates a DRAFT the person
+sends themselves, deliberately without send authority, with attachments as
+inline base64 entries.
 
 Search uses Google Drive metadata. Docs search returns native documents and
 compatible DOCX/ODT/RTF import sources; extensionless queries can exactly match

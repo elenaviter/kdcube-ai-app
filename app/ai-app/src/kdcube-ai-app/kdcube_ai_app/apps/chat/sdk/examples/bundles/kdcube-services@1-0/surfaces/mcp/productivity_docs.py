@@ -27,6 +27,8 @@ from ...services.productivity.google_docs import (
     DOCS_COMMENT_CLAIM,
     DOCS_READ_CLAIM,
     DOCS_WRITE_CLAIM,
+    DRIVE_READ_CLAIM,
+    DRIVE_WRITE_CLAIM,
 )
 
 
@@ -40,6 +42,10 @@ EnforceTool = Callable[[str, str, str], Awaitable[dict[str, Any] | None]]
 _READ_CLAIMS = [DOCS_READ_CLAIM]
 _WRITE_CLAIMS = [DOCS_READ_CLAIM, DOCS_WRITE_CLAIM]
 _COMMENT_CLAIMS = [DOCS_READ_CLAIM, DOCS_COMMENT_CLAIM]
+# Drive-as-files claims: raw upload and folder listing live outside the Docs
+# scopes because docs:write's drive.file cannot reach pre-existing folders.
+_DRIVE_READ_CLAIMS = [DRIVE_READ_CLAIM]
+_DRIVE_WRITE_CLAIMS = [DRIVE_WRITE_CLAIM]
 
 
 def _requirement(claims: list[str]) -> dict[str, Any]:
@@ -149,6 +155,20 @@ DOCS_PRODUCTIVITY_TOOLS: dict[str, dict[str, Any]] = {
         "label": "Import Google Doc",
         "description": "Import Markdown, HTML, or another source into a new document.",
         **_requirement(_WRITE_CLAIMS),
+    },
+    # ── drive files as themselves (drive:read / drive:write) ─────────────
+    "productivity_drive_upload_file": {
+        "label": "Upload file to Drive",
+        "description": (
+            "Upload one file to Google Drive without conversion, optionally "
+            "into a named folder."
+        ),
+        **_requirement(_DRIVE_WRITE_CLAIMS),
+    },
+    "productivity_drive_list_folder": {
+        "label": "List Drive folder",
+        "description": "List one Drive folder's direct children.",
+        **_requirement(_DRIVE_READ_CLAIMS),
     },
     # ── comment (docs:comment) ────────────────────────────────────────────
     "productivity_docs_create_comment": {
@@ -966,6 +986,16 @@ def register_google_docs_tools(
                 )
             ),
         ] = "markdown",
+        parent_id: Annotated[
+            str,
+            Field(
+                description=(
+                    "Optional Drive folder id for the new document. Placement "
+                    "into a pre-existing folder additionally requires the "
+                    "drive:write claim on the connected account."
+                )
+            ),
+        ] = "",
         idempotency_key: Annotated[
             str,
             Field(
@@ -985,17 +1015,130 @@ def register_google_docs_tools(
         denial = await _enforce("productivity_docs_import", "import", account_id)
         if denial is not None:
             return denial
+        # Folder placement widens the needed credential: drive.file (in
+        # docs:write) cannot write into a pre-existing folder, so a parent_id
+        # rides only on a drive:write credential. Resolution refuses with the
+        # claim named when the account does not carry it.
+        claims = _WRITE_CLAIMS + (_DRIVE_WRITE_CLAIMS if parent_id.strip() else [])
         return await docs.execute(
             operation="import",
-            claim=_WRITE_CLAIMS,
+            claim=claims,
             tool_name="productivity_docs_import",
             payload={
                 "title": title,
                 "content": content,
                 "content_base64": content_base64,
                 "source_format": source_format,
+                "parent_id": parent_id,
                 "idempotency_key": idempotency_key,
             },
+            account_id=account_id,
+        )
+
+    # ── drive files as themselves (drive:read / drive:write) ─────────────
+
+    @mcp.tool(
+        name="productivity_drive_upload_file",
+        title="Upload file to Drive",
+        description=(
+            "Upload one file to the approving user's Google Drive WITHOUT "
+            "conversion: a DOCX stays a DOCX, a PDF a PDF, a zip a zip. "
+            "Optionally place it into a Drive folder by id. Use "
+            "productivity_docs_import instead when the goal is an editable "
+            "Google Doc. Returns the new file_id and web_url."
+        ),
+        annotations=write_annotations(ToolAnnotations, title="Upload file to Drive"),
+        structured_output=False,
+    )
+    async def _productivity_drive_upload_file(
+        name: Annotated[
+            str,
+            Field(min_length=1, max_length=300, description="File name in Drive, extension included."),
+        ],
+        content_base64: Annotated[
+            str,
+            Field(min_length=1, description="Base64 file bytes (up to 100MB decoded)."),
+        ],
+        mime_type: Annotated[
+            str,
+            Field(description="MIME type of the bytes; guessed as octet-stream when empty."),
+        ] = "",
+        parent_id: Annotated[
+            str,
+            Field(description="Optional Drive folder id to place the file into."),
+        ] = "",
+        idempotency_key: Annotated[
+            str,
+            Field(
+                description=(
+                    "Optional caller correlation key returned with the result. It "
+                    "does not make Google's upload exactly-once."
+                )
+            ),
+        ] = "",
+        account_id: Annotated[
+            str,
+            Field(
+                description="Optional connected Google account id when several are available."
+            ),
+        ] = "",
+    ) -> dict[str, Any]:
+        denial = await _enforce("productivity_drive_upload_file", "upload", account_id)
+        if denial is not None:
+            return denial
+        return await docs.execute(
+            operation="drive_upload",
+            claim=_DRIVE_WRITE_CLAIMS,
+            tool_name="productivity_drive_upload_file",
+            payload={
+                "name": name,
+                "content_base64": content_base64,
+                "mime_type": mime_type,
+                "parent_id": parent_id,
+                "idempotency_key": idempotency_key,
+            },
+            account_id=account_id,
+        )
+
+    @mcp.tool(
+        name="productivity_drive_list_folder",
+        title="List Drive folder",
+        description=(
+            "List one Drive folder's direct children (files and subfolders) "
+            "with ids, names, MIME types, sizes, and links. The verification "
+            "read behind uploads and the browse behind a pasted folder link."
+        ),
+        annotations=read_only_annotations(ToolAnnotations, title="List Drive folder"),
+        structured_output=False,
+    )
+    async def _productivity_drive_list_folder(
+        folder_id: Annotated[
+            str,
+            Field(min_length=1, description="Drive folder id (the tail of its URL)."),
+        ],
+        limit: Annotated[
+            int,
+            Field(ge=1, le=100, description="Maximum children to return, 1-100."),
+        ] = 50,
+        cursor: Annotated[
+            str,
+            Field(description="Opaque continuation cursor from a previous result."),
+        ] = "",
+        account_id: Annotated[
+            str,
+            Field(
+                description="Optional connected Google account id when several are available."
+            ),
+        ] = "",
+    ) -> dict[str, Any]:
+        denial = await _enforce("productivity_drive_list_folder", "list", account_id)
+        if denial is not None:
+            return denial
+        return await docs.execute(
+            operation="drive_list",
+            claim=_DRIVE_READ_CLAIMS,
+            tool_name="productivity_drive_list_folder",
+            payload={"folder_id": folder_id, "limit": limit, "cursor": cursor},
             account_id=account_id,
         )
 

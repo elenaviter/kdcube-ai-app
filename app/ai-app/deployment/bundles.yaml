@@ -248,6 +248,19 @@ bundles:
               connected_accounts:
               - provider_id: google
                 claims: ["gmail:send"]
+            - grant: mail:draft
+              label: Draft connected mail
+              description: Create draft messages in mail accounts connected to KDCube, without sending them.
+              delegable_roles:
+              - kdcube:role:registered
+              - kdcube:role:paid
+              - kdcube:role:privileged
+              - kdcube:role:super-admin
+              delegable_permissions:
+              - mail:draft
+              connected_accounts:
+              - provider_id: google
+                claims: ["gmail:compose"]
             - grant: sheets:read
               label: Read Google Sheets
               description: Find spreadsheets and read their metadata and values through a connected Google account.
@@ -298,6 +311,26 @@ bundles:
               - kdcube:role:super-admin
               delegable_permissions:
               - docs:comment
+            - grant: drive:read
+              label: Read Google Drive folders
+              description: List Drive folder contents through a connected Google account.
+              delegable_roles:
+              - kdcube:role:registered
+              - kdcube:role:paid
+              - kdcube:role:privileged
+              - kdcube:role:super-admin
+              delegable_permissions:
+              - drive:read
+            - grant: drive:write
+              label: Upload files to Google Drive
+              description: Upload files without conversion and place them into Drive folders through a connected Google account.
+              delegable_roles:
+              - kdcube:role:registered
+              - kdcube:role:paid
+              - kdcube:role:privileged
+              - kdcube:role:super-admin
+              delegable_permissions:
+              - drive:write
             # Slack is a single provider, so it uses its OWN real claims (the
             # exact capabilities the Slack API needs), not an invented namespace
             # claim. These match SLACK_CONNECTED_ACCOUNT_CLAIMS.
@@ -1858,6 +1891,11 @@ bundles:
                   description: Read one message from connected mail accounts.
                   grants:
                   - mail:read
+                productivity_mail_draft:
+                  label: Draft mail message
+                  description: Create a draft in connected mail accounts without sending it.
+                  grants:
+                  - mail:draft
                 productivity_sheets_search:
                   label: Find Google Sheets
                   description: Find spreadsheets visible to a connected Google account.
@@ -1970,6 +2008,14 @@ bundles:
                   label: Import Google Doc
                   description: Import external content into a Google document.
                   grants: [docs:write]
+                productivity_drive_upload_file:
+                  label: Upload file to Drive
+                  description: Upload a file to Google Drive without conversion, optionally into a folder.
+                  grants: [drive:write]
+                productivity_drive_list_folder:
+                  label: List Drive folder
+                  description: List one Drive folder's direct children.
+                  grants: [drive:read]
                 productivity_docs_create_comment:
                   label: Comment on Google Doc
                   description: Create a comment on a document.
@@ -2048,11 +2094,14 @@ bundles:
                   allowed_claims:
                   - gmail:read
                   - gmail:send
+                  - gmail:compose
                   - sheets:read
                   - sheets:write
                   - docs:read
                   - docs:write
                   - docs:comment
+                  - drive:read
+                  - drive:write
               claims:
                 gmail:read:
                   label: Read Gmail
@@ -2070,6 +2119,16 @@ bundles:
                   - email
                   - profile
                   - https://www.googleapis.com/auth/gmail.send
+                gmail:compose:
+                  label: Draft Gmail
+                  description: Create draft emails in the approving user's Gmail account without sending them.
+                  provider_scopes:
+                  - openid
+                  - email
+                  - profile
+                  # drafts.create is NOT covered by gmail.send; compose is the
+                  # narrowest scope that writes drafts.
+                  - https://www.googleapis.com/auth/gmail.compose
                 sheets:read:
                   label: Read Google Sheets
                   description: Find spreadsheets and read their metadata and values.
@@ -2116,6 +2175,24 @@ bundles:
                   - openid
                   - email
                   - profile
+                  - https://www.googleapis.com/auth/drive
+                drive:read:
+                  label: Read Google Drive folders
+                  description: List Drive folder contents.
+                  provider_scopes:
+                  - openid
+                  - email
+                  - profile
+                  - https://www.googleapis.com/auth/drive.readonly
+                drive:write:
+                  label: Upload files to Google Drive
+                  description: Upload files without conversion and place them into Drive folders.
+                  provider_scopes:
+                  - openid
+                  - email
+                  - profile
+                  # drive.file cannot write into pre-existing folders the app
+                  # never touched; placement needs the full drive scope.
                   - https://www.googleapis.com/auth/drive
             slack:
               label: Slack
@@ -2999,6 +3076,7 @@ bundles:
                 - download_gmail_attachments
                 - send_gmail
                 - forward_gmail_message
+                - create_gmail_draft
                 tool_traits:
                   search_gmail:
                     strategy:
@@ -3013,6 +3091,9 @@ bundles:
                     strategy:
                     - exploitation
                   forward_gmail_message:
+                    strategy:
+                    - exploitation
+                  create_gmail_draft:
                     strategy:
                     - exploitation
                 tool_claims:
@@ -3057,6 +3138,14 @@ bundles:
                           claims:
                           - gmail:read
                           - gmail:send
+                  create_gmail_draft:
+                    connections:
+                      delegated_to_kdcube:
+                        connected_accounts:
+                        - provider_id: google
+                          connector_app_id: gmail
+                          claims:
+                          - gmail:compose
               - name: slack
                 kind: python
                 module: kdcube_ai_app.apps.chat.sdk.integrations.slack.tools

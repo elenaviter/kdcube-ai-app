@@ -37,6 +37,7 @@ from connection_hub.mcp_metadata import (
     kdcube_mcp_icons,
     kdcube_website_url,
     read_only_annotations,
+    write_annotations,
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.mcp_tool_enforcement import (
     bind_service_connector_apps_from_config,
@@ -118,6 +119,20 @@ PRODUCTIVITY_TOOLS: dict[str, dict[str, Any]] = {
             "delegated_to_kdcube": {
                 "connected_accounts": [
                     {"provider_id": "google", "claims": ["gmail:read"]},
+                ],
+            },
+        },
+    },
+    "productivity_mail_draft": {
+        "label": "Draft mail message",
+        "description": (
+            "Create a DRAFT in the user's connected mail account without "
+            "sending it."
+        ),
+        "connections": {
+            "delegated_to_kdcube": {
+                "connected_accounts": [
+                    {"provider_id": "google", "claims": ["gmail:compose"]},
                 ],
             },
         },
@@ -314,6 +329,79 @@ def build_productivity_mcp_app(
         return await gmail.read_gmail_message(
             message_id=message_id,
             include_html=include_html,
+            account_id=account_id,
+        )
+
+    @mcp.tool(
+        name="productivity_mail_draft",
+        title="Draft mail message",
+        description=(
+            "Create a DRAFT email in the approving user's connected mail "
+            "account without sending it. The person reviews and sends the "
+            "draft in their own mail client; this surface has no send tool. "
+            "Attachments ride inline as base64 entries. Returns {ok, error, "
+            "ret}; ret carries the draft id."
+        ),
+        annotations=write_annotations(ToolAnnotations, title="Draft mail message"),
+        structured_output=False,
+    )
+    async def _productivity_mail_draft(
+        to: Annotated[
+            str,
+            Field(
+                description=(
+                    "Comma, semicolon, or newline separated recipient email "
+                    "addresses. May be empty for a recipientless draft."
+                )
+            ),
+        ] = "",
+        subject: Annotated[str, Field(description="Email subject.")] = "",
+        body_markdown: Annotated[
+            str,
+            Field(description="Markdown body stored as text and HTML."),
+        ] = "",
+        cc: Annotated[
+            str,
+            Field(description="Optional cc recipients, same separators as `to`."),
+        ] = "",
+        bcc: Annotated[
+            str,
+            Field(description="Optional bcc recipients, same separators as `to`."),
+        ] = "",
+        body_html: Annotated[
+            str,
+            Field(description="Optional complete HTML body. Leave empty when using body_markdown."),
+        ] = "",
+        attachments_base64: Annotated[
+            str,
+            Field(
+                description=(
+                    "Optional JSON list of {filename, content_base64, "
+                    "mime_type?} attachments, up to 25MB decoded each."
+                )
+            ),
+        ] = "",
+        account_id: Annotated[
+            str,
+            Field(
+                description=(
+                    "Optional connected account id when the user has several "
+                    "mail accounts."
+                )
+            ),
+        ] = "",
+    ) -> dict[str, Any]:
+        denial = await _enforce("productivity_mail_draft", "draft", account_id)
+        if denial is not None:
+            return denial
+        return await gmail.create_gmail_draft(
+            to=to,
+            subject=subject,
+            body_markdown=body_markdown,
+            cc=cc,
+            bcc=bcc,
+            body_html=body_html,
+            attachments_base64=attachments_base64,
             account_id=account_id,
         )
 

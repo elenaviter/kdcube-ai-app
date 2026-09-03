@@ -61,6 +61,15 @@ DOCS_COMMENT_TOOLS = {
     "productivity_docs_resolve_comment",
     "productivity_docs_delete_comment",
 }
+# Drive-as-files tools carry their own claims: raw upload and folder listing
+# need honest Drive scopes, not the docs claims (drive.file cannot reach
+# pre-existing folders).
+DRIVE_READ_TOOLS = {
+    "productivity_drive_list_folder",
+}
+DRIVE_WRITE_TOOLS = {
+    "productivity_drive_upload_file",
+}
 LINKEDIN_READ_TOOLS = {
     "productivity_linkedin_profile",
 }
@@ -86,11 +95,14 @@ ALL_TOOLS = {
     "productivity_slack_search",
     "productivity_mail_search",
     "productivity_mail_get",
+    "productivity_mail_draft",
     *SHEETS_READ_TOOLS,
     *SHEETS_WRITE_TOOLS,
     *DOCS_READ_TOOLS,
     *DOCS_WRITE_TOOLS,
     *DOCS_COMMENT_TOOLS,
+    *DRIVE_READ_TOOLS,
+    *DRIVE_WRITE_TOOLS,
     *LINKEDIN_READ_TOOLS,
     *LINKEDIN_DISCOVERY_TOOLS,
     *LINKEDIN_WRITE_TOOLS,
@@ -120,6 +132,11 @@ def test_every_tool_declares_provider_claims():
         "productivity_slack_search": ("slack", ["slack:search"]),
         "productivity_mail_search": ("google", ["gmail:read"]),
         "productivity_mail_get": ("google", ["gmail:read"]),
+        # Drafts deliberately need only compose: an automation that prepares
+        # mail for a person to send never holds send authority.
+        "productivity_mail_draft": ("google", ["gmail:compose"]),
+        **{name: ("google", ["drive:read"]) for name in DRIVE_READ_TOOLS},
+        **{name: ("google", ["drive:write"]) for name in DRIVE_WRITE_TOOLS},
         **{name: ("google", ["sheets:read"]) for name in SHEETS_READ_TOOLS},
         **{
             name: ("google", ["sheets:read", "sheets:write"])

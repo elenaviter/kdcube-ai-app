@@ -50,6 +50,10 @@ from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.connector_app_resol
 GMAIL_PROVIDER_ID = "google"
 GMAIL_READ_CLAIM = "gmail:read"
 GMAIL_SEND_CLAIM = "gmail:send"
+# Drafts are NOT covered by gmail.send: users.drafts.* needs gmail.compose.
+# The claim exists so an automation can prepare mail a person reviews and
+# sends themselves, without ever holding send authority.
+GMAIL_COMPOSE_CLAIM = "gmail:compose"
 GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me"
 MAX_BODY_CHARS = 24000
 MAX_DOWNLOAD_ATTACHMENTS = 20
@@ -369,6 +373,61 @@ def _load_local_attachments(attachment_paths: Any) -> tuple[list[dict[str, Any]]
         filename = _safe_filename(resolved.name)
         mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
         attachments.append({"filename": filename, "mime_type": mime_type, "data": data, "source_path": item})
+    return attachments, errors
+
+
+def _load_inline_attachments(value: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Attachments carried IN the call: [{filename, content_base64, mime_type?}].
+
+    The `attachment_paths` lane resolves KDCube workspace refs, which only
+    exist inside a conversation turn. Automation callers (delegated bearers on
+    the productivity door) have no workspace, so drafts accept the bytes
+    directly, bounded by the same per-attachment cap."""
+    items = _jsonish_list(value)
+    attachments: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            errors.append({
+                "code": "attachment_invalid",
+                "index": index,
+                "message": "Each inline attachment must be an object with filename and content_base64.",
+            })
+            continue
+        filename = _safe_filename(str(item.get("filename") or ""))
+        encoded = str(item.get("content_base64") or "").strip()
+        if not encoded:
+            errors.append({
+                "code": "attachment_content_required",
+                "index": index,
+                "message": f"{filename}: content_base64 is required.",
+            })
+            continue
+        try:
+            data = base64.b64decode(encoded, validate=True)
+        except Exception:
+            errors.append({
+                "code": "attachment_invalid_base64",
+                "index": index,
+                "message": f"{filename}: content_base64 is not valid base64.",
+            })
+            continue
+        if len(data) > MAX_ATTACHMENT_BYTES:
+            errors.append({
+                "code": "attachment_too_large",
+                "index": index,
+                "message": f"{filename}: {len(data)} bytes exceeds the {MAX_ATTACHMENT_BYTES} byte cap.",
+            })
+            continue
+        mime_type = str(item.get("mime_type") or "").strip() or (
+            mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        )
+        attachments.append({
+            "filename": filename,
+            "mime_type": mime_type,
+            "data": data,
+            "source_path": f"inline:{index}",
+        })
     return attachments, errors
 
 
@@ -1076,6 +1135,164 @@ class GmailTools:
         )
 
     @kernel_function(
+        name="create_gmail_draft",
+        description=(
+            "Create a DRAFT email in the current user's connected Gmail account without sending it. "
+            "The person reviews and sends the draft themselves; this tool never sends. "
+            "Requires the gmail:compose claim in Connection Hub (drafts are not covered by gmail:send). "
+            "Attachments: KDCube artifact/file paths (conversation lane) and/or inline base64 entries "
+            "(automation lane). Returns {ok, error, ret}; ret carries the draft id and message id."
+        ),
+    )
+    async def create_gmail_draft(
+        self,
+        to: Annotated[str, "Comma, semicolon, or newline separated recipient email addresses. May be empty for a recipientless draft."] = "",
+        subject: Annotated[str, "Email subject."] = "",
+        body_markdown: Annotated[str, "Markdown body stored as text and HTML."] = "",
+        cc: Annotated[str, "Optional comma, semicolon, or newline separated cc recipients."] = "",
+        bcc: Annotated[str, "Optional comma, semicolon, or newline separated bcc recipients."] = "",
+        body_html: Annotated[str, "Optional complete HTML body. Leave empty when using body_markdown."] = "",
+        attachment_paths: Annotated[str, "Optional comma/newline/JSON list of KDCube logical_path or physical_path file refs to attach (conversation lane only)."] = "",
+        attachments_base64: Annotated[str, "Optional JSON list of {filename, content_base64, mime_type?} inline attachments (the lane for automation callers with no KDCube workspace)."] = "",
+        account_id: Annotated[str, "Optional connected account id when the user has several Gmail accounts."] = "",
+    ) -> Annotated[dict, "Envelope: {ok, error, ret}."]:
+        return await _run_provider_call(
+            where="gmail.create_gmail_draft",
+            operation="create_draft",
+            mutating=True,
+            run=lambda: self._create_gmail_draft(
+                to=to,
+                subject=subject,
+                body_markdown=body_markdown,
+                cc=cc,
+                bcc=bcc,
+                body_html=body_html,
+                attachment_paths=attachment_paths,
+                attachments_base64=attachments_base64,
+                account_id=account_id,
+            ),
+        )
+
+    async def _create_gmail_draft(
+        self,
+        *,
+        to: str,
+        subject: str,
+        body_markdown: str,
+        cc: str,
+        bcc: str,
+        body_html: str,
+        attachment_paths: str,
+        attachments_base64: str,
+        account_id: str,
+    ) -> dict[str, Any]:
+        # A draft may legitimately have no recipient yet; unlike send, nothing
+        # is required except a connected account with the compose claim.
+        recipients = split_email_addresses(to)
+        credential = await self._credential(
+            claim=GMAIL_COMPOSE_CLAIM, account_id=account_id,
+            tool_name="gmail.create_gmail_draft",
+        )
+        if not credential.ok:
+            return credential.error_envelope(where="gmail.create_gmail_draft")
+        if not credential.access_token:
+            return _error_result(
+                code="credential_missing_access_token",
+                message="Connected Gmail credential has no access token.",
+                where="gmail.create_gmail_draft",
+            )
+        attachments: list[dict[str, Any]] = []
+        attachment_errors: list[dict[str, Any]] = []
+        if str(attachment_paths or "").strip():
+            loaded, errors = _load_local_attachments(attachment_paths)
+            attachments.extend(loaded)
+            attachment_errors.extend(errors)
+        inline, inline_errors = _load_inline_attachments(attachments_base64)
+        attachments.extend(inline)
+        attachment_errors.extend(inline_errors)
+        if attachment_errors:
+            return _error_result(
+                code="attachment_load_failed",
+                message="One or more requested attachments could not be loaded.",
+                where="gmail.create_gmail_draft",
+                ret={"attachment_errors": attachment_errors},
+            )
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            sender_email, provider_failure = await self._profile_email(
+                client, credential.access_token
+            )
+            if not sender_email:
+                if provider_failure and provider_failure.credential_failure:
+                    return connected_account_auth_failure(
+                        credential,
+                        _auth_failure_message(provider_failure),
+                    )
+                if provider_failure:
+                    return provider_failure.error_result(where="gmail.create_gmail_draft")
+                return _error_result(
+                    code="gmail_profile_unavailable",
+                    message="Could not resolve the connected Gmail sender address.",
+                    where="gmail.create_gmail_draft",
+                )
+            message = build_email_message(
+                sender_email=sender_email,
+                recipients=recipients,
+                cc=split_email_addresses(cc),
+                bcc=split_email_addresses(bcc),
+                subject=subject,
+                body_text=body_markdown,
+                body_html=body_html,
+                attachments=attachments,
+            )
+            raw = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii").rstrip("=")
+            response = await client.post(
+                f"{GMAIL_API}/drafts",
+                headers={"Authorization": f"Bearer {credential.access_token}"},
+                json={"message": {"raw": raw}},
+            )
+            if response.status_code >= 400:
+                failure = _gmail_failure(
+                    response,
+                    operation="create_draft",
+                    fallback="Gmail draft creation failed.",
+                    where="gmail.create_gmail_draft",
+                    mutating=True,
+                )
+                if failure.credential_failure:
+                    return connected_account_auth_failure(
+                        credential,
+                        _auth_failure_message(failure),
+                    )
+                return failure.error_result(where="gmail.create_gmail_draft")
+            try:
+                data = response.json()
+            except Exception:
+                data = {}
+        draft_message = data.get("message") if isinstance(data.get("message"), dict) else {}
+        return _ok_ret_result(
+            {
+                "draft_id": str(data.get("id") or ""),
+                "message_id": str(draft_message.get("id") or ""),
+                "thread_id": str(draft_message.get("threadId") or ""),
+                "sender": sender_email,
+                "account_id": credential.account_id,
+                "recipients": recipients,
+                "subject": subject,
+                "attachment_count": len(attachments),
+                "attachments": [
+                    {
+                        "filename": item.get("filename"),
+                        "mime_type": item.get("mime_type"),
+                        "source_path": item.get("source_path"),
+                    }
+                    for item in attachments
+                ],
+                "drafts_url": "https://mail.google.com/mail/u/0/#drafts",
+            }
+        )
+
+    @kernel_function(
         name="forward_gmail_message",
         description=(
             "Forward one Gmail message to recipients through the current user's connected Gmail account. "
@@ -1330,6 +1547,7 @@ __all__ = [
     "GMAIL_PROVIDER_ID",
     "GMAIL_READ_CLAIM",
     "GMAIL_SEND_CLAIM",
+    "GMAIL_COMPOSE_CLAIM",
     "GmailTools",
     "kernel",
     "tools",

@@ -52,6 +52,11 @@ MAX_SEARCH_RESULTS = 50
 MAX_TEXT_CHARS = 200_000
 MAX_EXPORT_BYTES = 10 * 1024 * 1024  # Drive files.export ceiling
 MAX_IMPORT_BYTES = 10 * 1024 * 1024
+# Raw uploads ride the resumable lane (one initiate + one PUT), which has no
+# multipart 5MB ceiling; the bound here is ours, sized for report/archive
+# deliverables rather than media libraries.
+MAX_UPLOAD_BYTES = 100 * 1024 * 1024
+MAX_LIST_RESULTS = 100
 MAX_TITLE_CHARS = 300
 MAX_REPLACEMENTS = 50
 MAX_COMMENT_CHARS = 20_000
@@ -1317,7 +1322,13 @@ async def _import_document(
             "import_too_large",
             f"Import payload is {len(raw)} bytes; the limit is {MAX_IMPORT_BYTES}.",
         )
-    metadata = {"name": title, "mimeType": DOCS_MIME_TYPE}
+    metadata: dict[str, Any] = {"name": title, "mimeType": DOCS_MIME_TYPE}
+    parent_id = _clean(payload.get("parent_id"))
+    if parent_id:
+        # Placement into a pre-existing folder needs a credential whose scope
+        # actually reaches that folder (drive, not drive.file); the caller's
+        # claim selection owns that, this layer just states the intent.
+        metadata["parents"] = [parent_id]
     files = {
         "metadata": ("metadata", _json_dumps(metadata), "application/json"),
         "file": ("source", raw, source_mime),
@@ -1325,7 +1336,11 @@ async def _import_document(
     response = await client.post(
         f"{DRIVE_UPLOAD_API}/files",
         headers=_headers(access_token),
-        params={"uploadType": "multipart", "fields": "id,name,webViewLink"},
+        params={
+            "uploadType": "multipart",
+            "fields": "id,name,webViewLink,parents",
+            "supportsAllDrives": "true",
+        },
         files=files,
     )
     _raise_for_status(response, operation="import", mutating=True)
@@ -1338,7 +1353,141 @@ async def _import_document(
         "web_url": _clean(body.get("webViewLink")) or _web_url(document_id),
         "source_format": fmt,
         "byte_size": len(raw),
+        "parent_ids": [
+            _clean(parent) for parent in (body.get("parents") or []) if _clean(parent)
+        ],
         "idempotency_key": _clean(payload.get("idempotency_key")),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Drive file operations (drive:read / drive:write) — files as themselves
+# --------------------------------------------------------------------------- #
+
+
+async def _drive_upload_file(
+    client: httpx.AsyncClient, *, access_token: str, payload: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Upload one file to Drive WITHOUT conversion: a .docx stays a .docx, a
+    PDF a PDF, a zip a zip. The import operation above always converts to a
+    Google Doc, which is right for documents and wrong for deliverable files;
+    this is the other half. Resumable lane: initiate, then one PUT."""
+    name = _clean(payload.get("name") or payload.get("title"))
+    if not name or len(name) > MAX_TITLE_CHARS:
+        raise DocsValidationError(
+            "invalid_name",
+            f"name is required and must be at most {MAX_TITLE_CHARS} characters.",
+        )
+    content_b64 = _clean(payload.get("content_base64"))
+    if not content_b64:
+        raise DocsValidationError(
+            "content_required", "Provide content_base64 (the file bytes)."
+        )
+    try:
+        raw = base64.b64decode(content_b64, validate=True)
+    except Exception as exc:  # noqa: BLE001
+        raise DocsValidationError(
+            "invalid_content_base64", "content_base64 is not valid base64."
+        ) from exc
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise DocsValidationError(
+            "upload_too_large",
+            f"Upload payload is {len(raw)} bytes; the limit is {MAX_UPLOAD_BYTES}.",
+        )
+    mime_type = _clean(payload.get("mime_type")) or "application/octet-stream"
+    metadata: dict[str, Any] = {"name": name, "mimeType": mime_type}
+    parent_id = _clean(payload.get("parent_id"))
+    if parent_id:
+        metadata["parents"] = [parent_id]
+    initiate = await client.post(
+        f"{DRIVE_UPLOAD_API}/files",
+        headers={
+            **_headers(access_token),
+            "Content-Type": "application/json; charset=UTF-8",
+            "X-Upload-Content-Type": mime_type,
+            "X-Upload-Content-Length": str(len(raw)),
+        },
+        params={
+            "uploadType": "resumable",
+            "fields": "id,name,mimeType,size,webViewLink,parents",
+            "supportsAllDrives": "true",
+        },
+        content=_json_dumps(metadata),
+    )
+    _raise_for_status(initiate, operation="drive_upload", mutating=True)
+    upload_url = _clean(initiate.headers.get("Location"))
+    if not upload_url:
+        raise DocsValidationError(
+            "upload_session_missing",
+            "Drive did not return a resumable upload session URL.",
+        )
+    response = await client.put(
+        upload_url,
+        headers={"Content-Type": mime_type, "Content-Length": str(len(raw))},
+        content=raw,
+    )
+    _raise_for_status(response, operation="drive_upload", mutating=True)
+    body = response.json()
+    body = dict(body) if isinstance(body, Mapping) else {}
+    file_id = _clean(body.get("id"))
+    return {
+        "file_id": file_id,
+        "name": _clean(body.get("name")) or name,
+        "mime_type": _clean(body.get("mimeType")) or mime_type,
+        "byte_size": _int(body.get("size"), default=len(raw)),
+        "web_url": _clean(body.get("webViewLink")),
+        "parent_ids": [
+            _clean(parent) for parent in (body.get("parents") or []) if _clean(parent)
+        ],
+        "idempotency_key": _clean(payload.get("idempotency_key")),
+    }
+
+
+async def _drive_list_folder(
+    client: httpx.AsyncClient, *, access_token: str, payload: Mapping[str, Any]
+) -> dict[str, Any]:
+    """List one Drive folder's direct children: the verification read behind
+    every upload ("did the invoice land where intended"), and the browse a
+    person's folder link implies."""
+    folder_id = _clean(payload.get("folder_id") or payload.get("parent_id"))
+    if not folder_id:
+        raise DocsValidationError("folder_required", "Provide folder_id.")
+    limit = max(1, min(_int(payload.get("limit"), default=50), MAX_LIST_RESULTS))
+    escaped = folder_id.replace("\\", "\\\\").replace("'", "\\'")
+    params: dict[str, Any] = {
+        "q": f"'{escaped}' in parents and trashed = false",
+        "pageSize": limit,
+        "orderBy": "folder,modifiedTime desc",
+        "spaces": "drive",
+        "includeItemsFromAllDrives": "true",
+        "supportsAllDrives": "true",
+        "fields": f"nextPageToken,files({_DRIVE_FILE_FIELDS})",
+    }
+    cursor = _clean(payload.get("cursor"))
+    if cursor:
+        params["pageToken"] = cursor
+    response = await client.get(
+        f"{DRIVE_API}/files", headers=_headers(access_token), params=params
+    )
+    _raise_for_status(response, operation="drive_list", mutating=False)
+    body = response.json()
+    body = dict(body) if isinstance(body, Mapping) else {}
+    files = [
+        {
+            "file_id": _clean(row.get("id")),
+            "name": _clean(row.get("name")),
+            "mime_type": _clean(row.get("mimeType")),
+            "byte_size": _int(row.get("size"), default=0),
+            "modified_time": _clean(row.get("modifiedTime")),
+            "web_url": _clean(row.get("webViewLink")),
+        }
+        for row in (body.get("files") or [])
+        if isinstance(row, Mapping)
+    ]
+    return {
+        "folder_id": folder_id,
+        "files": files,
+        "next_cursor": _clean(body.get("nextPageToken")),
     }
 
 
@@ -1582,6 +1731,9 @@ _OPERATIONS = {
     "insert_page_break": _insert_page_break,
     "embed_image": _embed_image,
     "import": _import_document,
+    # drive files as themselves (drive:read / drive:write)
+    "drive_upload": _drive_upload_file,
+    "drive_list": _drive_list_folder,
     # comment (docs:comment)
     "create_comment": _create_comment,
     "reply_comment": _reply_comment,
@@ -1600,6 +1752,7 @@ MUTATING_OPERATIONS = frozenset(
         "insert_page_break",
         "embed_image",
         "import",
+        "drive_upload",
         "create_comment",
         "reply_comment",
         "resolve_comment",
@@ -1687,6 +1840,8 @@ __all__ = [
     "MAX_SEARCH_RESULTS",
     "MAX_TEXT_CHARS",
     "MAX_EXPORT_BYTES",
+    "MAX_UPLOAD_BYTES",
+    "MAX_LIST_RESULTS",
     "DOCS_MIME_TYPE",
     "DOCX_MIME_TYPE",
     "DocsValidationError",
