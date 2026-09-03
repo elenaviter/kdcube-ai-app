@@ -3,12 +3,13 @@ id: repo:kdcube-ai-app/app/ai-app/docs/procedures/platform-source-testing-README
 title: "Run Platform Source Tests"
 summary: "Contributor procedure for selecting the correct checkout, Python environment, extracted package sources, bundle fixture, and verification depth when testing KDCube platform code."
 tags: ["procedures", "contributors", "testing", "pytest", "frontend", "pull-requests"]
-keywords: ["platform source tests", "python interpreter", "PYTHONPATH", "connection hub source overlay", "bundle under test", "bundle path", "regression test", "pull request head"]
-updated_at: 2026-09-02
+keywords: ["platform source tests", "python interpreter", "PYTHONPATH", "app foundation source overlay", "connection hub source overlay", "bundle under test", "bundle path", "regression test", "pull request head"]
+updated_at: 2026-09-03
 see_also:
   - repo:kdcube-ai-app/AGENTS.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-test-bundle-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/operations/operate-runtime-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/cli-README.md
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/requirements-chat-processor.txt
 ---
 # Run Platform Source Tests
@@ -21,7 +22,8 @@ The test result is meaningful only when all four inputs are explicit:
 
 1. the KDCube checkout or pull-request worktree being tested;
 2. the Python interpreter and installed service dependencies;
-3. any intentionally overlaid source package, such as Connection Hub;
+3. any intentionally overlaid extracted package, such as App Foundation or
+   Connection Hub;
 4. the app fixture required by shared bundle tests.
 
 ## 1. Select the checkout and interpreter
@@ -52,13 +54,29 @@ export PY=/abs/path/to/kdcube/app/venvs/ai-app/chat-processor/bin/python
 If a compatible environment does not exist, create one and install the
 matching service requirement file. Chat processor, SDK, harness, and shared
 bundle tests use `requirements-chat-processor.txt`, which includes the test
-tools and the published `connection-hub` dependency:
+tools and declares the `app-foundation` and `connection-hub` dependencies:
 
 ```bash
 python3.11 -m venv "$KDCUBE_REPO/.venv-platform-tests"
 export PY="$KDCUBE_REPO/.venv-platform-tests/bin/python"
 "$PY" -m pip install -r "$KDCUBE_SRC/requirements-chat-processor.txt"
 ```
+
+When a declared package floor is still an unpublished coordinated candidate,
+preinstall its local distribution metadata before resolving the requirement
+file:
+
+```bash
+export APP_ECOSYSTEM_REPO=/abs/path/to/app-ecosystem
+export APP_FOUNDATION_SOURCE="$APP_ECOSYSTEM_REPO/packages/app-foundation"
+
+"$PY" -m pip install --no-deps "$APP_FOUNDATION_SOURCE"
+"$PY" -m pip install -r "$KDCUBE_SRC/requirements-chat-processor.txt"
+```
+
+The requirement pass installs the candidate's declared extras and the rest of
+the service environment. Section 2 then selects the exact checkout source for
+test imports.
 
 Use the corresponding `requirements-<service>.txt` for another service. Add
 `pytest` and `pytest-asyncio` to a service environment when its requirement
@@ -75,29 +93,34 @@ Prove the interpreter before interpreting a test result:
 Use `"$PY" -m pytest`, not an unqualified `pytest`. This keeps collection and
 execution in the same environment.
 
-## 2. Select installed or extracted Connection Hub code
+## 2. Select installed or extracted package code
 
-KDCube service requirement files declare the released `connection-hub`
-package. A normal source test uses that installed dependency.
+KDCube service requirement files declare released extracted dependencies. A
+normal source test uses those installed distributions. The MCP client
+implementation is owned by `app-foundation`; the historical KDCube import path
+is a compatibility facade over that package.
 
-When a change intentionally spans KDCube and an unreleased Connection Hub
-checkout, add the extracted package's `src` directory to `PYTHONPATH`:
+When a change intentionally spans KDCube and unreleased App Foundation or
+Connection Hub source, add each selected package's `src` directory to
+`PYTHONPATH`:
 
 ```bash
 export APP_ECOSYSTEM_REPO=/abs/path/to/app-ecosystem
+export APP_FOUNDATION_SRC="$APP_ECOSYSTEM_REPO/packages/app-foundation/src"
 export CONNECTION_HUB_SRC="$APP_ECOSYSTEM_REPO/products/connection-hub/packages/connection-hub/src"
-export PYTHONPATH="$KDCUBE_SRC:$CONNECTION_HUB_SRC${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$KDCUBE_SRC:$APP_FOUNDATION_SRC:$CONNECTION_HUB_SRC${PYTHONPATH:+:$PYTHONPATH}"
 ```
 
-For tests that do not overlay extracted Connection Hub source:
+For tests that do not overlay extracted package source:
 
 ```bash
 export PYTHONPATH="$KDCUBE_SRC${PYTHONPATH:+:$PYTHONPATH}"
 ```
 
-The source overlay is for coordinated repository testing. It does not replace
-the released version constraint used by runtime images and service installs.
-Record the Connection Hub commit when an overlaid checkout affects the result.
+The `PYTHONPATH` overlay selects coordinated repository source for this test
+process. Runtime-image verification uses the maintainer package-source build in
+§7, while released service installs resolve their declared package versions.
+Record every overlaid repository commit when it affects the result.
 
 Prove import origins before collection:
 
@@ -105,19 +128,20 @@ Prove import origins before collection:
 "$PY" - <<'PY'
 from pathlib import Path
 
+import app_foundation
 import connection_hub
 import kdcube_ai_app
 
 print("kdcube_ai_app:", Path(kdcube_ai_app.__file__).resolve())
+print("app_foundation:", Path(app_foundation.__file__).resolve())
 print("connection_hub:", Path(connection_hub.__file__).resolve())
 PY
 ```
 
-The first path must be inside `KDCUBE_SRC`. The second must be either the
-installed package selected for the test or the explicit
-`CONNECTION_HUB_SRC` checkout. A missing import or an unexpected origin is a
-test-environment failure. Correct the environment before assessing product
-behavior.
+The first path must be inside `KDCUBE_SRC`. Each extracted package path must be
+either the installed distribution selected for the test or its explicit
+source checkout. A missing import or an unexpected origin is a test-environment
+failure. Correct the environment before assessing product behavior.
 
 ## 3. Run the exact regression first
 
@@ -249,6 +273,29 @@ kdcube refresh \
   --build
 ```
 
+When the runtime change also consumes unpublished extracted-package source,
+stage every imported distribution in the same build:
+
+```bash
+export APP_ECOSYSTEM_REPO=/abs/path/to/app-ecosystem
+export APP_FOUNDATION_SOURCE="$APP_ECOSYSTEM_REPO/packages/app-foundation"
+export CONNECTION_HUB_SOURCE="$APP_ECOSYSTEM_REPO/products/connection-hub/packages/connection-hub"
+
+kdcube refresh \
+  --tenant <tenant> \
+  --project <project> \
+  --path "$KDCUBE_REPO" \
+  --build \
+  --maintainer-local-python-package "app-foundation=$APP_FOUNDATION_SOURCE" \
+  --maintainer-local-python-package "connection-hub=$CONNECTION_HUB_SOURCE"
+```
+
+The image preinstalls candidate distributions before resolving normal
+requirements, then reapplies the exact selected source. This allows a local
+candidate to satisfy a newly declared version floor. The complete command
+contract and package-selection rule live in
+[Current KDCube CLI](../service/cicd/cli-README.md#maintainer-local-python-package-sources).
+
 Then verify the behavior through the real transport and inspect the service
 logs. See [Operate A Runtime](../recipes/operations/operate-runtime-README.md)
 for runtime evidence and restart semantics.
@@ -281,7 +328,8 @@ The completion report records:
 - exact test commands and pass, fail, error, and skip counts;
 - bundle fixture used by shared tests;
 - unavailable infrastructure or tests not run;
-- live runtime source selector and transport checks when applicable.
+- live runtime source and maintainer-package selectors, plus transport checks,
+  when applicable.
 
 `git diff --check`, import success, collection success, unit tests, shared app
 contract tests, and live runtime checks prove different things. Report each as

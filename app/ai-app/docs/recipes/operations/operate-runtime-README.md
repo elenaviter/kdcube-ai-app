@@ -4,11 +4,13 @@ title: "Operate A KDCube Runtime"
 summary: "The daily run sheet: lifecycle, the four change loops (platform code, staged config, app descriptors, one app), export/import, and honest verification."
 status: active
 tags: ["operations", "cli", "kdcube-cli", "refresh", "reload", "export", "import"]
-updated_at: 2026-07-07
+keywords: ["operate KDCube runtime", "platform refresh", "maintainer package source", "bundle reload", "runtime export", "runtime verification"]
+updated_at: 2026-09-03
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/operations/install-clean-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/operations/install-from-descriptors-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/cli-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/procedures/platform-source-testing-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/ngrok-README.md
 ---
 # Operate A KDCube Runtime
@@ -46,6 +48,9 @@ kdcube refresh --upstream --build       # or move to a git source: --latest / --
 
 `refresh` preserves staged descriptors and never touches data volumes.
 `--no-restart` builds without restarting.
+
+Platform contributors testing coordinated local package source use the
+[maintainer package-source refresh](../../service/cicd/cli-README.md#maintainer-local-python-package-sources).
 
 **2. Staged config edited by hand** (`$WORKDIR/config/*.yaml`):
 

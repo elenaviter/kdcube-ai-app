@@ -17,7 +17,7 @@ keywords:
     "private proxy",
     "cross app identity",
   ]
-updated_at: 2026-08-18
+updated_at: 2026-09-03
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/how-to-integrate-with-kdcube-apps-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/integrate-cross-app-surface-README.md
@@ -530,7 +530,7 @@ For implementation steps and copy-ready SDK examples, follow
 | Background job stream | [Background Job Streams](../service/streams/background-jobs-README.md) |
 | Conversation submitter | [Servicing Interfaces](../service/servicing-interfaces-README.md) |
 | App REST/MCP routes and auth ownership | [Bundle Transports](../sdk/bundle/bundle-transports-README.md) |
-| MCP client transports | `kdcube_ai_app/apps/chat/sdk/runtime/mcp/client.py` |
+| MCP client transports | [MCP Integration](../sdk/tools/mcp-README.md): `app-foundation[mcp]` owns client construction; `kdcube_ai_app/apps/chat/sdk/runtime/mcp/client.py` is the compatibility facade |
 | Per-user MCP connection resolution | Connection Hub policy plus `kdcube_ai_app/apps/chat/sdk/integrations/connection_hub/delegated_mcp.py` |
 | Cross-KDCube implemented baseline and planned delegated client | [Cross-KDCube App Surface Interoperability](cross-kdcube-app-surface-interoperability-README.md) |
 | Scene and widget composition | [Scene Composition](../sdk/solutions/scene/scene-composition-README.md) |

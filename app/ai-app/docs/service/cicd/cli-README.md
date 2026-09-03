@@ -1,9 +1,10 @@
 ---
 id: repo:kdcube/app/ai-app/docs/service/cicd/cli-README.md
 title: "Current KDCube CLI"
-summary: "Current implemented CLI surface for local environment bootstrapping, workdir preparation, Docker Compose startup, descriptor validation, bundle config and secret patching, and the practical rule that multiple namespaced runtime snapshots may exist on one machine while local compose-backed execution remains one active deployment at a time."
+summary: "Current implemented CLI surface for local environment bootstrapping, workdir preparation, Docker Compose startup, descriptor validation, bundle config and secret patching, maintainer package-source builds, and local deployment selection."
 tags: ["service", "cicd", "cli", "env", "deployment", "bundle"]
-keywords: ["kdcube cli", "local environment bootstrap", "workdir setup", "docker compose control", "descriptor validation", "current cli contract", "local deployment tooling", "multiple local runtime snapshots", "single active local deployment", "tenant project workdir namespace", "bundle config patch", "bundle secret patch", "kdcube bundle command", "bundle reload internals", "reload-authority"]
+keywords: ["kdcube cli", "local environment bootstrap", "workdir setup", "docker compose control", "descriptor validation", "current cli contract", "local deployment tooling", "multiple local runtime snapshots", "single active local deployment", "tenant project workdir namespace", "bundle config patch", "bundle secret patch", "kdcube bundle command", "bundle reload internals", "reload-authority", "maintainer local Python package", "unpublished package candidate"]
+updated_at: 2026-09-03
 see_also:
   - repo:kdcube/app/ai-app/docs/service/cicd/release-README.md
   - repo:kdcube/app/ai-app/docs/service/cicd/descriptors-README.md
@@ -520,6 +521,47 @@ Behaviour:
 - restarts the stack (unless `--no-restart` is passed);
 - never modifies `assembly.yaml`, `secrets.yaml`, `bundles.yaml`,
   `bundles.secrets.yaml`, `gateway.yaml`, or `economics.yaml`.
+
+#### Maintainer local Python package sources
+
+Platform contributors can exercise coordinated, unpublished Python package
+source inside freshly built runtime images. Repeat
+`--maintainer-local-python-package DIST=SOURCE_DIR` for every extracted
+distribution imported by those images:
+
+```bash
+export APP_ECOSYSTEM_REPO=/path/to/app-ecosystem
+export APP_FOUNDATION_SOURCE="$APP_ECOSYSTEM_REPO/packages/app-foundation"
+export CONNECTION_HUB_SOURCE="$APP_ECOSYSTEM_REPO/products/connection-hub/packages/connection-hub"
+
+kdcube refresh \
+  --workdir "$WORKDIR" \
+  --path "$KDCUBE_REPO" \
+  --build \
+  --maintainer-local-python-package "app-foundation=$APP_FOUNDATION_SOURCE" \
+  --maintainer-local-python-package "connection-hub=$CONNECTION_HUB_SOURCE"
+```
+
+The shell variables above carry source paths for this command; runtime
+configuration remains descriptor-owned. The CLI copies each selected source
+into a transient Docker build-context directory. Every Python image then:
+
+1. preinstalls the selected distributions without dependencies, making their
+   candidate versions available to requirement resolution;
+2. installs its ordinary requirements and the selected packages' declared
+   extras;
+3. force-reinstalls the exact selected sources after resolution.
+
+This order supports both a local replacement for an already published package
+and a newly introduced candidate version that has not reached the package
+index. The transient source copies are removed after the build. The flag
+requires `--build`, and production consumers resolve published package
+versions.
+
+`service-foundation` currently supplies host-process relay lifecycle and is not
+imported by KDCube runtime images. Install it in the host command's Python
+environment. Add it to this image-build command when platform-image code begins
+to import that distribution.
 
 The build-storage policy is host-independent. It applies to the Docker host's
 disposable objects through commands supported by Docker Engine and Docker

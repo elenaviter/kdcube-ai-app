@@ -1,10 +1,10 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/sdk/tools/mcp-README.md
 title: "MCP"
-summary: "MCP tool integration: agent-scoped allow-lists, consumer-surface MCP service config, named-secret auth, and runtime execution flow (host + isolated)."
+summary: "MCP tool integration: implementation ownership, agent-scoped allow-lists, consumer-surface MCP service config, named-secret auth, and runtime execution flow."
 tags: ["sdk", "tools", "mcp", "runtime", "transport", "auth"]
-keywords: ["surfaces.as_consumer", "MCPToolsSubsystem", "mcp.<alias>.<tool>", "stdio", "http", "streamable-http", "sse", "MCP 2026-07-28", "legacy initialize", "tool_call"]
-updated_at: 2026-07-30
+keywords: ["surfaces.as_consumer", "MCPToolsSubsystem", "mcp.<alias>.<tool>", "stdio", "http", "streamable-http", "sse", "MCP 2026-07-28", "legacy initialize", "tool_call", "app-foundation", "MCP client ownership"]
+updated_at: 2026-09-03
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/consume-mcp-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/expose-mcp-service-README.md
@@ -34,6 +34,21 @@ The first recipe covers `surfaces.as_consumer`; the second covers
 `surfaces.as_provider`, including app-native MCP, Connection Hub managed
 authorization, economics, and when named services are optional rather than
 required.
+
+## Implementation ownership
+
+The host-neutral MCP SDK client is implemented by `app-foundation[mcp]`. It
+owns stdio, SSE, and Streamable HTTP construction, modern discovery with legacy
+fallback, stable tool-schema conversion, and result normalization. The
+historical KDCube module
+`kdcube_ai_app.apps.chat.sdk.runtime.mcp.client` is a compatibility re-export
+of that contract.
+
+KDCube owns the surrounding platform behavior: descriptor-to-connection
+resolution, per-agent tool exposure, delegated credential selection, tool
+execution policy, isolated execution integration, and ReAct result handling.
+This keeps the reusable protocol mechanism in one package while platform and
+product policy remain with their owners.
 
 For shared tool-subsystem behavior (agent-scoped config, alias resolution, isolated supervisor flow), see [Tool Subsystem](./tool-subsystem-README.md).
 
