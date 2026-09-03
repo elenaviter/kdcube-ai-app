@@ -70,6 +70,12 @@ GOOGLE_PROVIDER_KEY = "google"
 DOCS_READ_CLAIM = "docs:read"
 DOCS_WRITE_CLAIM = "docs:write"
 DOCS_COMMENT_CLAIM = "docs:comment"
+# Drive-as-files claims, mirrored from the productivity surface: raw upload
+# and folder listing need honest Drive scopes because docs:write's drive.file
+# cannot reach pre-existing folders. Folder placement on copy/import widens
+# to drive:write only when a parent_id is actually requested.
+DRIVE_READ_CLAIM = "drive:read"
+DRIVE_WRITE_CLAIM = "drive:write"
 
 DOCS_DOCUMENT_KIND = "docs.document"
 DOCS_IMPORT_SOURCE_KIND = "docs.import_source"
@@ -94,7 +100,8 @@ DOCS_EXPORT_FORMATS: dict[str, tuple[str, str]] = {
 }
 
 # The bounded verbs a caller may name through object.action. Each verb maps to
-# the identically named underlying proxy operation.
+# the identically named underlying proxy operation, except the two drive-file
+# verbs, whose proxy operations are drive_upload/drive_list.
 ACTION_COPY = "copy"
 ACTION_INSERT_TEXT = "insert_text"
 ACTION_APPEND_TEXT = "append_text"
@@ -110,6 +117,11 @@ ACTION_CREATE_COMMENT = "create_comment"
 ACTION_REPLY_COMMENT = "reply_comment"
 ACTION_RESOLVE_COMMENT = "resolve_comment"
 ACTION_DELETE_COMMENT = "delete_comment"
+# Drive files as themselves: an upload keeps its format (a DOCX stays a DOCX,
+# a PDF a PDF) where import always converts to a native document; the folder
+# listing is the verification read behind uploads and placements.
+ACTION_UPLOAD_FILE = "upload_file"
+ACTION_LIST_FOLDER = "list_folder"
 
 # Generic UI actions are resolved by the provider but are not advertised as
 # model-callable document mutations.
@@ -141,6 +153,10 @@ DOCS_COMMENT_ACTIONS = frozenset(
     }
 )
 
+# Drive-file actions gate on their own Drive claims, never the docs claims.
+DRIVE_FILE_READ_ACTIONS = frozenset({ACTION_LIST_FOLDER})
+DRIVE_FILE_WRITE_ACTIONS = frozenset({ACTION_UPLOAD_FILE})
+
 DOCS_ACTIONS = (
     ACTION_COPY,
     ACTION_INSERT_TEXT,
@@ -157,6 +173,8 @@ DOCS_ACTIONS = (
     ACTION_REPLY_COMMENT,
     ACTION_RESOLVE_COMMENT,
     ACTION_DELETE_COMMENT,
+    ACTION_UPLOAD_FILE,
+    ACTION_LIST_FOLDER,
 )
 
 DOCS_SINGLE_TAB_ACTIONS = frozenset(
@@ -188,12 +206,30 @@ BLOCK_PREVIEW_CHARS = 800
 ExecuteDocsOperation = Callable[..., Awaitable[Mapping[str, Any]]]
 
 
-def _action_claim(action: str) -> str | tuple[str, str]:
+def _action_claim(action: str) -> str | tuple[str, ...]:
+    if action in DRIVE_FILE_READ_ACTIONS:
+        return DRIVE_READ_CLAIM
+    if action in DRIVE_FILE_WRITE_ACTIONS:
+        return DRIVE_WRITE_CLAIM
     if action in DOCS_READ_ACTIONS:
         return DOCS_READ_CLAIM
     if action in DOCS_COMMENT_ACTIONS:
         return (DOCS_READ_CLAIM, DOCS_COMMENT_CLAIM)
     return (DOCS_READ_CLAIM, DOCS_WRITE_CLAIM)
+
+
+def _placement_claim(action: str, payload: Mapping[str, Any]) -> str | tuple[str, ...]:
+    """The action's claim, widened to drive:write when the call asks for
+    folder placement: docs:write's drive.file scope cannot write into a
+    pre-existing folder, so a parent_id changes what credential the call
+    honestly needs, and only then."""
+    claim = _action_claim(action)
+    if not _text(payload.get("parent_id")):
+        return claim
+    claims = (claim,) if isinstance(claim, str) else tuple(claim)
+    if DRIVE_WRITE_CLAIM in claims:
+        return claims
+    return (*claims, DRIVE_WRITE_CLAIM)
 
 
 DOCS_SEARCH_FILTERS = {
@@ -233,12 +269,20 @@ DOCS_GRANT_HINTS = {
     "object.action": [DOCS_WRITE_CLAIM],
     **{
         f"object.action.{action}": (
-            [DOCS_READ_CLAIM]
-            if action in DOCS_READ_ACTIONS
+            [DRIVE_READ_CLAIM]
+            if action in DRIVE_FILE_READ_ACTIONS
             else (
-                [DOCS_COMMENT_CLAIM]
-                if action in DOCS_COMMENT_ACTIONS
-                else [DOCS_WRITE_CLAIM]
+                [DRIVE_WRITE_CLAIM]
+                if action in DRIVE_FILE_WRITE_ACTIONS
+                else (
+                    [DOCS_READ_CLAIM]
+                    if action in DOCS_READ_ACTIONS
+                    else (
+                        [DOCS_COMMENT_CLAIM]
+                        if action in DOCS_COMMENT_ACTIONS
+                        else [DOCS_WRITE_CLAIM]
+                    )
+                )
             )
         )
         for action in DOCS_ACTIONS
@@ -563,10 +607,41 @@ DOCS_SCHEMA = {
             "claim": "docs:read",
         },
         ACTION_IMPORT: {
-            "description": "Create a document by importing source content.",
+            "description": (
+                "Create a document by importing source content. An optional "
+                "parent_id places the new document into a Drive folder and "
+                "additionally requires drive:write on the connected account."
+            ),
             "object_ref": "none",
-            "payload": ["title", "source_format", "content", "content_base64"],
+            "payload": [
+                "title",
+                "source_format",
+                "content",
+                "content_base64",
+                "parent_id",
+            ],
             "claim": "docs:write",
+        },
+        ACTION_UPLOAD_FILE: {
+            "description": (
+                "Upload one file to Drive WITHOUT conversion: a DOCX stays a "
+                "DOCX, a PDF a PDF, a zip a zip. Optional parent_id places it "
+                "into a folder. Use import instead when the goal is an "
+                "editable native document."
+            ),
+            "object_ref": "none",
+            "payload": ["name", "content_base64", "mime_type", "parent_id"],
+            "claim": "drive:write",
+        },
+        ACTION_LIST_FOLDER: {
+            "description": (
+                "List one Drive folder's direct children with ids, names, "
+                "MIME types, sizes, and links - the verification read behind "
+                "uploads and placements."
+            ),
+            "object_ref": "none",
+            "payload": ["folder_id", "limit", "cursor"],
+            "claim": "drive:read",
         },
         ACTION_LIST_COMMENTS: {
             "description": "List comments on the document.",
@@ -680,6 +755,20 @@ DOCS_SCHEMA_PROJECTION = {
                             {"object_kind": DOCS_EXPORT_KIND, "schema_operation": "object.get"},
                         ],
                     },
+                    {
+                        "id": "drive-files",
+                        "label": "Drive files as themselves",
+                        "description": (
+                            "Upload a file to Drive without conversion and "
+                            "list a folder's children. Distinct from import, "
+                            "which always creates a native document."
+                        ),
+                        "keywords": ["upload", "folder", "zip", "raw file", "placement"],
+                        "operations": [
+                            {"object_kind": DOCS_DOCUMENT_KIND, "schema_operation": f"object.action:{ACTION_UPLOAD_FILE}"},
+                            {"object_kind": DOCS_DOCUMENT_KIND, "schema_operation": f"object.action:{ACTION_LIST_FOLDER}"},
+                        ],
+                    },
                 ],
             },
             {
@@ -730,6 +819,11 @@ DOCS_SCHEMA_PROJECTION = {
                 ACTION_REPLY_COMMENT,
                 ACTION_RESOLVE_COMMENT,
                 ACTION_DELETE_COMMENT,
+                # The drive-file verbs take no document ref (like import);
+                # they live on the document kind for the same reason import
+                # does: the namespace has no separate drive-file object kind.
+                ACTION_UPLOAD_FILE,
+                ACTION_LIST_FOLDER,
             ],
         },
         DOCS_IMPORT_SOURCE_KIND: {
@@ -2457,7 +2551,13 @@ class DocsNamedServiceProvider(NamedServiceProvider):
             body = {**dict(request.payload or {}), **dict(request.object or {})}
             payload = {
                 key: body.get(key)
-                for key in ("title", "source_format", "content", "content_base64")
+                for key in (
+                    "title",
+                    "source_format",
+                    "content",
+                    "content_base64",
+                    "parent_id",
+                )
                 if body.get(key) is not None
             }
             if request.idempotency_key:
@@ -2465,13 +2565,45 @@ class DocsNamedServiceProvider(NamedServiceProvider):
             ret, error = await self._execute(
                 request=request,
                 operation=ACTION_IMPORT,
-                claim=_action_claim(ACTION_IMPORT),
+                claim=_placement_claim(ACTION_IMPORT, payload),
                 payload=payload,
                 account_id=_text(body.get("account_id")),
             )
             if error is not None:
                 return error
             return self._mutation_response(request=request, ret=ret or {}, parsed=None)
+        # The drive-file verbs also take no document ref: upload creates a
+        # Drive file as itself, list_folder reads a folder. Neither result is
+        # a document object, so they answer with the raw operation result.
+        if action in (ACTION_UPLOAD_FILE, ACTION_LIST_FOLDER):
+            body = {**dict(request.payload or {}), **dict(request.object or {})}
+            keys = (
+                ("name", "content_base64", "mime_type", "parent_id")
+                if action == ACTION_UPLOAD_FILE
+                else ("folder_id", "limit", "cursor")
+            )
+            payload = {
+                key: body.get(key) for key in keys if body.get(key) is not None
+            }
+            if action == ACTION_UPLOAD_FILE and request.idempotency_key:
+                payload["idempotency_key"] = request.idempotency_key
+            ret, error = await self._execute(
+                request=request,
+                operation=(
+                    "drive_upload" if action == ACTION_UPLOAD_FILE else "drive_list"
+                ),
+                claim=_action_claim(action),
+                payload=payload,
+                account_id=_text(body.get("account_id")),
+            )
+            if error is not None:
+                return error
+            return NamedServiceResponse.ok_response(
+                provider=self._provider_identity(),
+                namespace=request.namespace or DOCS_NAMESPACE,
+                object_ref=request.object_ref,
+                extra={"action": action, "result": dict(ret or {})},
+            )
 
         try:
             parsed = parse_docs_ref(request.object_ref)
@@ -2560,7 +2692,7 @@ class DocsNamedServiceProvider(NamedServiceProvider):
         ret, error = await self._execute(
             request=request,
             operation=action,
-            claim=_action_claim(action),
+            claim=_placement_claim(action, payload),
             payload=payload,
             account_id=parsed["account_id"],
         )

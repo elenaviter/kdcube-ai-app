@@ -1273,6 +1273,18 @@ bundles:
                             grants:
                             - named_services:use
                             - docs:write
+                          object.action.upload_file:
+                            label: Upload file to Drive
+                            description: Upload a file to Drive without conversion, optionally into a folder.
+                            grants:
+                            - named_services:use
+                            - drive:write
+                          object.action.list_folder:
+                            label: List Drive folder
+                            description: List one Drive folder's direct children.
+                            grants:
+                            - named_services:use
+                            - drive:read
                           object.action.list_comments:
                             label: List document comments
                             description: Read comment threads on a document.
@@ -1413,6 +1425,18 @@ bundles:
                             grants:
                             - named_services:use
                             - docs:write
+                          object.action.upload_file:
+                            label: Upload file to Drive
+                            description: Upload a file to Drive without conversion, optionally into a folder.
+                            grants:
+                            - named_services:use
+                            - drive:write
+                          object.action.list_folder:
+                            label: List Drive folder
+                            description: List one Drive folder's direct children.
+                            grants:
+                            - named_services:use
+                            - drive:read
                           object.action.list_comments:
                             label: List document comments
                             description: Read comment threads on a document.

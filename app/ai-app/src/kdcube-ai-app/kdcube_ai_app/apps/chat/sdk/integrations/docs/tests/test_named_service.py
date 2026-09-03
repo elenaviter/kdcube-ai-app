@@ -15,6 +15,11 @@ from kdcube_ai_app.apps.chat.sdk.integrations.docs.named_service import (
     ACTION_APPEND_TEXT,
     ACTION_REPLACE_TEXT,
     ACTION_REPLY_COMMENT,
+    ACTION_IMPORT,
+    ACTION_LIST_FOLDER,
+    ACTION_UPLOAD_FILE,
+    DRIVE_READ_CLAIM,
+    DRIVE_WRITE_CLAIM,
     DOCS_COMMENT_CLAIM,
     DOCS_CONNECTED_ACCOUNT_REQUIREMENTS,
     DOCS_DOCUMENT_KIND,
@@ -576,7 +581,10 @@ async def test_copy_returns_the_new_document_ref_and_uses_read_write_claims() ->
     assert response.object["title"] == "26_007"
     assert fake.calls[-1] == {
         "operation": ACTION_COPY,
-        "claim": (DOCS_READ_CLAIM, DOCS_WRITE_CLAIM),
+        # parent_id widens the credential to drive:write: docs:write's
+        # drive.file scope cannot place into a pre-existing folder, and the
+        # old docs-only claim is exactly why placement failed live.
+        "claim": (DOCS_READ_CLAIM, DOCS_WRITE_CLAIM, "drive:write"),
         "tool_name": "named_services.docs.object.action.copy",
         "payload": {
             "title": "26_007",
@@ -586,6 +594,93 @@ async def test_copy_returns_the_new_document_ref_and_uses_read_write_claims() ->
         },
         "account_id": "account-1",
     }
+
+
+@pytest.mark.anyio
+async def test_copy_without_placement_keeps_the_docs_claims() -> None:
+    fake = _FakeDocs()
+    response = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_ACTION,
+            namespace="docs",
+            object_ref="docs:google:account-1:document:doc-1",
+            action=ACTION_COPY,
+            payload={"title": "26_008"},
+        ),
+    )
+    assert response.ok is True
+    assert fake.calls[-1]["claim"] == (DOCS_READ_CLAIM, DOCS_WRITE_CLAIM)
+
+
+@pytest.mark.anyio
+async def test_import_with_parent_widens_to_drive_write() -> None:
+    fake = _FakeDocs()
+    response = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_ACTION,
+            namespace="docs",
+            action=ACTION_IMPORT,
+            payload={
+                "title": "26_009",
+                "source_format": "docx",
+                "content_base64": "UEs=",
+                "parent_id": "folder-1",
+            },
+        ),
+    )
+    assert response.ok is True
+    call = fake.calls[-1]
+    assert call["operation"] == ACTION_IMPORT
+    assert call["claim"] == (DOCS_READ_CLAIM, DOCS_WRITE_CLAIM, DRIVE_WRITE_CLAIM)
+    assert call["payload"]["parent_id"] == "folder-1"
+
+
+@pytest.mark.anyio
+async def test_upload_file_routes_to_drive_upload_with_drive_write() -> None:
+    """The parity case behind the steuer exercise: a file must reach Drive AS
+    ITSELF, in a folder, without ever wearing the docs claims."""
+    fake = _FakeDocs()
+    response = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_ACTION,
+            namespace="docs",
+            action=ACTION_UPLOAD_FILE,
+            payload={
+                "name": "26_009.docx",
+                "content_base64": "UEs=",
+                "mime_type": "application/zip",
+                "parent_id": "folder-1",
+            },
+        ),
+    )
+    assert response.ok is True
+    call = fake.calls[-1]
+    assert call["operation"] == "drive_upload"
+    assert call["claim"] == DRIVE_WRITE_CLAIM
+    assert call["payload"]["parent_id"] == "folder-1"
+    assert response.ret["extra"]["action"] == ACTION_UPLOAD_FILE
+
+
+@pytest.mark.anyio
+async def test_list_folder_routes_to_drive_list_with_drive_read() -> None:
+    fake = _FakeDocs()
+    response = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_ACTION,
+            namespace="docs",
+            action=ACTION_LIST_FOLDER,
+            payload={"folder_id": "folder-1", "limit": 10},
+        ),
+    )
+    assert response.ok is True
+    call = fake.calls[-1]
+    assert call["operation"] == "drive_list"
+    assert call["claim"] == DRIVE_READ_CLAIM
+    assert call["payload"] == {"folder_id": "folder-1", "limit": 10}
 
 
 @pytest.mark.anyio
