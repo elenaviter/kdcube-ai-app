@@ -67,6 +67,21 @@ bundles:
           cards:
             updating_marker_seconds: 15
             revoked_tombstone_seconds: 60
+          admission:
+            enabled: true
+            identity_projection_secret_ref: connections.delegated_credentials.admission.identity_projection_secret
+            max_clock_skew_seconds: 300
+            nonce_ttl_seconds: 600
+            services:
+              kdcube-management:
+                label: KDCube management service
+                enabled: true
+                secret_ref: connections.delegated_credentials.admission.services.kdcube-management.signing_secret
+                resources:
+                - urn:kdcube:management:deployment:*:*
+                request_bound_operations:
+                - kdcube.management.application.reload
+                request_permit_ttl_seconds: 600
           oauth:
             enabled: true
             brand: KDCube
@@ -96,6 +111,21 @@ bundles:
               delegable_roles:
               - kdcube:role:super-admin
               delegable_permissions:
+              - kdcube:role:super-admin
+            - grant: kdcube.management.deployment.inspect
+              label: Inspect KDCube deployment
+              description: Read bounded readiness and application status for one running KDCube deployment.
+              delegable_roles:
+              - kdcube:role:super-admin
+            - grant: kdcube.management.application.surfaces.read
+              label: Discover KDCube application surfaces
+              description: Read the declared surfaces of one exact KDCube application.
+              delegable_roles:
+              - kdcube:role:super-admin
+            - grant: kdcube.management.application.reload
+              label: Reload KDCube application
+              description: Re-read descriptor authority and reload one exact KDCube application.
+              delegable_roles:
               - kdcube:role:super-admin
             - grant: conversations:read
               label: Read your conversations
@@ -335,6 +365,26 @@ bundles:
               admin_only: true
               grants:
               - kdcube:role:super-admin
+            - resource: urn:kdcube:management:deployment:*:*
+              label: KDCube deployment management
+              admin_only: true
+              resource_selection: true
+              operations:
+                kdcube.management.deployment.inspect:
+                  label: Inspect deployment
+                  description: Read bounded release, readiness, and application status.
+                  grants:
+                  - kdcube.management.deployment.inspect
+                kdcube.management.application.surfaces.read:
+                  label: Discover application surfaces
+                  description: Read declared surfaces for one exact application.
+                  grants:
+                  - kdcube.management.application.surfaces.read
+                kdcube.management.application.reload:
+                  label: Reload application
+                  description: Reload one exact application from descriptor authority.
+                  grants:
+                  - kdcube.management.application.reload
             - resource: '*/api/integrations/bundles/*/*/connection-hub@1-0/public/mcp/remote_mcp_proxy*'
               label: Connected external MCP tools
               identity_scope: grantor

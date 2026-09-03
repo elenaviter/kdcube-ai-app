@@ -10,6 +10,7 @@ see_also:
   - https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/package/delegated-authority-and-admission.md
   - https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/connection-hub-architecture.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/protect-external-service-with-connection-hub-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/delegated-management-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md
 ---
@@ -27,3 +28,8 @@ invocation.
 KDCube remains the host runtime. Its authenticated MCP, Data Bus, named-service,
 request-session, and application-surface documents describe how KDCube supplies
 the transport and runtime adapters around that authority.
+
+The [Delegated KDCube Management Service](../service/cicd/delegated-management-service-README.md)
+is the platform reference for a state-changing protected service. It combines
+live Connection Hub admission, an exact browser-approved request permit, and a
+separate effect ledger before reloading one declared application.

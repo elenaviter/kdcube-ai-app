@@ -7,10 +7,13 @@ File: chat/proc/rest/integrations/__init__.py
 """
 from fastapi import FastAPI
 
-from .integrations import (
+from kdcube_ai_app.apps.chat.proc.rest.integrations.integrations import (
     router as integrations_router,
     admin_router as integrations_admin_router,
     internal_router as integrations_internal_router,
+)
+from kdcube_ai_app.apps.chat.proc.rest.management.routes import (
+    router as delegated_management_router,
 )
 
 
@@ -25,6 +28,11 @@ def mount_integrations_routers(app: FastAPI):
         integrations_router,
         prefix="/api/integrations",
         tags=["Integrations"],
+    )
+    app.include_router(
+        delegated_management_router,
+        prefix="/api/integrations",
+        tags=["Delegated Management"],
     )
     app.include_router(
         integrations_admin_router,

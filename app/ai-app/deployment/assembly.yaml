@@ -55,6 +55,22 @@ auth:
       redirect_url: "http://YOUR_DOMAIN/platform/reset-password?user=%[1]s"
     http_urlbase: "http://YOUR_DOMAIN/auth"
 
+# ---------------------------------------------------------------------------
+# Delegated management of this running tenant/project deployment.
+# Connection Hub resolves the live caller card on every operation. The
+# protected-service HMAC value lives in the Connection Hub app's secrets.
+# ---------------------------------------------------------------------------
+management:
+  delegated:
+    enabled: true
+    effect_pending_seconds: 120
+    connection_hub:
+      app_id: "connection-hub@1-0"
+      service_id: "kdcube-management"
+      service_secret_ref: "connections.delegated_credentials.admission.services.kdcube-management.signing_secret"
+      admission_url: ""  # empty uses this processor's descriptor-owned local port
+      timeout_seconds: 10
+
 proxy:
   ssl: false
   route_prefix: "/platform"

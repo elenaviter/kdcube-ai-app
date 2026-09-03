@@ -14,6 +14,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/gateway-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/environment/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/service-runtime-configuration-mapping-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/delegated-management-service-README.md
 ---
 # Service and Infrastructure Index
 
@@ -27,5 +28,6 @@ Core entry points:
 - Monitoring & observability: [README-monitoring-observability.md](README-monitoring-observability.md)
 - Control plane configuration: [instance-config-README.md](maintenance/instance-config-README.md)
 - Descriptor model and mode differences: [descriptors-README.md](cicd/descriptors-README.md)
+- Delegated management of a running deployment: [delegated-management-service-README.md](cicd/delegated-management-service-README.md)
 - Runtime env and descriptor mapping: [service-runtime-configuration-mapping-README.md](../configuration/service-runtime-configuration-mapping-README.md)
 - All-in-one deployment: [README.md](../../deployment/docker/all_in_one/README.md)

@@ -10,6 +10,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/procedures/platform-source-testing-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/delegated-authority-and-admission-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/delegated-management-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/what-you-can-do-with-kdcube-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/use-cases-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/how-to-integrate-with-kdcube-apps-README.md
@@ -40,6 +41,7 @@ Curated index of platform, service, and SDK documentation.
 * Quick Start: [quick-start-README.md](quick-start-README.md)
 * Security And Trust Model: [security-and-trust-model-README.md](arch/security-and-trust-model-README.md)
 * Delegated Authority And Admission: [delegated-authority-and-admission-README.md](arch/delegated-authority-and-admission-README.md)
+* Delegated KDCube Management Service: [delegated-management-service-README.md](service/cicd/delegated-management-service-README.md)
 * Connection Hub Solution: [connection-hub-solution-README.md](sdk/solutions/connections/connection-hub-solution-README.md)
 * Protect An External Service With Connection Hub: [protect-external-service-with-connection-hub-README.md](recipes/connections/protect-external-service-with-connection-hub-README.md)
 * Architecture Of What We Built: [architecture-of-what-we-built-README.md](arch/architecture-of-what-we-built-README.md)
@@ -152,6 +154,7 @@ Curated index of platform, service, and SDK documentation.
 * Application-Hosted Website Architecture: [application-hosted-websites-README.md](arch/application-hosted-websites-README.md)
 * Current CLI: [cli-README.md](service/cicd/cli-README.md)
 * Deployment Target Control API: [deployment-target-control-api-README.md](service/cicd/deployment-target-control-api-README.md)
+* Delegated KDCube Management Service: [delegated-management-service-README.md](service/cicd/delegated-management-service-README.md)
 * Descriptors And CI/CD: [descriptors-README.md](service/cicd/descriptors-README.md)
 * Custom CI/CD: [custom-cicd-README.md](service/cicd/custom-cicd-README.md)
 * Auth Overview: [auth-README.md](service/auth/auth-README.md)

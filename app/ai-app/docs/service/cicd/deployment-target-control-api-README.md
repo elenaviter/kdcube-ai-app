@@ -6,6 +6,7 @@ tags: ["service", "cicd", "cli", "python-api", "deployment-target", "application
 keywords: ["kdcube_cli.control", "local deployment target", "endpoint deployment target", "application surface", "structured control error", "Connection Hub CLI"]
 see_also:
   - repo:kdcube/app/ai-app/docs/service/cicd/cli-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/delegated-management-service-README.md
   - repo:kdcube/app/ai-app/docs/configuration/bundles-descriptor-README.md
   - repo:kdcube/app/ai-app/docs/arch/security-and-trust-model-README.md
 ---
@@ -64,13 +65,15 @@ not send an administration credential or call a remote management API. The
 human signs in to the browser application through the deployment's configured
 identity provider.
 
-Remote administration can use the same delegated-authority model as other
+Remote administration uses the same delegated-authority model as other
 protected KDCube surfaces. A delegated access card is KDCube-recognized
 authority created or approved by a grantor who already carries authority in
 that deployment. Its authority is the exact set of resources and operations
-written into the live card. A KDCube management service can therefore publish
-deployment-scoped operations such as inspect, configure, reload, or stop, and
-a grantor can place selected operations on a caller profile for this CLI.
+written into the live card. The public
+[Delegated KDCube Management Service](delegated-management-service-README.md)
+publishes deployment inspection, application-surface discovery, and exact
+application reload. A grantor can place selected operations on a caller
+profile for the Connection Hub CLI.
 
 The complete intended interaction is:
 
@@ -97,13 +100,15 @@ hold.
 
 The target must be reachable for browser login, card resolution, and the
 management request. Starting or recovering a completely stopped deployment
-uses its local or infrastructure control plane. Once KDCube is running, app
-configuration, reload, and lifecycle operations can be exposed through the
-delegated management surface.
+uses its local or infrastructure control plane. Once KDCube is running, the
+implemented first slice exposes bounded inspection and exact application
+reload through the delegated management surface.
 
-The current endpoint adapter implements steps 1 and route probing only. Remote
-status, lifecycle, configuration, reload, logs, browser authorization, and
-delegated management admission remain future control-API work.
+The current `EndpointDeploymentTarget` adapter still implements endpoint route
+resolution and probing only. The separate Connection Hub CLI consumes the
+public management protocol. Integrating that protocol into
+`kdcube_cli.control`, and adding configuration, logs, or broader lifecycle
+operations, remain later control-library work.
 
 ## Local application resolution
 
