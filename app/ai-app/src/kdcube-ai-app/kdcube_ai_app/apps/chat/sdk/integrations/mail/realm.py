@@ -10,9 +10,12 @@ accounts only, so a fully connected, fully consented iCloud account was
 invisible to them: one Google account matched, no ambiguity, silent pick.
 This module is the realm view the mail tools resolve through instead:
 
+- ``discover_mail_providers``: the realm's members for this deployment,
+  read from the hub catalog by adapter family (Gmail via OAuth, every
+  IMAP/SMTP instance), so no provider instance is ever named in code;
 - ``list_mail_accounts``: every connected mail account the caller may use,
-  across providers, filtered by the agent's per-account binding when the call
-  runs on a delegated card;
+  across those members, filtered by the agent's per-account binding when the
+  call runs on a delegated card;
 - ``choose_mail_account``: the selection rule. An explicit ``account_id``
   wins; one eligible account is used; several eligible accounts come back as
   an ``account_required`` envelope with labeled candidates, so the agent asks
@@ -55,18 +58,24 @@ def _clean(value: Any) -> str:
 
 @dataclass(frozen=True)
 class MailProviderSpec:
-    """One provider's place in the realm: its hub identity and the claim each
-    mail verb needs there. iCloud has no separate compose claim; drafts ride
-    its send claim because an IMAP APPEND into Drafts is a write to the
-    mailbox, exactly what ``email:send`` authorizes."""
+    """One provider INSTANCE's place in the realm, as discovered from the
+    Connection Hub catalog: its hub identity, the claim each mail verb needs
+    there, the transport that speaks to it, and the instance settings (hosts)
+    that transport reads. Nothing in this module names a provider instance;
+    the deployment's descriptor does.
+
+    IMAP/SMTP instances have no separate compose claim; a draft is an APPEND
+    into the Drafts mailbox, a write the send claim already authorizes."""
 
     key: str
     label: str
     provider_id: str
-    default_connector_app_id: str
+    connector_app_id: str
+    transport: str  # "gmail" | "imap_smtp"
     read_claim: str
     send_claim: str
     draft_claim: str
+    settings: dict[str, Any] = field(default_factory=dict)
 
     def claim_for(self, need: str) -> str:
         return {
@@ -75,50 +84,102 @@ class MailProviderSpec:
             "draft": self.draft_claim,
         }[need]
 
-    def connector_app_id(self) -> str:
-        try:
-            resolved = _clean(resolve_connector_app_id(self.provider_id))
-        except Exception:  # noqa: BLE001 - resolution is a convenience, not a gate
-            resolved = ""
-        return resolved or self.default_connector_app_id
-
     def requirement(self, need: str) -> dict[str, Any]:
-        """The single-provider requirement the enforcement layer understands,
-        for the account this call has already chosen."""
+        """The single-provider requirement the enforcement layer understands."""
         return {
             "provider_id": self.provider_id,
-            "connector_app_id": self.connector_app_id(),
+            "connector_app_id": self.connector_app_id,
             "claims": [self.claim_for(need)],
         }
 
 
-MAIL_PROVIDERS: dict[str, MailProviderSpec] = {
-    "gmail": MailProviderSpec(
-        key="gmail",
-        label="Gmail",
-        provider_id="google",
-        default_connector_app_id="gmail",
-        read_claim="gmail:read",
-        send_claim="gmail:send",
-        draft_claim="gmail:compose",
-    ),
-    "icloud": MailProviderSpec(
-        key="icloud",
-        label="iCloud Mail",
-        provider_id="icloud_mail",
-        default_connector_app_id="app_password",
-        read_claim="email:read",
-        send_claim="email:send",
-        draft_claim="email:send",
-    ),
-}
-
-_PROVIDER_BY_ID = {spec.provider_id: spec for spec in MAIL_PROVIDERS.values()}
+GMAIL_ADAPTER_PREFIX = "google."
+IMAP_SMTP_ADAPTER = "email.imap_smtp_app_password"
+GMAIL_CLAIMS = {"read": "gmail:read", "send": "gmail:send", "draft": "gmail:compose"}
+EMAIL_CLAIMS = {"read": "email:read", "send": "email:send", "draft": "email:send"}
 
 
-def provider_for(provider_key_or_id: str) -> MailProviderSpec | None:
-    text = _clean(provider_key_or_id).lower()
-    return MAIL_PROVIDERS.get(text) or _PROVIDER_BY_ID.get(text)
+def _spec_from_catalog(provider_id: str, entry: Mapping[str, Any]) -> MailProviderSpec | None:
+    """A realm member from one catalog provider entry, or None when the
+    provider is not a mail provider. Membership is decided by the ADAPTER
+    family and the claims it publishes, never by the instance's name."""
+    if not entry.get("enabled", True):
+        return None
+    adapter = _clean(entry.get("adapter"))
+    claims = dict(entry.get("claims") or {})
+    connector_apps = dict(entry.get("connector_apps") or {})
+    connector_app_id = ""
+    for app_id, app in connector_apps.items():
+        if isinstance(app, Mapping) and app.get("enabled", True):
+            connector_app_id = _clean(app_id)
+            break
+    label = _clean(entry.get("label")) or provider_id
+    if adapter == IMAP_SMTP_ADAPTER and "email:read" in claims:
+        return MailProviderSpec(
+            key=provider_id,
+            label=label,
+            provider_id=provider_id,
+            connector_app_id=connector_app_id or "app_password",
+            transport="imap_smtp",
+            read_claim=EMAIL_CLAIMS["read"],
+            send_claim=EMAIL_CLAIMS["send"],
+            draft_claim=EMAIL_CLAIMS["draft"],
+            settings=dict(entry.get("adapter_config") or {}),
+        )
+    if adapter.startswith(GMAIL_ADAPTER_PREFIX) and "gmail:read" in claims:
+        for app_id, app in connector_apps.items():
+            allowed = set(app.get("allowed_claims") or []) if isinstance(app, Mapping) else set()
+            if "gmail:read" in allowed:
+                connector_app_id = _clean(app_id)
+                break
+        try:
+            resolved = _clean(resolve_connector_app_id(provider_id))
+        except Exception:  # noqa: BLE001 - resolution is a convenience, not a gate
+            resolved = ""
+        return MailProviderSpec(
+            key="gmail" if provider_id == "google" else provider_id,
+            label="Gmail" if provider_id == "google" else label,
+            provider_id=provider_id,
+            connector_app_id=resolved or connector_app_id or "gmail",
+            transport="gmail",
+            read_claim=GMAIL_CLAIMS["read"],
+            send_claim=GMAIL_CLAIMS["send"],
+            draft_claim=GMAIL_CLAIMS["draft"],
+        )
+    return None
+
+
+async def discover_mail_providers() -> list[MailProviderSpec]:
+    """The realm's members for THIS deployment, read from the hub catalog:
+    every enabled provider instance whose adapter family and claims say
+    'mail'. Adding a provider (Yahoo, a company IMAP server) is a descriptor
+    block; this code never learns its name."""
+    client = await _hub_client()
+    if client is None:
+        return []
+    try:
+        catalog = await client.catalog()
+    except Exception as exc:  # noqa: BLE001 - no catalog means no realm, not a crash
+        LOGGER.warning("[mail.realm] catalog unavailable: %s", exc)
+        return []
+    providers = catalog.get("providers") if isinstance(catalog, Mapping) else None
+    out: list[MailProviderSpec] = []
+    for provider_id, entry in dict(providers or {}).items():
+        if not isinstance(entry, Mapping):
+            continue
+        spec = _spec_from_catalog(_clean(provider_id), entry)
+        if spec is not None:
+            out.append(spec)
+    out.sort(key=lambda spec: (0 if spec.transport == "gmail" else 1))
+    return out
+
+
+def mail_requirement(specs: Iterable[MailProviderSpec], need: str) -> dict[str, Any]:
+    """The tool gate for a mail verb: an ``any_of`` group over every realm
+    member's own requirement. Declared to the enforcement layer at call time
+    because the members are discovered, not known when the tool is written."""
+    alternatives = [spec.requirement(need) for spec in specs]
+    return {"any_of": alternatives} if len(alternatives) != 1 else alternatives[0]
 
 
 @dataclass(frozen=True)
@@ -200,18 +261,18 @@ def _binding_for(provider_id: str, account_id: str) -> tuple[str, ...] | None:
     return ()
 
 
-async def list_mail_accounts(*, providers: Iterable[str] = ()) -> list[MailAccount]:
-    """Connected mail accounts across the realm's providers, in provider
-    order, with the agent binding applied. Reading account records needs no
-    provider claim."""
+async def list_mail_accounts(
+    *, specs: Iterable[MailProviderSpec] | None = None
+) -> list[MailAccount]:
+    """Connected mail accounts across the realm's discovered members, with
+    the agent binding applied. Reading account records needs no provider
+    claim."""
     client = await _hub_client()
     if client is None:
         return []
-    wanted = [provider_for(key) for key in providers] if providers else list(MAIL_PROVIDERS.values())
+    members = list(specs) if specs is not None else await discover_mail_providers()
     out: list[MailAccount] = []
-    for spec in wanted:
-        if spec is None:
-            continue
+    for spec in members:
         try:
             rows = await client.list_accounts(provider_id=spec.provider_id)
         except Exception as exc:  # noqa: BLE001 - one provider's failure must not hide the others
@@ -222,7 +283,6 @@ async def list_mail_accounts(*, providers: Iterable[str] = ()) -> list[MailAccou
                 continue
             bound = _binding_for(spec.provider_id, _clean(account.account_id))
             if bound is not None and not bound:
-                # Agent turn, account not bound to this agent: not offered.
                 continue
             out.append(
                 MailAccount(
@@ -293,7 +353,7 @@ def _account_required_envelope(
 
 
 def connect_required_envelope(
-    *, where: str, need: str, tenant: str = "", project: str = "",
+    *, where: str, need: str, specs: Iterable[MailProviderSpec], tenant: str = "", project: str = "",
     connection_hub_bundle_id: str = "",
 ) -> dict[str, Any]:
     """No connected mailbox can serve this call: the connect-first consent,
@@ -312,10 +372,10 @@ def connect_required_envelope(
             "provider": spec.key,
             "provider_id": spec.provider_id,
             "provider_label": spec.label,
-            "connector_app_id": spec.connector_app_id(),
+            "connector_app_id": spec.connector_app_id,
             "claim": spec.claim_for(need),
         }
-        for spec in MAIL_PROVIDERS.values()
+        for spec in specs
     ]
     failures = [
         {
@@ -336,7 +396,7 @@ def connect_required_envelope(
         connection_hub_bundle_id=_clean(connection_hub_bundle_id) or DEFAULT_CONNECTION_HUB_BUNDLE_ID,
         missing=[{"ok": False, "tool_name": where, "failures": failures}],
     )
-    labels = " or ".join(option["provider_label"] for option in options)
+    labels = " or ".join(option["provider_label"] for option in options) or "a mail provider"
     message = f"No connected mail account can do this yet. Connect a mailbox ({labels}) in Connection Hub."
     payload["ok"] = False
     payload["error"] = {
@@ -404,7 +464,9 @@ def choose_mail_account(
 
 
 __all__ = [
-    "MAIL_PROVIDERS",
+    "EMAIL_CLAIMS",
+    "GMAIL_CLAIMS",
+    "IMAP_SMTP_ADAPTER",
     "MailAccount",
     "MailChoice",
     "MailProviderSpec",
@@ -412,6 +474,7 @@ __all__ = [
     "bind_service",
     "choose_mail_account",
     "connect_required_envelope",
+    "discover_mail_providers",
     "list_mail_accounts",
-    "provider_for",
+    "mail_requirement",
 ]

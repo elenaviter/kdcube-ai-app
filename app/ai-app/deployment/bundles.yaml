@@ -2367,6 +2367,16 @@ bundles:
             icloud_mail:
               label: iCloud Mail
               adapter: email.imap_smtp_app_password
+              # Server identity of this mail provider instance. Hosts belong to the
+              # PROVIDER (a mailbox is an account on it; a company server is another
+              # instance of the same adapter with its own hosts), and the SDK reads
+              # them from the catalog instead of hard-coding any provider.
+              settings:
+                imap_host: imap.mail.me.com
+                imap_port: 993
+                smtp_host: smtp.mail.me.com
+                smtp_port: 587
+                smtp_starttls: true
               enabled: true
               connector_apps:
                 app_password:

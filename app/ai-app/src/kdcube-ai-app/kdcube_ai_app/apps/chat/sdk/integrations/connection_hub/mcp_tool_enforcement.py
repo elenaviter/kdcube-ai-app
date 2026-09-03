@@ -90,6 +90,42 @@ async def enforce_tool_requirements(
     )
 
 
+async def resolve_tool_requirements(
+    request: Any,
+    *,
+    tool_name: str,
+    operation: str,
+    requirements: Sequence[Mapping[str, Any]],
+    account_id: str = "",
+    tenant: str = "",
+    project: str = "",
+    hub_bundle_id: str = "connection-hub@1-0",
+    accounts_lister: Any = None,
+) -> Any:
+    """The form that also answers WHICH provider account satisfied each
+    requirement (a ``ToolRequirementResolution``): what a tool declared with
+    an ``any_of`` group needs in order to route. ``accounts_lister`` is the
+    optional ``provider_id -> connected accounts`` coroutine that lets a
+    cross-provider account_required carry labels."""
+    return await _core.resolve_tool_requirements(
+        request,
+        tool_name=tool_name,
+        operation=operation,
+        requirements=requirements,
+        account_id=account_id,
+        tenant=tenant,
+        project=project,
+        hub_bundle_id=hub_bundle_id,
+        identity=get_current_user_identity() or {},
+        resolution_source=_resolution_source(request),
+        connector_app_resolver=resolve_connector_app_id,
+        credential_resolver=resolve_connected_account_claim,
+        credential_view_resolver=delegated_credential_view,
+        connect_first_denial_builder=connect_first_denial_for_identity,
+        accounts_lister=accounts_lister,
+    )
+
+
 def __getattr__(name: str) -> Any:
     return getattr(_core, name)
 
@@ -101,4 +137,5 @@ def __dir__() -> list[str]:
 __all__ = [
     "bind_service_connector_apps_from_config",
     "enforce_tool_requirements",
+    "resolve_tool_requirements",
 ]

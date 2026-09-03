@@ -344,7 +344,7 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
         )
 
         from kdcube_ai_app.apps.chat.sdk.integrations.email import (
-            icloud_tools as icloud_tools_module,
+            imap_smtp_tools as imap_smtp_tools_module,
         )
         from kdcube_ai_app.apps.chat.sdk.integrations.mail import (
             realm as mail_realm_module,
@@ -353,9 +353,10 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
         gmail_tools_module.bind_service(self)
         slack_tools_module.bind_service(self)
         linkedin_tools_module.bind_service(self)
-        # The mail REALM (account discovery across providers) and the iCloud
-        # transport resolve hub accounts/credentials the same way gmail does.
-        icloud_tools_module.bind_service(self)
+        # The mail REALM (provider discovery + accounts across providers) and
+        # the IMAP/SMTP transport resolve hub accounts/credentials the same
+        # way gmail does.
+        imap_smtp_tools_module.bind_service(self)
         mail_realm_module.bind_service(self)
         bind_productivity_service(self)
         bind_docs_service(self)

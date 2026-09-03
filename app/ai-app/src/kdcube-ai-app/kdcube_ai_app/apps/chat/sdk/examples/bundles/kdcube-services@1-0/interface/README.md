@@ -437,21 +437,27 @@ pre-existing folder additionally needs `drive:write` on the connected account,
 because `docs:write` carries only the `drive.file` scope, which cannot reach
 folders the connector app never created or opened.
 
-Mail is a REALM across providers. `productivity_mail_accounts` (claim-free)
-lists every connected mailbox (Gmail, iCloud Mail) with its `account_id` and
-what it may do; `productivity_mail_search`, `_get`, and `_draft` take that
-`account_id`. Without one, a single eligible mailbox is used, two eligible
-mailboxes answer `account_required` with labeled candidates (ask the user, never
-pick a provider), and the chosen account is enforced on its OWN provider claim
-(`gmail:*` or `email:*`) before its transport runs: Gmail through the Gmail API,
-iCloud through IMAP/SMTP. `productivity_mail_draft` creates a DRAFT the person
-sends themselves, deliberately without send authority: Gmail via
-`drafts.create` (`gmail:compose`), iCloud via an IMAP APPEND into Drafts
+Mail is a REALM whose members are DISCOVERED from the Connection Hub catalog
+by adapter family: the Google OAuth provider (Gmail claims) plus every provider
+instance on the `email.imap_smtp_app_password` adapter (iCloud Mail, Yahoo, a
+company server: each a descriptor block carrying its IMAP/SMTP hosts under
+`settings:`; the SDK names no provider instance). `productivity_mail_accounts`
+(claim-free) lists every connected mailbox with its `account_id` and what it may
+do; `productivity_mail_search`, `_get`, and `_draft` take that `account_id`.
+Their gate is the same enforcement every tool uses, declared at call time as an
+`any_of` group over the members' own claims: one eligible mailbox is used, two
+eligible mailboxes answer `account_required` with provider-labeled candidates
+(ask the user, never pick a provider), none leads with the connect-first
+consent naming every member, and the chosen account is enforced on its OWN
+claim (`gmail:*` or `email:*`) before its transport runs (Gmail API, or
+IMAP/SMTP with the instance's hosts). `productivity_mail_draft` creates a DRAFT
+the person sends themselves, deliberately without send authority: Gmail via
+`drafts.create` (`gmail:compose`), IMAP/SMTP via an APPEND into Drafts
 (`email:send`, a mailbox write), attachments as inline base64 entries. The
-`mail` named service follows the same realm: `object.list` spans both
-providers, message refs name theirs (`mail:gmail:…`, `mail:icloud:…`), and the
-`draft` action joins `send`; iCloud `forward` and attachment download are not
-implemented yet and say so.
+`mail` named service follows the same discovery: `object.list` spans every
+member, message refs name their provider (`mail:gmail:…`,
+`mail:icloud_mail:…`), and the `draft` action joins `send`; IMAP/SMTP `forward`
+and attachment download are not implemented yet and say so.
 
 Search uses Google Drive metadata. Docs search returns native documents and
 compatible DOCX/ODT/RTF import sources; extensionless queries can exactly match

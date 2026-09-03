@@ -169,14 +169,15 @@ def test_every_tool_declares_provider_claims():
     # the tool takes no account_id, so the denial could never be satisfied.
     for name in LINKEDIN_DISCOVERY_TOOLS | MAIL_TOOLS | WEB_TOOLS:
         assert module.tool_requirements(name) == []
-    # The realm knows both mail providers and the claim each verb needs there;
-    # a chosen iCloud account is gated on email:*, never on a Gmail claim.
-    realm = module.MAIL_PROVIDERS if hasattr(module, "MAIL_PROVIDERS") else None
-    if realm is None:
-        from kdcube_ai_app.apps.chat.sdk.integrations.mail.realm import MAIL_PROVIDERS as realm
-    assert realm["gmail"].requirement("draft")["claims"] == ["gmail:compose"]
-    assert realm["icloud"].requirement("read")["claims"] == ["email:read"]
-    assert realm["icloud"].requirement("draft")["claims"] == ["email:send"]
+    # The realm derives each member's gate from the catalog's adapter family;
+    # an IMAP/SMTP account is gated on email:*, never on a Gmail claim.
+    from kdcube_ai_app.apps.chat.sdk.integrations.mail.realm import _spec_from_catalog
+
+    gmail = _spec_from_catalog("google", {"adapter": "google.oauth", "claims": {"gmail:read": {}}, "connector_apps": {"gmail": {"allowed_claims": ["gmail:read"]}}})
+    imap = _spec_from_catalog("icloud_mail", {"adapter": "email.imap_smtp_app_password", "claims": {"email:read": {}}, "connector_apps": {"app_password": {}}})
+    assert gmail.requirement("draft")["claims"] == ["gmail:compose"]
+    assert imap.requirement("read")["claims"] == ["email:read"]
+    assert imap.requirement("draft")["claims"] == ["email:send"]
 
 
 @pytest.mark.asyncio

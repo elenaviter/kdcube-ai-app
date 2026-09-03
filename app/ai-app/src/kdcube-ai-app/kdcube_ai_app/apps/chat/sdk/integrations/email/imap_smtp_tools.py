@@ -1,18 +1,22 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""iCloud Mail behind the mail verbs, with the same envelopes Gmail answers.
+"""Any IMAP/SMTP mailbox behind the mail verbs, with the envelopes Gmail answers.
 
-The IMAP/SMTP adapter (``email.icloud``) predates the Connection Hub account
-model and expects a token ``store``; here the hub's connected-account
-credential (username + app-specific password, resolved per claim) is handed
-to it through a tiny shim, so the mail realm can route a call to an iCloud
-account exactly as it routes one to Gmail. Results are shaped like
-``google.gmail_tools`` results (``{ok, error, ret}`` with the same field
-names) so callers never branch on provider after routing.
+One transport for every provider instance on Connection Hub's
+``email.imap_smtp_app_password`` adapter (iCloud Mail, Yahoo, a company
+server): the instance's hosts come from its catalog settings, the account's
+username and app-specific password come from the hub credential resolved per
+claim. Nothing here names a provider. The older adapter module
+(``email.icloud``) holds the IMAP/SMTP mechanics and expects a token
+``store``; a tiny shim hands it the hub credential, and the hosts ride the
+account mapping it already reads overrides from.
 
-Drafts: iCloud has no drafts API; a draft is an IMAP ``APPEND`` into the
-Drafts mailbox, which is why it rides the ``email:send`` claim (a write to the
+Results are shaped like ``google.gmail_tools`` results (``{ok, error, ret}``
+with the same field names) so callers never branch on provider after routing.
+
+Drafts: IMAP has no drafts API; a draft is an ``APPEND`` into the Drafts
+mailbox, which is why it rides the ``email:send`` claim (a write to the
 mailbox) rather than a compose claim of its own.
 """
 
@@ -39,11 +43,13 @@ from kdcube_ai_app.apps.chat.sdk.integrations.email.icloud import (
     send_icloud_message,
 )
 
-ICLOUD_PROVIDER_ID = "icloud_mail"
-ICLOUD_CONNECTOR_APP_ID = "app_password"
-ICLOUD_READ_CLAIM = "email:read"
-ICLOUD_SEND_CLAIM = "email:send"
-ICLOUD_DRAFTS_MAILBOX = "Drafts"
+IMAP_SMTP_ADAPTER = "email.imap_smtp_app_password"
+EMAIL_READ_CLAIM = "email:read"
+EMAIL_SEND_CLAIM = "email:send"
+DRAFTS_MAILBOX = "Drafts"
+# Host settings a provider instance may carry in its catalog adapter_config;
+# absent keys fall back to the adapter module's defaults.
+HOST_SETTING_KEYS = ("imap_host", "imap_port", "smtp_host", "smtp_port", "smtp_starttls", "drafts_mailbox")
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 
 _SERVICE: Any = None
@@ -134,34 +140,54 @@ def _row_from_summary(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-class IcloudMailTools:
-    """Provider transport for iCloud accounts, called by the mail realm."""
+class ImapSmtpMailTools:
+    """Provider transport for one IMAP/SMTP provider INSTANCE, called by the
+    mail realm. ``provider_id``/``connector_app_id`` are the instance's hub
+    identity; ``settings`` are its catalog hosts."""
+
+    def __init__(
+        self,
+        *,
+        provider_id: str,
+        connector_app_id: str = "app_password",
+        settings: Mapping[str, Any] | None = None,
+        label: str = "",
+    ) -> None:
+        self.provider_id = _clean(provider_id)
+        self.connector_app_id = _clean(connector_app_id) or "app_password"
+        self.settings = {
+            key: value for key, value in dict(settings or {}).items() if key in HOST_SETTING_KEYS
+        }
+        self.label = _clean(label) or self.provider_id
+        self.drafts_mailbox = _clean(self.settings.get("drafts_mailbox")) or DRAFTS_MAILBOX
 
     async def _credential(self, *, claim: str, account_id: str, tool_name: str):
         return await resolve_connected_account_claim(
             globals(),
-            provider_id=ICLOUD_PROVIDER_ID,
-            connector_app_id=ICLOUD_CONNECTOR_APP_ID,
+            provider_id=self.provider_id,
+            connector_app_id=self.connector_app_id,
             claim=claim,
             account_id=account_id,
             tool_name=tool_name,
         )
 
-    @staticmethod
-    def _adapter_inputs(credential: Any) -> tuple[_HubTokenStore, dict[str, Any]]:
+    def _adapter_inputs(self, credential: Any) -> tuple[_HubTokenStore, dict[str, Any]]:
         raw = dict(getattr(credential, "raw_credential", None) or {})
+        # The adapter reads host overrides from the account mapping; the
+        # instance's catalog settings ride there so no host is hard-coded.
         account = {
             "account_id": _clean(getattr(credential, "account_id", "")),
             "email": _clean(raw.get("email") or raw.get("username")),
+            **{key: value for key, value in self.settings.items() if key != "drafts_mailbox"},
         }
         return _HubTokenStore(raw), account
 
     async def search(
         self, *, query: str = "", max_results: int = 5, account_id: str = ""
     ) -> dict[str, Any]:
-        where = "icloud.search"
+        where = f"{self.provider_id}.search"
         credential = await self._credential(
-            claim=ICLOUD_READ_CLAIM, account_id=account_id, tool_name=where
+            claim=EMAIL_READ_CLAIM, account_id=account_id, tool_name=where
         )
         if not credential.ok:
             return credential.error_envelope(where=where)
@@ -179,10 +205,10 @@ class IcloudMailTools:
         if not result.get("ok"):
             error = dict(result.get("error") or {})
             return _error(
-                code=_clean(error.get("code")) or "icloud_search_failed",
-                message=_clean(error.get("message")) or "iCloud search failed.",
+                code=_clean(error.get("code")) or "imap_search_failed",
+                message=_clean(error.get("message")) or f"{self.label} search failed.",
                 where=where,
-                ret={"provider": "icloud", **{k: v for k, v in error.items() if k not in ("code", "message")}},
+                ret={"provider": self.provider_id, **{k: v for k, v in error.items() if k not in ("code", "message")}},
             )
         rows = [_row_from_summary(row) for row in (result.get("messages") or [])]
         return _ok(
@@ -191,16 +217,16 @@ class IcloudMailTools:
                 "count": len(rows),
                 "next_cursor": "",
                 "account_id": credential.account_id,
-                "provider": "icloud",
+                "provider": self.provider_id,
             }
         )
 
     async def read_message(
         self, *, message_id: str, include_html: bool = False, account_id: str = ""
     ) -> dict[str, Any]:
-        where = "icloud.read_message"
+        where = f"{self.provider_id}.read_message"
         credential = await self._credential(
-            claim=ICLOUD_READ_CLAIM, account_id=account_id, tool_name=where
+            claim=EMAIL_READ_CLAIM, account_id=account_id, tool_name=where
         )
         if not credential.ok:
             return credential.error_envelope(where=where)
@@ -211,10 +237,10 @@ class IcloudMailTools:
         if not result.get("ok"):
             error = dict(result.get("error") or {})
             return _error(
-                code=_clean(error.get("code")) or "icloud_read_failed",
-                message=_clean(error.get("message")) or "iCloud message read failed.",
+                code=_clean(error.get("code")) or "imap_read_failed",
+                message=_clean(error.get("message")) or f"{self.label} message read failed.",
                 where=where,
-                ret={"provider": "icloud"},
+                ret={"provider": self.provider_id},
             )
         message = dict(result.get("message") or {})
         return _ok(
@@ -242,7 +268,7 @@ class IcloudMailTools:
                     "attachment_count": len(message.get("attachments") or []),
                 },
                 "account_id": credential.account_id,
-                "provider": "icloud",
+                "provider": self.provider_id,
             }
         )
 
@@ -265,9 +291,9 @@ class IcloudMailTools:
         attachments_base64: Any = "",
         account_id: str = "",
     ) -> dict[str, Any]:
-        where = "icloud.create_draft"
+        where = f"{self.provider_id}.create_draft"
         credential = await self._credential(
-            claim=ICLOUD_SEND_CLAIM, account_id=account_id, tool_name=where
+            claim=EMAIL_SEND_CLAIM, account_id=account_id, tool_name=where
         )
         if not credential.ok:
             return credential.error_envelope(where=where)
@@ -285,8 +311,8 @@ class IcloudMailTools:
         if not creds.get("ok"):
             error = dict(creds.get("error") or {})
             return _error(
-                code=_clean(error.get("code")) or "icloud_account_not_connected",
-                message=_clean(error.get("message")) or "iCloud credentials are incomplete.",
+                code=_clean(error.get("code")) or "mail_account_not_connected",
+                message=_clean(error.get("message")) or f"{self.label} credentials are incomplete.",
                 where=where,
             )
         sender = _clean(creds.get("username")) or account["email"]
@@ -301,20 +327,22 @@ class IcloudMailTools:
             attachments=attachments,
         )
         try:
-            appended = await asyncio.to_thread(_append_draft_sync, creds, message.as_bytes())
+            appended = await asyncio.to_thread(
+                _append_draft_sync, creds, message.as_bytes(), self.drafts_mailbox
+            )
         except Exception as exc:  # noqa: BLE001 - provider failure surfaces as an envelope
-            LOGGER.warning("[icloud.create_draft] append failed: %s", exc)
+            LOGGER.warning("[%s.create_draft] append failed: %s", self.provider_id, exc)
             return _error(
-                code="icloud_draft_failed",
-                message=f"iCloud refused the draft: {exc}",
+                code="imap_draft_failed",
+                message=f"{self.label} refused the draft: {exc}",
                 where=where,
-                ret={"provider": "icloud"},
+                ret={"provider": self.provider_id},
             )
         return _ok(
             {
                 "draft_id": appended.get("uid", ""),
                 "message_id": _clean(message.get("Message-ID")),
-                "mailbox": ICLOUD_DRAFTS_MAILBOX,
+                "mailbox": self.drafts_mailbox,
                 "sender": sender,
                 "account_id": credential.account_id,
                 "recipients": split_email_addresses(to),
@@ -328,7 +356,7 @@ class IcloudMailTools:
                     }
                     for item in attachments
                 ],
-                "provider": "icloud",
+                "provider": self.provider_id,
             }
         )
 
@@ -344,7 +372,7 @@ class IcloudMailTools:
         attachments_base64: Any = "",
         account_id: str = "",
     ) -> dict[str, Any]:
-        where = "icloud.send"
+        where = f"{self.provider_id}.send"
         recipients = split_email_addresses(to)
         if not recipients:
             return _error(
@@ -353,7 +381,7 @@ class IcloudMailTools:
                 where=where,
             )
         credential = await self._credential(
-            claim=ICLOUD_SEND_CLAIM, account_id=account_id, tool_name=where
+            claim=EMAIL_SEND_CLAIM, account_id=account_id, tool_name=where
         )
         if not credential.ok:
             return credential.error_envelope(where=where)
@@ -382,10 +410,10 @@ class IcloudMailTools:
         if not result.get("ok"):
             error = dict(result.get("error") or {})
             return _error(
-                code=_clean(error.get("code")) or "icloud_send_failed",
-                message=_clean(error.get("message")) or "iCloud send failed.",
+                code=_clean(error.get("code")) or "smtp_send_failed",
+                message=_clean(error.get("message")) or f"{self.label} send failed.",
                 where=where,
-                ret={"provider": "icloud"},
+                ret={"provider": self.provider_id},
             )
         return _ok(
             {
@@ -393,18 +421,18 @@ class IcloudMailTools:
                 "sender": sender,
                 "account_id": credential.account_id,
                 "attachment_count": len(attachments),
-                "provider": "icloud",
+                "provider": self.provider_id,
             }
         )
 
 
-def _append_draft_sync(creds: Mapping[str, Any], raw: bytes) -> dict[str, Any]:
-    """IMAP APPEND into Drafts with the \\Draft flag; returns the new UID when
-    the server reports APPENDUID."""
+def _append_draft_sync(creds: Mapping[str, Any], raw: bytes, mailbox: str = DRAFTS_MAILBOX) -> dict[str, Any]:
+    """IMAP APPEND into the Drafts mailbox with the \\Draft flag; returns the
+    new UID when the server reports APPENDUID."""
     conn = _connect_imap(creds)
     try:
         typ, data = conn.append(
-            ICLOUD_DRAFTS_MAILBOX,
+            mailbox,
             "\\Draft",
             imaplib.Time2Internaldate(time.time()),
             raw,
@@ -422,11 +450,12 @@ def _append_draft_sync(creds: Mapping[str, Any], raw: bytes) -> dict[str, Any]:
 
 
 __all__ = [
-    "ICLOUD_CONNECTOR_APP_ID",
-    "ICLOUD_PROVIDER_ID",
-    "ICLOUD_READ_CLAIM",
-    "ICLOUD_SEND_CLAIM",
-    "IcloudMailTools",
+    "DRAFTS_MAILBOX",
+    "EMAIL_READ_CLAIM",
+    "EMAIL_SEND_CLAIM",
+    "HOST_SETTING_KEYS",
+    "IMAP_SMTP_ADAPTER",
+    "ImapSmtpMailTools",
     "bind_integrations",
     "bind_service",
     "translate_gmail_query",

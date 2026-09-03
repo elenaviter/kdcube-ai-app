@@ -25,13 +25,17 @@ from kdcube_ai_app.apps.chat.sdk.integrations.google.gmail_tools import (
     bind_integrations as bind_gmail_integrations,
     bind_service as bind_gmail_service,
 )
-from kdcube_ai_app.apps.chat.sdk.integrations.email.icloud_tools import (
-    ICLOUD_PROVIDER_ID,
-    ICLOUD_READ_CLAIM,
-    ICLOUD_SEND_CLAIM,
-    IcloudMailTools,
-    bind_integrations as bind_icloud_integrations,
-    bind_service as bind_icloud_service,
+from kdcube_ai_app.apps.chat.sdk.integrations.email.imap_smtp_tools import (
+    EMAIL_READ_CLAIM,
+    EMAIL_SEND_CLAIM,
+    IMAP_SMTP_ADAPTER,
+    ImapSmtpMailTools,
+    bind_integrations as bind_imap_integrations,
+    bind_service as bind_imap_service,
+)
+from kdcube_ai_app.apps.chat.sdk.integrations.mail.realm import (
+    MailProviderSpec,
+    _spec_from_catalog,
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.file_staging import (
     delete_staged,
@@ -155,21 +159,24 @@ MAIL_CONNECTED_ACCOUNT_REQUIREMENTS = [
         },
     },
     {
-        # iCloud has no compose claim of its own: a draft is an IMAP APPEND into
-        # Drafts, a write to the mailbox, which email:send already authorizes.
-        "provider_id": ICLOUD_PROVIDER_ID,
-        "provider_label": "iCloud Mail",
-        "claims": [ICLOUD_READ_CLAIM, ICLOUD_SEND_CLAIM],
+        # The IMAP/SMTP adapter family (iCloud Mail, Yahoo, a company server:
+        # every provider instance on it). No compose claim of its own: a draft
+        # is an IMAP APPEND into Drafts, a write to the mailbox, which
+        # email:send already authorizes. The instance ids are the
+        # deployment's; consumers resolve them from the catalog by adapter.
+        "adapter": IMAP_SMTP_ADAPTER,
+        "provider_label": "IMAP/SMTP mailbox",
+        "claims": [EMAIL_READ_CLAIM, EMAIL_SEND_CLAIM],
         "claim_labels": {
-            ICLOUD_READ_CLAIM: "read mail",
-            ICLOUD_SEND_CLAIM: "send mail",
+            EMAIL_READ_CLAIM: "read mail",
+            EMAIL_SEND_CLAIM: "send mail",
         },
         "claims_by_operation": {
-            "object.list": [ICLOUD_READ_CLAIM],
-            "object.search": [ICLOUD_READ_CLAIM],
-            "object.get": [ICLOUD_READ_CLAIM],
-            "object.action.send": [ICLOUD_SEND_CLAIM],
-            "object.action.draft": [ICLOUD_SEND_CLAIM],
+            "object.list": [EMAIL_READ_CLAIM],
+            "object.search": [EMAIL_READ_CLAIM],
+            "object.get": [EMAIL_READ_CLAIM],
+            "object.action.send": [EMAIL_SEND_CLAIM],
+            "object.action.draft": [EMAIL_SEND_CLAIM],
         },
     },
 ]
@@ -185,26 +192,10 @@ MAIL_PROVIDER_CATALOG = {
         },
         "implemented": True,
     },
-    "icloud": {
-        "provider_id": ICLOUD_PROVIDER_ID,
-        "connector_app_id": "app_password",
-        "label": "iCloud Mail",
-        "claims": {
-            "read": ICLOUD_READ_CLAIM,
-            "send": ICLOUD_SEND_CLAIM,
-            "draft": ICLOUD_SEND_CLAIM,
-        },
-        "implemented": True,
-    },
-    # Shape reserved for providers implemented next. They share the ``mail``
-    # namespace and object model, but resolve through their own connector app.
-    "yahoo": {
-        "provider_id": "email",
-        "connector_app_id": "yahoo-mail",
-        "label": "Yahoo Mail",
-        "claims": {"read": "mail:read", "send": "mail:send"},
-        "implemented": False,
-    },
+    # Every IMAP/SMTP provider INSTANCE the deployment configures (iCloud Mail,
+    # Yahoo, a company server) is a realm member too, keyed by its provider
+    # id and discovered from the hub catalog at call time; see
+    # ``_realm_specs``. This static catalog only documents the OAuth member.
 }
 
 MAIL_SEARCH_FILTERS = {
@@ -214,7 +205,7 @@ MAIL_SEARCH_FILTERS = {
     },
     "provider": {
         "type": "string",
-        "description": "Optional mail provider key: gmail or icloud. Omit to span both.",
+        "description": "Optional mail provider key (gmail, or an IMAP/SMTP provider id such as icloud_mail). Omit to span every connected provider.",
     },
     "gmail_query": {
         "type": "string",
@@ -240,7 +231,8 @@ MAIL_INTRO = (
     "object.list to see connected accounts, object.search to find messages, "
     "object.get to read a message, and object.action with download_attachments, "
     "send, draft, or forward for bounded mail actions. Accounts may come from "
-    "several providers (Gmail, iCloud Mail); a message ref names its provider."
+    "several providers (Gmail, IMAP/SMTP mailboxes such as iCloud Mail); a "
+    "message ref names its provider."
 )
 
 # Human layer of the realm's self-description — the same contract the agent
@@ -248,7 +240,7 @@ MAIL_INTRO = (
 # verbatim; missing text here is a realm defect, never a UI invention.
 MAIL_PRESENTATION = {
     "about": "Read, search, and send email from the mail accounts you connect.",
-    "third_party": "Works with your mailboxes through your connected Google and iCloud Mail accounts.",
+    "third_party": "Works with your mailboxes through your connected Google and IMAP/SMTP (for example iCloud Mail) accounts.",
     "operations": {
         "provider.about": {"label": "Service overview", "description": "What this mail service does and how to use it."},
         "provider.capabilities": {"label": "Capabilities", "description": "The operations and behaviors this service declares."},
@@ -346,7 +338,7 @@ MAIL_SCHEMA = {
             "description": (
                 "Save a DRAFT in a connected mailbox without sending it; the person "
                 "reviews and sends it themselves. Gmail drafts land in Gmail Drafts, "
-                "iCloud drafts are appended to the Drafts mailbox over IMAP. Attach "
+                "IMAP/SMTP drafts are appended to the Drafts mailbox over IMAP. Attach "
                 "with attachments=[{staged_ref}] after request_upload, or inline "
                 "{filename, content_base64} entries."
             ),
@@ -373,10 +365,10 @@ MAIL_SCHEMA = {
             "send": GMAIL_SEND_CLAIM,
             "draft": GMAIL_COMPOSE_CLAIM,
         },
-        "icloud": {
-            "read": ICLOUD_READ_CLAIM,
-            "send": ICLOUD_SEND_CLAIM,
-            "draft": ICLOUD_SEND_CLAIM,
+        "imap_smtp": {
+            "read": EMAIL_READ_CLAIM,
+            "send": EMAIL_SEND_CLAIM,
+            "draft": EMAIL_SEND_CLAIM,
         },
     },
 }
@@ -744,12 +736,12 @@ class MailNamedServiceProvider(NamedServiceProvider):
         self._file_url_factory = file_url_factory
         self._upload_slot_factory = upload_slot_factory
         self._gmail = GmailTools()
-        self._icloud = IcloudMailTools()
+        self._imap_transports: dict[str, ImapSmtpMailTools] = {}
         if entrypoint is not None:
             bind_gmail_service(entrypoint)
             bind_gmail_integrations({"comm_context": getattr(entrypoint, "comm_context", None)})
-            bind_icloud_service(entrypoint)
-            bind_icloud_integrations({"comm_context": getattr(entrypoint, "comm_context", None)})
+            bind_imap_service(entrypoint)
+            bind_imap_integrations({"comm_context": getattr(entrypoint, "comm_context", None)})
 
     def _provider_identity(self) -> dict[str, Any]:
         return {"provider_id": PROVIDER_ID, "bundle_id": self.spec.bundle_id}
@@ -986,14 +978,62 @@ class MailNamedServiceProvider(NamedServiceProvider):
     async def _gmail_accounts(self, ctx: NamedServiceContext, *, claim: str = "") -> list[ConnectedAccount]:
         return await self._provider_accounts(ctx, provider_id=GMAIL_PROVIDER_ID, claim=claim)
 
-    async def _icloud_accounts(self, ctx: NamedServiceContext, *, claim: str = "") -> list[ConnectedAccount]:
-        """iCloud accounts the calling agent may use for ``claim``: connected,
-        holding the claim, and inside the agent's per-account binding (the
-        same default-closed rule ``_accounts_for_claim`` applies to Gmail)."""
-        eligible = await self._provider_accounts(ctx, provider_id=ICLOUD_PROVIDER_ID, claim=claim)
+    async def _realm_specs(self, ctx: NamedServiceContext) -> list[MailProviderSpec]:
+        """The mail realm's members for this deployment, discovered from the
+        hub catalog by adapter family (the same rule the productivity door
+        uses): Gmail via OAuth plus every IMAP/SMTP provider instance, whatever
+        the deployment named it."""
+        client = await self._client(ctx)
+        if client is None:
+            return []
+        try:
+            catalog = await client.catalog()
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("[mail] catalog unavailable: %s", exc)
+            return []
+        providers = catalog.get("providers") if isinstance(catalog, Mapping) else {}
+        specs: list[MailProviderSpec] = []
+        for provider_id, entry in dict(providers or {}).items():
+            if isinstance(entry, Mapping):
+                spec = _spec_from_catalog(_text(provider_id), entry)
+                if spec is not None:
+                    specs.append(spec)
+        specs.sort(key=lambda spec: 0 if spec.transport == "gmail" else 1)
+        return specs
+
+    async def _imap_specs(self, ctx: NamedServiceContext) -> list[MailProviderSpec]:
+        return [spec for spec in await self._realm_specs(ctx) if spec.transport == "imap_smtp"]
+
+    async def _spec_for_key(self, ctx: NamedServiceContext, provider_key: str) -> MailProviderSpec | None:
+        wanted = _text(provider_key)
+        for spec in await self._realm_specs(ctx):
+            if spec.key == wanted or spec.provider_id == wanted:
+                return spec
+        return None
+
+    def _imap_transport(self, spec: MailProviderSpec) -> ImapSmtpMailTools:
+        transport = self._imap_transports.get(spec.provider_id)
+        if transport is None:
+            transport = ImapSmtpMailTools(
+                provider_id=spec.provider_id,
+                connector_app_id=spec.connector_app_id,
+                settings=spec.settings,
+                label=spec.label,
+            )
+            self._imap_transports[spec.provider_id] = transport
+        return transport
+
+    async def _imap_accounts(
+        self, ctx: NamedServiceContext, spec: MailProviderSpec, *, claim: str = ""
+    ) -> list[ConnectedAccount]:
+        """Accounts on one IMAP/SMTP instance the calling agent may use for
+        ``claim``: connected, holding the claim, and inside the agent's
+        per-account binding (the same default-closed rule
+        ``_accounts_for_claim`` applies to Gmail)."""
+        eligible = await self._provider_accounts(ctx, provider_id=spec.provider_id, claim=claim)
         from connection_hub.agent_account_scope import account_claim_scope_for
 
-        scope = account_claim_scope_for(ICLOUD_PROVIDER_ID)
+        scope = account_claim_scope_for(spec.provider_id)
         if scope is None:
             return eligible
         out: list[ConnectedAccount] = []
@@ -1024,13 +1064,15 @@ class MailNamedServiceProvider(NamedServiceProvider):
             and (not claim or account.allows(claim))
         ]
 
-    @staticmethod
-    def _provider_keys(provider_filter: str) -> list[str]:
-        """Which providers a call spans: an explicit key, or every implemented one."""
+    async def _provider_keys(self, ctx: NamedServiceContext, provider_filter: str) -> list[str]:
+        """Which providers a call spans: an explicit key, or every realm member."""
         wanted = _text(provider_filter).lower()
         if wanted:
             return [wanted]
-        return [key for key, meta in MAIL_PROVIDER_CATALOG.items() if meta.get("implemented")]
+        keys = [spec.key for spec in await self._realm_specs(ctx)]
+        # Without a catalog (no hub scope) the OAuth member is still this
+        # namespace's floor: Gmail answers as it always did.
+        return keys or ["gmail"]
 
     async def _outbound_target(
         self,
@@ -1056,7 +1098,11 @@ class MailNamedServiceProvider(NamedServiceProvider):
             return (provider_key or "gmail"), explicit, None
         candidates: list[tuple[str, ConnectedAccount]] = []
         candidates.extend(("gmail", item) for item in await self._gmail_accounts(ctx, claim=gmail_claim))
-        candidates.extend(("icloud", item) for item in await self._icloud_accounts(ctx, claim=ICLOUD_SEND_CLAIM))
+        for spec in await self._imap_specs(ctx):
+            candidates.extend(
+                (spec.key, item)
+                for item in await self._imap_accounts(ctx, spec, claim=spec.claim_for(need))
+            )
         if len(candidates) == 1:
             provider_key, account = candidates[0]
             return provider_key, account.account_id, None
@@ -1082,7 +1128,7 @@ class MailNamedServiceProvider(NamedServiceProvider):
                     "candidates": [
                         {
                             "account_id": account.account_id,
-                            "label": f"{account.display_name or account.email or account.account_id} ({MAIL_PROVIDER_CATALOG[key]['label']})",
+                            "label": f"{account.display_name or account.email or account.account_id} ({await self._provider_label(ctx, key)})",
                             "email": account.email,
                             "provider": key,
                             "ref": account_ref(key, account.account_id),
@@ -1167,17 +1213,23 @@ class MailNamedServiceProvider(NamedServiceProvider):
             extra={"action": ACTION_DRAFT, "provider": "gmail", "result": ret},
         )
 
-    async def _icloud_outbound(
+    async def _provider_label(self, ctx: NamedServiceContext, provider_key: str) -> str:
+        spec = await self._spec_for_key(ctx, provider_key)
+        return spec.label if spec is not None else provider_key
+
+    async def _imap_outbound(
         self,
         ctx: NamedServiceContext,
         request: NamedServiceRequest,
         *,
+        spec: MailProviderSpec,
         action: str,
         account_id: str,
         payload: Mapping[str, Any],
     ) -> NamedServiceResponse:
-        """send / draft on an iCloud account. Files reach IMAP/SMTP inline, so
-        staged uploads are read back into base64 entries here."""
+        """send / draft on an IMAP/SMTP account. Files reach IMAP/SMTP inline,
+        so staged uploads are read back into base64 entries here."""
+        transport = self._imap_transport(spec)
         entries, entries_error = self._attachment_entries(request, payload)
         if entries_error is not None:
             return entries_error
@@ -1194,8 +1246,8 @@ class MailNamedServiceProvider(NamedServiceProvider):
                 account_id=account_id,
             )
             if action == ACTION_DRAFT:
-                return await self._icloud.create_draft(**kwargs)
-            return await self._icloud.send(**kwargs)
+                return await transport.create_draft(**kwargs)
+            return await transport.send(**kwargs)
 
         if entries:
             try:
@@ -1215,13 +1267,13 @@ class MailNamedServiceProvider(NamedServiceProvider):
             return _error_from_tool(
                 result if isinstance(result, Mapping) else {},
                 request=request,
-                default_code=f"icloud_{action}_failed",
+                default_code=f"imap_{action}_failed",
             )
         ret = result.get("ret") if isinstance(result.get("ret"), Mapping) else {}
         resolved_account = _text(ret.get("account_id") or account_id)
-        extra = {"action": action, "provider": "icloud", "result": ret}
+        extra = {"action": action, "provider": spec.key, "result": ret}
         if action == ACTION_SEND:
-            obj = _message_object(ret, provider_key="icloud", account_id=resolved_account)
+            obj = _message_object(ret, provider_key=spec.key, account_id=resolved_account)
             return NamedServiceResponse.ok_response(
                 provider=self._provider_identity(),
                 namespace=request.namespace or MAIL_NAMESPACE,
@@ -1232,7 +1284,7 @@ class MailNamedServiceProvider(NamedServiceProvider):
         return NamedServiceResponse.ok_response(
             provider=self._provider_identity(),
             namespace=request.namespace or MAIL_NAMESPACE,
-            object_ref=account_ref("icloud", resolved_account),
+            object_ref=account_ref(spec.key, resolved_account),
             extra=extra,
         )
 
@@ -1244,9 +1296,10 @@ class MailNamedServiceProvider(NamedServiceProvider):
         for item in await self._gmail_accounts(ctx):
             if item.account_id == wanted:
                 return "gmail"
-        for item in await self._icloud_accounts(ctx):
-            if item.account_id == wanted:
-                return "icloud"
+        for spec in await self._imap_specs(ctx):
+            for item in await self._imap_accounts(ctx, spec):
+                if item.account_id == wanted:
+                    return spec.key
         return ""
 
     async def _resolve_claim(
@@ -1441,13 +1494,14 @@ class MailNamedServiceProvider(NamedServiceProvider):
         filters = dict(request.filters or {})
         provider_filter = _text(filters.get("provider")).lower()
         items: list[dict[str, Any]] = []
-        providers = self._provider_keys(provider_filter)
+        providers = await self._provider_keys(ctx, provider_filter)
         if "gmail" in providers:
             for account in await self._gmail_accounts(ctx):
                 items.append(_account_object(account, provider_key="gmail"))
-        if "icloud" in providers:
-            for account in await self._icloud_accounts(ctx):
-                items.append(_account_object(account, provider_key="icloud"))
+        for spec in await self._imap_specs(ctx):
+            if spec.key in providers:
+                for account in await self._imap_accounts(ctx, spec):
+                    items.append(_account_object(account, provider_key=spec.key))
         extra: dict[str, Any] = {"count": len(items), "providers": providers}
         if not items:
             extra["consent"] = self._connect_hint(ctx, request)
@@ -1461,8 +1515,9 @@ class MailNamedServiceProvider(NamedServiceProvider):
     async def object_search(self, ctx: NamedServiceContext, request: NamedServiceRequest) -> NamedServiceResponse:
         filters = dict(request.filters or {})
         provider_filter = _text(filters.get("provider")).lower()
-        providers = self._provider_keys(provider_filter)
-        unknown = [key for key in providers if not (MAIL_PROVIDER_CATALOG.get(key) or {}).get("implemented")]
+        providers = await self._provider_keys(ctx, provider_filter)
+        known = {"gmail", *[spec.key for spec in await self._imap_specs(ctx)]}
+        unknown = [key for key in providers if key not in known]
         if unknown:
             return NamedServiceResponse.error_response(
                 code="mail_provider_not_implemented",
@@ -1490,11 +1545,13 @@ class MailNamedServiceProvider(NamedServiceProvider):
                 return consent
             if consent is None:
                 accounts.extend(("gmail", item) for item in gmail_accounts)
-        if "icloud" in providers:
-            icloud_accounts = await self._icloud_accounts(ctx, claim=ICLOUD_READ_CLAIM)
+        for spec in await self._imap_specs(ctx):
+            if spec.key not in providers:
+                continue
+            imap_accounts = await self._imap_accounts(ctx, spec, claim=spec.read_claim)
             if account_id:
-                icloud_accounts = [item for item in icloud_accounts if item.account_id == account_id]
-            accounts.extend(("icloud", item) for item in icloud_accounts)
+                imap_accounts = [item for item in imap_accounts if item.account_id == account_id]
+            accounts.extend((spec.key, item) for item in imap_accounts)
         if not accounts:
             # Nothing eligible anywhere: let the Gmail broker mint the precise
             # connect / upgrade / grant reason, as before this realm spanned
@@ -1524,12 +1581,13 @@ class MailNamedServiceProvider(NamedServiceProvider):
         per_account_limit = max(1, min(limit, 10))
         for provider_key, account in accounts:
             account_label = account.display_name or account.email or account.account_id
-            if provider_key == "icloud":
-                result = await self._icloud.search(
+            if provider_key != "gmail":
+                spec = await self._spec_for_key(ctx, provider_key)
+                result = await self._imap_transport(spec).search(
                     query=query,
                     max_results=per_account_limit,
                     account_id=account.account_id,
-                )
+                ) if spec is not None else {"ok": False, "error": {"code": "mail_provider_unknown"}}
             else:
                 result = await self._gmail.search_gmail(
                     query=query,
@@ -1600,11 +1658,12 @@ class MailNamedServiceProvider(NamedServiceProvider):
         if _is_materialization_request(request) and parsed.get("provider") == "gmail":
             return await self._materialize_object(ctx, request, parsed=parsed)
         if parsed.get("kind") == "account":
-            accounts = (
-                await self._icloud_accounts(ctx)
-                if parsed.get("provider") == "icloud"
-                else await self._gmail_accounts(ctx)
-            )
+            provider_key = parsed.get("provider") or "gmail"
+            if provider_key == "gmail":
+                accounts = await self._gmail_accounts(ctx)
+            else:
+                spec = await self._spec_for_key(ctx, provider_key)
+                accounts = await self._imap_accounts(ctx, spec) if spec is not None else []
             account = next((item for item in accounts if item.account_id == parsed.get("account_id")), None)
             if account is None:
                 return NamedServiceResponse.error_response(
@@ -1670,11 +1729,11 @@ class MailNamedServiceProvider(NamedServiceProvider):
                 object_ref=request.object_ref,
                 object=obj,
             )
-        if parsed.get("kind") == "attachment" and parsed.get("provider") == "icloud":
+        if parsed.get("kind") == "attachment" and parsed.get("provider") != "gmail":
             return NamedServiceResponse.error_response(
                 code="mail_provider_action_not_implemented",
                 message=(
-                    "iCloud attachments are listed on the message but not yet "
+                    "IMAP/SMTP attachments are listed on the message but not yet "
                     "downloadable through this namespace."
                 ),
                 status=501,
@@ -1682,10 +1741,10 @@ class MailNamedServiceProvider(NamedServiceProvider):
                 namespace=request.namespace or MAIL_NAMESPACE,
                 object_ref=request.object_ref,
             )
-        if parsed.get("kind") != "message" or parsed.get("provider") not in ("gmail", "icloud"):
+        if parsed.get("kind") != "message" or not parsed.get("provider"):
             return NamedServiceResponse.error_response(
                 code="mail_message_ref_required",
-                message="object_ref must be mail:<gmail|icloud>:<account_id>:message:<message_id>.",
+                message="object_ref must be mail:<provider>:<account_id>:message:<message_id>.",
                 status=400,
                 provider=self._provider_identity(),
                 namespace=request.namespace or MAIL_NAMESPACE,
@@ -1693,24 +1752,34 @@ class MailNamedServiceProvider(NamedServiceProvider):
             )
         include_html = bool(request.filters.get("include_html") or request.payload.get("include_html"))
         max_body_chars = _int(request.filters.get("max_body_chars") or request.payload.get("max_body_chars"), default=12000, maximum=24000)
-        if parsed.get("provider") == "icloud":
-            result = await self._icloud.read_message(
+        if parsed.get("provider") != "gmail":
+            spec = await self._spec_for_key(ctx, parsed.get("provider") or "")
+            if spec is None:
+                return NamedServiceResponse.error_response(
+                    code="mail_provider_unknown",
+                    message=f"No configured mail provider matches {parsed.get('provider')!r}.",
+                    status=404,
+                    provider=self._provider_identity(),
+                    namespace=request.namespace or MAIL_NAMESPACE,
+                    object_ref=request.object_ref,
+                )
+            result = await self._imap_transport(spec).read_message(
                 message_id=parsed["message_id"],
                 include_html=include_html,
                 account_id=parsed["account_id"],
             )
             if not isinstance(result, Mapping) or not result.get("ok"):
-                return _error_from_tool(result if isinstance(result, Mapping) else {}, request=request, default_code="icloud_read_failed")
+                return _error_from_tool(result if isinstance(result, Mapping) else {}, request=request, default_code="imap_read_failed")
             ret = result.get("ret") if isinstance(result.get("ret"), Mapping) else {}
             message = ret.get("message") if isinstance(ret.get("message"), Mapping) else {}
             resolved_account_id = _text(ret.get("account_id") or parsed["account_id"])
             known = next(
-                (item for item in await self._icloud_accounts(ctx) if item.account_id == resolved_account_id),
+                (item for item in await self._imap_accounts(ctx, spec) if item.account_id == resolved_account_id),
                 None,
             )
             obj = _message_object(
                 message,
-                provider_key="icloud",
+                provider_key=spec.key,
                 account_id=resolved_account_id,
                 account_label=(known.display_name or known.email) if known else "",
             )
@@ -1864,10 +1933,10 @@ class MailNamedServiceProvider(NamedServiceProvider):
         action = _text(request.action or request.payload.get("action")).lower()
         payload = dict(request.payload or {})
         parsed = parse_mail_ref(request.object_ref or "")
-        if parsed.get("provider") == "icloud" and action in (ACTION_DOWNLOAD_ATTACHMENTS, ACTION_FORWARD):
+        if parsed.get("provider") not in ("", "gmail") and action in (ACTION_DOWNLOAD_ATTACHMENTS, ACTION_FORWARD):
             return NamedServiceResponse.error_response(
                 code="mail_provider_action_not_implemented",
-                message=f"{action} is not available for iCloud accounts yet; read, search, send, and draft are.",
+                message=f"{action} is not available for IMAP/SMTP accounts yet; read, search, send, and draft are.",
                 status=501,
                 provider=self._provider_identity(),
                 namespace=request.namespace or MAIL_NAMESPACE,
@@ -1921,9 +1990,19 @@ class MailNamedServiceProvider(NamedServiceProvider):
             )
             if target_error is not None:
                 return target_error
-            if provider_key == "icloud":
-                return await self._icloud_outbound(
-                    ctx, request, action=action, account_id=target_account_id, payload=payload,
+            if provider_key != "gmail":
+                spec = await self._spec_for_key(ctx, provider_key)
+                if spec is None:
+                    return NamedServiceResponse.error_response(
+                        code="mail_provider_unknown",
+                        message=f"No configured mail provider matches {provider_key!r}.",
+                        status=404,
+                        provider=self._provider_identity(),
+                        namespace=request.namespace or MAIL_NAMESPACE,
+                        object_ref=request.object_ref,
+                    )
+                return await self._imap_outbound(
+                    ctx, request, spec=spec, action=action, account_id=target_account_id, payload=payload,
                 )
             if action == ACTION_DRAFT:
                 return await self._gmail_draft(request, account_id=target_account_id, payload=payload)

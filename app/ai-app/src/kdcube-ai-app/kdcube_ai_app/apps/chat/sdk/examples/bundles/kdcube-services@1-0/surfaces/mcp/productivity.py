@@ -25,13 +25,15 @@ from typing import Annotated, Any, Callable, Mapping
 
 from pydantic import Field
 
-from kdcube_ai_app.apps.chat.sdk.integrations.email.icloud_tools import IcloudMailTools
+from kdcube_ai_app.apps.chat.sdk.integrations.email.imap_smtp_tools import ImapSmtpMailTools
 from kdcube_ai_app.apps.chat.sdk.integrations.google.gmail_tools import GmailTools
 from kdcube_ai_app.apps.chat.sdk.integrations.mail.realm import (
     MailAccount,
-    choose_mail_account,
+    MailProviderSpec,
     connect_required_envelope,
+    discover_mail_providers,
     list_mail_accounts,
+    mail_requirement,
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.slack.tools import SlackTools
 from connection_hub.delegated_credentials.credential_view import (
@@ -49,6 +51,7 @@ from connection_hub.mcp_metadata import (
 from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.mcp_tool_enforcement import (
     bind_service_connector_apps_from_config,
     enforce_tool_requirements,
+    resolve_tool_requirements,
 )
 
 from ...services.named_services.request_scope import set_public_base_url_from_request
@@ -75,7 +78,8 @@ ConfigFactory = Callable[[], Mapping[str, Any]]
 PRODUCTIVITY_MCP_INSTRUCTIONS = """\
 This MCP server exposes productivity tools that run on the approving user's
 connected accounts (Slack, mail, Google Sheets, Google Docs, LinkedIn). Mail is
-a realm across providers (Gmail, iCloud Mail): when the user may have several
+a realm across the mail providers this deployment configures (Gmail, IMAP/SMTP
+mailboxes such as iCloud Mail): when the user may have several
 mailboxes, list accounts first and pass the chosen account_id; a mail call
 without account_id and several eligible accounts answers account_required with
 labeled candidates, which means ask the user, never pick a provider for them.
@@ -113,13 +117,13 @@ PRODUCTIVITY_TOOLS: dict[str, dict[str, Any]] = {
         },
     },
     # Mail is a REALM: which provider a call needs is the USER's choice of
-    # mailbox (Gmail, iCloud Mail), not something this code can know up front.
-    # So the mail tools declare NO fixed provider here. At call time the realm
-    # (mail/realm.py) lists the connected mailboxes, asks when several are
-    # eligible, and the tool enforces the CHOSEN account's own provider claim
-    # before routing to that provider. The door grants in the descriptor
-    # (mail:read / mail:draft, backed by google and icloud_mail) remain the
-    # card-side truth.
+    # mailbox, and which mail providers exist is the DEPLOYMENT's choice (its
+    # descriptor). Neither is known when this code is written, so the mail
+    # tools declare no provider here. At call time the realm (mail/realm.py)
+    # discovers the members from the hub catalog and the tool gates through
+    # the same enforcement as every other tool, with an ``any_of`` group over
+    # the members as its requirement; the enforcement answers which account
+    # was chosen and the call routes to that provider's transport.
     "productivity_mail_accounts": {
         "label": "List mail accounts",
         "description": (
@@ -130,7 +134,7 @@ PRODUCTIVITY_TOOLS: dict[str, dict[str, Any]] = {
     },
     "productivity_mail_search": {
         "label": "Search mail",
-        "description": "Search one of the user's connected mail accounts (Gmail or iCloud Mail).",
+        "description": "Search one of the user's connected mail accounts.",
     },
     "productivity_mail_get": {
         "label": "Read mail message",
@@ -186,7 +190,23 @@ def build_productivity_mcp_app(
 
     slack = SlackTools()
     gmail = GmailTools()
-    icloud = IcloudMailTools()
+    imap_transports: dict[str, ImapSmtpMailTools] = {}
+
+    def _mail_transport(spec: MailProviderSpec) -> Any:
+        """The transport for a realm member: the shared Gmail tools, or one
+        IMAP/SMTP transport per provider instance carrying its hosts."""
+        if spec.transport == "gmail":
+            return gmail
+        transport = imap_transports.get(spec.provider_id)
+        if transport is None:
+            transport = ImapSmtpMailTools(
+                provider_id=spec.provider_id,
+                connector_app_id=spec.connector_app_id,
+                settings=spec.settings,
+                label=spec.label,
+            )
+            imap_transports[spec.provider_id] = transport
+        return transport
 
     def _prepare() -> None:
         """Per-call request binding, mirroring the named-services bridge:
@@ -239,33 +259,71 @@ def build_productivity_mcp_app(
     async def _route_mail(
         tool_name: str, operation: str, need: str, account_id: str
     ) -> tuple[MailAccount | None, dict[str, Any] | None]:
-        """Realm resolution for one mail call.
+        """One mail call's gate and routing.
 
-        Returns (account, denial). A denial ends the call: account_required
-        with candidates, an unknown account_id, the connect-first consent
-        offering every mail provider when no mailbox is eligible, or the
-        chosen provider's own consent envelope."""
+        The gate is the declared shape every other tool uses, with the realm's
+        ``any_of`` group as its requirement: the group's members are the mail
+        providers this deployment configures (discovered from the hub catalog),
+        each with the claim this verb needs there. Enforcement then decides
+        exactly as for any tool: one eligible account proceeds, several across
+        providers answer account_required with labeled candidates, none leads
+        with the connect-first consent naming every member. What comes back is
+        the account chosen, so the call routes to that provider's transport.
+
+        Returns (account, denial); a denial is the tool's result."""
         _prepare()
-        accounts = await list_mail_accounts()
-        choice = choose_mail_account(
-            accounts, account_id=account_id, need=need, where=tool_name
-        )
-        if choice.denial is not None:
-            return None, choice.denial
-        if choice.account is None:
-            # No connected mailbox can serve this: offer every mail provider,
-            # never a hard-coded one.
+        specs = await discover_mail_providers()
+        if not specs:
             return None, connect_required_envelope(
-                where=tool_name, need=need,
+                where=tool_name, need=need, specs=[],
                 tenant=tenant_factory(), project=project_factory(),
             )
-        denial = await _enforce(
-            tool_name,
-            operation,
-            choice.account.account_id,
-            requirements=[choice.account.provider.requirement(need)],
+        accounts = await list_mail_accounts(specs=specs)
+        wanted = str(account_id or "").strip()
+        if wanted and not any(item.account_id == wanted for item in accounts):
+            return None, {
+                "ok": False,
+                "error": {
+                    "code": "account_not_found",
+                    "message": f"No connected mail account has id {wanted!r}.",
+                    "where": tool_name,
+                    "retryable": True,
+                },
+                "ret": {
+                    "reason": "account_not_found",
+                    "account_id": wanted,
+                    "candidates": [item.public_dict() for item in accounts if item.allows(need)],
+                },
+            }
+
+        async def _accounts_of(provider_id: str) -> list[Any]:
+            return [item for item in accounts if item.provider.provider_id == provider_id]
+
+        resolution = await resolve_tool_requirements(
+            request,
+            tool_name=tool_name,
+            operation=operation,
+            requirements=[mail_requirement(specs, need)],
+            account_id=wanted,
+            tenant=tenant_factory(),
+            project=project_factory(),
+            accounts_lister=_accounts_of,
         )
-        return choice.account, denial
+        if resolution.denial is not None:
+            return None, resolution.denial
+        chosen = resolution.account_for(0)
+        if chosen is None:
+            return None, connect_required_envelope(
+                where=tool_name, need=need, specs=specs,
+                tenant=tenant_factory(), project=project_factory(),
+            )
+        account = next(
+            (item for item in accounts if item.account_id == chosen.account_id), None
+        )
+        if account is None:
+            spec = next((item for item in specs if item.provider_id == chosen.provider_id), specs[0])
+            account = MailAccount(account_id=chosen.account_id, provider=spec)
+        return account, None
 
     @mcp.tool(
         name="productivity_slack_search",
@@ -303,8 +361,8 @@ def build_productivity_mcp_app(
         name="productivity_mail_accounts",
         title="List mail accounts",
         description=(
-            "List the approving user's connected mail accounts across "
-            "providers (Gmail, iCloud Mail) with account_id, address, and what "
+            "List the approving user's connected mail accounts across the "
+            "configured mail providers with account_id, address, and what "
             "each may do (read, draft, send). Call this first when the user "
             "has more than one mailbox, then pass the chosen account_id to the "
             "other mail tools. Returns {ok, error, ret}."
@@ -368,12 +426,13 @@ def build_productivity_mcp_app(
         )
         if denial is not None:
             return denial
-        if account is not None and account.provider.key == "icloud":
-            return await icloud.search(
+        assert account is not None
+        transport = _mail_transport(account.provider)
+        if transport is gmail:
+            return await gmail.search_gmail(
                 query=query, max_results=max_results, account_id=account.account_id
             )
-        assert account is not None
-        return await gmail.search_gmail(
+        return await transport.search(
             query=query, max_results=max_results, account_id=account.account_id
         )
 
@@ -411,14 +470,13 @@ def build_productivity_mcp_app(
         )
         if denial is not None:
             return denial
-        if account is not None and account.provider.key == "icloud":
-            return await icloud.read_message(
-                message_id=message_id,
-                include_html=include_html,
-                account_id=account.account_id,
-            )
         assert account is not None
-        return await gmail.read_gmail_message(
+        transport = _mail_transport(account.provider)
+        if transport is gmail:
+            return await gmail.read_gmail_message(
+                message_id=message_id, include_html=include_html, account_id=account.account_id
+            )
+        return await transport.read_message(
             message_id=message_id, include_html=include_html, account_id=account.account_id
         )
 
@@ -486,8 +544,10 @@ def build_productivity_mcp_app(
         )
         if denial is not None:
             return denial
-        if account is not None and account.provider.key == "icloud":
-            return await icloud.create_draft(
+        assert account is not None
+        transport = _mail_transport(account.provider)
+        if transport is not gmail:
+            return await transport.create_draft(
                 to=to,
                 subject=subject,
                 body_markdown=body_markdown,
@@ -497,7 +557,6 @@ def build_productivity_mcp_app(
                 attachments_base64=attachments_base64,
                 account_id=account.account_id,
             )
-        assert account is not None
         return await gmail.create_gmail_draft(
             to=to,
             subject=subject,
