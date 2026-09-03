@@ -25,7 +25,7 @@ This page describes the first phase: the protocol, the modules, the operator
 tool, and the proofs. The runtime still selects its secrets backend through
 `SECRETS_PROVIDER` as documented in
 [secrets-service-README.md](secrets-service-README.md). Nothing on this page
-changes that selection yet; the broker here is constructible and testable on
+changes that selection yet. The broker here is constructible and testable on
 its own.
 
 ## 1. Trust model in one pass
@@ -190,7 +190,7 @@ serves `/health`, `GET /secret/{key}`, `POST /set`, and
 `DELETE /secret/{key}` exactly as `secrets/secrets_server.py` does, so the
 existing in-deployment client keeps working when the provider is switched
 in a later phase. The old `X-KDCUBE-SECRET-TOKEN` and `X-KDCUBE-ADMIN-TOKEN`
-headers stay an optional in-deployment door gate; they are never forwarded
+headers stay an optional in-deployment door gate. They are never forwarded,
 and the vault never sees them.
 
 ## 6. Audit
@@ -204,20 +204,22 @@ code, generation, and expected generation. Names and values never appear.
 
 `kdcube_ai_app/infra/secrets/host_vault/tests/test_host_vault.py` runs with
 fake certificates and the labeled in-memory root-key provider and covers:
-exact namespace authorization with cross-tenant, cross-project, and
-cross-application denial; certificate identity against the live registry,
-including a same-id certificate from a foreign CA; one-use and expiring
-enrollment tickets; revoked and expired identities; rotation overlap and
-lapse; revocation from another process landing on the next identification;
-replay with the same and with a different body; stale `issued_at`;
-generation conflicts on set, rotate, and delete; a crash between candidate
-write and commit; restart durability of values and deletions; tampered
-ciphertext, metadata, and root-key version failing closed; audit fields
-without secret bytes; backend exceptions with canaries sanitized; a
-stateless broker that acknowledges only committed writes; root-key rotation
-with rewrap; identity file modes; a real mTLS round trip; a bearer without a
-client certificate being refused at the handshake and at the service; and
-sanitized TLS failures.
+
+- exact namespace authorization with cross-tenant, cross-project, and cross-application denial
+- certificate identity against the live registry, including a same-id certificate from a foreign CA
+- one-use and expiring enrollment tickets
+- revoked and expired identities, rotation overlap and lapse
+- revocation from another process landing on the next identification
+- replay with the same and with a different body, and a stale `issued_at`
+- generation conflicts on set, rotate, and delete
+- a crash between candidate write and commit
+- restart durability of values and deletions
+- tampered ciphertext, metadata, and root-key version failing closed
+- audit fields without secret bytes
+- backend exceptions with canaries sanitized
+- a stateless broker that acknowledges only committed writes
+- root-key rotation with rewrap, and identity file modes
+- a real mTLS round trip, a bearer without a client certificate refused at the handshake and at the service, and sanitized TLS failures
 
 Run from the repository root with the platform venv interpreter:
 
