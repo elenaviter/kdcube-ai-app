@@ -43,6 +43,8 @@ psycopg2-binary==2.9.10
 psycopg[binary]>=3.1
 # Delegated-access authority shared with the Connection Hub application.
 connection-hub>=2026.09.02.0000
+# Host-neutral MCP client construction and result normalization.
+app-foundation[mcp]>=2026.09.03.1835,<2027
 
 ddgs
 semantic-kernel
