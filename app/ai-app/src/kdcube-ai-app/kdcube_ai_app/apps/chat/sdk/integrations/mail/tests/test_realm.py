@@ -157,3 +157,16 @@ def test_no_hub_scope_means_no_accounts(monkeypatch):
 
     monkeypatch.setattr(realm, "_hub_client", _none)
     assert asyncio.run(realm.list_mail_accounts()) == []
+
+
+def test_nothing_connected_offers_every_mail_provider_not_gmail():
+    envelope = realm.connect_required_envelope(
+        where="productivity_mail_search", need="read", tenant="demo", project="project",
+    )
+    assert envelope["ok"] is False
+    assert envelope["error"]["code"] == "needs_connected_account_consent"
+    assert "Gmail or iCloud Mail" in envelope["error"]["message"]
+    offered = {(row["provider"], row["claim"]) for row in envelope["ret"]["providers"]}
+    assert offered == {("gmail", "gmail:read"), ("icloud", "email:read")}
+    assert envelope["ret"]["reason"] == "connect_required"
+    assert envelope["consent_required"] is True

@@ -91,17 +91,20 @@ WEB_TOOLS = {
     "productivity_web_search",
     "productivity_web_fetch",
 }
-# Mail account discovery is claim-free like LinkedIn's: it reads KDCube's own
-# connection records across providers so the agent can ask which mailbox.
-MAIL_DISCOVERY_TOOLS = {
+# Mail is a REALM: which provider a call needs is the user's choice of mailbox
+# (Gmail, iCloud Mail), so no mail tool declares a fixed provider gate. The gate
+# is applied in the tool body to the chosen account, on that account's own
+# provider claim, after the realm listed the mailboxes and asked when several
+# were eligible. The card-side truth is the descriptor's mail:* grants.
+MAIL_TOOLS = {
     "productivity_mail_accounts",
-}
-ALL_TOOLS = {
-    "productivity_slack_search",
-    *MAIL_DISCOVERY_TOOLS,
     "productivity_mail_search",
     "productivity_mail_get",
     "productivity_mail_draft",
+}
+ALL_TOOLS = {
+    "productivity_slack_search",
+    *MAIL_TOOLS,
     *SHEETS_READ_TOOLS,
     *SHEETS_WRITE_TOOLS,
     *DOCS_READ_TOOLS,
@@ -136,11 +139,6 @@ def test_every_tool_declares_provider_claims():
     assert set(declared) == ALL_TOOLS
     expectations = {
         "productivity_slack_search": ("slack", ["slack:search"]),
-        "productivity_mail_search": ("google", ["gmail:read"]),
-        "productivity_mail_get": ("google", ["gmail:read"]),
-        # Drafts deliberately need only compose: an automation that prepares
-        # mail for a person to send never holds send authority.
-        "productivity_mail_draft": ("google", ["gmail:compose"]),
         **{name: ("google", ["drive:read"]) for name in DRIVE_READ_TOOLS},
         **{name: ("google", ["drive:write"]) for name in DRIVE_WRITE_TOOLS},
         **{name: ("google", ["sheets:read"]) for name in SHEETS_READ_TOOLS},
@@ -169,8 +167,16 @@ def test_every_tool_declares_provider_claims():
     # Account discovery must stay claim-free: resolving a connected-account
     # claim here returns account_required once two accounts are connected, and
     # the tool takes no account_id, so the denial could never be satisfied.
-    for name in LINKEDIN_DISCOVERY_TOOLS | MAIL_DISCOVERY_TOOLS | WEB_TOOLS:
+    for name in LINKEDIN_DISCOVERY_TOOLS | MAIL_TOOLS | WEB_TOOLS:
         assert module.tool_requirements(name) == []
+    # The realm knows both mail providers and the claim each verb needs there;
+    # a chosen iCloud account is gated on email:*, never on a Gmail claim.
+    realm = module.MAIL_PROVIDERS if hasattr(module, "MAIL_PROVIDERS") else None
+    if realm is None:
+        from kdcube_ai_app.apps.chat.sdk.integrations.mail.realm import MAIL_PROVIDERS as realm
+    assert realm["gmail"].requirement("draft")["claims"] == ["gmail:compose"]
+    assert realm["icloud"].requirement("read")["claims"] == ["email:read"]
+    assert realm["icloud"].requirement("draft")["claims"] == ["email:send"]
 
 
 @pytest.mark.asyncio

@@ -292,6 +292,67 @@ def _account_required_envelope(
     }
 
 
+def connect_required_envelope(
+    *, where: str, need: str, tenant: str = "", project: str = "",
+    connection_hub_bundle_id: str = "",
+) -> dict[str, Any]:
+    """No connected mailbox can serve this call: the connect-first consent,
+    offering EVERY mail provider rather than a hard-coded one. The consent
+    block itself names one provider action (the hub deep link is per
+    provider); the message and ``ret.providers`` carry the whole choice."""
+    from connection_hub.delegated_to_kdcube.preflight import (
+        connected_account_consent_payload,
+    )
+    from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.connection_edges import (
+        DEFAULT_CONNECTION_HUB_BUNDLE_ID,
+    )
+
+    options = [
+        {
+            "provider": spec.key,
+            "provider_id": spec.provider_id,
+            "provider_label": spec.label,
+            "connector_app_id": spec.connector_app_id(),
+            "claim": spec.claim_for(need),
+        }
+        for spec in MAIL_PROVIDERS.values()
+    ]
+    failures = [
+        {
+            "ok": False,
+            "provider_id": option["provider_id"],
+            "connector_app_id": option["connector_app_id"],
+            "claim": option["claim"],
+            "account_id": "",
+            "error": "connect_required",
+            "reason": "connect_required",
+            "message": f"Connect {option['provider_label']} and approve {option['claim']}.",
+        }
+        for option in options
+    ]
+    payload = connected_account_consent_payload(
+        tenant=_clean(tenant),
+        project=_clean(project),
+        connection_hub_bundle_id=_clean(connection_hub_bundle_id) or DEFAULT_CONNECTION_HUB_BUNDLE_ID,
+        missing=[{"ok": False, "tool_name": where, "failures": failures}],
+    )
+    labels = " or ".join(option["provider_label"] for option in options)
+    message = f"No connected mail account can do this yet. Connect a mailbox ({labels}) in Connection Hub."
+    payload["ok"] = False
+    payload["error"] = {
+        **dict(payload.get("error") or {}),
+        "code": "needs_connected_account_consent",
+        "message": message,
+        "where": where,
+    }
+    ret = dict(payload.get("ret") or {})
+    ret.update({"reason": "connect_required", "need": need, "providers": options, "message": message})
+    payload["ret"] = ret
+    payload["consent_required"] = True
+    payload["instructions"] = message
+    return payload
+
+
 def choose_mail_account(
     accounts: list[MailAccount],
     *,
@@ -350,6 +411,7 @@ __all__ = [
     "bind_integrations",
     "bind_service",
     "choose_mail_account",
+    "connect_required_envelope",
     "list_mail_accounts",
     "provider_for",
 ]
