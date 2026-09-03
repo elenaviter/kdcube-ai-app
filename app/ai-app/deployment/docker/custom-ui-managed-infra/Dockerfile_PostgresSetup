@@ -14,8 +14,14 @@ WORKDIR /app
 
 # Minimal deps for the deploy script
 COPY src/kdcube-ai-app/requirements-dbdeploy.txt .
-RUN pip install --no-cache-dir -r requirements-dbdeploy.txt
 COPY deployment/docker/local-python-packages /tmp/kdcube-local-python-packages
+# Seed maintainer-selected distributions before dependency resolution.
+RUN if [ -f /tmp/kdcube-local-python-packages/requirements.txt ]; then \
+      pip install --no-cache-dir --no-deps \
+        -r /tmp/kdcube-local-python-packages/requirements.txt; \
+    fi
+RUN pip install --no-cache-dir -r requirements-dbdeploy.txt
+# Reapply the selected source after dependency resolution.
 RUN if [ -f /tmp/kdcube-local-python-packages/requirements.txt ]; then \
       pip install --no-cache-dir --no-deps --force-reinstall \
         -r /tmp/kdcube-local-python-packages/requirements.txt; \

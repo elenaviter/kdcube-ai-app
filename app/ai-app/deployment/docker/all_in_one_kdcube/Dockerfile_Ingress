@@ -19,9 +19,15 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 COPY src/kdcube-ai-app/requirements-chat-ingress.txt requirements.txt
 COPY src/kdcube-ai-app/requirements-aws.txt requirements-aws.txt
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
 COPY deployment/docker/local-python-packages /tmp/kdcube-local-python-packages
+# Seed maintainer-selected distributions before dependency resolution.
+RUN pip install --upgrade pip
+RUN if [ -f /tmp/kdcube-local-python-packages/requirements.txt ]; then \
+      pip install --no-cache-dir --no-deps \
+        -r /tmp/kdcube-local-python-packages/requirements.txt; \
+    fi
+RUN pip install --no-cache-dir -r requirements.txt
+# Reapply the selected source after dependency resolution.
 RUN if [ -f /tmp/kdcube-local-python-packages/requirements.txt ]; then \
       pip install --no-cache-dir --no-deps --force-reinstall \
         -r /tmp/kdcube-local-python-packages/requirements.txt; \
