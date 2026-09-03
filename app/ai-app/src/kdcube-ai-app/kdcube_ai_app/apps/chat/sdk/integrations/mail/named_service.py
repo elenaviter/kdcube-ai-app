@@ -17,12 +17,21 @@ import logging
 from typing import Any, AsyncIterator, Mapping
 
 from kdcube_ai_app.apps.chat.sdk.integrations.google.gmail_tools import (
+    GMAIL_COMPOSE_CLAIM,
     GMAIL_PROVIDER_ID,
     GMAIL_READ_CLAIM,
     GMAIL_SEND_CLAIM,
     GmailTools,
     bind_integrations as bind_gmail_integrations,
     bind_service as bind_gmail_service,
+)
+from kdcube_ai_app.apps.chat.sdk.integrations.email.icloud_tools import (
+    ICLOUD_PROVIDER_ID,
+    ICLOUD_READ_CLAIM,
+    ICLOUD_SEND_CLAIM,
+    IcloudMailTools,
+    bind_integrations as bind_icloud_integrations,
+    bind_service as bind_icloud_service,
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.file_staging import (
     delete_staged,
@@ -97,6 +106,9 @@ ACTION_SEND = "send"
 ACTION_FORWARD = "forward"
 ACTION_REQUEST_UPLOAD = "request_upload"
 ACTION_DISCARD_UPLOAD = "discard_upload"
+# A draft is prepared for the PERSON to send: it never leaves the mailbox by
+# this namespace's hand, so it rides mail:draft, never mail:send.
+ACTION_DRAFT = "draft"
 
 # Mail is provider-AGNOSTIC — the same namespace serves Gmail (OAuth) and
 # IMAP/SMTP (login/password, which has no native OAuth claims). So mail keeps a
@@ -110,6 +122,7 @@ MAIL_GRANT_HINTS = {
     "object.get": ["mail:read"],
     "object.action.download_attachments": ["mail:read"],
     "object.action.send": ["mail:send"],
+    "object.action.draft": ["mail:draft"],
     "object.action.forward": ["mail:read", "mail:send"],
     "object.action.request_upload": ["mail:send"],
     "object.action.discard_upload": ["mail:send"],
@@ -135,11 +148,30 @@ MAIL_CONNECTED_ACCOUNT_REQUIREMENTS = [
             "object.get": [GMAIL_READ_CLAIM],
             "object.action.download_attachments": [GMAIL_READ_CLAIM],
             "object.action.send": [GMAIL_SEND_CLAIM],
+            "object.action.draft": [GMAIL_COMPOSE_CLAIM],
             "object.action.forward": [GMAIL_READ_CLAIM, GMAIL_SEND_CLAIM],
             "object.action.request_upload": [GMAIL_SEND_CLAIM],
             "object.action.discard_upload": [GMAIL_SEND_CLAIM],
         },
-    }
+    },
+    {
+        # iCloud has no compose claim of its own: a draft is an IMAP APPEND into
+        # Drafts, a write to the mailbox, which email:send already authorizes.
+        "provider_id": ICLOUD_PROVIDER_ID,
+        "provider_label": "iCloud Mail",
+        "claims": [ICLOUD_READ_CLAIM, ICLOUD_SEND_CLAIM],
+        "claim_labels": {
+            ICLOUD_READ_CLAIM: "read mail",
+            ICLOUD_SEND_CLAIM: "send mail",
+        },
+        "claims_by_operation": {
+            "object.list": [ICLOUD_READ_CLAIM],
+            "object.search": [ICLOUD_READ_CLAIM],
+            "object.get": [ICLOUD_READ_CLAIM],
+            "object.action.send": [ICLOUD_SEND_CLAIM],
+            "object.action.draft": [ICLOUD_SEND_CLAIM],
+        },
+    },
 ]
 
 MAIL_PROVIDER_CATALOG = {
@@ -149,17 +181,23 @@ MAIL_PROVIDER_CATALOG = {
         "claims": {
             "read": GMAIL_READ_CLAIM,
             "send": GMAIL_SEND_CLAIM,
+            "draft": GMAIL_COMPOSE_CLAIM,
         },
+        "implemented": True,
+    },
+    "icloud": {
+        "provider_id": ICLOUD_PROVIDER_ID,
+        "connector_app_id": "app_password",
+        "label": "iCloud Mail",
+        "claims": {
+            "read": ICLOUD_READ_CLAIM,
+            "send": ICLOUD_SEND_CLAIM,
+            "draft": ICLOUD_SEND_CLAIM,
+        },
+        "implemented": True,
     },
     # Shape reserved for providers implemented next. They share the ``mail``
     # namespace and object model, but resolve through their own connector app.
-    "icloud": {
-        "provider_id": "email",
-        "connector_app_id": "icloud-mail",
-        "label": "iCloud Mail",
-        "claims": {"read": "mail:read", "send": "mail:send"},
-        "implemented": False,
-    },
     "yahoo": {
         "provider_id": "email",
         "connector_app_id": "yahoo-mail",
@@ -172,12 +210,11 @@ MAIL_PROVIDER_CATALOG = {
 MAIL_SEARCH_FILTERS = {
     "account_id": {
         "type": "string",
-        "description": "Optional connected mail account id. Omit to search every connected Gmail account with mail read access.",
+        "description": "Optional connected mail account id. Omit to search every connected mail account (Gmail and iCloud) with mail read access.",
     },
     "provider": {
         "type": "string",
-        "description": "Optional mail provider key. Currently implemented: gmail.",
-        "default": "gmail",
+        "description": "Optional mail provider key: gmail or icloud. Omit to span both.",
     },
     "gmail_query": {
         "type": "string",
@@ -202,7 +239,8 @@ MAIL_INTRO = (
     "Use namespace `mail` for user-connected email accounts. Start with "
     "object.list to see connected accounts, object.search to find messages, "
     "object.get to read a message, and object.action with download_attachments, "
-    "send, or forward for bounded mail actions."
+    "send, draft, or forward for bounded mail actions. Accounts may come from "
+    "several providers (Gmail, iCloud Mail); a message ref names its provider."
 )
 
 # Human layer of the realm's self-description — the same contract the agent
@@ -210,7 +248,7 @@ MAIL_INTRO = (
 # verbatim; missing text here is a realm defect, never a UI invention.
 MAIL_PRESENTATION = {
     "about": "Read, search, and send email from the mail accounts you connect.",
-    "third_party": "Works with your mailbox through your connected Google account.",
+    "third_party": "Works with your mailboxes through your connected Google and iCloud Mail accounts.",
     "operations": {
         "provider.about": {"label": "Service overview", "description": "What this mail service does and how to use it."},
         "provider.capabilities": {"label": "Capabilities", "description": "The operations and behaviors this service declares."},
@@ -221,6 +259,7 @@ MAIL_PRESENTATION = {
     },
     "actions": {
         ACTION_SEND: {"label": "Send email", "description": "Send an email from your connected mail account."},
+        ACTION_DRAFT: {"label": "Draft email", "description": "Save a draft in your mailbox for you to review and send yourself."},
         ACTION_FORWARD: {"label": "Forward email", "description": "Forward a message from your mailbox, optionally with its attachments."},
         ACTION_DOWNLOAD_ATTACHMENTS: {"label": "Download attachments", "description": "Save a message's attachments as files."},
         ACTION_REQUEST_UPLOAD: {"label": "Attach a file", "description": "Stage one outbound file for a send or forward."},
@@ -303,6 +342,17 @@ MAIL_SCHEMA = {
             "object_ref": "mail:<provider>:<account_id> or omit account_id in payload when only one account can send",
             "payload": ["to", "subject", "body_markdown", "cc", "bcc", "body_html", "attachments", "attachment_paths", "account_id"],
         },
+        ACTION_DRAFT: {
+            "description": (
+                "Save a DRAFT in a connected mailbox without sending it; the person "
+                "reviews and sends it themselves. Gmail drafts land in Gmail Drafts, "
+                "iCloud drafts are appended to the Drafts mailbox over IMAP. Attach "
+                "with attachments=[{staged_ref}] after request_upload, or inline "
+                "{filename, content_base64} entries."
+            ),
+            "object_ref": "mail:<provider>:<account_id> or omit account_id in payload when only one account can draft",
+            "payload": ["to", "subject", "body_markdown", "cc", "bcc", "body_html", "attachments", "attachments_base64", "account_id"],
+        },
         ACTION_FORWARD: {
             "description": (
                 "Forward an existing message. include_original_attachments=true carries "
@@ -321,7 +371,13 @@ MAIL_SCHEMA = {
         "gmail": {
             "read": GMAIL_READ_CLAIM,
             "send": GMAIL_SEND_CLAIM,
-        }
+            "draft": GMAIL_COMPOSE_CLAIM,
+        },
+        "icloud": {
+            "read": ICLOUD_READ_CLAIM,
+            "send": ICLOUD_SEND_CLAIM,
+            "draft": ICLOUD_SEND_CLAIM,
+        },
     },
 }
 
@@ -347,6 +403,7 @@ MAIL_SCHEMA_PROJECTION = {
                         "keywords": ["send", "email", "upload", "attachment"],
                         "operations": [
                             f"object.action:{ACTION_SEND}",
+                            f"object.action:{ACTION_DRAFT}",
                             f"object.action:{ACTION_REQUEST_UPLOAD}",
                             f"object.action:{ACTION_DISCARD_UPLOAD}",
                         ],
@@ -382,6 +439,7 @@ MAIL_SCHEMA_PROJECTION = {
             },
             "actions": [
                 ACTION_SEND,
+                ACTION_DRAFT,
                 ACTION_REQUEST_UPLOAD,
                 ACTION_DISCARD_UPLOAD,
             ],
@@ -411,6 +469,12 @@ MAIL_SCHEMA_PROJECTION = {
 # agent quotes must teach exactly that form. Encoded inline entries stay in
 # the turn-less (MCP) contract only — those callers hold raw bytes themselves.
 _MAIL_ACTION_DESCRIPTIONS_IN_CHAT: dict[str, str] = {
+    ACTION_DRAFT: (
+        "Save a DRAFT in a connected mailbox for the person to review and send "
+        "themselves; nothing is sent. Attach workspace files by ref via "
+        "attachment_paths (Gmail) or inline attachments_base64 entries; "
+        "attachments=[{staged_ref}] carries files staged via request_upload."
+    ),
     ACTION_SEND: (
         "Send a new email from a connected mail account. Attach workspace files "
         "by ref: attachment_paths=[<KDCube file path>] — pass the logical "
@@ -680,9 +744,12 @@ class MailNamedServiceProvider(NamedServiceProvider):
         self._file_url_factory = file_url_factory
         self._upload_slot_factory = upload_slot_factory
         self._gmail = GmailTools()
+        self._icloud = IcloudMailTools()
         if entrypoint is not None:
             bind_gmail_service(entrypoint)
             bind_gmail_integrations({"comm_context": getattr(entrypoint, "comm_context", None)})
+            bind_icloud_service(entrypoint)
+            bind_icloud_integrations({"comm_context": getattr(entrypoint, "comm_context", None)})
 
     def _provider_identity(self) -> dict[str, Any]:
         return {"provider_id": PROVIDER_ID, "bundle_id": self.spec.bundle_id}
@@ -917,16 +984,270 @@ class MailNamedServiceProvider(NamedServiceProvider):
         )
 
     async def _gmail_accounts(self, ctx: NamedServiceContext, *, claim: str = "") -> list[ConnectedAccount]:
+        return await self._provider_accounts(ctx, provider_id=GMAIL_PROVIDER_ID, claim=claim)
+
+    async def _icloud_accounts(self, ctx: NamedServiceContext, *, claim: str = "") -> list[ConnectedAccount]:
+        """iCloud accounts the calling agent may use for ``claim``: connected,
+        holding the claim, and inside the agent's per-account binding (the
+        same default-closed rule ``_accounts_for_claim`` applies to Gmail)."""
+        eligible = await self._provider_accounts(ctx, provider_id=ICLOUD_PROVIDER_ID, claim=claim)
+        from connection_hub.agent_account_scope import account_claim_scope_for
+
+        scope = account_claim_scope_for(ICLOUD_PROVIDER_ID)
+        if scope is None:
+            return eligible
+        out: list[ConnectedAccount] = []
+        for item in eligible:
+            claims = scope.get(item.account_id)
+            if claims is None:
+                claims = scope.get("*")
+            if claims is None:
+                continue
+            if "*" in claims or (claim in claims if claim else True):
+                out.append(item)
+        return out
+
+    async def _provider_accounts(
+        self, ctx: NamedServiceContext, *, provider_id: str, claim: str = ""
+    ) -> list[ConnectedAccount]:
         client = await self._client(ctx)
         if client is None:
             return []
-        accounts = await client.list_accounts(provider_id=GMAIL_PROVIDER_ID)
-        out = [
+        try:
+            accounts = await client.list_accounts(provider_id=provider_id)
+        except Exception as exc:  # noqa: BLE001 - one provider down must not hide the others
+            LOGGER.warning("[mail] list_accounts failed provider=%s: %s", provider_id, exc)
+            return []
+        return [
             account for account in accounts
             if account.connected
             and (not claim or account.allows(claim))
         ]
-        return out
+
+    @staticmethod
+    def _provider_keys(provider_filter: str) -> list[str]:
+        """Which providers a call spans: an explicit key, or every implemented one."""
+        wanted = _text(provider_filter).lower()
+        if wanted:
+            return [wanted]
+        return [key for key, meta in MAIL_PROVIDER_CATALOG.items() if meta.get("implemented")]
+
+    async def _outbound_target(
+        self,
+        ctx: NamedServiceContext,
+        request: NamedServiceRequest,
+        *,
+        parsed: Mapping[str, str],
+        payload: Mapping[str, Any],
+        need: str,
+    ) -> tuple[str, str, NamedServiceResponse | None]:
+        """(provider_key, account_id, error) for send/draft.
+
+        The realm rule, in namespace terms: a ref or payload account pins the
+        account (and its provider); otherwise exactly one eligible account
+        across providers is used, several eligible accounts answer
+        ``account_required`` with labeled candidates, and none at all falls
+        back to Gmail so its broker mints the precise connect/upgrade reason."""
+        gmail_claim = GMAIL_COMPOSE_CLAIM if need == "draft" else GMAIL_SEND_CLAIM
+        explicit = _text(payload.get("account_id") or parsed.get("account_id"))
+        if explicit:
+            provider_key = _text(parsed.get("provider")) if parsed.get("account_id") == explicit else ""
+            provider_key = provider_key or await self._account_provider_key(ctx, explicit)
+            return (provider_key or "gmail"), explicit, None
+        candidates: list[tuple[str, ConnectedAccount]] = []
+        candidates.extend(("gmail", item) for item in await self._gmail_accounts(ctx, claim=gmail_claim))
+        candidates.extend(("icloud", item) for item in await self._icloud_accounts(ctx, claim=ICLOUD_SEND_CLAIM))
+        if len(candidates) == 1:
+            provider_key, account = candidates[0]
+            return provider_key, account.account_id, None
+        provider_keys = {key for key, _ in candidates}
+        if len(provider_keys) == 1:
+            # Several accounts of ONE provider: that provider's broker already
+            # mints the standard account_required consent with candidates when
+            # it resolves without an account id; keep that established shape.
+            return next(iter(provider_keys)), "", None
+        if len(candidates) > 1:
+            return "", "", NamedServiceResponse.error_response(
+                code="account_required",
+                message=(
+                    "Several connected mail accounts can perform this action; "
+                    "choose one and resend with account_id."
+                ),
+                status=409,
+                provider=self._provider_identity(),
+                namespace=request.namespace or MAIL_NAMESPACE,
+                object_ref=request.object_ref,
+                details={
+                    "reason": "account_required",
+                    "candidates": [
+                        {
+                            "account_id": account.account_id,
+                            "label": f"{account.display_name or account.email or account.account_id} ({MAIL_PROVIDER_CATALOG[key]['label']})",
+                            "email": account.email,
+                            "provider": key,
+                            "ref": account_ref(key, account.account_id),
+                        }
+                        for key, account in candidates
+                    ],
+                },
+            )
+        return "gmail", "", None
+
+    @staticmethod
+    def _inline_attachments_json(payload: Mapping[str, Any], artifact_root: Any, staged: list[dict[str, Any]]) -> str:
+        """Inline base64 entries for a transport with no KDCube file lane
+        (iCloud): the payload's own attachments_base64 plus every staged file
+        read back from the inline workspace."""
+        import base64 as _b64
+        import pathlib as _pathlib
+
+        entries: list[dict[str, Any]] = []
+        raw = payload.get("attachments_base64")
+        if isinstance(raw, str) and raw.strip():
+            try:
+                raw = json.loads(raw)
+            except json.JSONDecodeError:
+                raw = []
+        for item in raw or []:
+            if isinstance(item, Mapping):
+                entries.append(dict(item))
+        for item in staged:
+            path = _pathlib.Path(str(artifact_root)) / str(item.get("relpath") or "")
+            if path.is_file():
+                entries.append({
+                    "filename": _text(item.get("filename")) or path.name,
+                    "content_base64": _b64.b64encode(path.read_bytes()).decode("ascii"),
+                    "mime_type": _text(item.get("mime")),
+                })
+        return json.dumps(entries)
+
+    async def _gmail_draft(
+        self, request: NamedServiceRequest, *, account_id: str, payload: Mapping[str, Any]
+    ) -> NamedServiceResponse:
+        entries, entries_error = self._attachment_entries(request, payload)
+        if entries_error is not None:
+            return entries_error
+
+        async def _draft(attachment_paths: Any, inline_json: str) -> Any:
+            return await self._gmail.create_gmail_draft(
+                to=_text(payload.get("to")),
+                subject=_text(payload.get("subject")),
+                body_markdown=_text(payload.get("body_markdown") or payload.get("body")),
+                cc=_text(payload.get("cc")),
+                bcc=_text(payload.get("bcc")),
+                body_html=_text(payload.get("body_html")),
+                attachment_paths=attachment_paths,
+                attachments_base64=inline_json,
+                account_id=account_id,
+            )
+
+        inline_only = self._inline_attachments_json(payload, "", [])
+        if entries:
+            try:
+                resolved, consumed = resolve_payload_file_entries(entries, staging_root=self._staging_root())
+                with inline_files_workspace() as artifact_root:
+                    staged = materialize_inline_files(artifact_root, resolved)
+                    result = await _draft(self._merged_attachment_paths(payload, staged), inline_only)
+            except InlineFileError as exc:
+                return self._inline_error(request, exc)
+            if isinstance(result, Mapping) and result.get("ok"):
+                root = self._staging_root()
+                for ref in consumed if root is not None else []:
+                    delete_staged(root, ref)
+        else:
+            result = await _draft(payload.get("attachment_paths") or "", inline_only)
+        if not isinstance(result, Mapping) or not result.get("ok"):
+            return _error_from_tool(result if isinstance(result, Mapping) else {}, request=request, default_code="gmail_draft_failed")
+        ret = result.get("ret") if isinstance(result.get("ret"), Mapping) else {}
+        resolved_account = _text(ret.get("account_id") or account_id)
+        return NamedServiceResponse.ok_response(
+            provider=self._provider_identity(),
+            namespace=request.namespace or MAIL_NAMESPACE,
+            object_ref=account_ref("gmail", resolved_account),
+            extra={"action": ACTION_DRAFT, "provider": "gmail", "result": ret},
+        )
+
+    async def _icloud_outbound(
+        self,
+        ctx: NamedServiceContext,
+        request: NamedServiceRequest,
+        *,
+        action: str,
+        account_id: str,
+        payload: Mapping[str, Any],
+    ) -> NamedServiceResponse:
+        """send / draft on an iCloud account. Files reach IMAP/SMTP inline, so
+        staged uploads are read back into base64 entries here."""
+        entries, entries_error = self._attachment_entries(request, payload)
+        if entries_error is not None:
+            return entries_error
+
+        async def _run(inline_json: str) -> Any:
+            kwargs = dict(
+                to=_text(payload.get("to")),
+                subject=_text(payload.get("subject") or ("" if action == ACTION_DRAFT else "KDCube message")),
+                body_markdown=_text(payload.get("body_markdown") or payload.get("body")),
+                cc=_text(payload.get("cc")),
+                bcc=_text(payload.get("bcc")),
+                body_html=_text(payload.get("body_html")),
+                attachments_base64=inline_json,
+                account_id=account_id,
+            )
+            if action == ACTION_DRAFT:
+                return await self._icloud.create_draft(**kwargs)
+            return await self._icloud.send(**kwargs)
+
+        if entries:
+            try:
+                resolved, consumed = resolve_payload_file_entries(entries, staging_root=self._staging_root())
+                with inline_files_workspace() as artifact_root:
+                    staged = materialize_inline_files(artifact_root, resolved)
+                    result = await _run(self._inline_attachments_json(payload, artifact_root, staged))
+            except InlineFileError as exc:
+                return self._inline_error(request, exc)
+            if isinstance(result, Mapping) and result.get("ok"):
+                root = self._staging_root()
+                for ref in consumed if root is not None else []:
+                    delete_staged(root, ref)
+        else:
+            result = await _run(self._inline_attachments_json(payload, "", []))
+        if not isinstance(result, Mapping) or not result.get("ok"):
+            return _error_from_tool(
+                result if isinstance(result, Mapping) else {},
+                request=request,
+                default_code=f"icloud_{action}_failed",
+            )
+        ret = result.get("ret") if isinstance(result.get("ret"), Mapping) else {}
+        resolved_account = _text(ret.get("account_id") or account_id)
+        extra = {"action": action, "provider": "icloud", "result": ret}
+        if action == ACTION_SEND:
+            obj = _message_object(ret, provider_key="icloud", account_id=resolved_account)
+            return NamedServiceResponse.ok_response(
+                provider=self._provider_identity(),
+                namespace=request.namespace or MAIL_NAMESPACE,
+                object_ref=obj.get("ref") or request.object_ref,
+                object=obj,
+                extra=extra,
+            )
+        return NamedServiceResponse.ok_response(
+            provider=self._provider_identity(),
+            namespace=request.namespace or MAIL_NAMESPACE,
+            object_ref=account_ref("icloud", resolved_account),
+            extra=extra,
+        )
+
+    async def _account_provider_key(self, ctx: NamedServiceContext, account_id: str) -> str:
+        """The provider key of a connected account id, '' when unknown."""
+        wanted = _text(account_id)
+        if not wanted:
+            return ""
+        for item in await self._gmail_accounts(ctx):
+            if item.account_id == wanted:
+                return "gmail"
+        for item in await self._icloud_accounts(ctx):
+            if item.account_id == wanted:
+                return "icloud"
+        return ""
 
     async def _resolve_claim(
         self,
@@ -1120,10 +1441,14 @@ class MailNamedServiceProvider(NamedServiceProvider):
         filters = dict(request.filters or {})
         provider_filter = _text(filters.get("provider")).lower()
         items: list[dict[str, Any]] = []
-        if not provider_filter or provider_filter == "gmail":
+        providers = self._provider_keys(provider_filter)
+        if "gmail" in providers:
             for account in await self._gmail_accounts(ctx):
                 items.append(_account_object(account, provider_key="gmail"))
-        extra: dict[str, Any] = {"count": len(items), "providers": ["gmail"]}
+        if "icloud" in providers:
+            for account in await self._icloud_accounts(ctx):
+                items.append(_account_object(account, provider_key="icloud"))
+        extra: dict[str, Any] = {"count": len(items), "providers": providers}
         if not items:
             extra["consent"] = self._connect_hint(ctx, request)
         return NamedServiceResponse.ok_response(
@@ -1135,11 +1460,13 @@ class MailNamedServiceProvider(NamedServiceProvider):
 
     async def object_search(self, ctx: NamedServiceContext, request: NamedServiceRequest) -> NamedServiceResponse:
         filters = dict(request.filters or {})
-        provider_key = _text(filters.get("provider") or "gmail").lower()
-        if provider_key != "gmail":
+        provider_filter = _text(filters.get("provider")).lower()
+        providers = self._provider_keys(provider_filter)
+        unknown = [key for key in providers if not (MAIL_PROVIDER_CATALOG.get(key) or {}).get("implemented")]
+        if unknown:
             return NamedServiceResponse.error_response(
                 code="mail_provider_not_implemented",
-                message=f"Mail provider is not implemented yet: {provider_key}",
+                message=f"Mail provider is not implemented yet: {unknown[0]}",
                 status=501,
                 provider=self._provider_identity(),
                 namespace=request.namespace or MAIL_NAMESPACE,
@@ -1147,11 +1474,37 @@ class MailNamedServiceProvider(NamedServiceProvider):
         query = _text(filters.get("gmail_query") or request.query)
         account_id = _text(filters.get("account_id") or request.payload.get("account_id"))
         limit = _int(request.limit, default=5, maximum=10)
-        accounts, consent = await self._accounts_for_claim(
-            ctx, request, claim=GMAIL_READ_CLAIM, account_id=account_id
-        )
-        if consent is not None:
-            return consent
+        # An explicit account pins its provider; otherwise the search spans
+        # every eligible account of every implemented provider, each answered
+        # by its own transport.
+        if account_id and not provider_filter:
+            pinned = await self._account_provider_key(ctx, account_id)
+            if pinned:
+                providers = [pinned]
+        accounts: list[tuple[str, ConnectedAccount]] = []
+        if "gmail" in providers:
+            gmail_accounts, consent = await self._accounts_for_claim(
+                ctx, request, claim=GMAIL_READ_CLAIM, account_id=account_id
+            )
+            if consent is not None and providers == ["gmail"]:
+                return consent
+            if consent is None:
+                accounts.extend(("gmail", item) for item in gmail_accounts)
+        if "icloud" in providers:
+            icloud_accounts = await self._icloud_accounts(ctx, claim=ICLOUD_READ_CLAIM)
+            if account_id:
+                icloud_accounts = [item for item in icloud_accounts if item.account_id == account_id]
+            accounts.extend(("icloud", item) for item in icloud_accounts)
+        if not accounts:
+            # Nothing eligible anywhere: let the Gmail broker mint the precise
+            # connect / upgrade / grant reason, as before this realm spanned
+            # providers.
+            _accounts, consent = await self._accounts_for_claim(
+                ctx, request, claim=GMAIL_READ_CLAIM, account_id=account_id
+            )
+            if consent is not None:
+                return consent
+            accounts = [("gmail", item) for item in _accounts]
         cursor = _text(request.cursor or filters.get("cursor"))
         if cursor and len(accounts) > 1 and not account_id:
             return NamedServiceResponse.error_response(
@@ -1169,19 +1522,27 @@ class MailNamedServiceProvider(NamedServiceProvider):
         errors: list[dict[str, Any]] = []
         next_cursors: dict[str, str] = {}
         per_account_limit = max(1, min(limit, 10))
-        for account in accounts:
+        for provider_key, account in accounts:
             account_label = account.display_name or account.email or account.account_id
-            result = await self._gmail.search_gmail(
-                query=query,
-                max_results=per_account_limit,
-                cursor=cursor,
-                account_id=account.account_id,
-            )
+            if provider_key == "icloud":
+                result = await self._icloud.search(
+                    query=query,
+                    max_results=per_account_limit,
+                    account_id=account.account_id,
+                )
+            else:
+                result = await self._gmail.search_gmail(
+                    query=query,
+                    max_results=per_account_limit,
+                    cursor=cursor,
+                    account_id=account.account_id,
+                )
             if not isinstance(result, Mapping) or not result.get("ok"):
                 errors.append({
                     "account_id": account.account_id,
                     "account_label": account_label,
-                    "error": result.get("error") if isinstance(result, Mapping) else "gmail_search_failed",
+                    "provider": provider_key,
+                    "error": result.get("error") if isinstance(result, Mapping) else f"{provider_key}_search_failed",
                     "ret": result.get("ret") if isinstance(result, Mapping) else None,
                 })
                 continue
@@ -1193,7 +1554,7 @@ class MailNamedServiceProvider(NamedServiceProvider):
                     items.append(
                         _message_object(
                             row,
-                            provider_key="gmail",
+                            provider_key=provider_key,
                             account_id=resolved_account_id,
                             account_label=account_label,
                         )
@@ -1222,7 +1583,8 @@ class MailNamedServiceProvider(NamedServiceProvider):
             warnings=[{"code": "mail_account_error", "message": str(err)} for err in errors] or None,
             extra={
                 "query": query,
-                "provider": "gmail",
+                "provider": providers[0] if len(providers) == 1 else "",
+                "providers": providers,
                 "count": len(items[:limit]),
                 "searched_accounts": len(accounts),
                 "next_cursors": next_cursors,
@@ -1238,7 +1600,11 @@ class MailNamedServiceProvider(NamedServiceProvider):
         if _is_materialization_request(request) and parsed.get("provider") == "gmail":
             return await self._materialize_object(ctx, request, parsed=parsed)
         if parsed.get("kind") == "account":
-            accounts = await self._gmail_accounts(ctx)
+            accounts = (
+                await self._icloud_accounts(ctx)
+                if parsed.get("provider") == "icloud"
+                else await self._gmail_accounts(ctx)
+            )
             account = next((item for item in accounts if item.account_id == parsed.get("account_id")), None)
             if account is None:
                 return NamedServiceResponse.error_response(
@@ -1304,10 +1670,22 @@ class MailNamedServiceProvider(NamedServiceProvider):
                 object_ref=request.object_ref,
                 object=obj,
             )
-        if parsed.get("kind") != "message" or parsed.get("provider") != "gmail":
+        if parsed.get("kind") == "attachment" and parsed.get("provider") == "icloud":
+            return NamedServiceResponse.error_response(
+                code="mail_provider_action_not_implemented",
+                message=(
+                    "iCloud attachments are listed on the message but not yet "
+                    "downloadable through this namespace."
+                ),
+                status=501,
+                provider=self._provider_identity(),
+                namespace=request.namespace or MAIL_NAMESPACE,
+                object_ref=request.object_ref,
+            )
+        if parsed.get("kind") != "message" or parsed.get("provider") not in ("gmail", "icloud"):
             return NamedServiceResponse.error_response(
                 code="mail_message_ref_required",
-                message="object_ref must be mail:gmail:<account_id>:message:<message_id>.",
+                message="object_ref must be mail:<gmail|icloud>:<account_id>:message:<message_id>.",
                 status=400,
                 provider=self._provider_identity(),
                 namespace=request.namespace or MAIL_NAMESPACE,
@@ -1315,6 +1693,35 @@ class MailNamedServiceProvider(NamedServiceProvider):
             )
         include_html = bool(request.filters.get("include_html") or request.payload.get("include_html"))
         max_body_chars = _int(request.filters.get("max_body_chars") or request.payload.get("max_body_chars"), default=12000, maximum=24000)
+        if parsed.get("provider") == "icloud":
+            result = await self._icloud.read_message(
+                message_id=parsed["message_id"],
+                include_html=include_html,
+                account_id=parsed["account_id"],
+            )
+            if not isinstance(result, Mapping) or not result.get("ok"):
+                return _error_from_tool(result if isinstance(result, Mapping) else {}, request=request, default_code="icloud_read_failed")
+            ret = result.get("ret") if isinstance(result.get("ret"), Mapping) else {}
+            message = ret.get("message") if isinstance(ret.get("message"), Mapping) else {}
+            resolved_account_id = _text(ret.get("account_id") or parsed["account_id"])
+            known = next(
+                (item for item in await self._icloud_accounts(ctx) if item.account_id == resolved_account_id),
+                None,
+            )
+            obj = _message_object(
+                message,
+                provider_key="icloud",
+                account_id=resolved_account_id,
+                account_label=(known.display_name or known.email) if known else "",
+            )
+            obj["body_text"] = _text(message.get("body_text"))[:max_body_chars]
+            obj["body_text_truncated"] = len(_text(message.get("body_text"))) > max_body_chars
+            return NamedServiceResponse.ok_response(
+                provider=self._provider_identity(),
+                namespace=request.namespace or MAIL_NAMESPACE,
+                object_ref=obj.get("ref") or request.object_ref,
+                object=obj,
+            )
         result = await self._gmail.read_gmail_message(
             message_id=parsed["message_id"],
             include_html=include_html,
@@ -1457,6 +1864,15 @@ class MailNamedServiceProvider(NamedServiceProvider):
         action = _text(request.action or request.payload.get("action")).lower()
         payload = dict(request.payload or {})
         parsed = parse_mail_ref(request.object_ref or "")
+        if parsed.get("provider") == "icloud" and action in (ACTION_DOWNLOAD_ATTACHMENTS, ACTION_FORWARD):
+            return NamedServiceResponse.error_response(
+                code="mail_provider_action_not_implemented",
+                message=f"{action} is not available for iCloud accounts yet; read, search, send, and draft are.",
+                status=501,
+                provider=self._provider_identity(),
+                namespace=request.namespace or MAIL_NAMESPACE,
+                object_ref=request.object_ref,
+            )
         if action == ACTION_DOWNLOAD_ATTACHMENTS:
             if parsed.get("kind") != "message" or parsed.get("provider") != "gmail":
                 return NamedServiceResponse.error_response(
@@ -1498,8 +1914,20 @@ class MailNamedServiceProvider(NamedServiceProvider):
         if action == ACTION_DISCARD_UPLOAD:
             return self._discard_upload(ctx, request)
 
-        if action == ACTION_SEND:
-            account_id = _text(payload.get("account_id") or parsed.get("account_id"))
+        if action in (ACTION_SEND, ACTION_DRAFT):
+            provider_key, target_account_id, target_error = await self._outbound_target(
+                ctx, request, parsed=parsed, payload=payload,
+                need="draft" if action == ACTION_DRAFT else "send",
+            )
+            if target_error is not None:
+                return target_error
+            if provider_key == "icloud":
+                return await self._icloud_outbound(
+                    ctx, request, action=action, account_id=target_account_id, payload=payload,
+                )
+            if action == ACTION_DRAFT:
+                return await self._gmail_draft(request, account_id=target_account_id, payload=payload)
+            account_id = target_account_id
             entries, entries_error = self._attachment_entries(request, payload)
             if entries_error is not None:
                 return entries_error

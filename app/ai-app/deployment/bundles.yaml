@@ -235,6 +235,8 @@ bundles:
               connected_accounts:
               - provider_id: google
                 claims: ["gmail:read"]
+              - provider_id: icloud_mail
+                claims: ["email:read"]
             - grant: mail:send
               label: Send connected mail
               description: Send or forward messages through mail accounts connected to KDCube.
@@ -248,6 +250,8 @@ bundles:
               connected_accounts:
               - provider_id: google
                 claims: ["gmail:send"]
+              - provider_id: icloud_mail
+                claims: ["email:send"]
             - grant: mail:draft
               label: Draft connected mail
               description: Create draft messages in mail accounts connected to KDCube, without sending them.
@@ -261,6 +265,8 @@ bundles:
               connected_accounts:
               - provider_id: google
                 claims: ["gmail:compose"]
+              - provider_id: icloud_mail
+                claims: ["email:send"]
             - grant: sheets:read
               label: Read Google Sheets
               description: Find spreadsheets and read their metadata and values through a connected Google account.
@@ -874,6 +880,12 @@ bundles:
                             grants:
                             - named_services:use
                             - mail:read
+                          object.action.draft:
+                            label: Draft mail
+                            description: Save a draft in a connected mailbox for the person to review and send; nothing is sent.
+                            grants:
+                            - named_services:use
+                            - mail:draft
                           object.action.send:
                             label: Send mail
                             description: Send a new message from a connected mail account.
@@ -942,6 +954,12 @@ bundles:
                             grants:
                             - named_services:use
                             - mail:read
+                          object.action.draft:
+                            label: Draft mail
+                            description: Save a draft in a connected mailbox for the person to review and send; nothing is sent.
+                            grants:
+                            - named_services:use
+                            - mail:draft
                           object.action.send:
                             label: Send mail
                             description: Send a new message from a connected mail account.
@@ -1905,6 +1923,11 @@ bundles:
                   description: Search Slack messages through connected Slack accounts.
                   grants:
                   - slack:search
+                productivity_mail_accounts:
+                  label: List mail accounts
+                  description: List connected mail accounts across providers to pick a mailbox.
+                  grants:
+                  - mail:read
                 productivity_mail_search:
                   label: Search mail
                   description: Search messages in connected mail accounts.

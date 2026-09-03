@@ -91,8 +91,14 @@ WEB_TOOLS = {
     "productivity_web_search",
     "productivity_web_fetch",
 }
+# Mail account discovery is claim-free like LinkedIn's: it reads KDCube's own
+# connection records across providers so the agent can ask which mailbox.
+MAIL_DISCOVERY_TOOLS = {
+    "productivity_mail_accounts",
+}
 ALL_TOOLS = {
     "productivity_slack_search",
+    *MAIL_DISCOVERY_TOOLS,
     "productivity_mail_search",
     "productivity_mail_get",
     "productivity_mail_draft",
@@ -163,7 +169,7 @@ def test_every_tool_declares_provider_claims():
     # Account discovery must stay claim-free: resolving a connected-account
     # claim here returns account_required once two accounts are connected, and
     # the tool takes no account_id, so the denial could never be satisfied.
-    for name in LINKEDIN_DISCOVERY_TOOLS | WEB_TOOLS:
+    for name in LINKEDIN_DISCOVERY_TOOLS | MAIL_DISCOVERY_TOOLS | WEB_TOOLS:
         assert module.tool_requirements(name) == []
 
 

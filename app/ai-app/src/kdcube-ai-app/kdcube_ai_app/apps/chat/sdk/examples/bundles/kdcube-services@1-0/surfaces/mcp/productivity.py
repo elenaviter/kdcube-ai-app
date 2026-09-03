@@ -25,7 +25,13 @@ from typing import Annotated, Any, Callable, Mapping
 
 from pydantic import Field
 
+from kdcube_ai_app.apps.chat.sdk.integrations.email.icloud_tools import IcloudMailTools
 from kdcube_ai_app.apps.chat.sdk.integrations.google.gmail_tools import GmailTools
+from kdcube_ai_app.apps.chat.sdk.integrations.mail.realm import (
+    MailAccount,
+    choose_mail_account,
+    list_mail_accounts,
+)
 from kdcube_ai_app.apps.chat.sdk.integrations.slack.tools import SlackTools
 from connection_hub.delegated_credentials.credential_view import (
     delegated_credential_view,
@@ -67,8 +73,12 @@ ConfigFactory = Callable[[], Mapping[str, Any]]
 
 PRODUCTIVITY_MCP_INSTRUCTIONS = """\
 This MCP server exposes productivity tools that run on the approving user's
-connected accounts (Slack, mail, Google Sheets, Google Docs, LinkedIn). For
-Sheets, use search when the spreadsheet id is unknown, describe before
+connected accounts (Slack, mail, Google Sheets, Google Docs, LinkedIn). Mail is
+a realm across providers (Gmail, iCloud Mail): when the user may have several
+mailboxes, list accounts first and pass the chosen account_id; a mail call
+without account_id and several eligible accounts answers account_required with
+labeled candidates, which means ask the user, never pick a provider for them.
+For Sheets, use search when the spreadsheet id is unknown, describe before
 structural changes, and pass the returned stable ids to read or write tools. For
 Docs, use search when the document id is unknown, get before editing, and pass
 the returned document id and text indices to the edit and comment tools. For
@@ -100,6 +110,20 @@ PRODUCTIVITY_TOOLS: dict[str, dict[str, Any]] = {
                 ],
             },
         },
+    },
+    # Mail is a REALM: the user may connect several providers (Gmail, iCloud).
+    # The declarations below name the Gmail claims as the static requirement
+    # (the consent page and the tests read them); at call time the tools
+    # resolve through the realm (mail/realm.py), which lists every connected
+    # mail account, asks when several are eligible, and enforces the CHOSEN
+    # account's own provider claim before routing to that provider.
+    "productivity_mail_accounts": {
+        "label": "List mail accounts",
+        "description": (
+            "List the user's connected mail accounts across providers, with "
+            "what each may do. Reads KDCube's own connection records; takes "
+            "no account_id and needs no provider claim."
+        ),
     },
     "productivity_mail_search": {
         "label": "Search mail",
@@ -180,6 +204,7 @@ def build_productivity_mcp_app(
 
     slack = SlackTools()
     gmail = GmailTools()
+    icloud = IcloudMailTools()
 
     def _prepare() -> None:
         """Per-call request binding, mirroring the named-services bridge:
@@ -207,18 +232,54 @@ def build_productivity_mcp_app(
         )
 
     async def _enforce(
-        tool_name: str, operation: str, account_id: str = ""
+        tool_name: str,
+        operation: str,
+        account_id: str = "",
+        requirements: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
+        """``requirements`` overrides the tool's static declaration for calls
+        that have already chosen an account: the realm passes the chosen
+        account's own provider requirement, so an iCloud pick is enforced as
+        iCloud and never as the Gmail default."""
         _prepare()
         return await enforce_tool_requirements(
             request,
             tool_name=tool_name,
             operation=operation,
-            requirements=tool_requirements(tool_name),
+            requirements=(
+                requirements if requirements is not None else tool_requirements(tool_name)
+            ),
             account_id=account_id,
             tenant=tenant_factory(),
             project=project_factory(),
         )
+
+    async def _route_mail(
+        tool_name: str, operation: str, need: str, account_id: str
+    ) -> tuple[MailAccount | None, dict[str, Any] | None]:
+        """Realm resolution for one mail call.
+
+        Returns (account, denial). A denial ends the call (account_required
+        with candidates, an unknown account_id, or the chosen provider's own
+        consent envelope). No account and no denial means the realm found no
+        eligible account at all; the caller then falls back to the static
+        Gmail enforcement, whose connect-first denial names what to connect."""
+        _prepare()
+        accounts = await list_mail_accounts()
+        choice = choose_mail_account(
+            accounts, account_id=account_id, need=need, where=tool_name
+        )
+        if choice.denial is not None:
+            return None, choice.denial
+        if choice.account is None:
+            return None, await _enforce(tool_name, operation, account_id)
+        denial = await _enforce(
+            tool_name,
+            operation,
+            choice.account.account_id,
+            requirements=[choice.account.provider.requirement(need)],
+        )
+        return choice.account, denial
 
     @mcp.tool(
         name="productivity_slack_search",
@@ -253,12 +314,41 @@ def build_productivity_mcp_app(
         return await slack.search_slack(query=query, count=count, account_id=account_id)
 
     @mcp.tool(
+        name="productivity_mail_accounts",
+        title="List mail accounts",
+        description=(
+            "List the approving user's connected mail accounts across "
+            "providers (Gmail, iCloud Mail) with account_id, address, and what "
+            "each may do (read, draft, send). Call this first when the user "
+            "has more than one mailbox, then pass the chosen account_id to the "
+            "other mail tools. Returns {ok, error, ret}."
+        ),
+        annotations=read_only_annotations(ToolAnnotations, title="List mail accounts"),
+        structured_output=False,
+    )
+    async def _productivity_mail_accounts() -> dict[str, Any]:
+        _prepare()
+        accounts = await list_mail_accounts()
+        rows = [account.public_dict() for account in accounts]
+        return {
+            "ok": True,
+            "error": None,
+            "ret": {
+                "accounts": rows,
+                "count": len(rows),
+                "providers": sorted({row["provider"] for row in rows}),
+            },
+        }
+
+    @mcp.tool(
         name="productivity_mail_search",
         title="Search mail",
         description=(
-            "Search the approving user's connected mail account. Returns "
-            "{ok, error, ret}; ret contains message ids, subjects, senders, "
-            "dates, snippets."
+            "Search the approving user's connected mail account. With several "
+            "connected mail accounts and no account_id this returns "
+            "account_required with the candidates: ask the user, then resend "
+            "with account_id. Returns {ok, error, ret}; ret contains message "
+            "ids, subjects, senders, dates, snippets."
         ),
         annotations=read_only_annotations(ToolAnnotations, title="Search mail"),
         structured_output=False,
@@ -287,11 +377,19 @@ def build_productivity_mcp_app(
             ),
         ] = "",
     ) -> dict[str, Any]:
-        denial = await _enforce("productivity_mail_search", "search", account_id)
+        account, denial = await _route_mail(
+            "productivity_mail_search", "search", "read", account_id
+        )
         if denial is not None:
             return denial
+        if account is not None and account.provider.key == "icloud":
+            return await icloud.search(
+                query=query, max_results=max_results, account_id=account.account_id
+            )
         return await gmail.search_gmail(
-            query=query, max_results=max_results, account_id=account_id
+            query=query,
+            max_results=max_results,
+            account_id=account.account_id if account is not None else account_id,
         )
 
     @mcp.tool(
@@ -323,13 +421,21 @@ def build_productivity_mcp_app(
             ),
         ] = "",
     ) -> dict[str, Any]:
-        denial = await _enforce("productivity_mail_get", "get", account_id)
+        account, denial = await _route_mail(
+            "productivity_mail_get", "get", "read", account_id
+        )
         if denial is not None:
             return denial
+        if account is not None and account.provider.key == "icloud":
+            return await icloud.read_message(
+                message_id=message_id,
+                include_html=include_html,
+                account_id=account.account_id,
+            )
         return await gmail.read_gmail_message(
             message_id=message_id,
             include_html=include_html,
-            account_id=account_id,
+            account_id=account.account_id if account is not None else account_id,
         )
 
     @mcp.tool(
@@ -391,9 +497,22 @@ def build_productivity_mcp_app(
             ),
         ] = "",
     ) -> dict[str, Any]:
-        denial = await _enforce("productivity_mail_draft", "draft", account_id)
+        account, denial = await _route_mail(
+            "productivity_mail_draft", "draft", "draft", account_id
+        )
         if denial is not None:
             return denial
+        if account is not None and account.provider.key == "icloud":
+            return await icloud.create_draft(
+                to=to,
+                subject=subject,
+                body_markdown=body_markdown,
+                cc=cc,
+                bcc=bcc,
+                body_html=body_html,
+                attachments_base64=attachments_base64,
+                account_id=account.account_id,
+            )
         return await gmail.create_gmail_draft(
             to=to,
             subject=subject,
@@ -402,7 +521,7 @@ def build_productivity_mcp_app(
             bcc=bcc,
             body_html=body_html,
             attachments_base64=attachments_base64,
-            account_id=account_id,
+            account_id=account.account_id if account is not None else account_id,
         )
 
     register_google_sheets_tools(

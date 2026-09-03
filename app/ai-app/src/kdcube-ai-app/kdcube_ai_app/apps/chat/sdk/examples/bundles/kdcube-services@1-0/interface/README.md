@@ -435,10 +435,23 @@ account, split into three claims:
 Import accepts an optional `parent_id` Drive folder; placement into a
 pre-existing folder additionally needs `drive:write` on the connected account,
 because `docs:write` carries only the `drive.file` scope, which cannot reach
-folders the connector app never created or opened. The mail group gains
-`productivity_mail_draft` (`gmail:compose`): it creates a DRAFT the person
-sends themselves, deliberately without send authority, with attachments as
-inline base64 entries.
+folders the connector app never created or opened.
+
+Mail is a REALM across providers. `productivity_mail_accounts` (claim-free)
+lists every connected mailbox (Gmail, iCloud Mail) with its `account_id` and
+what it may do; `productivity_mail_search`, `_get`, and `_draft` take that
+`account_id`. Without one, a single eligible mailbox is used, two eligible
+mailboxes answer `account_required` with labeled candidates (ask the user, never
+pick a provider), and the chosen account is enforced on its OWN provider claim
+(`gmail:*` or `email:*`) before its transport runs: Gmail through the Gmail API,
+iCloud through IMAP/SMTP. `productivity_mail_draft` creates a DRAFT the person
+sends themselves, deliberately without send authority: Gmail via
+`drafts.create` (`gmail:compose`), iCloud via an IMAP APPEND into Drafts
+(`email:send`, a mailbox write), attachments as inline base64 entries. The
+`mail` named service follows the same realm: `object.list` spans both
+providers, message refs name theirs (`mail:gmail:…`, `mail:icloud:…`), and the
+`draft` action joins `send`; iCloud `forward` and attachment download are not
+implemented yet and say so.
 
 Search uses Google Drive metadata. Docs search returns native documents and
 compatible DOCX/ODT/RTF import sources; extensionless queries can exactly match
