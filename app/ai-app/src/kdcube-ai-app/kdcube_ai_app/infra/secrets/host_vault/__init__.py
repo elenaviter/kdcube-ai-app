@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Elena Viter
+
+"""Durable host vault for KDCube provider secrets (isolated first phase).
+
+Target flow this package implements the pieces of, without selecting it in
+any live deployment:
+
+    trusted Connection Hub app in KDCube
+      -> KDCube ISecretsManager (secrets-service)      [unchanged, not wired here]
+      -> deployment-local kdcube-secrets broker        broker.py
+      -> mTLS with enrolled deployment workload key    identity.py, transport.py
+      -> durable encrypted host vault                  service.py, storage.py, keys.py
+      -> raw value returns to trusted KDCube process
+
+Modules:
+
+- ``protocol``: the versioned wire contract (operations, request envelope,
+  fixed error codes, secret references, replay controls, sanitization).
+- ``keys``: root-key custody adapter and envelope encryption (data keys
+  wrapped by a versioned root key). The only in-memory provider is labeled
+  fake, for tests.
+- ``storage``: the durable encrypted store: atomic commit, generations,
+  crash recovery, bounded records, fail-closed on corruption.
+- ``audit``: append-only, secret-safe audit records.
+- ``identity``: deployment enrollment (CSR -> certificate), live trust
+  registry with namespace ACLs, rotation overlap, revocation, expiry.
+- ``service``: the vault service: authenticate the presented workload
+  certificate, authorize the exact namespace, apply replay controls, run the
+  store operation, audit.
+- ``transport``: mTLS server and client over stdlib ``ssl``/``http``.
+- ``broker``: the stateless ``kdcube-secrets`` adapter that translates the
+  existing internal secrets-service operations into vault requests.
+
+Nothing here reads, migrates, or logs a real secret value; the selected
+``secrets-file`` provider and ``infra/secrets/manager.py`` are untouched.
+"""
+
+from kdcube_ai_app.infra.secrets.host_vault.protocol import (
+    PROTOCOL_VERSION,
+    ErrorCode,
+    Operation,
+    SecretNamespace,
+    SecretReference,
+    VaultError,
+    VaultRequest,
+    VaultResponse,
+)
+
+__all__ = [
+    "PROTOCOL_VERSION",
+    "ErrorCode",
+    "Operation",
+    "SecretNamespace",
+    "SecretReference",
+    "VaultError",
+    "VaultRequest",
+    "VaultResponse",
+]
