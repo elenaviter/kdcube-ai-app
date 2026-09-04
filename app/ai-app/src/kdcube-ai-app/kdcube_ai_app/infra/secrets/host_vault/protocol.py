@@ -101,8 +101,9 @@ def _clean(value: Any) -> str:
 class SecretNamespace:
     """Canonical tenant / project / trusted application namespace.
 
-    The application is the trusted LOGICAL identity (``connection-hub@1-0``),
-    bound by the platform broker, not by the calling agent."""
+    The application is a trusted logical namespace bound by the platform
+    broker, not by the calling agent. KDCube's deployment-wide broker uses
+    ``kdcube-runtime``."""
 
     tenant: str
     project: str

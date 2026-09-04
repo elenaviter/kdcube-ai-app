@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""Durable host vault for KDCube provider secrets (isolated first phase).
+"""Durable host vault for KDCube provider secrets.
 
-Target flow this package implements the pieces of, without selecting it in
-any live deployment:
+The local Compose runtime can select this flow explicitly while retaining the
+existing secrets-service contract:
 
     trusted Connection Hub app in KDCube
-      -> KDCube ISecretsManager (secrets-service)      [unchanged, not wired here]
+      -> KDCube ISecretsManager (secrets-service)
       -> deployment-local kdcube-secrets broker        broker.py
       -> mTLS with enrolled deployment workload key    identity.py, transport.py
       -> durable encrypted host vault                  service.py, storage.py, keys.py
@@ -32,8 +32,8 @@ Modules:
 - ``broker``: the stateless ``kdcube-secrets`` adapter that translates the
   existing internal secrets-service operations into vault requests.
 
-Nothing here reads, migrates, or logs a real secret value; the selected
-``secrets-file`` provider and ``infra/secrets/manager.py`` are untouched.
+Selecting the backend does not migrate existing secret values. Migration and
+plaintext cleanup remain explicit operator actions after readback verification.
 """
 
 from kdcube_ai_app.infra.secrets.host_vault.protocol import (

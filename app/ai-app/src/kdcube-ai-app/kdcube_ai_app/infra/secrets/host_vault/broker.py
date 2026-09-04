@@ -10,10 +10,10 @@ no negative result, no last response. A mutation is acknowledged to the
 caller only when the vault answered ``ok`` (the store committed).
 
 Namespace binding: the broker runs inside the deployment and knows the
-canonical tenant/project; the trusted LOGICAL application (``connection-hub@1-0``)
-is bound by the platform code that calls the broker, never by a remote
-caller. The secret reference is DERIVED here from the internal key, so no
-external party ever names a vault path.
+canonical tenant/project. The HTTP adapter binds one logical application for
+the whole deployment-wide secrets manager (``kdcube-runtime``); library users
+may bind a narrower trusted application. The secret reference is DERIVED here
+from the internal key, so no external party ever names a vault path.
 
 The bearer model of the existing service (``X-KDCUBE-SECRET-TOKEN`` /
 ``X-KDCUBE-ADMIN-TOKEN``) is deliberately absent: possession of a copied
@@ -54,6 +54,14 @@ class BrokerResult:
     generation: int | None = None
 
 
+@dataclass(frozen=True)
+class BrokerReadResult:
+    ok: bool
+    code: ErrorCode
+    value: str | None = None
+    generation: int | None = None
+
+
 class SecretsBroker:
     def __init__(self, *, transport: VaultTransport, tenant: str, project: str) -> None:
         self._transport = transport
@@ -72,17 +80,25 @@ class SecretsBroker:
 
     # ── the internal secrets-service operations ───────────────────────────
 
+    def read(self, *, application: str, key: str) -> BrokerReadResult:
+        """Read one value while retaining the fixed protocol result code."""
+        try:
+            response = self._call(VaultRequest.new(Operation.GET, self._reference(application, key)))
+        except VaultError as exc:
+            return BrokerReadResult(ok=False, code=exc.code)
+        return BrokerReadResult(
+            ok=response.ok,
+            code=response.code,
+            value=response.value if response.ok else None,
+            generation=response.generation,
+        )
+
     def get(self, *, application: str, key: str) -> str | None:
         """Read one value. ``None`` for not found, forbidden, or unreachable:
         the same shape ``SecretsServiceSecretsManager.get_secret`` returns,
         so the later provider wiring changes nothing for readers."""
-        try:
-            response = self._call(VaultRequest.new(Operation.GET, self._reference(application, key)))
-        except VaultError:
-            return None
-        if not response.ok:
-            return None
-        return response.value
+        result = self.read(application=application, key=key)
+        return result.value if result.ok else None
 
     def set(self, *, application: str, key: str, value: str, expected_generation: int | None = None) -> BrokerResult:
         response = self._call(VaultRequest.new(
@@ -114,4 +130,4 @@ class SecretsBroker:
         return {"ok": response.ok, "code": response.code.value, **{k: v for k, v in response.extra.items() if k == "deployment_id"}}
 
 
-__all__ = ["BrokerResult", "SecretsBroker", "VaultTransport"]
+__all__ = ["BrokerReadResult", "BrokerResult", "SecretsBroker", "VaultTransport"]

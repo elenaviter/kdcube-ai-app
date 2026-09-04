@@ -7,6 +7,7 @@ keywords: ["kdcube-cli", "kdcube init", "kdcube start", "kdcube stop", "kdcube_c
 see_also:
   - repo:kdcube/app/ai-app/docs/service/cicd/cli-README.md
   - repo:kdcube/app/ai-app/docs/service/cicd/deployment-target-control-api-README.md
+  - repo:kdcube/app/ai-app/docs/service/secrets/host-vault-README.md
 ---
 # KDCube CLI
 
@@ -49,6 +50,14 @@ See the
 [deployment-target control API](../../../docs/service/cicd/deployment-target-control-api-README.md)
 for capabilities, explicit surface selection, endpoint-only behavior, and
 structured errors.
+
+The CLI also stages an existing local file-backed secret inventory into an
+enrolled host vault, then performs an explicit verified provider switch with
+automatic ordinary-failure rollback. See
+[Host Vault for Provider Secrets](../../../docs/service/secrets/host-vault-README.md)
+for `kdcube secrets host-vault stage`, `kdcube secrets host-vault activate`,
+`kdcube secrets host-vault recover`, their no-value-output contracts, and the
+remaining durability gates.
 ---
 
 ## What You Build

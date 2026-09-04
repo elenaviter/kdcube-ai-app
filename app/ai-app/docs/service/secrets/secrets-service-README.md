@@ -9,6 +9,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/secrets-descriptor-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/environment/setup-dev-env-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/environment/setup-for-ecs-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/secrets/host-vault-README.md
 ---
 # Secrets Manager Implementations
 
@@ -125,6 +126,24 @@ Behavior:
 - uses `SECRETS_ADMIN_TOKEN` for writes
 - the proc/ingress service itself is not the storage of record
 - persistence depends on the backing store used by the secrets service
+
+Local Compose provides two descriptor-selected service implementations:
+
+- `secrets.service.backend: ephemeral` runs the existing temporary sidecar
+- `secrets.service.backend: host-vault` runs the stateless mTLS broker backed
+  by the durable host-owned vault
+
+The host-vault broker keeps the same internal HTTP contract, so trusted
+KDCube callers do not change. Its deployment certificate is mounted only into
+the broker. The broker can run in shadow mode while `secrets-file` remains the
+active provider, allowing `kdcube secrets host-vault stage` to copy and compare
+values before cutover. `kdcube secrets host-vault activate` then quiesces the
+two secret-consuming services, switches them together, verifies real reads,
+and restores file authority on an ordinary failure. An interrupted activation
+blocks ordinary startup until `kdcube secrets host-vault recover --yes`
+recreates and verifies the retained file-backed path. See
+[Host Vault for Provider Secrets](host-vault-README.md) for the descriptor,
+workload identity, enrollment, staging, activation, and durability contracts.
 
 Restart behavior:
 

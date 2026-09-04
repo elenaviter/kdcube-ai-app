@@ -1,17 +1,70 @@
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
 
+import kdcube_ai_app.infra.secrets.manager as secrets_manager_module
 from kdcube_ai_app.infra.secrets import (
     AwsSecretsManagerSecretsManager,
     InMemorySecretsManager,
     SecretsManagerConfig,
+    SecretsManagerWriteError,
     SecretsFileSecretsManager,
+    SecretsServiceSecretsManager,
     build_secrets_manager_config,
     get_secrets_manager,
     reset_secrets_manager_cache,
 )
+
+
+class _FakeHttpResponse:
+    def __init__(self, status_code: int, payload: object):
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self):
+        if isinstance(self._payload, Exception):
+            raise self._payload
+        return self._payload
+
+
+class _FakeSecretsHttpClient:
+    def __init__(self, response: _FakeHttpResponse | None = None, error: Exception | None = None):
+        self.response = response
+        self.error = error
+        self.requests = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def _respond(self, method: str, url: str, **kwargs):
+        self.requests.append((method, url, kwargs))
+        if self.error is not None:
+            raise self.error
+        assert self.response is not None
+        return self.response
+
+    async def get(self, url: str, **kwargs):
+        return await self._respond("GET", url, **kwargs)
+
+    async def post(self, url: str, **kwargs):
+        return await self._respond("POST", url, **kwargs)
+
+    async def delete(self, url: str, **kwargs):
+        return await self._respond("DELETE", url, **kwargs)
+
+
+class _FakeHttpxModule:
+    def __init__(self, client: _FakeSecretsHttpClient):
+        self.client = client
+
+    def AsyncClient(self, *, timeout: float):
+        assert timeout > 0
+        return self.client
 
 
 class _FakeAwsClientError(Exception):
@@ -81,6 +134,102 @@ def test_build_secrets_manager_config_uses_env_and_ignores_gateway_json(monkeypa
     assert config.url == "http://kdcube-secrets:7777"
     assert config.token == "proc-read"
     assert config.admin_token == "proc-admin"
+
+
+def _secrets_service_manager() -> SecretsServiceSecretsManager:
+    return SecretsServiceSecretsManager(
+        SecretsManagerConfig(
+            provider="secrets-service",
+            component="proc",
+            url="http://kdcube-secrets:7777",
+            token="read-token",
+            admin_token="admin-token",
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_secrets_service_accepts_host_vault_generation(monkeypatch):
+    client = _FakeSecretsHttpClient(
+        response=_FakeHttpResponse(200, {"status": "ok", "generation": 4})
+    )
+    monkeypatch.setattr(
+        secrets_manager_module,
+        "_get_httpx",
+        lambda: _FakeHttpxModule(client),
+    )
+
+    await _secrets_service_manager().set_secret("services.fixture.token", "secret-value")
+
+    assert client.requests == [
+        (
+            "POST",
+            "http://kdcube-secrets:7777/set",
+            {
+                "json": {"key": "services.fixture.token", "value": "secret-value"},
+                "headers": {"X-KDCUBE-ADMIN-TOKEN": "admin-token"},
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_secrets_service_conflict_is_fixed_and_secret_safe(monkeypatch):
+    canary = "must-not-escape-conflict"
+    client = _FakeSecretsHttpClient(
+        response=_FakeHttpResponse(409, {"detail": canary})
+    )
+    monkeypatch.setattr(
+        secrets_manager_module,
+        "_get_httpx",
+        lambda: _FakeHttpxModule(client),
+    )
+
+    with pytest.raises(SecretsManagerWriteError) as captured:
+        await _secrets_service_manager().set_secret("users.private.token", canary)
+
+    assert str(captured.value) == "secrets-service set conflict"
+    assert canary not in str(captured.value)
+    assert "users.private.token" not in str(captured.value)
+
+
+@pytest.mark.asyncio
+async def test_secrets_service_transport_failure_is_fixed_and_secret_safe(monkeypatch):
+    canary = "must-not-escape-transport"
+    client = _FakeSecretsHttpClient(error=RuntimeError(canary))
+    monkeypatch.setattr(
+        secrets_manager_module,
+        "_get_httpx",
+        lambda: _FakeHttpxModule(client),
+    )
+
+    with pytest.raises(SecretsManagerWriteError) as captured:
+        await _secrets_service_manager().set_secret("services.fixture.token", canary)
+
+    assert str(captured.value) == "secrets-service set request failed"
+    assert canary not in str(captured.value)
+
+
+@pytest.mark.asyncio
+async def test_secrets_service_unavailable_read_fails_closed_without_key_or_body(
+    monkeypatch,
+    caplog,
+):
+    canary = "must-not-escape-read"
+    client = _FakeSecretsHttpClient(
+        response=_FakeHttpResponse(503, {"detail": canary})
+    )
+    monkeypatch.setattr(
+        secrets_manager_module,
+        "_get_httpx",
+        lambda: _FakeHttpxModule(client),
+    )
+
+    value = await _secrets_service_manager().get_secret("users.private.token")
+
+    assert value is None
+    assert canary not in caplog.text
+    assert "users.private.token" not in caplog.text
 
 
 def test_aws_sm_secret_path_uses_grouped_documents():
@@ -403,6 +552,9 @@ async def test_secrets_file_manager_writes_global_and_bundle_yaml(tmp_path, monk
     assert "kdcube.copilot@2026-04-03-19-05" in bundle_text
     assert "tg-secret" in bundle_text
     assert "docs-secret" in bundle_text
+    if os.name == "posix":
+        assert global_file.stat().st_mode & 0o777 == 0o600
+        assert bundle_file.stat().st_mode & 0o777 == 0o600
 
     await manager.delete_secret("services.openai.api_key")
     await manager.delete_many(
@@ -420,6 +572,35 @@ async def test_secrets_file_manager_writes_global_and_bundle_yaml(tmp_path, monk
         is None
     )
     assert await manager.get_secret("bundles.kdcube.copilot@2026-04-03-19-05.secrets.__keys") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes are required")
+async def test_secrets_file_manager_atomic_rewrite_repairs_public_mode(tmp_path, monkeypatch):
+    global_file = tmp_path / "secrets.yaml"
+    global_file.write_text("services: {}\n", encoding="utf-8")
+    global_file.chmod(0o644)
+
+    monkeypatch.setenv("SECRETS_PROVIDER", "secrets-file")
+    monkeypatch.setenv("GLOBAL_SECRETS_YAML", global_file.resolve().as_uri())
+    reset_secrets_manager_cache()
+
+    manager = get_secrets_manager(
+        SimpleNamespace(
+            TENANT="demo",
+            PROJECT="demo-march",
+            SECRETS_PROVIDER="secrets-file",
+            GLOBAL_SECRETS_YAML=global_file.resolve().as_uri(),
+            BUNDLE_SECRETS_YAML=None,
+        )
+    )
+
+    await manager.set_secret("services.demo.token", "first")
+    assert global_file.stat().st_mode & 0o777 == 0o600
+
+    await manager.set_secret("services.demo.token", "second")
+    assert global_file.stat().st_mode & 0o777 == 0o600
+    assert list(tmp_path.glob(".secrets.yaml.tmp-*")) == []
 
 
 @pytest.mark.asyncio

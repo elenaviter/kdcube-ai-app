@@ -23,9 +23,8 @@ from rich.prompt import Confirm, Prompt
 from rich.table import Table
 from rich.text import Text
 
-from kdcube_cli.banner import print_cli_banner
 from kdcube_cli import installer as installer_mod
-from kdcube_cli.docker_storage import build_storage_maintenance_commands
+from kdcube_cli.banner import print_cli_banner
 from kdcube_cli.control import (
     AmbiguousTargetError,
     ControlEvent,
@@ -39,11 +38,34 @@ from kdcube_cli.control import (
     discover_local_targets,
     resolve_local_workdir,
 )
+from kdcube_cli.descriptor_files import copy_descriptor_file
+from kdcube_cli.docker_storage import build_storage_maintenance_commands
 from kdcube_cli.export_live_bundles import export_live_bundle_descriptors
+from kdcube_cli.host_vault import (
+    HostVaultConfigurationError,
+)
+from kdcube_cli.host_vault import (
+    validate_assembly_for_start as validate_host_vault_assembly_for_start,
+)
 from kdcube_cli.local_python_packages import (
     clear_local_python_package_sources,
     parse_local_python_package_sources,
     stage_local_python_package_sources,
+)
+from kdcube_cli.secrets_activation import (
+    ComposeHostVaultActivationRuntime,
+    HostVaultActivationError,
+    HostVaultActivationResult,
+    HostVaultRecoveryResult,
+    activate_host_vault,
+    recover_host_vault_activation,
+)
+from kdcube_cli.secrets_migration import (
+    ComposeHostVaultDestination,
+    HostVaultStageError,
+    HostVaultStageResult,
+    load_file_secret_inventory,
+    stage_file_secrets,
 )
 from kdcube_cli.tty_keys import (
     KEY_DOWN,
@@ -54,7 +76,6 @@ from kdcube_cli.tty_keys import (
     KEY_UP,
     read_tty_key,
 )
-
 
 DEFAULT_REPO = "https://github.com/kdcube/kdcube.git"
 DEFAULT_DIR = Path.home() / ".kdcube" / "kdcube-ai-app"
@@ -344,6 +365,187 @@ def start_compose_stack(
     console.print("[green]Docker compose started.[/green]")
     console.print("Open the UI:")
     console.print(f"  [link={result.url}]{result.url}[/link]")
+
+
+def stage_host_vault_secrets(
+    console: Console,
+    *,
+    repo_root: Path,
+    workdir: Path,
+    dry_run: bool,
+    json_output: bool,
+) -> HostVaultStageResult:
+    config_dir = workdir / "config"
+    assembly = installer_mod.load_release_descriptor_soft(config_dir / "assembly.yaml")
+    try:
+        vault_config = validate_host_vault_assembly_for_start(
+            assembly,
+            workdir=workdir,
+        )
+    except HostVaultConfigurationError as exc:
+        raise SystemExit(f"Host-vault staging preflight failed: {exc}") from exc
+    if not vault_config.enabled:
+        raise SystemExit(
+            "Host-vault staging requires secrets.service.backend 'host-vault'."
+        )
+    if vault_config.provider != "secrets-file":
+        raise SystemExit(
+            "Host-vault staging requires secrets.provider 'secrets-file'; "
+            "the source must remain authoritative during the copy."
+        )
+
+    ctx = _build_paths_for_repo(repo_root, workdir)
+    env_file = config_dir / ".env"
+    if not env_file.is_file():
+        raise SystemExit(f"Compose env file not found: {env_file}")
+    _ensure_docker_responsive()
+    try:
+        inventory = load_file_secret_inventory(
+            config_dir,
+            is_placeholder=installer_mod.is_placeholder,
+        )
+        destination = ComposeHostVaultDestination(
+            docker_dir=ctx.docker_dir,
+            env_file=env_file,
+            environment=installer_mod.compose_env(env_file),
+        )
+        result = stage_file_secrets(inventory, destination, dry_run=dry_run)
+    except HostVaultStageError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    if json_output:
+        _print_json(result.to_dict())
+        return result
+    verb = "Would create" if dry_run else "Created"
+    affected = result.would_create if dry_run else result.created
+    console.print("[green]Host-vault shadow stage verified.[/green]")
+    console.print(
+        f"[dim]Discovered:[/dim] {result.discovered}  "
+        f"[dim]{verb}:[/dim] {affected}  "
+        f"[dim]Already matched:[/dim] {result.already_matched}  "
+        f"[dim]Skipped placeholders:[/dim] {result.skipped_placeholders}"
+    )
+    console.print(
+        "[dim]secrets-file remains authoritative; no source value was deleted "
+        "and the provider was not changed.[/dim]"
+    )
+    return result
+
+
+def activate_host_vault_secrets(
+    console: Console,
+    *,
+    repo_root: Path,
+    workdir: Path,
+    dry_run: bool,
+    json_output: bool,
+    wait_seconds: float,
+) -> HostVaultActivationResult:
+    config_dir = workdir / "config"
+    assembly = installer_mod.load_release_descriptor_soft(config_dir / "assembly.yaml")
+    try:
+        vault_config = validate_host_vault_assembly_for_start(
+            assembly,
+            workdir=workdir,
+        )
+    except HostVaultConfigurationError as exc:
+        raise SystemExit(f"Host-vault activation preflight failed: {exc}") from exc
+    if not vault_config.enabled:
+        raise SystemExit(
+            "Host-vault activation requires secrets.service.backend 'host-vault'."
+        )
+
+    ctx = _build_paths_for_repo(repo_root, workdir)
+    env_file = config_dir / ".env"
+    if not env_file.is_file():
+        raise SystemExit(f"Compose env file not found: {env_file}")
+    _ensure_docker_responsive()
+    try:
+        result = activate_host_vault(
+            config_dir=config_dir,
+            destination=ComposeHostVaultDestination(
+                docker_dir=ctx.docker_dir,
+                env_file=env_file,
+                environment=installer_mod.compose_env(env_file),
+            ),
+            runtime=ComposeHostVaultActivationRuntime(
+                docker_dir=ctx.docker_dir,
+                env_file=env_file,
+                timeout_seconds=wait_seconds,
+            ),
+            dry_run=dry_run,
+        )
+    except HostVaultActivationError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    if json_output:
+        _print_json(result.to_dict())
+        return result
+    if dry_run:
+        console.print("[green]Host-vault activation preflight passed.[/green]")
+        console.print(
+            f"[dim]Verified staged values:[/dim] {result.discovered}  "
+            "[dim]Runtime changed:[/dim] no"
+        )
+        return result
+    if result.activated:
+        console.print("[green]Host-vault provider activated and verified.[/green]")
+        console.print(
+            f"[dim]Verified staged values:[/dim] {result.discovered}  "
+            f"[dim]Consumers:[/dim] {', '.join(result.verified_consumers)}"
+        )
+        console.print(
+            "[dim]Plaintext source files were retained. Provider-secret writes now use "
+            "the host vault.[/dim]"
+        )
+    else:
+        console.print("[dim]The host-vault provider is already active.[/dim]")
+    return result
+
+
+def recover_host_vault_secrets(
+    console: Console,
+    *,
+    repo_root: Path,
+    workdir: Path,
+    json_output: bool,
+    wait_seconds: float,
+) -> HostVaultRecoveryResult:
+    config_dir = workdir / "config"
+    ctx = _build_paths_for_repo(repo_root, workdir)
+    env_file = config_dir / ".env"
+    if not env_file.is_file():
+        raise SystemExit(f"Compose env file not found: {env_file}")
+    _ensure_docker_responsive()
+    try:
+        result = recover_host_vault_activation(
+            config_dir=config_dir,
+            runtime=ComposeHostVaultActivationRuntime(
+                docker_dir=ctx.docker_dir,
+                env_file=env_file,
+                timeout_seconds=wait_seconds,
+            ),
+        )
+    except HostVaultActivationError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    if json_output:
+        _print_json(result.to_dict())
+        return result
+    if result.recovered:
+        console.print("[green]Interrupted host-vault activation recovered.[/green]")
+        console.print(
+            "[dim]Provider:[/dim] secrets-file  "
+            "[dim]Backend:[/dim] ephemeral  "
+            f"[dim]Consumers:[/dim] {', '.join(result.verified_consumers)}"
+        )
+        console.print(
+            "[dim]The plaintext source remains authoritative. Configure shadow mode, "
+            "stage, and activate again when ready.[/dim]"
+        )
+    else:
+        console.print("[dim]No interrupted host-vault activation is pending.[/dim]")
+    return result
 
 
 def _control_event_renderer(console: Console):
@@ -1689,7 +1891,7 @@ def apply_bundle_config_descriptors(
     else:
         installer_mod.save_release_descriptor(target_bundles_path, incoming_bundles)
         if secrets_will_apply:
-            shutil.copyfile(source_bundles_secrets_path, target_bundles_secrets_path)
+            copy_descriptor_file(source_bundles_secrets_path, target_bundles_secrets_path)
         if not quiet:
             console.print(f"[green]Applied bundle content descriptors:[/green] {source_dir}")
 
@@ -1823,7 +2025,7 @@ def _denormalize_exported_assembly_descriptor(data: dict[str, object]) -> bool:
 
 def _export_platform_descriptor_file(source: Path, target: Path) -> None:
     if source.name != "assembly.yaml":
-        shutil.copyfile(source, target)
+        copy_descriptor_file(source, target)
         return
 
     data = installer_mod.load_release_descriptor_soft(source)
@@ -1896,7 +2098,7 @@ def _apply_platform_config_descriptors(
         )
         if not dry_run:
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, target)
+            copy_descriptor_file(source, target)
 
     if not quiet:
         if dry_run:
@@ -4019,6 +4221,106 @@ def main() -> None:
         help="With `config import --reload`, show the raw docker compose command and proc response",
     )
 
+    _sp = subparsers.add_parser(
+        "secrets",
+        help="Inspect and stage deployment secret backends",
+    )
+    _secrets_backends = _sp.add_subparsers(dest="secrets_backend", required=True)
+    _hv = _secrets_backends.add_parser(
+        "host-vault",
+        help="Operate the local host-vault backend",
+    )
+    _hv_actions = _hv.add_subparsers(dest="secrets_action", required=True)
+    _stage = _hv_actions.add_parser(
+        "stage",
+        help="Copy and verify file-backed values without changing providers",
+    )
+    _add_quiet_arg(_stage)
+    _stage.add_argument("--tenant", default="", help="Tenant of the local runtime")
+    _stage.add_argument("--project", default="", help="Project of the local runtime")
+    _stage.add_argument(
+        "--workdir",
+        default=None,
+        help="(Advanced) Fully-qualified namespaced runtime workdir",
+    )
+    _stage.add_argument("--path", default=str(DEFAULT_DIR), help="Platform repo path")
+    _stage.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Verify the destination and report how many values would be created",
+    )
+    _stage.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print machine-readable, secret-free results",
+    )
+    _activate = _hv_actions.add_parser(
+        "activate",
+        help="Switch verified local consumers from secrets-file to host-vault",
+    )
+    _add_quiet_arg(_activate)
+    _activate.add_argument("--tenant", default="", help="Tenant of the local runtime")
+    _activate.add_argument("--project", default="", help="Project of the local runtime")
+    _activate.add_argument(
+        "--workdir",
+        default=None,
+        help="(Advanced) Fully-qualified namespaced runtime workdir",
+    )
+    _activate.add_argument("--path", default=str(DEFAULT_DIR), help="Platform repo path")
+    _activate.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Verify source/destination parity and runtime readiness without changing providers",
+    )
+    _activate.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm the provider switch without an interactive prompt",
+    )
+    _activate.add_argument(
+        "--wait-seconds",
+        type=float,
+        default=120.0,
+        help="Maximum wait for each broker or consumer readiness check (default: 120)",
+    )
+    _activate.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print machine-readable, secret-free results",
+    )
+    _recover = _hv_actions.add_parser(
+        "recover",
+        help="Recover an interrupted activation to verified file-backed operation",
+    )
+    _add_quiet_arg(_recover)
+    _recover.add_argument("--tenant", default="", help="Tenant of the local runtime")
+    _recover.add_argument("--project", default="", help="Project of the local runtime")
+    _recover.add_argument(
+        "--workdir",
+        default=None,
+        help="(Advanced) Fully-qualified namespaced runtime workdir",
+    )
+    _recover.add_argument("--path", default=str(DEFAULT_DIR), help="Platform repo path")
+    _recover.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm recovery without an interactive prompt",
+    )
+    _recover.add_argument(
+        "--wait-seconds",
+        type=float,
+        default=120.0,
+        help="Maximum wait for each broker or consumer readiness check (default: 120)",
+    )
+    _recover.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print machine-readable, secret-free results",
+    )
+
     _sp = subparsers.add_parser("export", help="Export live bundle descriptors")
     _add_quiet_arg(_sp)
     _sp.add_argument("--workdir", default=None, help="Namespaced runtime workdir")
@@ -4310,6 +4612,81 @@ def main() -> None:
         else implicit_descriptors_location
     )
     try:
+        if args.command == "secrets":
+            if args.secrets_backend != "host-vault" or args.secrets_action not in {
+                "stage",
+                "activate",
+                "recover",
+            }:
+                raise SystemExit("Unsupported secrets operation.")
+            _workdir = _resolve_subcommand_workdir(
+                args.workdir,
+                cli_defaults,
+                tenant_arg=getattr(args, "tenant", "") or "",
+                project_arg=getattr(args, "project", "") or "",
+            )
+            _resolved = _resolve_cli_workdir(_workdir)
+            _repo = _resolve_subcommand_repo(
+                args.path,
+                workdir=_resolved,
+                path_provided=_arg_provided("--path"),
+            )
+            if args.secrets_action == "stage":
+                stage_host_vault_secrets(
+                    console,
+                    repo_root=_repo,
+                    workdir=_resolved,
+                    dry_run=bool(args.dry_run),
+                    json_output=bool(args.json_output),
+                )
+                return
+            if args.wait_seconds < 5 or args.wait_seconds > 600:
+                raise SystemExit("--wait-seconds must be between 5 and 600.")
+            if args.secrets_action == "recover":
+                if not args.yes:
+                    if args.json_output or not sys.stdin.isatty():
+                        raise SystemExit(
+                            "Host-vault recovery requires --yes in non-interactive or JSON mode."
+                        )
+                    confirmed = Confirm.ask(
+                        "Recover the interrupted activation to secrets-file with the "
+                        "ephemeral sidecar now?",
+                        default=False,
+                    )
+                    if not confirmed:
+                        console.print(
+                            "[dim]Host-vault recovery cancelled; no runtime was changed.[/dim]"
+                        )
+                        return
+                recover_host_vault_secrets(
+                    console,
+                    repo_root=_repo,
+                    workdir=_resolved,
+                    json_output=bool(args.json_output),
+                    wait_seconds=float(args.wait_seconds),
+                )
+                return
+            if not args.dry_run and not args.yes:
+                if args.json_output or not sys.stdin.isatty():
+                    raise SystemExit(
+                        "Host-vault activation requires --yes in non-interactive or JSON mode."
+                    )
+                confirmed = Confirm.ask(
+                    "Switch chat-ingress and chat-proc to the staged host vault now?",
+                    default=False,
+                )
+                if not confirmed:
+                    console.print("[dim]Host-vault activation cancelled; no runtime was changed.[/dim]")
+                    return
+            activate_host_vault_secrets(
+                console,
+                repo_root=_repo,
+                workdir=_resolved,
+                dry_run=bool(args.dry_run),
+                json_output=bool(args.json_output),
+                wait_seconds=float(args.wait_seconds),
+            )
+            return
         if args.command == "defaults":
             updates: dict[str, str] = {}
             if args.default_tenant.strip():

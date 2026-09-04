@@ -578,7 +578,7 @@ platform:
         exec_workspace_root: ""
         py_code_exec_image: "py-code-exec:latest"
         py_code_exec_timeout: 600
-        py_code_exec_network_mode: "host"
+        py_code_exec_network_mode: "auto"
         py_code_exec_container_strategy: "split"
         max_file_bytes: "100m"
         max_exec_workspace_delta_bytes: "250m"
@@ -591,7 +591,7 @@ platform:
 | `exec_workspace_root` | `get_settings().PLATFORM.EXEC.EXEC_WORKSPACE_ROOT` | container-visible exec workspace root |
 | `py_code_exec_image` | `get_settings().PLATFORM.EXEC.PY.PY_CODE_EXEC_IMAGE` | Docker image for the ISO runtime |
 | `py_code_exec_timeout` | `get_settings().PLATFORM.EXEC.PY.PY_CODE_EXEC_TIMEOUT` | default Python execution timeout in seconds |
-| `py_code_exec_network_mode` | `get_settings().PLATFORM.EXEC.PY.PY_CODE_EXEC_NETWORK_MODE` | Docker network mode for the ISO supervisor container |
+| `py_code_exec_network_mode` | `get_settings().PLATFORM.EXEC.PY.PY_CODE_EXEC_NETWORK_MODE` | Network selection for the trusted ISO supervisor. `auto` uses `host` for a host-run processor and shares the current processor container's existing network namespace under Docker-in-Docker. Explicit Docker modes remain supported. The split generated-code executor always uses `none`. |
 | `py_code_exec_container_strategy` | `get_settings().PLATFORM.EXEC.PY.PY_CODE_EXEC_CONTAINER_STRATEGY` | `split` runs supervisor and generated code in separate containers and is the default; `combined` keeps the older single exec container |
 | `max_file_bytes` | `get_settings().PLATFORM.EXEC.PY.EXEC_MAX_FILE_BYTES` | max single generated file size per isolated exec call |
 | `max_exec_workspace_delta_bytes` | `get_settings().PLATFORM.EXEC.PY.EXEC_MAX_WORKSPACE_DELTA_BYTES` | max net-new monitored writable bytes per isolated exec call |

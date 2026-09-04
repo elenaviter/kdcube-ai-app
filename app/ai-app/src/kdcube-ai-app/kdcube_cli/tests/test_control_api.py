@@ -422,6 +422,46 @@ def test_local_lifecycle_failure_is_structured_and_omits_process_output(tmp_path
     assert "sensitive" not in captured.value.summary
 
 
+def test_local_start_refuses_incomplete_host_vault_identity_before_compose(tmp_path):
+    repo, workdir = _make_runtime(tmp_path)
+    _write_yaml(
+        workdir / "config" / "assembly.yaml",
+        {
+            "context": {"tenant": "demo-tenant", "project": "demo-project"},
+            "platform": {
+                "services": {
+                    "proc": {"exec": {"py_code_exec_network_mode": "auto"}}
+                }
+            },
+            "secrets": {
+                "provider": "secrets-service",
+                "service": {
+                    "backend": "host-vault",
+                    "host_vault": {
+                        "address": "host.docker.internal:7781",
+                        "server_name": "host.docker.internal",
+                        "identity_dir": str(tmp_path / "missing-identity"),
+                    },
+                },
+            },
+        },
+    )
+    runner = FakeRunner()
+    target = LocalDeploymentTarget(
+        DeploymentTargetRef.local(workdir),
+        repo_root=repo,
+        runner=runner,
+        lock_file=tmp_path / "cli-lock.json",
+    )
+
+    with pytest.raises(OperationFailedError) as captured:
+        target.start()
+
+    assert "Host-vault startup preflight failed" in captured.value.summary
+    assert "is incomplete" in captured.value.summary
+    assert not any("compose" in call["command"] for call in runner.calls)
+
+
 def test_local_initialize_uses_typed_request_without_console(tmp_path):
     repo = _make_repo(tmp_path)
     workdir = tmp_path / "runtimes" / "acme__lab"

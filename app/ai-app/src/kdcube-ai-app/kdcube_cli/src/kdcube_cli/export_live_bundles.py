@@ -10,6 +10,8 @@ from pathlib import Path
 import yaml
 from rich.console import Console
 
+from kdcube_cli.descriptor_files import write_descriptor_text
+
 
 _MANAGED_BUNDLE_METADATA_FILE = ".kdcube-managed-bundle.json"
 
@@ -356,9 +358,10 @@ def _export_live_bundle_descriptors_from_files(
 
     out_bundles_secrets_path = out_dir / "bundles.secrets.yaml"
     if bundles_secrets_path is not None and bundles_secrets_path.exists():
-        out_bundles_secrets_path.write_text(bundles_secrets_path.read_text())
+        write_descriptor_text(out_bundles_secrets_path, bundles_secrets_path.read_text())
     else:
-        out_bundles_secrets_path.write_text(
+        write_descriptor_text(
+            out_bundles_secrets_path,
             yaml.safe_dump(_empty_bundles_secrets_payload(), sort_keys=False, allow_unicode=True)
         )
 
@@ -477,7 +480,8 @@ def export_live_bundle_descriptors(
     bundles_path = out_dir / "bundles.yaml"
     bundles_secrets_path = out_dir / "bundles.secrets.yaml"
     bundles_path.write_text(yaml.safe_dump(bundles_payload, sort_keys=False, allow_unicode=True))
-    bundles_secrets_path.write_text(
+    write_descriptor_text(
+        bundles_secrets_path,
         yaml.safe_dump(bundles_secrets_payload, sort_keys=False, allow_unicode=True)
     )
 

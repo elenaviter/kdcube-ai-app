@@ -250,6 +250,12 @@ routines:
 # ---------------------------------------------------------------------------
 secrets:
   provider: "secrets-file"  # SECRETS_PROVIDER: secrets-service | aws-sm | in-memory | secrets-file
+  service:
+    backend: "ephemeral"    # ephemeral | host-vault; host-vault also permits secrets-file during verified shadow staging
+    host_vault:
+      address: "host.docker.internal:7781"  # DNS/IP plus port, as reached from the kdcube-secrets container
+      server_name: "host.docker.internal"   # DNS name or IP present in the vault server certificate
+      identity_dir: null                     # absolute host path outside the KDCube workdir
 
 # ---------------------------------------------------------------------------
 # Host paths (deployment topology hints promoted into managed settings)
@@ -395,7 +401,7 @@ platform:
         exec_workspace_root: ""                # EXEC_WORKSPACE_ROOT; proc runtime path. CLI compose normally uses /exec-workspace; direct host-run descriptors should use an absolute host path.
         py_code_exec_image: "py-code-exec:latest"  # PY_CODE_EXEC_IMAGE
         py_code_exec_timeout: 600              # PY_CODE_EXEC_TIMEOUT
-        py_code_exec_network_mode: "host"      # PY_CODE_EXEC_NETWORK_MODE
+        py_code_exec_network_mode: "auto"      # PY_CODE_EXEC_NETWORK_MODE; host outside Docker, current proc namespace inside Docker
         py_code_exec_container_strategy: "split"  # PY_CODE_EXEC_CONTAINER_STRATEGY: split (reference) | combined (legacy)
         max_file_bytes: "100m"                 # Max single file the ISO runtime may create per exec call; "0"/"unlimited" disables
         max_exec_workspace_delta_bytes: "250m" # Max net-new monitored writable bytes the ISO runtime may create per exec call

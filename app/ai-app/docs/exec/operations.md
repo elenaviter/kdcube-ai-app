@@ -118,7 +118,7 @@ platform:
       exec:
         py_code_exec_image: py-code-exec:latest
         py_code_exec_timeout: 600
-        py_code_exec_network_mode: host
+        py_code_exec_network_mode: auto
         max_file_bytes: 100m
         max_exec_workspace_delta_bytes: 250m
         max_workspace_bytes: ""
@@ -335,7 +335,7 @@ services:
       - HOST_EXEC_WORKSPACE_PATH=${HOST_EXEC_WORKSPACE_PATH}
       
       # Execution settings
-      - PY_CODE_EXEC_NETWORK_MODE=host
+      - PY_CODE_EXEC_NETWORK_MODE=auto
       
     volumes:
       # Docker socket (for spawning sibling containers)
@@ -404,7 +404,7 @@ BUNDLES_ROOT=/bundles                              # Container path
 # === Execution Settings ===
 PY_CODE_EXEC_IMAGE=py-code-exec:latest
 PY_CODE_EXEC_TIMEOUT=600
-PY_CODE_EXEC_NETWORK_MODE=host       # Supervisor needs Redis/Postgres access
+PY_CODE_EXEC_NETWORK_MODE=auto       # Host outside Docker; proc namespace in Docker-in-Docker
 # Split-Docker: if the supervisor's RUNTIME_GLOBALS_JSON exceeds this many bytes
 # it is streamed over the container's stdin instead of a -e arg (avoids the OS
 # MAX_ARG_STRLEN limit / "Argument list too long"). Default 98304 (96 KiB).
@@ -455,7 +455,7 @@ docker ps -a | grep py-code-exec
 |----------|-------------|---------|
 | `PY_CODE_EXEC_IMAGE` | Docker image for code execution | `py-code-exec:latest` |
 | `PY_CODE_EXEC_TIMEOUT` | Execution timeout (seconds) | `600` |
-| `PY_CODE_EXEC_NETWORK_MODE` | Docker network mode | `host` |
+| `PY_CODE_EXEC_NETWORK_MODE` | Trusted-supervisor network selection | `auto` in the maintained local descriptor; SDK fallback `host` |
 
 ### Docker-in-Docker Variables
 

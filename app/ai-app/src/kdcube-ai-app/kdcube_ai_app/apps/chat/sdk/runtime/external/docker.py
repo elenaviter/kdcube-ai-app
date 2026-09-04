@@ -52,6 +52,7 @@ _SUPERVISOR_RUNTIME_GLOBALS_STDIN_ENV = "KDCUBE_EXEC_PAYLOAD_STDIN"
 _SUPERVISOR_RUNTIME_GLOBALS_STDIN_VALUE = "env_json"
 _SUPERVISOR_RUNTIME_GLOBALS_STDIN_BYTES_ENV = "KDCUBE_EXEC_PAYLOAD_STDIN_BYTES"
 _SUPERVISOR_RUNTIME_GLOBALS_INLINE_MAX_BYTES_DEFAULT = 96 * 1024
+_AUTO_NETWORK_MODE = "auto"
 
 _PROC_VISIBLE_ROOTS = (
     "/exec-workspace",
@@ -256,6 +257,33 @@ def _safe_docker_token(value: str, *, fallback: str) -> str:
     token = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "").strip())
     token = token.strip("._-")
     return token[:80] or fallback
+
+
+def _resolve_trusted_network_mode(
+        network_mode: str | None,
+        *,
+        environ: Dict[str, str] | None = None,
+        running_in_docker: bool | None = None,
+) -> str:
+    """Resolve the trusted supervisor's descriptor-owned Docker network mode.
+
+    ``auto`` keeps direct host launches on Docker's host network. When proc is
+    itself a container, it shares proc's existing network namespace so the
+    trusted supervisor can reach every deployment-private service already
+    available to proc without publishing those services on the host. The
+    generated split executor still uses its independent ``none`` network.
+    """
+    requested = str(network_mode or "host").strip() or "host"
+    if requested.lower() != _AUTO_NETWORK_MODE:
+        return requested
+    in_docker = _is_running_in_docker() if running_in_docker is None else running_in_docker
+    if not in_docker:
+        return "host"
+    env = os.environ if environ is None else environ
+    parent = str(env.get("HOSTNAME") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", parent):
+        raise ValueError("current Docker container identity is unavailable")
+    return f"container:{parent}"
 
 
 def _sanitize_docker_argv(argv: list[str]) -> list[str]:
@@ -1262,6 +1290,21 @@ async def run_py_in_docker(
 
     img = image or _DEFAULT_IMAGE
     to = timeout_s or _DEFAULT_TIMEOUT_S
+    try:
+        trusted_network_mode = _resolve_trusted_network_mode(network_mode)
+    except ValueError:
+        log.log(
+            "[docker.exec] descriptor network mode 'auto' requires the current "
+            "processor container identity",
+            level="ERROR",
+        )
+        return {
+            "ok": False,
+            "returncode": 127,
+            "error": "docker_network_mode_unavailable",
+            "stderr_tail": "trusted Docker runtime network is unavailable",
+            "error_summary": "trusted Docker runtime network is unavailable",
+        }
 
     # Translate paths for Docker-in-Docker
     host_workdir = _translate_container_path_to_host(workdir)
@@ -1357,7 +1400,7 @@ async def run_py_in_docker(
             readonly_mounts=readonly_mounts,
             rw_mounts=rw_mounts,
             extra_docker_args=extra_docker_args or [],
-            network_mode=network_mode or "host",
+            network_mode=trusted_network_mode,
         )
 
     argv = _build_docker_argv(
@@ -1371,7 +1414,7 @@ async def run_py_in_docker(
         bundle_id=bundle_dir,
         readonly_mounts=readonly_mounts,
         rw_mounts=rw_mounts,
-        network_mode=network_mode or "host",
+        network_mode=trusted_network_mode,
     )
 
     log.log(f"[docker.exec] Running: {' '.join(_sanitize_docker_argv(argv))}")

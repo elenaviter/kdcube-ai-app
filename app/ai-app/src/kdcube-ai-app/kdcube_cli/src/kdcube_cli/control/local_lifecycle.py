@@ -28,6 +28,10 @@ from kdcube_cli.control.models import (
     LocalStopRequest,
     OperationResult,
 )
+from kdcube_cli.host_vault import (
+    HostVaultConfigurationError,
+    validate_assembly_for_start as validate_host_vault_assembly_for_start,
+)
 
 
 class LocalLifecycleController:
@@ -62,6 +66,20 @@ class LocalLifecycleController:
             )
         self.ensure_docker_responsive()
         self._check_before_start()
+        assembly = installer_mod.load_release_descriptor_soft(
+            self._context.config_dir / "assembly.yaml"
+        )
+        try:
+            validate_host_vault_assembly_for_start(
+                assembly,
+                workdir=self._context.workdir,
+            )
+        except HostVaultConfigurationError as exc:
+            raise OperationFailedError(
+                "start",
+                self._reference.target_id,
+                f"Host-vault startup preflight failed: {exc}",
+            ) from exc
         env_main = installer_mod.load_env_file(env_file)
         installer_mod.ensure_compose_log_dirs(logs_dir(env_main, self._context.workdir))
         runtime_env = installer_mod.write_env_overlay(

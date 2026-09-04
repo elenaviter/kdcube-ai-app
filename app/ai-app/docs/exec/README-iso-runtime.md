@@ -577,7 +577,11 @@ sudo chmod -R g+rwX /path/to/exec-workspace
 - `PY_CODE_EXEC_TIMEOUT`
   - Max runtime in seconds for isolated runs.
 - `PY_CODE_EXEC_NETWORK_MODE`
-  - Docker network mode for the exec container (`host` is typical).
+  - Network selection for the trusted supervisor. The maintained local
+    descriptor uses `auto`: a host-run processor selects `host`, while a
+    Docker-in-Docker processor shares its current private network namespace.
+    Explicit Docker modes remain supported. The split executor always uses
+    `none`.
 - `platform.services.proc.exec.max_file_bytes`
   - Descriptor source for max single generated file size.
 - `platform.services.proc.exec.max_exec_workspace_delta_bytes`

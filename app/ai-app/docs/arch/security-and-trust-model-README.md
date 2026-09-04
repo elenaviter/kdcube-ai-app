@@ -220,6 +220,25 @@ accounts the user connected. The token should not be placed in model context,
 generated source, browser configuration, or an executor workspace. See
 [Agents Acting For The User](../sdk/solutions/connections/agent-acting-for-user/agent-acting-for-user-README.md).
 
+For local Compose, the optional host-vault backend moves provider values out
+of the KDCube workdir. Trusted KDCube services keep using the internal secrets
+manager; a dedicated `kdcube-secrets` broker alone holds the deployment mTLS
+identity and reaches the host-owned encrypted store. The identity authorizes
+the exact `tenant/project/kdcube-runtime` namespace and is not delegated to
+users, agents, applications, or generated executors. This protects the vault
+from callers that possess only KDCube or Connection Hub bearer credentials;
+it does not protect against a caller that can administer Docker, read the
+broker's identity files, or control the host vault service. See
+[Host Vault for Provider Secrets](../service/secrets/host-vault-README.md).
+Existing file-backed values are first shadow-staged with create-only writes
+and in-broker digest comparison while `secrets-file` remains authoritative.
+Provider activation is a separately confirmed CLI transaction that quiesces
+the secret consumers, verifies both switched read paths, and restores file
+authority on an ordinary failure. A durable non-secret transaction marker
+blocks startup after interruption until explicit recovery recreates and
+verifies file-backed operation. Plaintext cleanup remains a later operator
+decision after active-provider restart durability is accepted.
+
 ```text
 user consent -> Connection Hub record -> server-side credential store
                                              |

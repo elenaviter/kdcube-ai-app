@@ -421,10 +421,22 @@ def _write_yaml_mapping_to_storage(storage_uri: str, payload: Mapping[str, Any])
             resolved = Path(file_path).expanduser().resolve()
             resolved.parent.mkdir(parents=True, exist_ok=True)
             tmp_path = resolved.with_name(f".{resolved.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}")
+            fd = -1
             try:
-                tmp_path.write_text(rendered, encoding="utf-8")
+                fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                if os.name == "posix":
+                    os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    fd = -1
+                    handle.write(rendered)
+                    handle.flush()
+                    os.fsync(handle.fileno())
                 tmp_path.replace(resolved)
+                if os.name == "posix":
+                    resolved.chmod(0o600)
             finally:
+                if fd >= 0:
+                    os.close(fd)
                 if tmp_path.exists():
                     tmp_path.unlink(missing_ok=True)
             return
@@ -777,6 +789,34 @@ class SecretsServiceSecretsManager(ISecretsManager):
     def _key_url(self, key: str) -> str:
         return f"{self._url}/secret/{quote(key, safe='')}"
 
+    @staticmethod
+    def _validate_write_response(response: Any, *, operation: str) -> None:
+        if response.status_code == 409:
+            raise SecretsManagerWriteError(f"secrets-service {operation} conflict")
+        if response.status_code == 503:
+            raise SecretsManagerWriteError(f"secrets-service {operation} unavailable")
+        if response.status_code != 200:
+            raise SecretsManagerWriteError(
+                f"secrets-service {operation} failed with status {response.status_code}"
+            )
+        try:
+            payload = response.json() or {}
+        except Exception:
+            raise SecretsManagerWriteError(
+                f"secrets-service {operation} returned an invalid response"
+            ) from None
+        if payload.get("status") != "ok":
+            raise SecretsManagerWriteError(
+                f"secrets-service {operation} returned an invalid response"
+            )
+        generation = payload.get("generation")
+        if generation is not None and (
+            isinstance(generation, bool) or not isinstance(generation, int) or generation < 1
+        ):
+            raise SecretsManagerWriteError(
+                f"secrets-service {operation} returned an invalid generation"
+            )
+
     async def get_secret(self, key: str) -> Optional[str]:
         if not self._url:
             return None
@@ -793,9 +833,12 @@ class SecretsServiceSecretsManager(ISecretsManager):
                 return str(value) if value is not None else None
             if response.status_code in {403, 404}:
                 return None
-            logger.warning("Secrets service GET %s failed with status %s", key, response.status_code)
-        except Exception:
-            logger.debug("Secrets service GET %s failed", key, exc_info=True)
+            if response.status_code == 503:
+                logger.warning("Secrets service GET unavailable")
+            else:
+                logger.warning("Secrets service GET failed with status %s", response.status_code)
+        except Exception as exc:
+            logger.debug("Secrets service GET failed: %s", type(exc).__name__)
         return None
 
     def can_write(self) -> bool:
@@ -805,29 +848,35 @@ class SecretsServiceSecretsManager(ISecretsManager):
         if not self.can_write():
             raise SecretsManagerWriteError("secrets-service provider is not configured for writes")
         httpx = _get_httpx()
-        async with httpx.AsyncClient(timeout=self._write_timeout) as client:
-            response = await client.post(
-                f"{self._url}/set",
-                json={"key": key, "value": value},
-                headers={"X-KDCUBE-ADMIN-TOKEN": self._admin_token},
-            )
-        if response.status_code != 200:
-            raise SecretsManagerWriteError(f"secrets-service set failed for {key}: {response.status_code}")
+        try:
+            async with httpx.AsyncClient(timeout=self._write_timeout) as client:
+                response = await client.post(
+                    f"{self._url}/set",
+                    json={"key": key, "value": value},
+                    headers={"X-KDCUBE-ADMIN-TOKEN": self._admin_token},
+                )
+        except Exception:
+            raise SecretsManagerWriteError("secrets-service set request failed") from None
+        self._validate_write_response(response, operation="set")
 
     async def delete_secret(self, key: str) -> None:
         if not self.can_write():
             raise SecretsManagerWriteError("secrets-service provider is not configured for writes")
         httpx = _get_httpx()
-        async with httpx.AsyncClient(timeout=self._write_timeout) as client:
-            response = await client.delete(
-                self._key_url(key),
-                headers={"X-KDCUBE-ADMIN-TOKEN": self._admin_token},
-            )
+        try:
+            async with httpx.AsyncClient(timeout=self._write_timeout) as client:
+                response = await client.delete(
+                    self._key_url(key),
+                    headers={"X-KDCUBE-ADMIN-TOKEN": self._admin_token},
+                )
+        except Exception:
+            raise SecretsManagerWriteError("secrets-service delete request failed") from None
         if response.status_code == 405:
             await self.set_secret(key, "")
             return
-        if response.status_code not in {200, 204, 404}:
-            raise SecretsManagerWriteError(f"secrets-service delete failed for {key}: {response.status_code}")
+        if response.status_code in {204, 404}:
+            return
+        self._validate_write_response(response, operation="delete")
 
 
 class AwsSecretsManagerSecretsManager(ISecretsManager):

@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -167,6 +168,58 @@ def test_default_install_exposes_governed_external_mcp_proxy():
         "grants": ["external_mcp:use"],
         "resource_selection": True,
     }
+
+
+def test_default_install_exposes_resident_delegated_gateway_ceiling():
+    descriptor_path = (
+        Path(__file__).resolve().parents[4] / "deployment" / "bundles.yaml"
+    )
+    descriptor = yaml.safe_load(descriptor_path.read_text())
+    items = {item["id"]: item for item in descriptor["bundles"]["items"]}
+    hub = items["connection-hub@1-0"]["config"]
+
+    assert hub["surfaces"]["as_provider"]["mcp"]["delegated_mcp_gateway"][
+        "auth"
+    ] == {
+        "mode": "delegated_proxy",
+        "authority_id": "delegated_client",
+    }
+    assert hub["connections"]["delegated_credentials"]["gateway"] == {
+        "requestable_discovery": {"caller_types": ["resident"]}
+    }
+    gateway_resources = [
+        item
+        for item in hub["connections"]["delegated_credentials"]["oauth"][
+            "resources"
+        ]
+        if "delegated_mcp_gateway" in item["resource"]
+    ]
+    assert gateway_resources == [
+        {
+            "resource": (
+                "*/api/integrations/bundles/*/*/connection-hub@1-0/"
+                "public/mcp/delegated_mcp_gateway*"
+            ),
+            "label": "Connection Hub delegated MCP gateway",
+            "identity_scope": "grantor",
+            "resource_selection": True,
+        }
+    ]
+
+    workspace = items["workspace@2026-03-31-13-36"]["config"]
+    main = workspace["surfaces"]["as_consumer"]["agents"]["main"]
+    assert main["delegated_resource_families"] == [
+        {
+            "id": "user_external_mcp",
+            "resource_kinds": ["remote_mcp"],
+            "authority_sources": ["delegated_card"],
+            "transports": ["streamable-http"],
+            "resource_patterns": ["urn:connection-hub:remote-mcp:*"],
+            "allowed_tools": ["*"],
+            "max_resources": 8,
+            "max_tools_per_resource": 64,
+        }
+    ]
 
 
 def test_init_prompt_mode_defaults_to_terminal_and_preserves_automation():
@@ -1398,6 +1451,9 @@ def test_stage_descriptor_directory_stages_complete_canonical_set(tmp_path: Path
     assert staged["bundles_secrets_path"] == target_dir / "bundles.secrets.yaml"
     assert staged["gateway_path"] == target_dir / "gateway.yaml"
     assert staged["assembly"]["context"]["tenant"] == "demo"
+    if os.name == "posix":
+        assert (target_dir / "secrets.yaml").stat().st_mode & 0o777 == 0o600
+        assert (target_dir / "bundles.secrets.yaml").stat().st_mode & 0o777 == 0o600
 
 
 def test_descriptor_fast_path_requires_platform_ref_without_latest():
@@ -3313,6 +3369,8 @@ def test_export_live_bundle_descriptors_reconstructs_effective_files(monkeypatch
             ],
         }
     }
+    if os.name == "posix":
+        assert (tmp_path / "bundles.secrets.yaml").stat().st_mode & 0o777 == 0o600
 
 
 def test_export_live_bundle_descriptors_prefers_local_descriptor_files(tmp_path: Path):
@@ -3361,6 +3419,8 @@ bundles:
     assert yaml.safe_load((out_dir / "bundles.secrets.yaml").read_text()) == yaml.safe_load(
         bundles_secrets_path.read_text()
     )
+    if os.name == "posix":
+        assert (out_dir / "bundles.secrets.yaml").stat().st_mode & 0o777 == 0o600
 
 
 def test_export_live_bundle_descriptors_removes_platform_managed_example_paths(tmp_path: Path):
@@ -3488,6 +3548,8 @@ def test_export_platform_descriptors_copies_platform_files(tmp_path: Path):
     assert (out_dir / "assembly.yaml").exists()
     for name in ("secrets.yaml", "gateway.yaml", "economics.yaml"):
         assert (out_dir / name).read_text() == (config_dir / name).read_text()
+    if os.name == "posix":
+        assert (out_dir / "secrets.yaml").stat().st_mode & 0o777 == 0o600
 
 
 def test_export_platform_descriptors_denormalizes_local_infra_hosts(tmp_path: Path):

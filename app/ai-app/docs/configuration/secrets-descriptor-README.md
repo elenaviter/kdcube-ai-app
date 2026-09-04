@@ -90,10 +90,30 @@ workers.
 If `assembly.secrets.provider == secrets-file`:
 
 - `secrets.yaml` can be mounted as the live file authority
+- on POSIX hosts, the CLI creates, stages, applies, and exports canonical
+  secret descriptors with owner-only `0600` permissions
+- runtime atomic updates preserve `0600` instead of recreating a
+  group/world-readable file through the process umask
 
 Otherwise:
 
 - it is installer input used to populate the active runtime secrets provider
+
+For an opt-in local host vault, set `secrets.service.backend: host-vault`. Keep
+`secrets.provider: secrets-file` while the CLI shadow-stages and verifies the
+existing values. `kdcube secrets host-vault activate` performs the explicit
+local-Compose cutover to `secrets-service`, verifies reads in ingress and proc,
+and restores file authority on an ordinary activation failure. A durable,
+non-secret pending marker blocks ordinary startup after an interrupted switch;
+`kdcube secrets host-vault recover --yes` recreates and verifies the retained
+file-backed path before clearing it.
+The descriptor also declares the vault address, TLS server name, and an
+absolute deployment-identity directory outside the workdir. Set
+`platform.services.proc.exec.py_code_exec_network_mode: auto` so a trusted
+Docker-in-Docker supervisor shares the processor's private service networks;
+the split generated-code executor remains networkless. The values remain
+server-side; the descriptor contains paths and topology only. See
+[Host Vault for Provider Secrets](../service/secrets/host-vault-README.md).
 
 ### Direct local service run
 
@@ -108,6 +128,19 @@ In `aws-sm`:
 
 - `secrets.yaml` is deployment input
 - live secret authority is AWS Secrets Manager, not the YAML file
+
+## Local isolation boundary
+
+Owner-only mode is local filesystem hygiene. It prevents another OS account
+from reading the descriptor, but it does not isolate a process that already
+runs with the descriptor owner's account authority.
+
+In local Docker Compose, trusted KDCube services read the descriptor through
+the `/config` bind mount. For split isolated execution, proc supplies the
+descriptor-backed settings and secrets to the trusted supervisor container.
+The sibling container that executes generated Python receives no `/config`
+mount, secret-descriptor payload, secret-provider material, or Docker socket.
+See [README-iso-runtime.md](../exec/README-iso-runtime.md) for that boundary.
 
 ## Practical rule
 

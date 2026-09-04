@@ -26,6 +26,18 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
 from rich.text import Text
+
+from kdcube_cli.descriptor_files import (
+    copy_descriptor_file,
+    enforce_secret_descriptor_permissions,
+    write_descriptor_text,
+)
+from kdcube_cli.host_vault import (
+    HostVaultConfigurationError,
+    compose_environment as host_vault_compose_environment,
+    config_from_assembly as host_vault_config_from_assembly,
+    validate_assembly_for_start as validate_host_vault_assembly_for_start,
+)
 from kdcube_cli.tty_keys import (
     KEY_DOWN,
     KEY_ENTER,
@@ -427,8 +439,7 @@ def load_release_descriptor(path: Path) -> Dict[str, object]:
 
 def save_release_descriptor(path: Path, data: Dict[str, object]) -> None:
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(yaml.safe_dump(data, sort_keys=False))
+        write_descriptor_text(path, yaml.safe_dump(data, sort_keys=False))
     except Exception:
         pass
 
@@ -2070,12 +2081,12 @@ def stage_assembly_descriptor(
 
 def ensure_secrets_template(target_path: Path, ai_app_root: Path) -> bool:
     if target_path.exists():
+        enforce_secret_descriptor_permissions(target_path)
         return True
     src = ai_app_root / "deployment/secrets.yaml"
     if not src.exists():
         return False
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(src, target_path)
+    copy_descriptor_file(src, target_path)
     return True
 
 
@@ -2087,8 +2098,9 @@ def stage_secrets_descriptor(
 ) -> bool:
     if source_path and source_path.exists():
         if target_path.resolve() != source_path.resolve():
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source_path, target_path)
+            copy_descriptor_file(source_path, target_path)
+        else:
+            enforce_secret_descriptor_permissions(target_path)
         return True
     return ensure_secrets_template(target_path, ai_app_root)
 
@@ -2120,12 +2132,12 @@ def stage_bundles_descriptor(
 
 def ensure_bundles_secrets_template(target_path: Path, ai_app_root: Path) -> bool:
     if target_path.exists():
+        enforce_secret_descriptor_permissions(target_path)
         return True
     src = ai_app_root / "deployment/bundles.secrets.yaml"
     if not src.exists():
         return False
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(src, target_path)
+    copy_descriptor_file(src, target_path)
     return True
 
 
@@ -2137,8 +2149,9 @@ def stage_bundles_secrets_descriptor(
 ) -> bool:
     if source_path and source_path.exists():
         if target_path.resolve() != source_path.resolve():
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source_path, target_path)
+            copy_descriptor_file(source_path, target_path)
+        else:
+            enforce_secret_descriptor_permissions(target_path)
         return True
     return ensure_bundles_secrets_template(target_path, ai_app_root)
 
@@ -2493,11 +2506,13 @@ def apply_runtime_secrets(console: Console, ctx: PathsContext, secrets: Dict[str
                     "/app/secretsctl.py",
                     "set",
                     key,
-                    value,
+                    "--stdin",
                 ],
                 cwd=ctx.docker_dir,
                 check=True,
                 env=compose_env(env_file),
+                input=value,
+                text=True,
             )
         except FileNotFoundError:
             console.print("[red]Docker not found. Please install Docker and rerun.[/red]")
@@ -3536,6 +3551,17 @@ def gather_configuration(
         proc_admin = env_proc.entries.get("SECRETS_ADMIN_TOKEN", (None, None))[1]
         if is_placeholder(proc_admin) or not (proc_admin or "").strip():
             update_env_value(env_proc, "SECRETS_ADMIN_TOKEN", "${SECRETS_ADMIN_TOKEN}")
+    try:
+        host_vault_config = host_vault_config_from_assembly(assembly_data)
+    except HostVaultConfigurationError as exc:
+        raise SystemExit(f"Invalid host-vault descriptor configuration: {exc}") from exc
+    _set_nested(
+        assembly_data,
+        ["secrets", "service", "backend"],
+        host_vault_config.backend,
+    )
+    for key, value in host_vault_compose_environment(host_vault_config).items():
+        update_env_value(env_main, key, value)
     update_if_placeholder(env_ingress, "LINK_PREVIEW_ENABLED", "0")
 
     # Auth provider selection
@@ -6054,6 +6080,13 @@ def run_setup(
     if ask_confirm(console, "Run docker compose now?", default=True):
         runtime_env = None
         try:
+            try:
+                validate_host_vault_assembly_for_start(
+                    load_release_descriptor(config_dir / "assembly.yaml"),
+                    workdir=ctx.workdir,
+                )
+            except HostVaultConfigurationError as exc:
+                raise SystemExit(f"Host-vault startup preflight failed: {exc}") from exc
             maybe_remove_legacy_containers(console)
             token_overrides = generate_runtime_tokens()
             runtime_env = write_env_overlay(config_dir / ".env", token_overrides)

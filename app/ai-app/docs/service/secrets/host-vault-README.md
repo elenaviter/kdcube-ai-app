@@ -1,7 +1,7 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/service/secrets/host-vault-README.md
 title: "Host Vault for Provider Secrets"
-summary: "Durable, host-owned vault for provider credentials: versioned protocol, deployment workload identity over mTLS, envelope-encrypted store, and the stateless kdcube-secrets broker. First phase, not yet wired into the secrets provider."
+summary: "Durable, host-owned vault for provider credentials with an opt-in local Compose broker, deployment workload identity over mTLS, envelope-encrypted storage, and explicit migration and hardening gates."
 tags: ["service", "secrets", "security", "vault", "runtime"]
 keywords: ["host vault", "kdcube-host-vault/1", "workload identity", "mTLS", "kdcube-secrets broker", "envelope encryption", "trust registry", "hostvaultctl"]
 see_also:
@@ -21,12 +21,14 @@ outside the KDCube runtime workdir. Deployments reach it over mutual TLS with
 a key generated inside their own boundary, and the vault checks every request
 against a live trust registry before it touches the store.
 
-This page describes the first phase: the protocol, the modules, the operator
-tool, and the proofs. The runtime still selects its secrets backend through
-`SECRETS_PROVIDER` as documented in
-[secrets-service-README.md](secrets-service-README.md). Nothing on this page
-changes that selection yet. The broker here is constructible and testable on
-its own.
+This page describes the protocol, local Compose integration, operator tool,
+and proofs. The runtime still selects its secrets provider through the
+descriptor-owned `secrets.provider` setting documented in
+[secrets-service-README.md](secrets-service-README.md). `secrets-file` remains
+the shipped default. The host-vault broker may be started beside that file
+provider for shadow staging, then selected explicitly as the backing
+implementation of `secrets-service` after acceptance. Selecting the broker
+never migrates or deletes an existing secret descriptor.
 
 ## 1. Trust model in one pass
 
@@ -48,7 +50,11 @@ certificate's fingerprint up in the registry: the record must exist, be
 active, and be unexpired at that moment. A bearer header, a deployment id in
 the body, the socket address, or a process name never establish authority.
 The registry's namespace ACL decides which `tenant/project/application`
-references that identity may read or write.
+references that identity may read or write. KDCube's current secrets manager
+is deployment-wide, so its broker binds the exact logical application
+`kdcube-runtime`. Platform, bundle, and per-user keys remain distinguished by
+their existing internal key grammar inside that namespace. A remote caller
+cannot choose either the namespace or a key.
 
 Enrollment is a one-use ticket: the deployment generates its private key in
 place, hands out only a CSR, and the host CA issues a certificate whose
@@ -131,10 +137,12 @@ kdcube_ai_app/infra/secrets/host_vault/
 
 The broker derives the vault reference from the deployment's canonical
 tenant and project plus the trusted logical application the platform binds
-(`connection-hub@1-0` by default) and the internal secrets-manager key. No
-remote caller names a vault path. The broker caches nothing and returns `ok`
-for a mutation only when the vault committed it. Reads that are forbidden or
-unreachable come back as `None`, the same shape the existing
+and the internal secrets-manager key. The shipped HTTP broker always binds
+`kdcube-runtime`, because it fronts KDCube's deployment-wide secrets manager;
+it does not claim per-application process isolation. No remote caller names a
+vault path. The broker caches nothing and returns `ok` for a mutation only
+when the vault committed it. Reads that are forbidden or unreachable come
+back as `None`, the same shape the existing
 `SecretsServiceSecretsManager.get_secret` returns.
 
 ## 5. Deployment files
@@ -175,7 +183,7 @@ python hostvaultctl.py deployment-keygen --dir /run/kdcube-host-vault-identity
 
 # host
 python hostvaultctl.py enroll --deployment-id dep-prod-1 \
-  --namespace demo-tenant/demo-project/connection-hub@1-0 \
+  --namespace demo-tenant/demo-project/kdcube-runtime \
   --csr host-vault-client.csr --out dep-prod-1.crt
 
 # inside the deployment boundary
@@ -184,14 +192,187 @@ python hostvaultctl.py deployment-install --dir /run/kdcube-host-vault-identity 
 ```
 
 The broker reads `KDCUBE_HOST_VAULT_ADDR`, `KDCUBE_HOST_VAULT_SERVER_NAME`,
-`KDCUBE_HOST_VAULT_IDENTITY_DIR`, `KDCUBE_SECRETS_TENANT`,
-`KDCUBE_SECRETS_PROJECT`, and optionally `KDCUBE_SECRETS_APPLICATION`. It
-serves `/health`, `GET /secret/{key}`, `POST /set`, and
-`DELETE /secret/{key}` exactly as `secrets/secrets_server.py` does, so the
-existing in-deployment client keeps working when the provider is switched
-in a later phase. The old `X-KDCUBE-SECRET-TOKEN` and `X-KDCUBE-ADMIN-TOKEN`
-headers stay an optional in-deployment door gate. They are never forwarded,
-and the vault never sees them.
+`KDCUBE_HOST_VAULT_IDENTITY_DIR`, `KDCUBE_SECRETS_TENANT`, and
+`KDCUBE_SECRETS_PROJECT`. It preserves `/health`, `GET /secret/{key}`, `POST
+/set`, and `DELETE /secret/{key}` from `secrets/secrets_server.py`. The host
+vault implementation additionally accepts an optional generation guard on
+`POST /set` and exposes admin-only `POST /verify` for secret-free migration
+comparison. The old `X-KDCUBE-SECRET-TOKEN` and `X-KDCUBE-ADMIN-TOKEN` headers
+stay an in-deployment door gate. They are never forwarded, and the vault never
+sees them.
+
+### Local Compose selection
+
+The KDCube descriptor owns the selection. Shadow staging keeps the file
+provider authoritative:
+
+```yaml
+secrets:
+  provider: secrets-file
+  service:
+    backend: host-vault
+    host_vault:
+      address: host.docker.internal:7781
+      server_name: host.docker.internal
+      identity_dir: /absolute/service-owned/path/deployment-identity
+
+platform:
+  services:
+    proc:
+      exec:
+        py_code_exec_network_mode: auto
+```
+
+After staging and regression acceptance, changing `provider` to
+`secrets-service` selects the already populated broker. That cutover is a
+separate operator action.
+
+`identity_dir` is a host path outside the KDCube workdir containing exactly:
+
+```text
+host-vault-client.crt
+host-vault-client.key
+host-vault-ca.crt
+```
+
+The CLI projects this non-secret topology into Compose. Both maintained local
+Compose layouts run the same `kdcube-secrets` image. Its default
+`secrets.service.backend` is `ephemeral`, which runs the existing temporary
+sidecar. `host-vault` runs the mTLS broker instead. Only that broker receives
+read-only mounts for the three identity files and network access to the host;
+ingress, proc, metrics, and generated executors receive none of them.
+
+Before `kdcube start`, the CLI verifies that the provider/backend combination
+is coherent, the identity directory is outside the workdir, all three files
+exist and are regular files, and the private key is owner-only on POSIX.
+`host.docker.internal` is mapped to the Docker host on Linux as well as Docker
+Desktop. The vault service must bind an address reachable from Docker; mTLS
+still authenticates both ends.
+
+The `auto` trusted-runtime network setting keeps host-launched supervisors on
+Docker's host network. Under local Docker-in-Docker it shares the processor's
+network namespace, which already contains the normal internal-service network
+and the private secrets-service network. This gives the trusted supervisor a
+route to `kdcube-secrets` without publishing the broker. A split generated-code
+executor remains a separate container with `--network none`, no broker token,
+no descriptor payload, and no deployment identity. Host-vault preflight rejects
+another network mode because a secret-using trusted tool would otherwise fail
+only when invoked.
+
+### Shadow-stage existing file secrets
+
+With the host vault enrolled, the broker running, and `secrets-file` still
+selected, inspect the destination without writing:
+
+```bash
+kdcube secrets host-vault stage \
+  --tenant demo-tenant --project demo-project \
+  --dry-run --json
+```
+
+Then stage and verify all configured non-placeholder values:
+
+```bash
+kdcube secrets host-vault stage \
+  --tenant demo-tenant --project demo-project \
+  --json
+```
+
+The CLI reads the owner-only `secrets.yaml` and `bundles.secrets.yaml` in its
+trusted process. Values travel to `secretsctl` over stdin and never appear in
+process arguments. Verification hashes the candidate in the CLI and compares
+it with the stored value inside the broker; neither value is returned. The
+result contains counts only.
+
+Staging is idempotent and default-closed:
+
+- every destination value is checked before the first write;
+- an existing different value aborts the whole run before writes;
+- an absent value is created with `expected_generation: 0`, so a racing or
+  previously tombstoned record is not overwritten;
+- each create is read back and compared, followed by a complete final pass;
+- a failure leaves successful copies in place and leaves the source provider
+  untouched, so the next run resumes by accepting exact matches;
+- placeholders are counted and skipped;
+- no command changes `secrets.provider` or deletes plaintext source files.
+
+The shadow stage establishes destination parity. It is not activation. Keep
+`secrets-file` selected until the secret-using runtime regression suite passes
+against an explicitly activated test deployment. Plaintext cleanup remains a
+later, separately confirmed operator action.
+
+### Activate the staged provider
+
+Check parity and runtime readiness without changing a file or container:
+
+```bash
+kdcube secrets host-vault activate \
+  --tenant demo-tenant --project demo-project \
+  --dry-run --json
+```
+
+Then perform the explicit provider switch:
+
+```bash
+kdcube secrets host-vault activate \
+  --tenant demo-tenant --project demo-project \
+  --yes --json
+```
+
+Without `--yes`, an interactive terminal asks for confirmation. Automation
+and JSON mode require `--yes`. `--wait-seconds` bounds each broker and
+consumer readiness check from 5 to 600 seconds; the default is 120.
+
+Activation is a bounded local-Compose transaction:
+
+1. It requires `kdcube-secrets`, `chat-ingress`, and `chat-proc` to be
+   running and verifies that every current file-backed value already matches
+   the host vault.
+2. It durably creates `config/.host-vault-activation.pending.json`. The
+   owner-only marker contains only schema, phase, and recovery-mode metadata;
+   it contains no value, key name, digest, token, path, or identity material.
+3. It quiesces ingress and proc so neither can write a file-backed secret
+   while the final inventory is checked.
+4. It changes `assembly.secrets.provider` and the two generated consumer
+   environments to `secrets-service`.
+5. It recreates the broker first and both consumers second with one temporary
+   token overlay. Tokens remain out of process arguments and are not persisted
+   by activation.
+6. It resolves one staged value independently inside ingress and proc and
+   compares digests without returning the value. It also rejects a source
+   inventory change observed during the switch, then durably removes the
+   marker.
+
+Any ordinary failure after quiescing restores the exact prior configuration,
+recreates the shadow-mode runtime, and verifies file-backed reads. If the host
+vault itself prevents that exact restart, recovery selects the ephemeral
+sidecar with `secrets-file`, preserving availability and the plaintext source.
+
+If the CLI process or host stops after the marker is durable and before it is
+removed, ordinary `kdcube start` refuses the unresolved transaction. Recover
+to a known file-backed state before retrying activation:
+
+```bash
+kdcube secrets host-vault recover \
+  --tenant demo-tenant --project demo-project \
+  --yes --json
+```
+
+Recovery is repeatable. It selects `secrets-file` with the ephemeral sidecar,
+recreates the broker, ingress, and proc, verifies a real file-backed read in
+both consumers, and only then removes the marker. It does not depend on marker
+contents to reconstruct configuration and never deletes the plaintext source.
+If recovery fails, the marker remains and startup continues to fail closed.
+This covers interrupted configuration activation; service, Docker, and host
+restart durability of the active vault is still a separate acceptance gate.
+
+Broker verification retries a small number of transient connection and
+`502`/`503`/`504` failures. Permission, conflict, and malformed-request errors
+remain immediate failures.
+
+This selection is local-Compose-specific. ECS descriptors continue to select
+`aws-sm`; no ECS task definition, IAM policy, or Terraform path is changed by
+the host-vault switch.
 
 ## 6. Audit
 
@@ -234,13 +415,24 @@ app/venvs/ai-app/chat-processor/bin/python -m pytest \
 default import mode would put `kdcube_ai_app/infra` on `sys.path`, where
 the `secrets` package shadows the standard library module.
 
-## 8. What comes after this phase
+## 8. Current gates
 
-Wiring the broker under `ISecretsManager(secrets-service)`, descriptor and
-compose configuration, migration from the current backend with readback
-comparison inside trusted code, Connection Hub connector regression, and
-restart durability across service, Docker, and host restarts are separate
-integration slices. Generated or isolated code never receives vault
-credentials, the deployment private key, unrestricted references, or a
-general vault client: trusted supervisor services project only the values
-and operations they choose.
+The protocol, opt-in local Compose broker, idempotent file-to-vault shadow
+stage, operator-confirmed activation, automatic ordinary-failure rollback,
+and explicit interrupted-activation recovery are implemented. The remaining
+gates are deliberately separate:
+
+- run Connection Hub connector create, invoke, replace, and delete plus Brave
+  and connected-account regressions against the broker-backed provider
+- prove service, Docker, and host restart durability and deployment-identity
+  revocation on a real machine
+- prove a complete split-runtime secret-using tool call with the broker enabled;
+  parent-network routing and the networkless executor are covered separately
+- package the host vault as a dedicated service-owned appliance or VM and add
+  its enrollment/install lifecycle
+- remove plaintext source values only through a later explicit cleanup action
+  after activation and durability acceptance
+
+Generated or isolated code never receives vault credentials, the deployment
+private key, unrestricted references, or a general vault client. Trusted
+supervisor services project only the values and operations they choose.

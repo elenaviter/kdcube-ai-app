@@ -304,8 +304,12 @@ def test_broker_is_stateless_and_acknowledges_only_committed_writes(rig: Rig, mo
     b = broker.SecretsBroker(transport=transport_, tenant="demo-tenant", project="demo-project")
     assert b.set(application="connection-hub@1-0", key=KEY, value=CANARY).ok
     assert b.get(application="connection-hub@1-0", key=KEY) == CANARY
+    read = b.read(application="connection-hub@1-0", key=KEY)
+    assert read.ok and read.value == CANARY and read.generation == 1
     assert CANARY not in json.dumps({k: str(v) for k, v in vars(b).items()})
     assert b.get(application="other-app@1-0", key=KEY) is None  # forbidden reads as absent
+    denied = b.read(application="other-app@1-0", key=KEY)
+    assert denied.ok is False and denied.code is ErrorCode.FORBIDDEN
     # a write the store refused is NOT acknowledged
     monkeypatch.setattr(rig.store, "_commit_hook", lambda: (_ for _ in ()).throw(OSError("crash")))
     result = b.set(application="connection-hub@1-0", key=KEY, value="lost")

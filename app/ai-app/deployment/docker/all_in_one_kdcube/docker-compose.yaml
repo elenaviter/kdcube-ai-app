@@ -104,11 +104,37 @@ services:
     environment:
       - SECRETS_ADMIN_TOKEN=${SECRETS_ADMIN_TOKEN:-}
       - SECRETS_READ_TOKENS=${SECRETS_READ_TOKENS:-}
+      - KDCUBE_SECRETS_SERVICE_BACKEND=${KDCUBE_SECRETS_SERVICE_BACKEND:-ephemeral}
+      - KDCUBE_HOST_VAULT_ADDR=${KDCUBE_HOST_VAULT_ADDR:-}
+      - KDCUBE_HOST_VAULT_SERVER_NAME=${KDCUBE_HOST_VAULT_SERVER_NAME:-}
+      - KDCUBE_SECRETS_TENANT=${KDCUBE_SECRETS_TENANT:-}
+      - KDCUBE_SECRETS_PROJECT=${KDCUBE_SECRETS_PROJECT:-}
     restart: unless-stopped
     tmpfs:
       - /run/kdcube-secrets
+    volumes:
+      - type: bind
+        source: ${HOST_KDCUBE_HOST_VAULT_CLIENT_CERT_PATH:-/dev/null}
+        target: /run/kdcube-host-vault-identity/host-vault-client.crt
+        read_only: true
+      - type: bind
+        source: ${HOST_KDCUBE_HOST_VAULT_CLIENT_KEY_PATH:-/dev/null}
+        target: /run/kdcube-host-vault-identity/host-vault-client.key
+        read_only: true
+      - type: bind
+        source: ${HOST_KDCUBE_HOST_VAULT_CA_PATH:-/dev/null}
+        target: /run/kdcube-host-vault-identity/host-vault-ca.crt
+        read_only: true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7777/health', timeout=2)" ]
+      interval: 5s
+      timeout: 3s
+      retries: 12
     networks:
       - kdcube-secrets
+      - kdcube-host-vault
 
 #  neo4j:
 #    image: neo4j:5
@@ -259,7 +285,7 @@ services:
       redis:
         condition: service_healthy
       kdcube-secrets:
-        condition: service_started
+        condition: service_healthy
       clamav:
         condition: service_healthy
     networks:
@@ -325,6 +351,8 @@ services:
       postgres-setup:
         condition: service_completed_successfully
       redis:
+        condition: service_healthy
+      kdcube-secrets:
         condition: service_healthy
     networks:
       - kdcube-internal
@@ -441,3 +469,5 @@ networks:
   kdcube-secrets:
     driver: bridge
     internal: true
+  kdcube-host-vault:
+    driver: bridge
