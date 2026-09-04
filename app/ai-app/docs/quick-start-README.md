@@ -5,7 +5,7 @@ summary: "Install the published KDCube CLI, initialize a tenant/project from the
 status: active
 tags: [docs, quickstart, local, docker-compose, cli, authentication]
 keywords: [install kdcube, kdcube init, local runtime, latest release, Google login, tenant project, runtime workdir]
-updated_at: 2026-09-02
+updated_at: 2026-09-05
 see_also:
   - repo:kdcube/app/ai-app/docs/what-you-can-do-with-kdcube-README.md
   - repo:kdcube/app/ai-app/docs/recipes/operations/install-clean-README.md
@@ -159,6 +159,22 @@ To use Connection Hub from an external agent, continue with
 That workflow connects an external MCP, creates a caller profile with exact
 tool permissions, provides the proxy endpoint and one-time credential, and
 proves live narrowing or revocation from the running client.
+
+### Try One SDK Component Directly
+
+The source checkout also provides smaller executable paths:
+
+- [Runnable Agent Harness examples](../../../agents/README.md) start native
+  ReAct, LangGraph, or Claude Code directly from Python with independent Redis
+  and Postgres services. The full command contract is
+  [Run the Agent Harness from Python](recipes/quickstart/run-agent-harness-from-python-README.md).
+- [Web Search MCP](../../../mcp/web-search/README.md) starts KDCube Web Search
+  as an operator-filtered stdio, HTTP, or SSE MCP server.
+
+These component paths do not require the gateway, processor, chat UI, or a
+running KDCube server. Continue with this Quick Start when you want the full
+multi-user runtime and its authentication, tool-execution enforcement,
+managed tools, isolated workspaces, and app hosting.
 
 ## What `init` Creates
 

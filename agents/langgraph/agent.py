@@ -34,6 +34,7 @@ from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.configuration import (  
     activate_configured_skills,
     agent_instructions,
     configured_tools,
+    configured_web_search_path,
     require_supported_tools,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.evidence import (  # noqa: E402
@@ -157,6 +158,10 @@ async def main_async(args: argparse.Namespace) -> None:
     descriptors_dir = Path(args.descriptors).expanduser().resolve()
     settings = activate_platform_descriptors(descriptors_dir)
     config = load_config(config_path)
+    web_search_config = configured_web_search_path(config, config_path=config_path)
+    from kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search import web_search_server
+
+    web_search_server.load_config(web_search_config)
     output_dir = (config_path.parent / str((config.get("output") or {}).get("directory") or "./output")).resolve()
     harness_config = direct_harness_config(
         settings=settings,
@@ -199,6 +204,7 @@ async def main_async(args: argparse.Namespace) -> None:
     print("mode: standalone SDK process")
     print(f"adapter: LangGraph create_agent -> KDCubeChatModel ({ROLE})")
     print(f"tools: {', '.join(sorted(enabled_tools)) or '(none)'}")
+    print(f"web search: KDCube Web Search ({web_search_config})")
     print(f"skills: {', '.join(skill_config.enabled) or '(none)'}")
     print(f"output: {output_dir}")
     print(f"conversation storage: {harness_config.storage_uri}")

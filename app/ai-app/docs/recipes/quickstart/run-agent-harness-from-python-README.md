@@ -3,9 +3,9 @@ id: repo:kdcube-ai-app/app/ai-app/docs/recipes/quickstart/run-agent-harness-from
 title: "Recipe: Run the Agent Harness from Python"
 summary: "Executable steps for running a YAML-configured native ReAct, LangGraph, or Claude Code agent from KDCube SDK source."
 status: current
-tags: ["recipe", "quickstart", "agent-harness", "python", "native-react", "langgraph", "claude-code", "self-hosted"]
-keywords: ["run agent harness", "direct SDK agent", "standard descriptors", "Redis", "Postgres", "Git transcript", "isolated code execution"]
-updated_at: 2026-09-04
+tags: ["recipe", "quickstart", "agent-harness", "python", "native-react", "langgraph", "claude-code", "self-hosted", "web-search"]
+keywords: ["run agent harness", "direct SDK agent", "KDCube Web Search", "standard descriptors", "Redis", "Postgres", "Git transcript", "isolated code execution"]
+updated_at: 2026-09-05
 see_also:
   - repo:kdcube-ai-app/agents/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/README.md
@@ -13,6 +13,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/assembly-descriptor-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/secrets-descriptor-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/exec/README-iso-runtime.md
+  - repo:kdcube-ai-app/mcp/web-search/README.md
 ---
 # Recipe: Run the Agent Harness from Python
 
@@ -29,8 +30,9 @@ agents/
   claude/       Claude Code through ClaudeCodeAgent
 ```
 
-Each directory contains its agent, requirements, behavior YAML, standard
-platform descriptors, skill, Compose services, and setup command.
+Each directory contains its agent, requirements, behavior YAML, KDCube Web
+Search policy, standard platform descriptors, skill, Compose services, and
+setup command.
 
 ## The first-run journey
 
@@ -152,6 +154,10 @@ descriptors.local/
 .env                   matching Compose service credentials
 ```
 
+The tracked `web-search.yaml` beside `config.template.yaml` owns the KDCube
+Web Search allowlist, blocklist, and SSRF policy. It is part of the example,
+not generated local state.
+
 The Claude setup also initializes
 `output/claude-session-store.git`; native and LangGraph do not carry that
 Claude-specific surface.
@@ -190,10 +196,41 @@ agent:
     root: ./skills
     enabled:
       - demo.research-brief
+
+web_search:
+  config: ./web-search.yaml
 ```
 
 The runner turns enabled rows into an exact tool allow-list and loads the named
 skill from this directory. Unknown tool or skill IDs fail during construction.
+
+Every example uses KDCube Web Search. Native and LangGraph adapt its Python
+implementation to their native tool interfaces; Claude starts the same module
+as a local stdio MCP server and denies Claude's ambient `WebSearch` and
+`WebFetch`. The adapter-facing IDs differ, but the search implementation and
+operator policy do not:
+
+| Agent | Enabled search operation |
+| --- | --- |
+| Native ReAct | `demo.web_search` |
+| LangGraph | `web_search` |
+| Claude Code | `mcp__kdcube_web_search__web_search` |
+
+`web-search.yaml` is the Web Search tool's own policy:
+
+```yaml
+filter:
+  allowlist:
+    - python.org
+  blocklist: []
+  ssrf_guard: true
+```
+
+The shipped topic concerns Python, so the initial allowlist admits
+`python.org` and its subdomains. Change the list when you change the topic. A
+tool call can narrow this policy with `sites`; it cannot widen it. The full
+standalone tool contract is in the
+[Web Search MCP quick start](../../../../../mcp/web-search/README.md).
 
 `descriptors.local/assembly.yaml` controls the host:
 
@@ -307,8 +344,9 @@ standard SSH fields under `services.git` in `assembly.yaml`.
 
 Use `config.local.yaml` to change instructions, topic, tools, skills, and
 limits. Use the standard descriptors to change model, infrastructure, storage,
-economics, executor, or credentials. Add local tool implementations in
-`tools.py`, then select their IDs in YAML and rerun `--check`.
+economics, executor, or credentials. Use `web-search.yaml` for Web Search
+egress policy. Add other local tool implementations in `tools.py`, then select
+their IDs in YAML and rerun `--check`.
 
 YAML selects installed code. Every enabled tool and skill therefore has a real
 implementation that construction validates.

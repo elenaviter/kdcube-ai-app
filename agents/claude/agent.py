@@ -32,6 +32,7 @@ from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.configuration import (  
     activate_configured_skills,
     agent_instructions,
     configured_tools,
+    configured_web_search_path,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.evidence import (  # noqa: E402
     ConsoleEmitter,
@@ -64,6 +65,7 @@ async def agent_config(
     config: dict[str, Any],
     *,
     workspace: Path,
+    web_search_config: Path,
     check_only: bool,
     skill_ids: tuple[str, ...],
 ) -> ClaudeCodeAgentConfig:
@@ -93,6 +95,7 @@ async def agent_config(
             + ", ".join(unsupported_runtimes)
         )
     allowed_tools = tuple(tool.id for tool in tool_config if tool.enabled)
+    web_search_server_id = "kdcube_web_search"
     instructions = agent_instructions(
         config,
         fallback=(
@@ -110,8 +113,25 @@ async def agent_config(
         timeout_seconds=float(claude.get("timeout_seconds") or 900),
         permission_mode="acceptEdits",
         workspace_config=ClaudeCodeWorkspaceConfig(
+            mcp_servers={
+                web_search_server_id: {
+                    "type": "stdio",
+                    "command": sys.executable,
+                    "args": [
+                        "-m",
+                        "kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search.web_search_server",
+                        "--transport",
+                        "stdio",
+                        "--config",
+                        str(web_search_config),
+                    ],
+                    "env": {"PYTHONPATH": str(SDK_ROOT)},
+                }
+            },
+            enabled_mcp_servers=(web_search_server_id,),
             instructions_markdown=instructions,
             allowed_tools=allowed_tools,
+            denied_tools=("WebSearch", "WebFetch"),
             skill_ids=skill_ids,
             overwrite=True,
         ),
@@ -184,6 +204,7 @@ async def main_async(args: argparse.Namespace) -> None:
     descriptors_dir = Path(args.descriptors).expanduser().resolve()
     settings = activate_platform_descriptors(descriptors_dir)
     config = load_config(config_path)
+    web_search_config = configured_web_search_path(config, config_path=config_path)
     output = (config_path.parent / str((config.get("output") or {}).get("directory") or "./output")).resolve()
     if args.check:
         conversation_id = "claude-check"
@@ -203,6 +224,7 @@ async def main_async(args: argparse.Namespace) -> None:
     cfg = await agent_config(
         config,
         workspace=workspace,
+        web_search_config=web_search_config,
         check_only=args.check or args.infra_check,
         skill_ids=skill_config.enabled,
     )
@@ -223,6 +245,7 @@ async def main_async(args: argparse.Namespace) -> None:
     print("adapter: ClaudeCodeAgent -> local Claude Code subprocess")
     print(f"model: anthropic/{cfg.model}")
     print(f"tools: {', '.join(cfg.allowed_tools) or '(none)'}")
+    print(f"web search: KDCube Web Search MCP ({web_search_config})")
     print(f"skills: {', '.join(skill_config.enabled) or '(none)'}")
     print(f"workspace: {workspace}")
     print(f"conversation storage: {harness_config.storage_uri}")
@@ -274,7 +297,8 @@ async def main_async(args: argparse.Namespace) -> None:
     topic = str((config.get("agent") or {}).get("topic") or "accountable agent runtimes")
     prompts = [
         (
-            f"Use WebSearch to research recent, concrete information about {topic}. "
+            "Use the kdcube_web_search web_search MCP tool with use_llm=false and "
+            f"fetch_content=false to research recent, concrete information about {topic}. "
             "Save five sourced findings to research.json so the next turn can use them."
         ),
         (

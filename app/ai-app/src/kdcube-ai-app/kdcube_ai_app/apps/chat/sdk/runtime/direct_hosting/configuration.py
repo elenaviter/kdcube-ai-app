@@ -63,6 +63,29 @@ def configured_tools(config: Mapping[str, Any]) -> tuple[ConfiguredTool, ...]:
     return tuple(tools)
 
 
+def configured_web_search_path(
+    config: Mapping[str, Any],
+    *,
+    config_path: Path,
+) -> Path:
+    """Resolve the standalone Web Search tool policy selected by agent YAML."""
+    raw = config.get("web_search")
+    if not isinstance(raw, Mapping):
+        raise ValueError("configuration section 'web_search' must be a mapping")
+    path_raw = str(raw.get("config") or "").strip()
+    if not path_raw:
+        raise ValueError("web_search.config is required")
+    candidate = Path(path_raw).expanduser()
+    path = (
+        candidate.resolve()
+        if candidate.is_absolute()
+        else (config_path.parent / candidate).resolve()
+    )
+    if not path.is_file():
+        raise ValueError(f"web_search.config does not exist: {path}")
+    return path
+
+
 def enabled_tool_ids(config: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(tool.id for tool in configured_tools(config) if tool.enabled)
 
@@ -158,6 +181,7 @@ __all__ = [
     "agent_instructions",
     "configured_skills",
     "configured_tools",
+    "configured_web_search_path",
     "enabled_tool_ids",
     "require_supported_tools",
     "verify_docker_image",

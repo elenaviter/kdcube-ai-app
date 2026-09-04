@@ -1,4 +1,4 @@
-"""Local tools for the standalone native ReAct demonstration."""
+"""KDCube Web Search adapter and local deliverable tool for native ReAct."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
 
-from ddgs import DDGS
 from openpyxl import Workbook
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
@@ -15,6 +14,7 @@ from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 
 from kdcube_ai_app.apps.chat.sdk.runtime.workdir_discovery import resolve_output_dir
+from kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search import web_search_server
 
 
 def _rows(value: Any) -> list[dict[str, str]]:
@@ -39,11 +39,19 @@ def _rows(value: Any) -> list[dict[str, str]]:
     return rows
 
 
-def web_search(query: str, max_results: int = 5) -> dict[str, Any]:
-    """Search the public web and return compact title, excerpt, and URL rows."""
+async def web_search(query: str, max_results: int = 5) -> dict[str, Any]:
+    """Search through KDCube Web Search and return compact sourced rows."""
     limit = max(1, min(int(max_results or 5), 8))
     try:
-        hits = list(DDGS().text(query, max_results=limit))
+        hits = await web_search_server.web_search(
+            queries=query,
+            objective=query,
+            refinement="none",
+            n=limit,
+            fetch_content=False,
+            include_binary_base64=False,
+            use_llm=False,
+        )
     except Exception as exc:  # Network/provider failures are tool evidence.
         return {"ok": False, "query": query, "error": str(exc), "results": []}
     return {"ok": True, "query": query, "results": _rows(hits)}

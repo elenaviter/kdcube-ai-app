@@ -28,10 +28,7 @@ agent:
     - id: Bash
       enabled: true
       runtime: local
-    - id: WebSearch
-      enabled: true
-      runtime: local
-    - id: WebFetch
+    - id: mcp__kdcube_web_search__web_search
       enabled: true
       runtime: local
   skills:
@@ -41,3 +38,6 @@ agent:
 
 output:
   directory: ./output
+
+web_search:
+  config: ./web-search.yaml

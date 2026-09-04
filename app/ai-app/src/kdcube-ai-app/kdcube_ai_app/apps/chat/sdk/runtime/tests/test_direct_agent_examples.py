@@ -20,6 +20,10 @@ REPO_ROOT = next(
     if (parent / "AGENTS.md").is_file() and (parent / "agents").is_dir()
 )
 AGENTS_ROOT = REPO_ROOT / "agents"
+ROOT_README = REPO_ROOT / "README.md"
+QUICK_START = REPO_ROOT / "app" / "ai-app" / "docs" / "quick-start-README.md"
+MCP_CATALOG = REPO_ROOT / "mcp" / "README.md"
+WEB_SEARCH_QUICK_START = REPO_ROOT / "mcp" / "web-search" / "README.md"
 DIRECT_RECIPE = (
     REPO_ROOT
     / "app"
@@ -47,6 +51,24 @@ def test_primary_agents_are_visible_at_the_agents_root() -> None:
     assert top_level_directories == set(ADAPTERS)
 
 
+def test_primary_onboarding_links_agents_and_web_search_directly() -> None:
+    root = ROOT_README.read_text(encoding="utf-8")
+    quick_start = QUICK_START.read_text(encoding="utf-8")
+    agents = (AGENTS_ROOT / "README.md").read_text(encoding="utf-8")
+    mcp_catalog = MCP_CATALOG.read_text(encoding="utf-8")
+
+    assert "(agents/README.md)" in root
+    assert "(app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md)" in root
+    assert "(mcp/web-search/README.md)" in root
+    assert "(../../../agents/README.md)" in quick_start
+    assert "(recipes/quickstart/run-agent-harness-from-python-README.md)" in quick_start
+    assert "(../../../mcp/web-search/README.md)" in quick_start
+    assert "(../mcp/web-search/README.md)" in agents
+    assert "(web-search/README.md)" in mcp_catalog
+    assert DIRECT_RECIPE.is_file()
+    assert WEB_SEARCH_QUICK_START.is_file()
+
+
 def test_every_agents_readme_answers_the_four_first_use_questions() -> None:
     readmes = sorted(AGENTS_ROOT / adapter / "README.md" for adapter in ADAPTERS)
     assert readmes
@@ -69,6 +91,7 @@ def test_each_example_owns_its_runnable_contract(adapter: str) -> None:
         "descriptors.template",
         "requirements.txt",
         "skills",
+        "web-search.yaml",
     }
     assert expected.issubset({path.name for path in root.iterdir()})
 
@@ -83,11 +106,133 @@ def test_each_example_owns_its_runnable_contract(adapter: str) -> None:
     assert config.get("agent", {}).get("skills", {}).get("enabled") == [
         "demo.research-brief"
     ]
+    assert config.get("web_search", {}).get("config") == "./web-search.yaml"
+    web_policy = yaml.safe_load((root / "web-search.yaml").read_text(encoding="utf-8"))
+    assert web_policy["filter"]["allowlist"] == ["python.org"]
+    assert web_policy["filter"]["ssrf_guard"] is True
     if adapter != "claude":
         assert "model" not in config
 
     requirements = (root / "requirements.txt").read_text(encoding="utf-8")
     assert "../../app/ai-app/src/kdcube-ai-app" in requirements
+    assert "sdk/tools/mcp/web_search/requirements.txt" in requirements
+
+
+def test_every_adapter_uses_kdcube_web_search() -> None:
+    native_tools = (AGENTS_ROOT / "native" / "tools.py").read_text(encoding="utf-8")
+    langgraph_tools = (AGENTS_ROOT / "langgraph" / "tools.py").read_text(
+        encoding="utf-8"
+    )
+    claude_config = yaml.safe_load(
+        (AGENTS_ROOT / "claude" / "config.template.yaml").read_text(encoding="utf-8")
+    )
+    claude_source = (AGENTS_ROOT / "claude" / "agent.py").read_text(encoding="utf-8")
+
+    for source in (native_tools, langgraph_tools):
+        assert "from ddgs import DDGS" not in source
+        assert "web_search_server.web_search(" in source
+
+    claude_tools = {
+        item["id"]
+        for item in claude_config["agent"]["tools"]
+        if item.get("enabled", True)
+    }
+    assert "WebSearch" not in claude_tools
+    assert "WebFetch" not in claude_tools
+    assert "mcp__kdcube_web_search__web_search" in claude_tools
+    assert "mcp__kdcube_web_search__web_fetch" not in claude_tools
+    assert "mcp__kdcube_web_search__allowlist_status" not in claude_tools
+    assert "kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search.web_search_server" in claude_source
+    assert 'denied_tools=("WebSearch", "WebFetch")' in claude_source
+
+
+@pytest.mark.asyncio
+async def test_native_web_search_adapter_calls_kdcube_tool(monkeypatch) -> None:
+    from agents.native import tools as native_tools
+
+    search = AsyncMock(
+        return_value=[
+            {"title": "Python", "text": "Current release", "url": "https://python.org/"}
+        ]
+    )
+    monkeypatch.setattr(native_tools.web_search_server, "web_search", search)
+
+    result = await native_tools.web_search("current Python release", max_results=3)
+
+    assert result["ok"] is True
+    assert result["results"][0]["url"] == "https://python.org/"
+    search.assert_awaited_once_with(
+        queries="current Python release",
+        objective="current Python release",
+        refinement="none",
+        n=3,
+        fetch_content=False,
+        include_binary_base64=False,
+        use_llm=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_langgraph_web_search_adapter_calls_kdcube_tool(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from agents.langgraph import tools as langgraph_tools
+
+    search = AsyncMock(
+        return_value=[
+            {"title": "Python", "text": "Current release", "url": "https://python.org/"}
+        ]
+    )
+    monkeypatch.setattr(langgraph_tools.web_search_server, "web_search", search)
+    tools = langgraph_tools.build_tools(tmp_path, enabled_ids={"web_search"})
+
+    result = json.loads(
+        await tools[0].ainvoke({"query": "current Python release", "max_results": 2})
+    )
+
+    assert result["ok"] is True
+    assert result["results"][0]["url"] == "https://python.org/"
+    search.assert_awaited_once_with(
+        queries="current Python release",
+        objective="current Python release",
+        refinement="none",
+        n=2,
+        fetch_content=False,
+        include_binary_base64=False,
+        use_llm=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_claude_web_search_mcp_starts_with_operator_policy() -> None:
+    from kdcube_ai_app.apps.chat.sdk.runtime.mcp.client import (
+        normalize_mcp_tool_result,
+        open_mcp_client,
+    )
+
+    module = "kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search.web_search_server"
+    config = (AGENTS_ROOT / "claude" / "web-search.yaml").resolve()
+    async with open_mcp_client(
+        transport="stdio",
+        command=sys.executable,
+        args=["-m", module, "--transport", "stdio", "--config", str(config)],
+        env=os.environ.copy(),
+        read_timeout_seconds=20,
+    ) as client:
+        listed = await client.list_tools()
+        status = normalize_mcp_tool_result(
+            await client.call_tool("allowlist_status", {})
+        )["result"]
+
+    assert {tool.name for tool in listed.tools} == {
+        "allowlist_status",
+        "web_fetch",
+        "web_search",
+    }
+    assert status["allowlist_entries"] == ["python.org"]
+    assert status["ssrf_guard"] is True
+    assert status["enforced"] is True
 
 
 @pytest.mark.parametrize("adapter", ADAPTERS)

@@ -1,4 +1,4 @@
-"""Web research and briefing tools for the direct LangGraph example."""
+"""KDCube Web Search and briefing adapters for the direct LangGraph example."""
 
 from __future__ import annotations
 
@@ -7,13 +7,14 @@ from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
 
-from ddgs import DDGS
 from langchain_core.tools import BaseTool, tool
 from openpyxl import Workbook
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+
+from kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search import web_search_server
 
 
 def _normalise_results(value: Any) -> list[dict[str, str]]:
@@ -40,11 +41,21 @@ def _normalise_results(value: Any) -> list[dict[str, str]]:
 
 def build_tools(output_dir: Path, *, enabled_ids: set[str] | None = None) -> list[BaseTool]:
     @tool
-    def web_search(query: str, max_results: int = 5) -> str:
-        """Search the public web. Returns JSON rows containing title, excerpt, and URL."""
+    async def web_search(query: str, max_results: int = 5) -> str:
+        """Search with KDCube Web Search. Returns title, excerpt, and URL rows."""
         limit = max(1, min(int(max_results or 5), 8))
         try:
-            rows = _normalise_results(list(DDGS().text(query, max_results=limit)))
+            rows = _normalise_results(
+                await web_search_server.web_search(
+                    queries=query,
+                    objective=query,
+                    refinement="none",
+                    n=limit,
+                    fetch_content=False,
+                    include_binary_base64=False,
+                    use_llm=False,
+                )
+            )
             return json.dumps({"ok": True, "query": query, "results": rows}, ensure_ascii=False)
         except Exception as exc:
             return json.dumps({"ok": False, "query": query, "error": str(exc), "results": []})

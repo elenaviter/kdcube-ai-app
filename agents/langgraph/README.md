@@ -2,9 +2,9 @@
 id: repo:kdcube-ai-app/agents/langgraph/README.md
 title: "Run the LangGraph Agent"
 summary: "Run LangGraph through the KDCube model bridge with durable checkpoints and harness accounting."
-tags: ["agents", "langgraph", "langchain", "harness", "accounting", "standalone"]
-keywords: ["KDCubeChatModel", "stream_model_text_tracked", "AsyncPostgresSaver", "ChatCommunicator"]
-updated_at: 2026-09-04
+tags: ["agents", "langgraph", "langchain", "harness", "accounting", "standalone", "web-search"]
+keywords: ["KDCubeChatModel", "KDCube Web Search", "stream_model_text_tracked", "AsyncPostgresSaver", "ChatCommunicator"]
+updated_at: 2026-09-05
 see_also:
   - repo:kdcube-ai-app/agents/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md
@@ -36,14 +36,15 @@ ignored by Git.
 
 ## What the demo shows
 
-Turn one searches the web. Turn two resumes the same graph thread and creates
-a PDF and XLSX. A successful run proves live events, accounted model calls,
-durable harness turns, and Postgres graph checkpoints; it ends with
-`demonstration: PASS`.
+Turn one searches through KDCube Web Search. Turn two resumes the same graph
+thread and creates a PDF and XLSX. A successful run proves live events,
+accounted model calls, durable harness turns, and Postgres graph checkpoints;
+it ends with `demonstration: PASS`.
 
 ## Change the demo
 
 Edit `config.local.yaml` to change instructions, tools, skills, topic, or
 limits. Edit `descriptors.local/assembly.yaml` for model and infrastructure;
 edit `descriptors.local/secrets.yaml` for credentials. Add LangChain tools in
-`tools.py` and select their IDs in YAML.
+`tools.py` and select their IDs in YAML. Edit `web-search.yaml` to change the
+search domain allowlist, blocklist, or SSRF policy.

@@ -2,12 +2,13 @@
 id: repo:kdcube-ai-app/agents/README.md
 title: "Run an Agent with the KDCube Harness"
 summary: "Choose native ReAct, LangGraph, or Claude Code and run it directly from Python."
-tags: ["agents", "harness", "native-react", "langgraph", "claude-code", "quickstart"]
-keywords: ["agent examples", "DirectAgentHarness", "Redis", "Postgres", "PDF", "XLSX"]
-updated_at: 2026-09-04
+tags: ["agents", "harness", "native-react", "langgraph", "claude-code", "quickstart", "web-search"]
+keywords: ["agent examples", "DirectAgentHarness", "KDCube Web Search", "Redis", "Postgres", "PDF", "XLSX"]
+updated_at: 2026-09-05
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/quick-start-README.md
+  - repo:kdcube-ai-app/mcp/web-search/README.md
 ---
 # Run an Agent with the KDCube Harness
 
@@ -25,6 +26,16 @@ descriptors, requirements, a skill, and Redis/Postgres Compose services.
 These examples run directly from Python without a KDCube server. They show web
 research, multiple turns, harness events and accounting, durable conversation
 state, and PDF/XLSX output.
+
+All three use the repository's KDCube Web Search implementation. Native ReAct
+and LangGraph call it through small framework adapters; Claude Code receives
+it as an on-demand local stdio MCP server. Claude's ambient `WebSearch` and
+`WebFetch` tools are denied in this example, so a successful search proves the
+configured KDCube tool was used. Each directory's `web-search.yaml` owns the
+domain allowlist, blocklist, and SSRF policy.
+
+The same tool can be run independently for another MCP client. See the
+[Web Search MCP quick start](../mcp/web-search/README.md).
 
 For the full copy-and-run procedure, including optional isolated code
 execution, use

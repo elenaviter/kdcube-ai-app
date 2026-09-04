@@ -1,0 +1,10 @@
+# KDCube Web Search policy for this demonstration. Edit the allowlist when
+# changing the research topic; a bare domain also permits its subdomains.
+filter:
+  allowlist:
+    - python.org
+  blocklist: []
+  ssrf_guard: true
+
+server:
+  log_level: WARNING

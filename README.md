@@ -125,6 +125,17 @@ Hub. See the [Quick Start](app/ai-app/docs/quick-start-README.md) for
 prerequisites, Google OAuth setup, source/version choices, and the generated
 workdir layout.
 
+You can also start with one SDK component from this checkout:
+
+| Goal | Start here |
+| --- | --- |
+| Run native ReAct, LangGraph, or Claude Code through the Agent Harness directly from Python | [Runnable agents](agents/README.md) · [executable recipe](app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md) |
+| Give an agent KDCube Web Search as a standalone, operator-filtered MCP server | [Web Search MCP quick start](mcp/web-search/README.md) · [MCP server catalog](mcp/README.md) |
+
+The direct-agent path uses independent Redis and Postgres services and does
+not require a running KDCube server. The Web Search launcher runs as a local
+stdio MCP server or as an HTTP/SSE service.
+
 Working with a coding agent? Point it at [AGENTS.md](AGENTS.md) — it routes
 contributor rules and the operator/builder path (install, configure, build an
 app) and names the docs to read first.
@@ -234,6 +245,7 @@ isolation profile, model-written code runs in a separate, networkless executor
 and reaches privileged capabilities through trusted supervisor tools.
 
 [Settle an existing solution in KDCube](app/ai-app/docs/recipes/apps/settle-your-solution-in-kdcube-README.md) ·
+[Run an Agent Harness agent from Python](agents/README.md) ·
 [ReAct Agent runtime](app/ai-app/docs/sdk/agents/react/flow-README.md) ·
 [Why the ReAct Agent is not simply tool calling](app/ai-app/docs/sdk/agents/react/why/why-not-simply-tool-calling-README.md) ·
 [Isolated execution](app/ai-app/docs/exec/README-iso-runtime.md)

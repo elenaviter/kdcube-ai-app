@@ -32,6 +32,7 @@ from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.infrastructure import ( 
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.configuration import (  # noqa: E402
     activate_configured_skills,
     agent_instructions,
+    configured_web_search_path,
     verify_docker_image,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.evidence import (  # noqa: E402
@@ -315,6 +316,10 @@ async def main_async(args: argparse.Namespace) -> None:
     descriptors_dir = Path(args.descriptors).expanduser().resolve()
     settings = activate_platform_descriptors(descriptors_dir)
     config = load_config(config_path)
+    web_search_config = configured_web_search_path(config, config_path=config_path)
+    from kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search import web_search_server
+
+    web_search_server.load_config(web_search_config)
     service = None if args.infra_check else await build_model_service(
         role=ROLE,
         check_only=args.check,
@@ -350,6 +355,7 @@ async def main_async(args: argparse.Namespace) -> None:
         selected_model = service.config.ensure_role(ROLE)
         print(f"model: {selected_model['provider']}/{selected_model['model']}")
     print(f"tools: {', '.join(tool_plan.enabled_ids) or '(none)'}")
+    print(f"web search: KDCube Web Search ({web_search_config})")
     print(f"skills: {', '.join(skill_config.enabled) or '(none)'}")
     if tool_plan.exec_runtime:
         image = verify_docker_image(tool_plan.exec_runtime)
