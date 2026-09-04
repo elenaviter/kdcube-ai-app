@@ -30,18 +30,22 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Header, HTTPException
-from pydantic import BaseModel
-
 from kdcube_ai_app.infra.secrets.host_vault.broker import SecretsBroker
-from kdcube_ai_app.infra.secrets.host_vault.protocol import ErrorCode
+from kdcube_ai_app.infra.secrets.host_vault.protocol import (
+    MAX_LIST_NAMES,
+    MAX_VALUE_BYTES,
+    ErrorCode,
+)
 from kdcube_ai_app.infra.secrets.host_vault.transport import ClientTLS, HostVaultClient
+from pydantic import BaseModel
 
 logging.basicConfig(
     level=os.getenv("SECRETS_LOG_LEVEL", "INFO").upper(),
@@ -132,18 +136,64 @@ class SecretVerification(BaseModel):
     sha256: str
 
 
-def _require_admin(token: Optional[str]) -> None:
+def _require_admin(token: str | None) -> None:
     if ADMIN_TOKEN and token != ADMIN_TOKEN:
         raise HTTPException(status_code=403, detail="admin token required")
 
 
-def _require_read(token: Optional[str]) -> None:
+def _require_read(token: str | None) -> None:
     if READ_TOKENS and token not in READ_TOKENS:
         raise HTTPException(status_code=403, detail="read token required")
 
 
 def _fail(code: ErrorCode) -> HTTPException:
     return HTTPException(status_code=_STATUS.get(code, 503), detail=code.value)
+
+
+def _inventory_prefix(key: str) -> str | None:
+    return key[: -len("__keys")] if key.endswith(".__keys") else None
+
+
+def _inventory_value(key: str) -> str:
+    prefix = _inventory_prefix(key)
+    if prefix is None:
+        raise HTTPException(status_code=400, detail="invalid inventory key")
+    listed = BROKER.list_names(application=APPLICATION, metadata_key=key)
+    if not listed.ok:
+        raise _fail(listed.code)
+    names = set(listed.names)
+
+    # Records written before encrypted-name inventory may carry one explicit
+    # metadata value. Treat it only as a hint and verify every referenced key,
+    # so deleted or cross-scope entries can never survive in the derived view.
+    legacy = BROKER.read(application=APPLICATION, key=key)
+    if legacy.ok:
+        raw = legacy.value or ""
+        if len(raw.encode("utf-8")) > MAX_VALUE_BYTES:
+            raise _fail(ErrorCode.CORRUPT_RECORD)
+        try:
+            candidates = json.loads(raw)
+        except (TypeError, ValueError):
+            raise _fail(ErrorCode.CORRUPT_RECORD) from None
+        if not isinstance(candidates, list) or len(candidates) > MAX_LIST_NAMES:
+            raise _fail(ErrorCode.CORRUPT_RECORD)
+        for candidate in candidates:
+            if (
+                not isinstance(candidate, str)
+                or not candidate.startswith(prefix)
+                or candidate.endswith(".__keys")
+            ):
+                raise _fail(ErrorCode.CORRUPT_RECORD)
+            verified = BROKER.read(application=APPLICATION, key=candidate)
+            if verified.ok:
+                names.add(candidate)
+                if len(names) > MAX_LIST_NAMES:
+                    raise _fail(ErrorCode.TOO_LARGE)
+            elif verified.code is not ErrorCode.NOT_FOUND:
+                raise _fail(verified.code)
+    elif legacy.code is not ErrorCode.NOT_FOUND:
+        raise _fail(legacy.code)
+    return json.dumps(sorted(names), ensure_ascii=False)
 
 
 @app.get("/health")
@@ -158,20 +208,26 @@ def health() -> dict[str, Any]:
 
 @app.get("/secret/{key}")
 def get_secret(
-    key: str, x_kdcube_secret_token: Optional[str] = Header(default=None)
-) -> dict[str, str]:
+    key: str, x_kdcube_secret_token: str | None = Header(default=None)
+) -> dict[str, Any]:
     _require_read(x_kdcube_secret_token)
-    value = BROKER.get(application=APPLICATION, key=key)
-    if value is None:
+    if _inventory_prefix(key) is not None:
+        return {"value": _inventory_value(key)}
+    result = BROKER.read(application=APPLICATION, key=key)
+    if not result.ok:
+        if result.code is not ErrorCode.NOT_FOUND:
+            raise _fail(result.code)
         raise HTTPException(status_code=404, detail="secret not found")
-    return {"value": value}
+    return {"value": result.value, "generation": result.generation}
 
 
 @app.post("/set")
 def set_secret(
-    item: SecretItem, x_kdcube_admin_token: Optional[str] = Header(default=None)
+    item: SecretItem, x_kdcube_admin_token: str | None = Header(default=None)
 ) -> dict[str, Any]:
     _require_admin(x_kdcube_admin_token)
+    if _inventory_prefix(item.key) is not None:
+        return {"status": "ok", "inventory": "derived"}
     result = BROKER.set(
         application=APPLICATION,
         key=item.key,
@@ -186,7 +242,7 @@ def set_secret(
 @app.post("/verify")
 def verify_secret(
     item: SecretVerification,
-    x_kdcube_admin_token: Optional[str] = Header(default=None),
+    x_kdcube_admin_token: str | None = Header(default=None),
 ) -> dict[str, Any]:
     _require_admin(x_kdcube_admin_token)
     expected = item.sha256.strip().lower()
@@ -204,9 +260,11 @@ def verify_secret(
 
 @app.delete("/secret/{key}")
 def delete_secret(
-    key: str, x_kdcube_admin_token: Optional[str] = Header(default=None)
+    key: str, x_kdcube_admin_token: str | None = Header(default=None)
 ) -> dict[str, Any]:
     _require_admin(x_kdcube_admin_token)
+    if _inventory_prefix(key) is not None:
+        return {"status": "ok", "deleted": False, "inventory": "derived"}
     result = BROKER.delete(application=APPLICATION, key=key)
     if not result.ok:
         raise _fail(result.code)

@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 
 import pytest
-
 from kdcube_ai_app.apps.chat.proc.rest.management.contracts import (
     INSPECT_OPERATION,
     management_request_digest,

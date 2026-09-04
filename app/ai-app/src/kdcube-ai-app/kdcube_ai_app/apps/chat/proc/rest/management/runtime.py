@@ -5,11 +5,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 from urllib.parse import quote
 
 from fastapi import Request
-
 from kdcube_ai_app.apps.chat.proc.rest.management.service import (
     ManagementApplicationNotFound,
     ManagementRuntimeUnavailable,
@@ -100,13 +100,13 @@ class KDCubeManagementRuntime:
         )
         try:
             manifest = load_bundle_manifest(spec, bundle_id=application_id)
+            from kdcube_ai_app.apps.chat.proc.app_deployment.policy import (
+                is_widget_enabled,
+            )
             from kdcube_ai_app.apps.chat.proc.rest.integrations.integrations import (
                 _authoritative_bundle_props,
                 is_api_enabled,
                 is_mcp_enabled,
-            )
-            from kdcube_ai_app.apps.chat.proc.app_deployment.policy import (
-                is_widget_enabled,
             )
             from kdcube_ai_app.infra.plugin.bundle_loader import (
                 apply_api_overrides,

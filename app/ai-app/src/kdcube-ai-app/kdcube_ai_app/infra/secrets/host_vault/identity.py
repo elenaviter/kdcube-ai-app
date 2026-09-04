@@ -34,11 +34,16 @@ import json
 import os
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
-from kdcube_ai_app.infra.secrets.host_vault.protocol import ErrorCode, SecretNamespace, VaultError
+from kdcube_ai_app.infra.secrets.host_vault.protocol import (
+    ErrorCode,
+    SecretNamespace,
+    VaultError,
+)
 
 try:  # pragma: no cover - import guard
     from cryptography import x509
@@ -80,7 +85,12 @@ class HostIssuingCA:
         self._cert = x509.load_pem_x509_certificate(cert_pem)
 
     @classmethod
-    def generate(cls, *, common_name: str = "kdcube-hostd issuing CA", days: int = 3650) -> "HostIssuingCA":
+    def generate(
+        cls,
+        *,
+        common_name: str = "kdcube-hostd issuing CA",
+        days: int = 3650,
+    ) -> HostIssuingCA:
         _require_crypto()
         key = ec.generate_private_key(ec.SECP256R1())
         name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
@@ -192,7 +202,7 @@ class DeploymentKey:
         self._key = serialization.load_pem_private_key(key_pem, password=None)
 
     @classmethod
-    def generate(cls) -> "DeploymentKey":
+    def generate(cls) -> DeploymentKey:
         _require_crypto()
         key = ec.generate_private_key(ec.SECP256R1())
         return cls(key.private_bytes(
@@ -254,7 +264,7 @@ class TrustRecord:
         }
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "TrustRecord":
+    def from_dict(cls, data: Mapping[str, Any]) -> TrustRecord:
         return cls(
             deployment_id=str(data["deployment_id"]),
             fingerprint=str(data["fingerprint"]),
@@ -319,7 +329,7 @@ class TrustRegistry:
             return
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))
-        except Exception as exc:  # noqa: BLE001 - a corrupt registry trusts nobody
+        except Exception as exc:
             raise VaultError(ErrorCode.BACKEND_UNAVAILABLE, detail=f"trust registry unreadable: {type(exc).__name__}") from exc
         records = {}
         for row in data.get("records") or []:
@@ -451,10 +461,10 @@ class TrustRegistry:
 
 __all__ = [
     "DEFAULT_CERT_DAYS",
+    "ROTATION_OVERLAP_SECONDS",
     "DeploymentKey",
     "EnrollmentTicket",
     "HostIssuingCA",
-    "ROTATION_OVERLAP_SECONDS",
     "TrustRecord",
     "TrustRegistry",
     "fingerprint_of",

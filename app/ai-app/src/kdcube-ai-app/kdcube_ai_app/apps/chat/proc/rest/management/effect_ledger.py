@@ -9,8 +9,9 @@ import hashlib
 import json
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping, Protocol
+from typing import Any, Protocol
 
 from kdcube_ai_app.apps.chat.proc.rest.management.contracts import EFFECT_SCHEMA
 
@@ -99,7 +100,7 @@ return 1
         invocation_id: str,
     ) -> str:
         identity = hashlib.sha256(
-            f"{access_id}\n{resource}\n{operation}\n{invocation_id}".encode("utf-8")
+            f"{access_id}\n{resource}\n{operation}\n{invocation_id}".encode()
         ).hexdigest()
         return (
             "kdcube:management:effects:"
@@ -217,10 +218,10 @@ __all__ = [
     "ACTION_PENDING",
     "ACTION_REPLAY",
     "ACTION_UNKNOWN",
-    "EffectLedger",
-    "EffectReservation",
-    "RedisEffectLedger",
     "STATE_COMPLETED",
     "STATE_FAILED",
     "STATE_STARTED",
+    "EffectLedger",
+    "EffectReservation",
+    "RedisEffectLedger",
 ]

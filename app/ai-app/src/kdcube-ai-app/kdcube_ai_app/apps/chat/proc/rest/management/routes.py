@@ -9,10 +9,9 @@ import json
 from typing import Any
 from urllib.parse import quote
 
+from connection_hub.connection_edges import request_origin
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from connection_hub.connection_edges import request_origin
-
 from kdcube_ai_app.apps.chat.proc.rest.management.admission import (
     ConnectionHubAdmissionClient,
 )
@@ -31,8 +30,28 @@ from kdcube_ai_app.apps.chat.proc.rest.management.contracts import (
 from kdcube_ai_app.apps.chat.proc.rest.management.effect_ledger import (
     RedisEffectLedger,
 )
+from kdcube_ai_app.apps.chat.proc.rest.management.http_input import read_json_object
 from kdcube_ai_app.apps.chat.proc.rest.management.runtime import (
     KDCubeManagementRuntime,
+)
+from kdcube_ai_app.apps.chat.proc.rest.management.secret_contracts import (
+    MAX_SECRET_VALUE_BYTES,
+    SECRET_DELETE_OPERATION,
+    SECRET_METADATA_OPERATION,
+    SECRET_READ_OPERATION,
+    SECRET_RESOURCE_SELECTOR,
+    SECRET_WRITE_OPERATION,
+    SecretTarget,
+    validate_secret_value,
+)
+from kdcube_ai_app.apps.chat.proc.rest.management.secret_export_routes import (
+    SECRET_RESPONSE_HEADERS,
+)
+from kdcube_ai_app.apps.chat.proc.rest.management.secret_export_routes import (
+    router as secret_export_router,
+)
+from kdcube_ai_app.apps.chat.proc.rest.management.secret_runtime import (
+    KDCubeSecretRuntime,
 )
 from kdcube_ai_app.apps.chat.proc.rest.management.service import (
     DelegatedManagementService,
@@ -41,6 +60,7 @@ from kdcube_ai_app.apps.chat.proc.rest.management.service import (
 from kdcube_ai_app.apps.chat.sdk.config import get_secret, get_settings
 
 router = APIRouter(prefix="/management/v1")
+router.include_router(secret_export_router)
 
 
 def _origin(request: Request) -> str:
@@ -132,6 +152,12 @@ async def _service(request: Request) -> tuple[DelegatedManagementService, str]:
                 tenant=config.tenant,
                 project=config.project,
             ),
+            secret_runtime=KDCubeSecretRuntime(
+                request,
+                tenant=config.tenant,
+                project=config.project,
+            ),
+            request_digest_secret=secret,
         ),
         resource,
     )
@@ -143,8 +169,13 @@ async def _invoke(
     operation: str,
     application_id: str = "",
     body: dict[str, Any] | None = None,
+    resource_override: str = "",
+    approval_context: dict[str, str] | None = None,
+    secret_target: SecretTarget | None = None,
+    response_headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     _settings, config, resource = _configuration()
+    effective_resource = str(resource_override or resource).strip()
     metadata_url = (
         f"{_origin(request)}/api/integrations/management/v1/"
         ".well-known/oauth-protected-resource"
@@ -154,7 +185,7 @@ async def _invoke(
         return _error_response(
             status_code=401,
             operation=operation,
-            resource=resource,
+            resource=effective_resource,
             config=config,
             invocation_id="",
             code="delegated_bearer_missing",
@@ -171,7 +202,7 @@ async def _invoke(
         return _error_response(
             status_code=400,
             operation=operation,
-            resource=resource,
+            resource=effective_resource,
             config=config,
             invocation_id="",
             code="idempotency_key_invalid",
@@ -185,7 +216,7 @@ async def _invoke(
         return _error_response(
             status_code=status,
             operation=operation,
-            resource=resource,
+            resource=effective_resource,
             config=config,
             invocation_id=invocation_id,
             code=code,
@@ -198,8 +229,15 @@ async def _invoke(
         invocation_id=invocation_id,
         application_id=application_id,
         body=body,
+        resource=effective_resource,
+        approval_context=approval_context,
+        secret_target=secret_target,
     )
-    return JSONResponse(status_code=response.status_code, content=dict(response.payload))
+    return JSONResponse(
+        status_code=response.status_code,
+        content=dict(response.payload),
+        headers=response_headers,
+    )
 
 
 @router.get(
@@ -225,6 +263,7 @@ async def protected_resource_metadata(request: Request) -> JSONResponse:
             "resource": resource,
             "authorization_servers": [issuer],
             "bearer_methods_supported": ["header"],
+            "kdcube_management_resources": [resource, SECRET_RESOURCE_SELECTOR],
             "kdcube_management_operations": {
                 INSPECT_OPERATION: {
                     "method": "GET",
@@ -244,9 +283,107 @@ async def protected_resource_metadata(request: Request) -> JSONResponse:
                         "{application_id}/reload"
                     ),
                 },
+                SECRET_METADATA_OPERATION: {
+                    "method": "POST",
+                    "path": "/api/integrations/management/v1/secrets/metadata/read",
+                    "resource_selector": SECRET_RESOURCE_SELECTOR,
+                },
+                SECRET_READ_OPERATION: {
+                    "method": "POST",
+                    "path": "/api/integrations/management/v1/secrets/value/read",
+                    "resource_selector": SECRET_RESOURCE_SELECTOR,
+                },
+                SECRET_WRITE_OPERATION: {
+                    "method": "POST",
+                    "path": "/api/integrations/management/v1/secrets/value/write",
+                    "resource_selector": SECRET_RESOURCE_SELECTOR,
+                },
+                SECRET_DELETE_OPERATION: {
+                    "method": "POST",
+                    "path": "/api/integrations/management/v1/secrets/delete",
+                    "resource_selector": SECRET_RESOURCE_SELECTOR,
+                },
             },
         }
     )
+
+
+async def _secret_payload(
+    request: Request,
+    *,
+    include_value: bool,
+) -> tuple[SecretTarget, dict[str, Any]]:
+    maximum = MAX_SECRET_VALUE_BYTES + 4096 if include_value else 4096
+    payload = await read_json_object(request, maximum_bytes=maximum)
+    allowed = {"scope", "bundle_id", "key"}
+    required = {"scope", "key"}
+    if include_value:
+        allowed.add("value")
+        required.add("value")
+    if set(payload) - allowed or not required.issubset(payload):
+        raise ValueError("secret request contains unexpected or missing fields")
+    target = SecretTarget.from_mapping(payload)
+    exact: dict[str, Any] = target.public_dict()
+    if include_value:
+        exact["value"] = validate_secret_value(payload.get("value"))
+    return target, exact
+
+
+async def _invoke_secret(
+    request: Request,
+    *,
+    operation: str,
+    include_value: bool = False,
+) -> JSONResponse:
+    try:
+        target, body = await _secret_payload(request, include_value=include_value)
+        _settings, config, _resource = _configuration()
+        resource = target.resource(tenant=config.tenant, project=config.project)
+    except ValueError as exc:
+        _settings, config, resource = _configuration()
+        return _error_response(
+            status_code=400,
+            operation=operation,
+            resource=resource,
+            config=config,
+            invocation_id=request.headers.get("idempotency-key", ""),
+            code="secret_request_invalid",
+            message=str(exc),
+            headers=SECRET_RESPONSE_HEADERS,
+        )
+    return await _invoke(
+        request,
+        operation=operation,
+        body=body,
+        resource_override=resource,
+        approval_context=target.approval_context(),
+        secret_target=target,
+        response_headers=SECRET_RESPONSE_HEADERS,
+    )
+
+
+@router.post("/secrets/metadata/read")
+async def read_secret_metadata(request: Request) -> JSONResponse:
+    return await _invoke_secret(request, operation=SECRET_METADATA_OPERATION)
+
+
+@router.post("/secrets/value/read")
+async def read_secret_value(request: Request) -> JSONResponse:
+    return await _invoke_secret(request, operation=SECRET_READ_OPERATION)
+
+
+@router.post("/secrets/value/write")
+async def write_secret_value(request: Request) -> JSONResponse:
+    return await _invoke_secret(
+        request,
+        operation=SECRET_WRITE_OPERATION,
+        include_value=True,
+    )
+
+
+@router.post("/secrets/delete")
+async def delete_secret(request: Request) -> JSONResponse:
+    return await _invoke_secret(request, operation=SECRET_DELETE_OPERATION)
 
 
 @router.get("/deployment")

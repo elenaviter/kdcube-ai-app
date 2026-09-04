@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from kdcube_ai_app.infra.secrets.host_vault.protocol import (
+    MAX_LIST_NAMES,
     ErrorCode,
     Operation,
     SecretNamespace,
@@ -60,6 +61,13 @@ class BrokerReadResult:
     code: ErrorCode
     value: str | None = None
     generation: int | None = None
+
+
+@dataclass(frozen=True)
+class BrokerListResult:
+    ok: bool
+    code: ErrorCode
+    names: tuple[str, ...] = ()
 
 
 class SecretsBroker:
@@ -96,9 +104,41 @@ class SecretsBroker:
     def get(self, *, application: str, key: str) -> str | None:
         """Read one value. ``None`` for not found, forbidden, or unreachable:
         the same shape ``SecretsServiceSecretsManager.get_secret`` returns,
-        so the later provider wiring changes nothing for readers."""
+        preserving the existing reader contract."""
         result = self.read(application=application, key=key)
         return result.value if result.ok else None
+
+    def list_names(self, *, application: str, metadata_key: str) -> BrokerListResult:
+        """List names under one ``.__keys`` selector, never values."""
+
+        try:
+            selector = self._reference(application, metadata_key)
+            response = self._call(VaultRequest.new(Operation.LIST, selector))
+            if not response.ok:
+                return BrokerListResult(ok=False, code=response.code)
+            raw_names = response.extra.get("names")
+            if not isinstance(raw_names, list) or len(raw_names) > MAX_LIST_NAMES:
+                return BrokerListResult(ok=False, code=ErrorCode.INTERNAL)
+            prefix = metadata_key[: -len("__keys")]
+            names: set[str] = set()
+            for raw_name in raw_names:
+                if not isinstance(raw_name, str):
+                    return BrokerListResult(ok=False, code=ErrorCode.INTERNAL)
+                name = raw_name.strip()
+                if not name.startswith(prefix) or name.endswith(".__keys"):
+                    return BrokerListResult(ok=False, code=ErrorCode.INTERNAL)
+                try:
+                    self._reference(application, name)
+                except VaultError:
+                    return BrokerListResult(ok=False, code=ErrorCode.INTERNAL)
+                names.add(name)
+            return BrokerListResult(
+                ok=True,
+                code=ErrorCode.OK,
+                names=tuple(sorted(names)),
+            )
+        except VaultError as exc:
+            return BrokerListResult(ok=False, code=exc.code)
 
     def set(self, *, application: str, key: str, value: str, expected_generation: int | None = None) -> BrokerResult:
         response = self._call(VaultRequest.new(
@@ -130,4 +170,10 @@ class SecretsBroker:
         return {"ok": response.ok, "code": response.code.value, **{k: v for k, v in response.extra.items() if k == "deployment_id"}}
 
 
-__all__ = ["BrokerReadResult", "BrokerResult", "SecretsBroker", "VaultTransport"]
+__all__ = [
+    "BrokerListResult",
+    "BrokerReadResult",
+    "BrokerResult",
+    "SecretsBroker",
+    "VaultTransport",
+]

@@ -6,9 +6,11 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import re
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 from urllib.parse import quote
 
 REQUEST_SCHEMA = "kdcube.management.request.v1"
@@ -81,6 +83,7 @@ def management_request_digest(
     operation: str,
     application_id: str = "",
     body: Mapping[str, Any] | None = None,
+    secret: str = "",
 ) -> str:
     encoded = json.dumps(
         management_request_document(
@@ -93,6 +96,15 @@ def management_request_digest(
         separators=(",", ":"),
         ensure_ascii=True,
     ).encode("utf-8")
+    secret_bytes = str(secret or "").encode("utf-8")
+    if secret_bytes:
+        if len(secret_bytes) < 32:
+            raise ValueError("management request digest secret is too short")
+        return hmac.new(
+            secret_bytes,
+            b"kdcube.management.request-digest.v1\0" + encoded,
+            hashlib.sha256,
+        ).hexdigest()
     return hashlib.sha256(encoded).hexdigest()
 
 

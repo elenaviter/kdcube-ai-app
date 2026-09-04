@@ -28,9 +28,10 @@ import json
 import os
 import re
 import secrets
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Protocol
+from typing import Protocol
 
 from kdcube_ai_app.infra.secrets.host_vault.protocol import ErrorCode, VaultError
 
@@ -62,7 +63,7 @@ def _b64(data: bytes) -> str:
 def _unb64(text: str) -> bytes:
     try:
         return base64.b64decode(text, validate=True)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise VaultError(ErrorCode.CORRUPT_RECORD, detail="base64") from exc
 
 
@@ -192,7 +193,7 @@ class SealedValue:
         }
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, object]) -> "SealedValue":
+    def from_dict(cls, data: Mapping[str, object]) -> SealedValue:
         try:
             return cls(
                 root_key_id=str(data["root_key_id"]),
@@ -237,7 +238,7 @@ class Envelope:
             return AESGCM(self._keys.key(sealed.root_key_id)).decrypt(blob[:NONCE_BYTES], blob[NONCE_BYTES:], aad)
         except VaultError:
             raise
-        except Exception as exc:  # noqa: BLE001 - any AEAD failure is corruption or wrong key
+        except Exception as exc:
             raise VaultError(ErrorCode.CORRUPT_RECORD, detail="data key unwrap") from exc
 
     def open(self, sealed: SealedValue, *, record_id: str) -> bytes:
@@ -248,7 +249,7 @@ class Envelope:
             raise VaultError(ErrorCode.CORRUPT_RECORD, detail="ciphertext length")
         try:
             return AESGCM(data_key).decrypt(blob[:NONCE_BYTES], blob[NONCE_BYTES:], aad)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise VaultError(ErrorCode.CORRUPT_RECORD, detail="value open") from exc
 
     def rewrap(self, sealed: SealedValue, *, record_id: str) -> SealedValue:
@@ -270,10 +271,10 @@ class Envelope:
 
 
 __all__ = [
+    "KEY_BYTES",
     "Envelope",
     "FakeInMemoryRootKeyProvider",
     "FileRootKeyProvider",
-    "KEY_BYTES",
     "RootKeyProvider",
     "SealedValue",
 ]

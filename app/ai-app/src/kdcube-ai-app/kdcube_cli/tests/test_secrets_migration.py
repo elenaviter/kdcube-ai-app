@@ -85,7 +85,6 @@ def test_inventory_matches_file_provider_key_shape_and_filters_placeholders(tmp_
     bundle_key = "bundles.connection-hub@1-0.secrets.connections.token"
     assert inventory.values == {
         bundle_key: "connector-canary",
-        "bundles.connection-hub@1-0.secrets.__keys": f'["{bundle_key}"]',
         "infra.redis.password": "redis-canary",
         "services.brave.api_key": "brave-canary",
     }

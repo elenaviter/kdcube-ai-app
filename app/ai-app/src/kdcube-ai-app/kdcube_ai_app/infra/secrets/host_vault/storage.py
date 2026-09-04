@@ -30,23 +30,34 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import math
 import os
+import re
 import threading
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Protocol
+from typing import Protocol
 
-from kdcube_ai_app.infra.secrets.host_vault.keys import Envelope, RootKeyProvider, SealedValue
+from kdcube_ai_app.infra.secrets.host_vault.keys import (
+    Envelope,
+    RootKeyProvider,
+    SealedValue,
+)
 from kdcube_ai_app.infra.secrets.host_vault.protocol import (
     MAX_VALUE_BYTES,
     ErrorCode,
+    SecretNamespace,
     SecretReference,
     VaultError,
 )
 
 RECORD_FORMAT = "kdcube-host-vault-record/1"
 MAX_RECORD_BYTES = MAX_VALUE_BYTES * 2 + 4096
+MAX_LIST_SCAN_RECORDS = 100_000
+LOGGER = logging.getLogger("kdcube.host_vault.storage")
 
 
 @dataclass(frozen=True)
@@ -67,15 +78,38 @@ class DurableSecretStore(Protocol):
 
     def delete(self, reference: SecretReference, *, expected_generation: int | None) -> StoredRecord: ...
 
+    def list_names(
+        self,
+        namespace: SecretNamespace,
+        *,
+        prefix: str,
+        limit: int,
+    ) -> list[str]: ...
+
     def rewrap_all(self) -> int: ...
 
 
 def _fsync_dir(directory: Path) -> None:
+    if os.name == "nt":
+        return
     fd = os.open(directory, os.O_RDONLY)
     try:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def _record_without_duplicate_keys(pairs: list[tuple[str, object]]) -> dict:
+    result: dict = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate record field")
+        result[key] = value
+    return result
+
+
+def _reject_record_constant(_value: str) -> None:
+    raise ValueError("nonstandard record number")
 
 
 class FileDurableSecretStore:
@@ -107,6 +141,10 @@ class FileDurableSecretStore:
     def _record_id(reference: SecretReference, generation: int) -> str:
         return f"{reference.digest}#{generation}"
 
+    @staticmethod
+    def _name_record_id(reference_digest: str, generation: int) -> str:
+        return f"{reference_digest}#{generation}:name"
+
     def recover(self) -> int:
         """Crash recovery: drop candidates that never reached commit. Called
         on start; safe to call any time. Returns the number removed."""
@@ -126,10 +164,9 @@ class FileDurableSecretStore:
         material = json.dumps({k: v for k, v in payload.items() if k != "integrity"}, sort_keys=True)
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
-    def _read_raw(self, reference: SecretReference) -> dict | None:
-        path = self._path(reference)
+    def _read_path(self, path: Path) -> dict:
         if not path.is_file():
-            return None
+            raise VaultError(ErrorCode.NOT_FOUND)
         try:
             raw = path.read_bytes()
         except OSError as exc:
@@ -137,15 +174,59 @@ class FileDurableSecretStore:
         if len(raw) > MAX_RECORD_BYTES:
             raise VaultError(ErrorCode.CORRUPT_RECORD, detail="record too large")
         try:
-            payload = json.loads(raw.decode("utf-8"))
-        except Exception as exc:  # noqa: BLE001
+            payload = json.loads(
+                raw.decode("utf-8"),
+                object_pairs_hook=_record_without_duplicate_keys,
+                parse_constant=_reject_record_constant,
+            )
+        except Exception as exc:
             raise VaultError(ErrorCode.CORRUPT_RECORD, detail="record json") from exc
-        if not isinstance(payload, dict) or payload.get("format") != RECORD_FORMAT:
+        allowed = {
+            "format",
+            "reference_digest",
+            "generation",
+            "deleted",
+            "committed_at",
+            "sealed",
+            "sealed_name",
+            "integrity",
+        }
+        generation = payload.get("generation") if isinstance(payload, dict) else None
+        committed_at = payload.get("committed_at") if isinstance(payload, dict) else None
+        if (
+            not isinstance(payload, dict)
+            or set(payload) - allowed
+            or payload.get("format") != RECORD_FORMAT
+            or not isinstance(payload.get("reference_digest"), str)
+            or not re.fullmatch(r"[a-f0-9]{24}", payload["reference_digest"])
+            or isinstance(generation, bool)
+            or not isinstance(generation, int)
+            or generation < 1
+            or not isinstance(payload.get("deleted"), bool)
+            or isinstance(committed_at, bool)
+            or not isinstance(committed_at, (int, float))
+            or not math.isfinite(float(committed_at))
+            or float(committed_at) <= 0
+            or not isinstance(payload.get("sealed"), dict)
+            or (
+                "sealed_name" in payload
+                and not isinstance(payload.get("sealed_name"), dict)
+            )
+            or not isinstance(payload.get("integrity"), str)
+            or not re.fullmatch(r"[a-f0-9]{64}", payload["integrity"])
+        ):
             raise VaultError(ErrorCode.CORRUPT_RECORD, detail="record format")
-        if payload.get("reference_digest") != reference.digest:
-            raise VaultError(ErrorCode.CORRUPT_RECORD, detail="record identity")
         if self._digest(payload) != payload.get("integrity"):
             raise VaultError(ErrorCode.CORRUPT_RECORD, detail="record integrity")
+        return payload
+
+    def _read_raw(self, reference: SecretReference) -> dict | None:
+        path = self._path(reference)
+        if not path.is_file():
+            return None
+        payload = self._read_path(path)
+        if payload.get("reference_digest") != reference.digest:
+            raise VaultError(ErrorCode.CORRUPT_RECORD, detail="record identity")
         return payload
 
     def _write_committed(self, reference: SecretReference, payload: dict) -> None:
@@ -160,7 +241,14 @@ class FileDurableSecretStore:
         try:
             fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             try:
-                os.write(fd, data)
+                if os.name == "posix":
+                    os.fchmod(fd, 0o600)
+                remaining = memoryview(data)
+                while remaining:
+                    written = os.write(fd, remaining)
+                    if written <= 0:
+                        raise OSError("short record write")
+                    remaining = remaining[written:]
                 os.fsync(fd)
             finally:
                 os.close(fd)
@@ -211,6 +299,10 @@ class FileDurableSecretStore:
             payload = self._read_raw(reference)
             generation = self._check_generation(payload, expected_generation) + 1
             sealed = self._envelope.seal(value, record_id=self._record_id(reference, generation))
+            sealed_name = self._envelope.seal(
+                reference.name.encode("utf-8"),
+                record_id=self._name_record_id(reference.digest, generation),
+            )
             new_payload = {
                 "format": RECORD_FORMAT,
                 "reference_digest": reference.digest,
@@ -218,6 +310,7 @@ class FileDurableSecretStore:
                 "deleted": False,
                 "committed_at": time.time(),
                 "sealed": sealed.to_dict(),
+                "sealed_name": sealed_name.to_dict(),
             }
             self._write_committed(reference, new_payload)
             return self._record(new_payload)
@@ -241,6 +334,56 @@ class FileDurableSecretStore:
             self._write_committed(reference, tombstone)
             return self._record(tombstone)
 
+    def list_names(
+        self,
+        namespace: SecretNamespace,
+        *,
+        prefix: str,
+        limit: int,
+    ) -> list[str]:
+        """List live names for one authorized namespace and bounded prefix.
+
+        Names are encrypted in each new record. Legacy records without that
+        field remain readable and are recovered by the broker's verified
+        legacy-inventory fallback.
+        """
+
+        if limit <= 0:
+            raise VaultError(ErrorCode.INVALID_REQUEST)
+        found: set[str] = set()
+        scanned = 0
+        with self._lock:
+            for path in self._root.rglob("*.json"):
+                scanned += 1
+                if scanned > MAX_LIST_SCAN_RECORDS:
+                    raise VaultError(ErrorCode.TOO_LARGE)
+                payload = self._read_path(path)
+                if payload.get("deleted") or not isinstance(
+                    payload.get("sealed_name"), dict
+                ):
+                    continue
+                digest = str(payload.get("reference_digest") or "")
+                generation = int(payload.get("generation") or 0)
+                try:
+                    name = self._envelope.open(
+                        SealedValue.from_dict(payload["sealed_name"]),
+                        record_id=self._name_record_id(digest, generation),
+                    ).decode("utf-8")
+                    reference = SecretReference(namespace=namespace, name=name)
+                except (UnicodeDecodeError, ValueError, VaultError) as exc:
+                    raise VaultError(
+                        ErrorCode.CORRUPT_RECORD,
+                        detail="record name",
+                    ) from exc
+                if reference.digest != digest:
+                    continue
+                if not name.startswith(prefix):
+                    continue
+                found.add(name)
+                if len(found) > limit:
+                    raise VaultError(ErrorCode.TOO_LARGE)
+        return sorted(found)
+
     def _all_paths(self) -> Iterable[Path]:
         return sorted(self._root.rglob("*.json"))
 
@@ -253,21 +396,47 @@ class FileDurableSecretStore:
         with self._lock:
             for path in self._all_paths():
                 try:
-                    payload = json.loads(path.read_bytes().decode("utf-8"))
-                except Exception:  # noqa: BLE001
+                    payload = self._read_path(path)
+                except VaultError:
+                    LOGGER.warning(
+                        "Skipping unreadable host-vault record during root-key rotation: %s",
+                        path.name,
+                    )
                     continue
-                if not isinstance(payload, dict) or payload.get("deleted"):
+                if payload.get("deleted"):
                     continue
                 digest = str(payload.get("reference_digest") or "")
+                if path.name != f"{digest}.json":
+                    LOGGER.warning(
+                        "Skipping misplaced host-vault record during root-key rotation: %s",
+                        path.name,
+                    )
+                    continue
                 generation = int(payload.get("generation") or 0)
                 try:
                     sealed = SealedValue.from_dict(payload.get("sealed") or {})
                     rewrapped = self._envelope.rewrap(sealed, record_id=f"{digest}#{generation}")
+                    sealed_name_raw = payload.get("sealed_name")
+                    sealed_name = (
+                        SealedValue.from_dict(sealed_name_raw)
+                        if isinstance(sealed_name_raw, dict)
+                        else None
+                    )
+                    rewrapped_name = (
+                        self._envelope.rewrap(
+                            sealed_name,
+                            record_id=self._name_record_id(digest, generation),
+                        )
+                        if sealed_name is not None
+                        else None
+                    )
                 except VaultError:
                     continue
-                if rewrapped is sealed:
+                if rewrapped is sealed and rewrapped_name is sealed_name:
                     continue
                 payload["sealed"] = rewrapped.to_dict()
+                if rewrapped_name is not None:
+                    payload["sealed_name"] = rewrapped_name.to_dict()
                 payload = {k: v for k, v in payload.items() if k != "integrity"}
                 pseudo = _DigestOnlyReference(digest)
                 self._write_committed(pseudo, payload)  # type: ignore[arg-type]
@@ -284,8 +453,9 @@ class _DigestOnlyReference:
 
 
 __all__ = [
+    "MAX_LIST_SCAN_RECORDS",
+    "RECORD_FORMAT",
     "DurableSecretStore",
     "FileDurableSecretStore",
-    "RECORD_FORMAT",
     "StoredRecord",
 ]

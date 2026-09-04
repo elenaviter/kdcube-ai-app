@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
 import pytest
-
-from kdcube_ai_app.apps.chat.proc.rest.management.admission import AdmissionDecision
-from kdcube_ai_app.apps.chat.proc.rest.management.admission import AdmissionUnavailable
+from kdcube_ai_app.apps.chat.proc.rest.management.admission import (
+    AdmissionDecision,
+    AdmissionUnavailable,
+)
 from kdcube_ai_app.apps.chat.proc.rest.management.contracts import (
     INSPECT_OPERATION,
     RELOAD_OPERATION,
     SURFACES_OPERATION,
+    management_request_digest,
 )
 from kdcube_ai_app.apps.chat.proc.rest.management.effect_ledger import (
     ACTION_CONFLICT,
@@ -20,10 +23,19 @@ from kdcube_ai_app.apps.chat.proc.rest.management.effect_ledger import (
     ACTION_REPLAY,
     EffectReservation,
 )
+from kdcube_ai_app.apps.chat.proc.rest.management.secret_contracts import (
+    BUNDLE_SCOPE,
+    SECRET_READ_OPERATION,
+    SECRET_WRITE_OPERATION,
+    SecretTarget,
+)
 from kdcube_ai_app.apps.chat.proc.rest.management.service import (
     DelegatedManagementService,
     ManagementApplicationNotFound,
+    ManagementRuntimeUnavailable,
 )
+
+_REQUEST_DIGEST_SECRET = "request-digest-test-secret-at-least-32-bytes"
 
 
 def _allow() -> AdmissionDecision:
@@ -183,8 +195,44 @@ class _Runtime:
         }
 
 
+@dataclass
+class _SecretRuntime:
+    read_calls: int = 0
+    write_calls: int = 0
+
+    async def metadata(self, target: SecretTarget) -> Mapping[str, Any]:
+        return {**target.public_dict(), "exists": True}
+
+    async def read(self, target: SecretTarget) -> Mapping[str, Any]:
+        self.read_calls += 1
+        return {**target.public_dict(), "value": "secret-result-canary"}
+
+    async def write(
+        self,
+        target: SecretTarget,
+        *,
+        value: str,
+        caller_profile: str,
+    ) -> Mapping[str, Any]:
+        assert caller_profile == "caller-profile-1"
+        assert value == "secret-input-canary"
+        self.write_calls += 1
+        return {**target.public_dict(), "state": "stored"}
+
+    async def delete(
+        self,
+        target: SecretTarget,
+        *,
+        caller_profile: str,
+    ) -> Mapping[str, Any]:
+        return {**target.public_dict(), "state": "deleted"}
+
+
 def _service(
-    admission: _Admission, ledger: _Ledger, runtime: _Runtime
+    admission: _Admission,
+    ledger: _Ledger,
+    runtime: _Runtime,
+    secret_runtime: _SecretRuntime | None = None,
 ) -> DelegatedManagementService:
     return DelegatedManagementService(
         tenant="tenant-a",
@@ -194,6 +242,8 @@ def _service(
         admission=admission,
         ledger=ledger,
         runtime=runtime,
+        secret_runtime=secret_runtime,
+        request_digest_secret=_REQUEST_DIGEST_SECRET,
     )
 
 
@@ -497,3 +547,133 @@ async def test_effect_audit_is_complete_and_contains_no_bearer(caplog) -> None:
     assert bearer not in str(response.payload)
     assert bearer not in str(ledger.records)
     assert bearer not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_secret_read_uses_exact_resource_without_persisting_or_replaying_value(
+    caplog,
+) -> None:
+    target = SecretTarget(
+        scope=BUNDLE_SCOPE,
+        bundle_id="workspace@1-0",
+        key="provider.api_key",
+    )
+    resource = target.resource(tenant="tenant-a", project="project-a")
+    admission = _Admission()
+    ledger = _Ledger()
+    secret_runtime = _SecretRuntime()
+    service = _service(
+        admission,
+        ledger,
+        _Runtime(),
+        secret_runtime,
+    )
+    body = target.public_dict()
+
+    first = await service.execute(
+        operation=SECRET_READ_OPERATION,
+        delegated_bearer="opaque-bearer",
+        invocation_id="secret-read-1",
+        resource=resource,
+        approval_context=target.approval_context(),
+        secret_target=target,
+        body=body,
+    )
+    replay = await service.execute(
+        operation=SECRET_READ_OPERATION,
+        delegated_bearer="opaque-bearer",
+        invocation_id="secret-read-1",
+        resource=resource,
+        approval_context=target.approval_context(),
+        secret_target=target,
+        body=body,
+    )
+
+    record = ledger.records[("access-1", SECRET_READ_OPERATION, "secret-read-1")]
+    assert first.status_code == 200
+    assert first.payload["result"]["value"] == "secret-result-canary"
+    assert replay.status_code == 409
+    assert replay.payload["error"]["code"] == "secret_value_result_not_replayable"
+    assert secret_runtime.read_calls == 1
+    assert admission.calls[0]["resource"] == resource
+    assert admission.calls[0]["approval_context"] == {
+        "secret_scope": "bundle",
+        "bundle_id": "workspace@1-0",
+        "secret_key": "provider.api_key",
+    }
+    assert record["audit"]["resource"] == resource
+    assert "secret-result-canary" not in str(record)
+    assert "secret-result-canary" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_secret_runtime_unavailable_reports_exact_secret_resource() -> None:
+    class _UnavailableSecretRuntime(_SecretRuntime):
+        async def read(self, target: SecretTarget) -> Mapping[str, Any]:
+            del target
+            raise ManagementRuntimeUnavailable("fixture unavailable")
+
+    target = SecretTarget(
+        scope=BUNDLE_SCOPE,
+        bundle_id="workspace@1-0",
+        key="provider.api_key",
+    )
+    resource = target.resource(tenant="tenant-a", project="project-a")
+    response = await _service(
+        _Admission(),
+        _Ledger(),
+        _Runtime(),
+        _UnavailableSecretRuntime(),
+    ).execute(
+        operation=SECRET_READ_OPERATION,
+        delegated_bearer="opaque-bearer",
+        invocation_id="secret-read-unavailable-1",
+        resource=resource,
+        approval_context=target.approval_context(),
+        secret_target=target,
+        body=target.public_dict(),
+    )
+
+    assert response.status_code == 503
+    assert response.payload["error"]["code"] == "management_runtime_unavailable"
+    assert response.payload["resource"] == resource
+
+
+@pytest.mark.asyncio
+async def test_secret_write_digest_covers_value_but_audit_and_receipt_do_not(
+    caplog,
+) -> None:
+    target = SecretTarget(
+        scope=BUNDLE_SCOPE,
+        bundle_id="workspace@1-0",
+        key="provider.api_key",
+    )
+    resource = target.resource(tenant="tenant-a", project="project-a")
+    admission = _Admission()
+    ledger = _Ledger()
+    secret_runtime = _SecretRuntime()
+    service = _service(admission, ledger, _Runtime(), secret_runtime)
+
+    response = await service.execute(
+        operation=SECRET_WRITE_OPERATION,
+        delegated_bearer="opaque-bearer",
+        invocation_id="secret-write-1",
+        resource=resource,
+        approval_context=target.approval_context(),
+        secret_target=target,
+        body={**target.public_dict(), "value": "secret-input-canary"},
+    )
+
+    record = ledger.records[("access-1", SECRET_WRITE_OPERATION, "secret-write-1")]
+    plain_digest = management_request_digest(
+        resource=resource,
+        operation=SECRET_WRITE_OPERATION,
+        body={**target.public_dict(), "value": "secret-input-canary"},
+    )
+    assert response.status_code == 200
+    assert secret_runtime.write_calls == 1
+    assert admission.calls[0]["request_digest"] == record["request_digest"]
+    assert admission.calls[0]["request_digest"] != plain_digest
+    assert "secret-input-canary" not in str(response.payload)
+    assert "secret-input-canary" not in str(record)
+    assert "secret-input-canary" not in caplog.text

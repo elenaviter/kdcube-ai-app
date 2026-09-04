@@ -8,8 +8,9 @@ from __future__ import annotations
 import copy
 import secrets
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 import httpx

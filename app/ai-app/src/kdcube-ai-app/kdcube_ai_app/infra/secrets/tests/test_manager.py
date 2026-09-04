@@ -2,17 +2,18 @@ import json
 import os
 from types import SimpleNamespace
 
-import pytest
-
 import kdcube_ai_app.infra.secrets.manager as secrets_manager_module
+import pytest
 from kdcube_ai_app.infra.secrets import (
     AwsSecretsManagerSecretsManager,
     InMemorySecretsManager,
-    SecretsManagerConfig,
-    SecretsManagerWriteError,
     SecretsFileSecretsManager,
+    SecretsManagerConfig,
+    SecretsManagerError,
+    SecretsManagerWriteError,
     SecretsServiceSecretsManager,
     build_secrets_manager_config,
+    build_user_secret_metadata_key,
     get_secrets_manager,
     reset_secrets_manager_cache,
 )
@@ -174,6 +175,51 @@ async def test_secrets_service_accepts_host_vault_generation(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_secrets_service_does_not_send_inventory_mutations(monkeypatch):
+    client = _FakeSecretsHttpClient(response=_FakeHttpResponse(500, {}))
+    monkeypatch.setattr(
+        secrets_manager_module,
+        "_get_httpx",
+        lambda: _FakeHttpxModule(client),
+    )
+    manager = _secrets_service_manager()
+    metadata_key = "bundles.fixture@1-0.secrets.__keys"
+
+    await manager.set_secret(metadata_key, '["must-not-be-stored"]')
+    await manager.delete_secret(metadata_key)
+
+    assert client.requests == []
+
+
+@pytest.mark.asyncio
+async def test_secrets_service_inventory_is_provider_derived_and_scope_checked(
+    monkeypatch,
+):
+    metadata_key = "bundles.fixture@1-0.secrets.__keys"
+    expected = "bundles.fixture@1-0.secrets.provider.token"
+    client = _FakeSecretsHttpClient(
+        response=_FakeHttpResponse(200, {"value": json.dumps([expected])})
+    )
+    monkeypatch.setattr(
+        secrets_manager_module,
+        "_get_httpx",
+        lambda: _FakeHttpxModule(client),
+    )
+
+    manager = _secrets_service_manager()
+
+    assert await manager.list_secret_keys(metadata_key) == [expected]
+    assert client.requests[0][0] == "GET"
+
+    client.response = _FakeHttpResponse(
+        200,
+        {"value": json.dumps(["bundles.other@1-0.secrets.provider.token"])},
+    )
+    with pytest.raises(SecretsManagerError, match="inventory response is invalid"):
+        await manager.list_secret_keys(metadata_key)
+
+
+@pytest.mark.asyncio
 async def test_secrets_service_conflict_is_fixed_and_secret_safe(monkeypatch):
     canary = "must-not-escape-conflict"
     client = _FakeSecretsHttpClient(
@@ -227,7 +273,12 @@ async def test_secrets_service_unavailable_read_fails_closed_without_key_or_body
 
     value = await _secrets_service_manager().get_secret("users.private.token")
 
+    with pytest.raises(SecretsManagerError) as captured:
+        await _secrets_service_manager().get_secret_strict("users.private.token")
+
     assert value is None
+    assert str(captured.value) == "Secrets service read failed"
+    assert canary not in str(captured.value)
     assert canary not in caplog.text
     assert "users.private.token" not in caplog.text
 
@@ -291,6 +342,67 @@ async def test_aws_sm_manager_reads_grouped_documents_and_virtual_metadata():
 
 
 @pytest.mark.asyncio
+async def test_aws_inventory_unions_only_live_verified_legacy_records() -> None:
+    metadata_key = "bundles.user-mgmt@1-0.secrets.__keys"
+    grouped_key = "bundles.user-mgmt@1-0.secrets.provider.grouped"
+    legacy_key = "bundles.user-mgmt@1-0.secrets.provider.legacy"
+    deleted_key = "bundles.user-mgmt@1-0.secrets.provider.deleted"
+    manager = AwsSecretsManagerSecretsManager(
+        SecretsManagerConfig(
+            provider="aws-sm",
+            component="proc",
+            aws_sm_prefix="kdcube/demo/demo-march",
+        )
+    )
+    client = _FakeAwsSecretsClient(
+        {
+            "kdcube/demo/demo-march/bundles/user-mgmt@1-0/secrets": json.dumps(
+                {"provider": {"grouped": "grouped-value"}}
+            ),
+            "kdcube/demo/demo-march/bundles/user-mgmt@1-0/secrets/__keys": json.dumps(
+                [legacy_key, deleted_key]
+            ),
+            "kdcube/demo/demo-march/bundles/user-mgmt@1-0/secrets/provider/legacy": (
+                "legacy-value"
+            ),
+        }
+    )
+    manager._session = _FakeAwsSession(client)
+
+    assert await manager.list_secret_keys(metadata_key) == [
+        grouped_key,
+        legacy_key,
+    ]
+    assert json.loads(await manager.get_secret(metadata_key) or "[]") == [
+        grouped_key,
+        legacy_key,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_aws_inventory_rejects_cross_scope_legacy_metadata() -> None:
+    metadata_key = "bundles.user-mgmt@1-0.secrets.__keys"
+    manager = AwsSecretsManagerSecretsManager(
+        SecretsManagerConfig(
+            provider="aws-sm",
+            component="proc",
+            aws_sm_prefix="kdcube/demo/demo-march",
+        )
+    )
+    client = _FakeAwsSecretsClient(
+        {
+            "kdcube/demo/demo-march/bundles/user-mgmt@1-0/secrets/__keys": json.dumps(
+                ["bundles.other@1-0.secrets.provider.token"]
+            )
+        }
+    )
+    manager._session = _FakeAwsSession(client)
+
+    with pytest.raises(SecretsManagerError, match="inventory response is invalid"):
+        await manager.list_secret_keys(metadata_key)
+
+
+@pytest.mark.asyncio
 async def test_aws_sm_manager_falls_back_to_aggregate_bundle_blob_and_legacy_leafs():
     manager = AwsSecretsManagerSecretsManager(
         SecretsManagerConfig(provider="aws-sm", component="proc", aws_sm_prefix="kdcube/demo/demo-march")
@@ -349,6 +461,46 @@ async def test_aws_sm_manager_writes_and_deletes_grouped_bundle_documents():
 
     await manager.delete_secret("bundles.user-mgmt@1-0.secrets.user_management.cognito_user_pool_id")
     assert "kdcube/demo/demo-march/bundles/user-mgmt@1-0/secrets" not in client.data
+
+
+@pytest.mark.asyncio
+async def test_aws_sm_strict_read_and_write_fail_without_clobbering(caplog):
+    marker = "aws-provider-secret-marker"
+
+    class _UnavailableAwsClient(_FakeAwsSecretsClient):
+        async def get_secret_value(self, *, SecretId: str):
+            raise RuntimeError(marker)
+
+    manager = AwsSecretsManagerSecretsManager(
+        SecretsManagerConfig(
+            provider="aws-sm",
+            component="proc",
+            aws_sm_prefix="kdcube/demo/demo-march",
+        )
+    )
+    client = _UnavailableAwsClient(
+        {
+            "kdcube/demo/demo-march/platform/secrets": json.dumps(
+                {"services": {"existing": {"token": "preserve-me"}}}
+            )
+        }
+    )
+    manager._session = _FakeAwsSession(client)
+
+    assert await manager.get_secret("services.new.token") is None
+    with pytest.raises(SecretsManagerError) as read_error:
+        await manager.get_secret_strict("services.new.token")
+    with pytest.raises(SecretsManagerError) as write_error:
+        await manager.set_secret("services.new.token", marker)
+
+    assert json.loads(
+        client.data["kdcube/demo/demo-march/platform/secrets"]
+    ) == {"services": {"existing": {"token": "preserve-me"}}}
+    assert str(read_error.value) == "AWS Secrets Manager read failed"
+    assert str(write_error.value) == "AWS Secrets Manager read failed"
+    assert marker not in caplog.text
+    assert marker not in str(read_error.value)
+    assert marker not in str(write_error.value)
 
 
 @pytest.mark.asyncio
@@ -447,29 +599,21 @@ async def test_secrets_file_manager_reads_global_and_bundle_yaml(tmp_path, monke
     global_file = tmp_path / "secrets.yaml"
     bundle_file = tmp_path / "bundles.secrets.yaml"
     global_file.write_text(
-        "\n".join(
-            [
-                "services:",
-                "  openai:",
-                "    api_key: sk-global",
-                "  anthropic:",
-                "    claude_code_key: sk-claude-code",
-            ]
-        ),
+        "services:\n"
+        "  openai:\n"
+        "    api_key: sk-global\n"
+        "  anthropic:\n"
+        "    claude_code_key: sk-claude-code",
         encoding="utf-8",
     )
     bundle_file.write_text(
-        "\n".join(
-            [
-                "bundles:",
-                "  version: '1'",
-                "  items:",
-                "    - id: 'kdcube.copilot@2026-04-03-19-05'",
-                "      secrets:",
-                "        telegram:",
-                "          webhook_secret: tg-secret",
-            ]
-        ),
+        "bundles:\n"
+        "  version: '1'\n"
+        "  items:\n"
+        "    - id: 'kdcube.copilot@2026-04-03-19-05'\n"
+        "      secrets:\n"
+        "        telegram:\n"
+        "          webhook_secret: tg-secret",
         encoding="utf-8",
     )
 
@@ -575,6 +719,32 @@ async def test_secrets_file_manager_writes_global_and_bundle_yaml(tmp_path, monk
 
 
 @pytest.mark.asyncio
+async def test_secrets_file_manager_preserves_nonempty_exact_strings_and_skips_placeholders(
+    tmp_path,
+):
+    global_file = tmp_path / "secrets.yaml"
+    manager = SecretsFileSecretsManager(
+        SecretsManagerConfig(
+            provider="secrets-file",
+            component="proc",
+            global_secrets_yaml=global_file.resolve().as_uri(),
+        )
+    )
+
+    await manager.set_many(
+        {
+            "services.fixture.whitespace": "  exact value  ",
+            "services.fixture.empty": "",
+        }
+    )
+
+    assert await manager.get_secret_strict("services.fixture.whitespace") == (
+        "  exact value  "
+    )
+    assert await manager.get_secret_strict("services.fixture.empty") is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.skipif(os.name != "posix", reason="POSIX file modes are required")
 async def test_secrets_file_manager_atomic_rewrite_repairs_public_mode(tmp_path, monkeypatch):
     global_file = tmp_path / "secrets.yaml"
@@ -606,6 +776,9 @@ async def test_secrets_file_manager_atomic_rewrite_repairs_public_mode(tmp_path,
 @pytest.mark.asyncio
 async def test_secrets_file_manager_reads_and_writes_user_bundle_secrets(tmp_path, monkeypatch):
     global_file = tmp_path / "secrets.yaml"
+    expected_key = (
+        "users.user-1.bundles.rms@06-04-26-156.secrets.anthropic.api_key"
+    )
     monkeypatch.setenv("SECRETS_PROVIDER", "secrets-file")
     monkeypatch.setenv("GLOBAL_SECRETS_YAML", global_file.resolve().as_uri())
     reset_secrets_manager_cache()
@@ -639,11 +812,36 @@ async def test_secrets_file_manager_reads_and_writes_user_bundle_secrets(tmp_pat
     assert "user-1:" in text
     assert "rms@06-04-26-156" in text
     assert "sk-user" in text
+    assert await manager.list_user_secret_keys(
+        user_id="user-1",
+        bundle_id="rms@06-04-26-156",
+    ) == [expected_key]
+
+    metadata_key = build_user_secret_metadata_key(
+        user_id="user-1",
+        bundle_id="rms@06-04-26-156",
+    )
+    await manager.set_secret(metadata_key, '["users.user-1.stale"]')
+    assert metadata_key not in global_file.read_text(encoding="utf-8")
+
+    await manager.delete_user_secret(
+        user_id="user-1",
+        bundle_id="rms@06-04-26-156",
+        key="anthropic.api_key",
+    )
+    assert await manager.list_user_secret_keys(
+        user_id="user-1",
+        bundle_id="rms@06-04-26-156",
+    ) == []
 
 
 @pytest.mark.asyncio
 async def test_in_memory_manager_reads_and_writes_user_bundle_secrets():
     manager = InMemorySecretsManager()
+    expected_key = (
+        "users.user-1.bundles.task-and-memo-app@1-0.secrets."
+        "email.accounts.google_1.tokens"
+    )
 
     await manager.set_user_secret(
         user_id="user-1",
@@ -663,7 +861,7 @@ async def test_in_memory_manager_reads_and_writes_user_bundle_secrets():
     assert await manager.list_user_secret_keys(
         user_id="user-1",
         bundle_id="task-and-memo-app@1-0",
-    ) == []
+    ) == [expected_key]
 
     await manager.delete_user_secret(
         user_id="user-1",

@@ -10,10 +10,16 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/service-runtime-configuration-mapping-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/bundle-runtime-configuration-and-secrets-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/runtime-configuration-and-secrets-store-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/delegated-management-service-README.md
 ---
 # Platform Secrets Descriptor
 
 `secrets.yaml` stores platform/global secrets.
+
+An empty string or `null` is an unconfigured placeholder, not a stored secret.
+Use the delete operation to remove a live value; delegated management rejects
+an empty replacement so file, host-vault, and cloud providers retain the same
+observable contract.
 
 Typical keys:
 
@@ -98,6 +104,16 @@ If `assembly.secrets.provider == secrets-file`:
 Otherwise:
 
 - it is installer input used to populate the active runtime secrets provider
+
+An administrator can reconstruct an explicit set of platform and bundle keys
+through the browser-approved CLI ceremony documented in
+[Delegated KDCube Management Service](../service/cicd/delegated-management-service-README.md#human-secret-export).
+
+Secret inventory is provider-derived. `.__keys` is a virtual compatibility
+selector used by the runtime and must not be authored, staged, or mutated in a
+descriptor. Legacy metadata may be read only as a hint whose candidates are
+scope-checked and verified against current live values; stale entries are not
+returned.
 
 For an opt-in local host vault, set `secrets.service.backend: host-vault`. Keep
 `secrets.provider: secrets-file` while the CLI shadow-stages and verifies the

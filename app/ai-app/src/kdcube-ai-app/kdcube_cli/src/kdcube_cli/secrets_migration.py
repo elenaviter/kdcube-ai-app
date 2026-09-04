@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import subprocess
 import time
@@ -176,19 +175,6 @@ def load_file_secret_inventory(
             secrets,
             values,
             is_placeholder=is_placeholder,
-        )
-
-    keys_by_bundle: dict[str, list[str]] = {}
-    for key in values:
-        if not key.startswith("bundles.") or ".secrets." not in key:
-            continue
-        bundle_id, tail = key[len("bundles.") :].split(".secrets.", 1)
-        if tail != "__keys":
-            keys_by_bundle.setdefault(bundle_id, []).append(key)
-    for bundle_id, keys in keys_by_bundle.items():
-        values[f"bundles.{bundle_id}.secrets.__keys"] = json.dumps(
-            sorted(keys),
-            ensure_ascii=False,
         )
 
     return FileSecretInventory(values=dict(sorted(values.items())), skipped_placeholders=skipped)

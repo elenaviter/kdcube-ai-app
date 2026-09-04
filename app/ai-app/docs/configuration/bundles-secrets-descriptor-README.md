@@ -11,10 +11,15 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/bundle-runtime-configuration-and-secrets-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-properties-and-secrets-lifecycle-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/runtime-configuration-and-secrets-store-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/delegated-management-service-README.md
 ---
 # Bundles Secrets Descriptor
 
 `bundles.secrets.yaml` stores deployment-scoped bundle secrets.
+
+An empty string or `null` is an unconfigured placeholder. Removing a live
+secret uses the provider delete operation; an empty management write is
+rejected so every provider exposes the same result.
 
 Example:
 
@@ -149,6 +154,15 @@ If `assembly.secrets.provider == secrets-file`:
 If you use another provider:
 
 - the file is installer input only
+
+An administrator can reconstruct an explicit set of platform and bundle keys
+through the browser-approved CLI ceremony documented in
+[Delegated KDCube Management Service](../service/cicd/delegated-management-service-README.md#human-secret-export).
+
+The runtime derives each bundle's current key inventory from live values.
+`bundles.<id>.secrets.__keys` is a virtual compatibility selector, not a
+descriptor field and not mutable state. Legacy metadata is only a bounded hint:
+each candidate is scope-checked and read before it can appear in inventory.
 
 ### Direct local service run
 

@@ -18,29 +18,35 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Mapping
+from typing import Any
 
 PROTOCOL_VERSION = "kdcube-host-vault/1"
 
 # Bounds. Values are provider credentials (tokens, app passwords, OAuth
 # refresh tokens): kilobytes, never files.
 MAX_VALUE_BYTES = 64 * 1024
-MAX_NAME_CHARS = 200
+MAX_NAME_CHARS = 1024
+MAX_LIST_NAMES = 1024
 MAX_REQUEST_SKEW_SECONDS = 300
 REFERENCE_PREFIX = "kdv1"
 
 _SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$")
-_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,199}$")
+_NAME_RE = re.compile(
+    rf"^[A-Za-z0-9][A-Za-z0-9._:@/-]{{0,{MAX_NAME_CHARS - 1}}}$"
+)
 
 
 class Operation(str, Enum):
     HEALTH = "health"
     GET = "secret.get"
+    LIST = "secret.list"
     SET = "secret.set"
     DELETE = "secret.delete"
     # Rotate is a distinct operation only because its authorization intent
@@ -111,8 +117,10 @@ class SecretNamespace:
 
     def __post_init__(self) -> None:
         for name, value in (("tenant", self.tenant), ("project", self.project), ("application", self.application)):
-            if not _SEGMENT_RE.match(_clean(value)):
+            cleaned = _clean(value)
+            if not _SEGMENT_RE.fullmatch(cleaned):
                 raise VaultError(ErrorCode.INVALID_REQUEST, f"{name} is not a canonical segment.")
+            object.__setattr__(self, name, cleaned)
 
     @property
     def path(self) -> str:
@@ -122,7 +130,7 @@ class SecretNamespace:
         return {"tenant": self.tenant, "project": self.project, "application": self.application}
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "SecretNamespace":
+    def from_dict(cls, data: Mapping[str, Any]) -> SecretNamespace:
         return cls(
             tenant=_clean(data.get("tenant")),
             project=_clean(data.get("project")),
@@ -140,8 +148,10 @@ class SecretReference:
     name: str
 
     def __post_init__(self) -> None:
-        if not _NAME_RE.match(_clean(self.name)) or ".." in self.name:
+        name = _clean(self.name)
+        if not _NAME_RE.fullmatch(name) or ".." in name:
             raise VaultError(ErrorCode.INVALID_REQUEST, "secret name is not a bounded reference.")
+        object.__setattr__(self, "name", name)
 
     @property
     def wire(self) -> str:
@@ -152,7 +162,7 @@ class SecretReference:
         return hashlib.sha256(self.wire.encode("utf-8")).hexdigest()[:24]
 
     @classmethod
-    def parse(cls, wire: str) -> "SecretReference":
+    def parse(cls, wire: str) -> SecretReference:
         text = _clean(wire)
         prefix = f"{REFERENCE_PREFIX}:"
         if not text.startswith(prefix):
@@ -163,7 +173,7 @@ class SecretReference:
         return cls(namespace=SecretNamespace(parts[0], parts[1], parts[2]), name=parts[3])
 
     @classmethod
-    def derive(cls, *, namespace: SecretNamespace, internal_key: str) -> "SecretReference":
+    def derive(cls, *, namespace: SecretNamespace, internal_key: str) -> SecretReference:
         """Trusted derivation from an internal secrets-manager key. The key
         grammar of ``ISecretsManager`` (dotted paths such as
         ``users.<uid>.bundles.<bid>.secrets.<key>``) fits the name grammar; the
@@ -193,7 +203,7 @@ class VaultRequest:
         *,
         value: str | None = None,
         expected_generation: int | None = None,
-    ) -> "VaultRequest":
+    ) -> VaultRequest:
         return cls(
             operation=operation,
             reference=reference,
@@ -233,25 +243,53 @@ class VaultRequest:
         return data
 
     @classmethod
-    def from_wire(cls, data: Mapping[str, Any], *, deployment_id: str) -> "VaultRequest":
+    def from_wire(cls, data: Mapping[str, Any], *, deployment_id: str) -> VaultRequest:
         if not isinstance(data, Mapping):
             raise VaultError(ErrorCode.INVALID_REQUEST, "request body must be an object.")
-        if _clean(data.get("protocol")) != PROTOCOL_VERSION:
+        allowed = {
+            "protocol",
+            "operation",
+            "request_id",
+            "issued_at",
+            "reference",
+            "value",
+            "expected_generation",
+        }
+        if set(data) - allowed:
+            raise VaultError(ErrorCode.INVALID_REQUEST, "request fields are invalid.")
+        if data.get("protocol") != PROTOCOL_VERSION:
             raise VaultError(ErrorCode.INVALID_REQUEST, "unsupported protocol version.")
+        operation_value = data.get("operation")
+        if not isinstance(operation_value, str):
+            raise VaultError(ErrorCode.INVALID_REQUEST, "unknown operation.")
         try:
-            operation = Operation(_clean(data.get("operation")))
+            operation = Operation(operation_value)
         except ValueError as exc:
             raise VaultError(ErrorCode.INVALID_REQUEST, "unknown operation.") from exc
-        request_id = _clean(data.get("request_id"))
-        if not re.match(r"^[A-Za-z0-9-]{8,64}$", request_id):
+        request_id_value = data.get("request_id")
+        if not isinstance(request_id_value, str):
             raise VaultError(ErrorCode.INVALID_REQUEST, "request_id is required.")
+        request_id = request_id_value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9-]{8,64}", request_id):
+            raise VaultError(ErrorCode.INVALID_REQUEST, "request_id is required.")
+        issued_at_value = data.get("issued_at")
+        if isinstance(issued_at_value, bool) or not isinstance(
+            issued_at_value,
+            (int, float),
+        ):
+            raise VaultError(ErrorCode.INVALID_REQUEST, "issued_at is required.")
         try:
-            issued_at = float(data.get("issued_at"))
-        except (TypeError, ValueError) as exc:
+            issued_at = float(issued_at_value)
+        except (TypeError, ValueError, OverflowError) as exc:
             raise VaultError(ErrorCode.INVALID_REQUEST, "issued_at is required.") from exc
+        if not math.isfinite(issued_at) or issued_at <= 0:
+            raise VaultError(ErrorCode.INVALID_REQUEST, "issued_at is required.")
         reference = None
         if operation is not Operation.HEALTH:
-            reference = SecretReference.parse(_clean(data.get("reference")))
+            reference_value = data.get("reference")
+            if not isinstance(reference_value, str):
+                raise VaultError(ErrorCode.INVALID_REQUEST, "reference is required.")
+            reference = SecretReference.parse(reference_value)
         value = data.get("value")
         if value is not None:
             if not isinstance(value, str):
@@ -259,13 +297,39 @@ class VaultRequest:
             if len(value.encode("utf-8")) > MAX_VALUE_BYTES:
                 raise VaultError(ErrorCode.TOO_LARGE)
         expected = data.get("expected_generation")
-        if expected is not None:
-            try:
-                expected = int(expected)
-            except (TypeError, ValueError) as exc:
-                raise VaultError(ErrorCode.INVALID_REQUEST, "expected_generation must be an integer.") from exc
+        if expected is not None and (
+            isinstance(expected, bool)
+            or not isinstance(expected, int)
+            or expected < 0
+        ):
+            raise VaultError(
+                ErrorCode.INVALID_REQUEST,
+                "expected_generation must be a non-negative integer.",
+            )
         if operation in (Operation.SET, Operation.ROTATE) and value is None:
             raise VaultError(ErrorCode.INVALID_REQUEST, "value is required.")
+        if operation in {Operation.HEALTH, Operation.GET, Operation.DELETE} and (
+            value is not None
+        ):
+            raise VaultError(ErrorCode.INVALID_REQUEST, "operation does not accept a value.")
+        if operation in {Operation.HEALTH, Operation.GET} and expected is not None:
+            raise VaultError(
+                ErrorCode.INVALID_REQUEST,
+                "operation does not accept expected_generation.",
+            )
+        if operation is Operation.HEALTH and "reference" in data:
+            raise VaultError(ErrorCode.INVALID_REQUEST, "health does not accept a reference.")
+        if operation is Operation.LIST and (
+            reference is None or not reference.name.endswith(".__keys")
+        ):
+            raise VaultError(
+                ErrorCode.INVALID_REQUEST,
+                "list requires a secret inventory reference.",
+            )
+        if operation is Operation.LIST and (
+            value is not None or expected is not None
+        ):
+            raise VaultError(ErrorCode.INVALID_REQUEST, "list does not mutate.")
         return cls(
             operation=operation,
             reference=reference,
@@ -291,11 +355,11 @@ class VaultResponse:
     extra: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def success(cls, request: VaultRequest, *, value: str | None = None, generation: int | None = None, **extra: Any) -> "VaultResponse":
+    def success(cls, request: VaultRequest, *, value: str | None = None, generation: int | None = None, **extra: Any) -> VaultResponse:
         return cls(ok=True, code=ErrorCode.OK, message="ok", request_id=request.request_id, value=value, generation=generation, extra=dict(extra))
 
     @classmethod
-    def failure(cls, error: VaultError, *, request_id: str = "") -> "VaultResponse":
+    def failure(cls, error: VaultError, *, request_id: str = "") -> VaultResponse:
         return cls(ok=False, code=error.code, message=error.message, request_id=request_id)
 
     def to_wire(self) -> dict[str, Any]:
@@ -310,28 +374,104 @@ class VaultResponse:
             data["value"] = self.value
         if self.generation is not None:
             data["generation"] = self.generation
+        if set(self.extra) - {"deployment_id", "names"}:
+            raise VaultError(ErrorCode.INTERNAL, "The vault answer is malformed.")
         data.update(self.extra)
+        VaultResponse.from_wire(data)
         return data
 
     @classmethod
-    def from_wire(cls, data: Mapping[str, Any]) -> "VaultResponse":
-        if not isinstance(data, Mapping) or _clean(data.get("protocol")) != PROTOCOL_VERSION:
+    def from_wire(cls, data: Mapping[str, Any]) -> VaultResponse:
+        if not isinstance(data, Mapping) or data.get("protocol") != PROTOCOL_VERSION:
             raise VaultError(ErrorCode.INTERNAL, "The vault answered in an unknown protocol.")
+        known = {
+            "protocol",
+            "ok",
+            "code",
+            "message",
+            "request_id",
+            "value",
+            "generation",
+            "deployment_id",
+            "names",
+        }
+        if set(data) - known:
+            raise VaultError(ErrorCode.INTERNAL, "The vault answer is malformed.")
+        ok = data.get("ok")
+        if not isinstance(ok, bool):
+            raise VaultError(ErrorCode.INTERNAL, "The vault answer is malformed.")
+        code_value = data.get("code")
+        if not isinstance(code_value, str):
+            raise VaultError(ErrorCode.INTERNAL, "The vault answer is malformed.")
         try:
-            code = ErrorCode(_clean(data.get("code")))
-        except ValueError:
-            code = ErrorCode.INTERNAL
+            code = ErrorCode(code_value)
+        except ValueError as exc:
+            raise VaultError(ErrorCode.INTERNAL, "The vault answer is malformed.") from exc
+        if ok != (code is ErrorCode.OK):
+            raise VaultError(ErrorCode.INTERNAL, "The vault answer is malformed.")
+        message = data.get("message")
+        request_id = data.get("request_id")
+        if (
+            not isinstance(message, str)
+            or len(message) > 512
+            or any(ord(character) < 32 or ord(character) == 127 for character in message)
+            or not isinstance(request_id, str)
+        ):
+            raise VaultError(ErrorCode.INTERNAL, "The vault answer is malformed.")
+        if request_id and not re.fullmatch(r"[A-Za-z0-9-]{8,64}", request_id):
+            raise VaultError(ErrorCode.INTERNAL, "The vault answer is malformed.")
         value = data.get("value")
         generation = data.get("generation")
-        known = {"protocol", "ok", "code", "message", "request_id", "value", "generation"}
+        if (
+            value is not None
+            and (
+                not isinstance(value, str)
+                or len(value.encode("utf-8")) > MAX_VALUE_BYTES
+            )
+        ):
+            raise VaultError(ErrorCode.INTERNAL, "The vault answer is malformed.")
+        if generation is not None and (
+            isinstance(generation, bool)
+            or not isinstance(generation, int)
+            or generation < 0
+        ):
+            raise VaultError(ErrorCode.INTERNAL, "The vault answer is malformed.")
+        if not ok and (value is not None or generation is not None):
+            raise VaultError(ErrorCode.INTERNAL, "The vault answer is malformed.")
+        names = data.get("names")
+        if names is not None and (
+            not ok
+            or not isinstance(names, list)
+            or len(names) > MAX_LIST_NAMES
+            or any(
+                not isinstance(name, str)
+                or not _NAME_RE.fullmatch(name)
+                or ".." in name
+                or name.endswith(".__keys")
+                for name in names
+            )
+            or names != sorted(set(names))
+        ):
+            raise VaultError(ErrorCode.INTERNAL, "The vault answer is malformed.")
+        deployment_id = data.get("deployment_id")
+        if deployment_id is not None and (
+            not ok
+            or not isinstance(deployment_id, str)
+            or not _SEGMENT_RE.fullmatch(deployment_id)
+        ):
+            raise VaultError(ErrorCode.INTERNAL, "The vault answer is malformed.")
         return cls(
-            ok=bool(data.get("ok")),
+            ok=ok,
             code=code,
-            message=_clean(data.get("message")),
-            request_id=_clean(data.get("request_id")),
-            value=value if isinstance(value, str) else None,
-            generation=int(generation) if isinstance(generation, int) else None,
-            extra={k: v for k, v in data.items() if k not in known},
+            message=message,
+            request_id=request_id,
+            value=value,
+            generation=generation,
+            extra={
+                key: data[key]
+                for key in ("deployment_id", "names")
+                if key in data
+            },
         )
 
 
@@ -347,6 +487,7 @@ def sanitize_failure(exc: BaseException) -> VaultError:
 
 
 __all__ = [
+    "MAX_LIST_NAMES",
     "MAX_NAME_CHARS",
     "MAX_REQUEST_SKEW_SECONDS",
     "MAX_VALUE_BYTES",

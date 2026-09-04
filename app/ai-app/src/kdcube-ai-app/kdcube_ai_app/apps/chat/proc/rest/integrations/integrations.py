@@ -11,7 +11,6 @@ import json
 import logging
 import os
 import re
-import time
 import traceback
 import uuid
 from dataclasses import asdict
@@ -34,7 +33,7 @@ from kdcube_ai_app.apps.chat.ingress.resolvers import (
 from kdcube_ai_app.apps.middleware.gateway import STATE_SESSION, STATE_STREAM_ID, extract_stream_id
 from kdcube_ai_app.auth.AuthManager import RequireUser
 from kdcube_ai_app.auth.sessions import RequestContext, UserSession, UserType
-from kdcube_ai_app.apps.chat.sdk.config import get_settings, get_secret
+from kdcube_ai_app.apps.chat.sdk.config import get_settings
 from kdcube_ai_app.infra.service_hub.inventory import (
     ConfigRequest,
     create_workflow_config,
@@ -167,6 +166,11 @@ from kdcube_ai_app.infra.secrets import (
     SecretsManagerWriteError,
     build_user_secret_metadata_key,
     get_secrets_manager,
+)
+from kdcube_ai_app.infra.secrets.projections import (
+    bundle_secret_inventory_key as _bundle_secrets_key,
+    publish_bundle_secret_update as _publish_bundle_secrets_update,
+    user_bundle_secret_inventory_key as _user_bundle_secrets_key,
 )
 import kdcube_ai_app.infra.namespaces as namespaces
 
@@ -1562,75 +1566,6 @@ def _bundle_props_key(*, tenant: str, project: str, bundle_id: str) -> str:
     )
 
 
-def _bundle_secrets_key(*, tenant: str, project: str, bundle_id: str) -> str:
-    return namespaces.CONFIG.BUNDLES.SECRETS_KEYS_FMT.format(
-        tenant=tenant,
-        project=project,
-        bundle_id=bundle_id,
-    )
-
-
-def _bundle_secrets_update_channel(*, tenant: str, project: str) -> str:
-    return namespaces.CONFIG.BUNDLES.SECRETS_UPDATE_CHANNEL.format(
-        tenant=tenant,
-        project=project,
-    )
-
-
-async def _publish_bundle_secrets_update(
-        redis,
-        *,
-        tenant: str,
-        project: str,
-        bundle_id: str,
-        scope: str,
-        mode: str,
-        keys: Set[str],
-        actor: Optional[str] = None,
-        user_id: Optional[str] = None,
-) -> None:
-    if redis is None:
-        return
-    payload: Dict[str, Any] = {
-        "type": "bundles.secrets.update",
-        "tenant": tenant,
-        "project": project,
-        "bundle_id": bundle_id,
-        "scope": scope,
-        "mode": mode,
-        "keys": sorted(str(key) for key in keys),
-        "ts": time.time(),
-    }
-    if actor:
-        payload["updated_by"] = actor
-    if user_id:
-        payload["user_id"] = user_id
-    try:
-        await redis.publish(
-            _bundle_secrets_update_channel(tenant=tenant, project=project),
-            json.dumps(payload, ensure_ascii=False),
-        )
-    except Exception:
-        logger.warning(
-            "Failed to publish bundle secrets update: tenant=%s project=%s bundle=%s scope=%s mode=%s",
-            tenant,
-            project,
-            bundle_id,
-            scope,
-            mode,
-            exc_info=True,
-        )
-
-
-def _user_bundle_secrets_key(*, tenant: str, project: str, bundle_id: str, user_id: str) -> str:
-    return namespaces.CONFIG.BUNDLES.USER_SECRETS_KEYS_FMT.format(
-        tenant=tenant,
-        project=project,
-        bundle_id=bundle_id,
-        user_id=user_id,
-    )
-
-
 def _flatten_secrets(prefix: str, node: Any, out: Dict[str, str]) -> None:
     if node is None:
         return
@@ -2425,7 +2360,14 @@ async def set_bundle_secrets(
     try:
         secrets_manager = get_secrets_manager(settings)
     except SecretsManagerError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        logger.error(
+            "Bundle secrets provider initialization failed error_type=%s",
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Secrets provider is unavailable",
+        ) from None
     if not secrets_manager.can_write():
         raise HTTPException(status_code=503, detail="Secrets provider is not configured for writes")
 
@@ -2455,35 +2397,34 @@ async def set_bundle_secrets(
         else:
             await secrets_manager.delete_many(keys)
     except SecretsManagerWriteError as exc:
-        raise HTTPException(status_code=502, detail=f"Failed to store secrets: {exc}") from exc
+        logger.error(
+            "Bundle secrets mutation failed error_type=%s",
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="Failed to store secrets",
+        ) from None
 
     secrets_key = _bundle_secrets_key(tenant=tenant_id, project=project_id, bundle_id=bundle_id)
-    stored_keys: Set[str] = set()
-    try:
-        raw_keys = await redis.get(secrets_key)
-        if raw_keys:
-            stored_keys = set(json.loads(raw_keys))
-    except Exception:
-        stored_keys = set()
-    if mode == "set":
-        stored_keys.update(keys)
-    else:
-        stored_keys.difference_update(keys)
-
     metadata_key = f"bundles.{bundle_id}.secrets.__keys"
+    stored_keys: Set[str] = set()
+    inventory_state = "current"
     try:
-        if stored_keys:
-            await secrets_manager.set_secret(
-                metadata_key,
-                json.dumps(sorted(stored_keys), ensure_ascii=False),
-            )
-        else:
-            await secrets_manager.delete_secret(metadata_key)
-    except SecretsManagerWriteError as exc:
-        raise HTTPException(status_code=502, detail=f"Failed to store secrets metadata: {exc}") from exc
+        stored_keys = set(await secrets_manager.list_secret_keys(metadata_key))
+    except SecretsManagerError as exc:
+        inventory_state = "refresh_pending"
+        logger.warning(
+            "Failed to refresh bundle secret inventory after a committed mutation "
+            "error_type=%s",
+            type(exc).__name__,
+        )
 
     try:
-        await redis.set(secrets_key, json.dumps(sorted(stored_keys)))
+        if inventory_state == "current":
+            await redis.set(secrets_key, json.dumps(sorted(stored_keys)))
+        else:
+            await redis.delete(secrets_key)
     except Exception:
         pass
 
@@ -2506,6 +2447,7 @@ async def set_bundle_secrets(
         "count": len(flat),
         "keys": sorted(keys),
         "stored_keys": sorted(stored_keys),
+        "inventory_state": inventory_state,
         "mode": mode,
     }
 
@@ -2531,14 +2473,19 @@ async def get_bundle_secrets(
         except Exception:
             keys = []
     if not keys:
-        # Fallback: keys list stored in the configured secrets provider.
-        raw_keys = await get_secret(f"bundles.{bundle_id}.secrets.__keys")
-        if raw_keys:
-            try:
-                keys = json.loads(raw_keys) or []
-                await redis.set(secrets_key, json.dumps(keys))
-            except Exception:
-                keys = []
+        # The provider derives inventory from committed values. ``__keys`` is
+        # a compatibility selector, not a separately mutable secret.
+        try:
+            secrets_manager = get_secrets_manager(settings)
+            keys = await secrets_manager.list_secret_keys(
+                f"bundles.{bundle_id}.secrets.__keys"
+            )
+            await redis.set(secrets_key, json.dumps(keys))
+        except SecretsManagerError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Secrets inventory is unavailable",
+            ) from exc
     return {
         "bundle_id": bundle_id,
         "tenant": tenant_id,
@@ -2564,7 +2511,14 @@ async def set_current_user_bundle_secrets(
     try:
         secrets_manager = get_secrets_manager(settings)
     except SecretsManagerError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        logger.error(
+            "User secrets provider initialization failed error_type=%s",
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Secrets provider is unavailable",
+        ) from None
     if not secrets_manager.can_write():
         raise HTTPException(status_code=503, detail="Secrets provider is not configured for writes")
 
@@ -2600,7 +2554,14 @@ async def set_current_user_bundle_secrets(
         else:
             await secrets_manager.delete_many(keys)
     except SecretsManagerWriteError as exc:
-        raise HTTPException(status_code=502, detail=f"Failed to store user secrets: {exc}") from exc
+        logger.error(
+            "User secrets mutation failed error_type=%s",
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="Failed to store user secrets",
+        ) from None
 
     secrets_key = _user_bundle_secrets_key(
         tenant=tenant,
@@ -2608,32 +2569,24 @@ async def set_current_user_bundle_secrets(
         bundle_id=bundle_id,
         user_id=user_id,
     )
-    stored_keys: Set[str] = set()
-    try:
-        raw_keys = await redis.get(secrets_key)
-        if raw_keys:
-            stored_keys = set(json.loads(raw_keys))
-    except Exception:
-        stored_keys = set()
-    if mode == "set":
-        stored_keys.update(keys)
-    else:
-        stored_keys.difference_update(keys)
-
     metadata_key = build_user_secret_metadata_key(user_id=user_id, bundle_id=bundle_id)
+    stored_keys: Set[str] = set()
+    inventory_state = "current"
     try:
-        if stored_keys:
-            await secrets_manager.set_secret(
-                metadata_key,
-                json.dumps(sorted(stored_keys), ensure_ascii=False),
-            )
-        else:
-            await secrets_manager.delete_secret(metadata_key)
-    except SecretsManagerWriteError as exc:
-        raise HTTPException(status_code=502, detail=f"Failed to store user secrets metadata: {exc}") from exc
+        stored_keys = set(await secrets_manager.list_secret_keys(metadata_key))
+    except SecretsManagerError as exc:
+        inventory_state = "refresh_pending"
+        logger.warning(
+            "Failed to refresh user secret inventory after a committed mutation "
+            "error_type=%s",
+            type(exc).__name__,
+        )
 
     try:
-        await redis.set(secrets_key, json.dumps(sorted(stored_keys)))
+        if inventory_state == "current":
+            await redis.set(secrets_key, json.dumps(sorted(stored_keys)))
+        else:
+            await redis.delete(secrets_key)
     except Exception:
         pass
 
@@ -2656,6 +2609,7 @@ async def set_current_user_bundle_secrets(
         "project": project,
         "user_id": user_id,
         "count": len(flat),
+        "inventory_state": inventory_state,
         "mode": mode,
     }
 

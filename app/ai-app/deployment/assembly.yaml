@@ -70,6 +70,17 @@ management:
       service_secret_ref: "connections.delegated_credentials.admission.services.kdcube-management.signing_secret"
       admission_url: ""  # empty uses this processor's descriptor-owned local port
       timeout_seconds: 10
+  secret_export:
+    enabled: true
+    # The built-in verifier proves the current KDCube admin browser session
+    # plus an explicit click. Stronger policies fail closed until the
+    # deployment installs a fresh-authentication or user-verification verifier.
+    required_assurance: "session_confirmation"
+    max_evidence_age_seconds: 300
+    transaction_ttl_seconds: 180
+    consumed_tombstone_seconds: 600
+    max_targets: 64
+    max_total_value_bytes: 1048576
 
 proxy:
   ssl: false

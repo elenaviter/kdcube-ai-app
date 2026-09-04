@@ -18,6 +18,11 @@ from urllib.parse import quote, urlparse
 
 logger = logging.getLogger("kdcube.secrets.manager")
 
+_SECRET_INVENTORY_SUFFIX = ".__keys"
+_MAX_SECRET_INVENTORY_KEYS = 1024
+_MAX_SECRET_INVENTORY_BYTES = 256 * 1024
+_MAX_SECRET_PROVIDER_KEY_CHARS = 1024
+
 
 def _first_non_empty(*values: Any) -> Optional[str]:
     for value in values:
@@ -88,6 +93,54 @@ def _get_httpx():
     return httpx
 
 
+def _secret_inventory_prefix(key: str) -> str | None:
+    text = str(key or "").strip()
+    if not text.endswith(_SECRET_INVENTORY_SUFFIX):
+        return None
+    prefix = text[: -len("__keys")]
+    return prefix if prefix else None
+
+
+def _reject_inventory_constant(_value: str) -> None:
+    raise ValueError("nonstandard inventory value")
+
+
+def _parse_secret_inventory(
+    raw: str | None,
+    *,
+    metadata_key: str,
+) -> list[str]:
+    prefix = _secret_inventory_prefix(metadata_key)
+    if prefix is None:
+        raise SecretsManagerError("Secret inventory key is invalid")
+    if raw is None:
+        return []
+    if not isinstance(raw, str) or len(raw.encode("utf-8")) > (
+        _MAX_SECRET_INVENTORY_BYTES
+    ):
+        raise SecretsManagerError("Secret inventory response is invalid")
+    try:
+        values = json.loads(raw, parse_constant=_reject_inventory_constant)
+    except (TypeError, ValueError) as exc:
+        raise SecretsManagerError("Secret inventory response is invalid") from exc
+    if not isinstance(values, list) or len(values) > _MAX_SECRET_INVENTORY_KEYS:
+        raise SecretsManagerError("Secret inventory response is invalid")
+    keys: set[str] = set()
+    for value in values:
+        if not isinstance(value, str):
+            raise SecretsManagerError("Secret inventory response is invalid")
+        item = value.strip()
+        if (
+            not item
+            or len(item) > _MAX_SECRET_PROVIDER_KEY_CHARS
+            or not item.startswith(prefix)
+            or _secret_inventory_prefix(item) is not None
+        ):
+            raise SecretsManagerError("Secret inventory response is invalid")
+        keys.add(item)
+    return sorted(keys)
+
+
 class SecretsManagerError(RuntimeError):
     pass
 
@@ -122,6 +175,22 @@ class ISecretsManager(ABC):
     async def get_secret(self, key: str) -> Optional[str]:
         raise NotImplementedError
 
+    async def get_secret_strict(self, key: str) -> Optional[str]:
+        """Read a key while distinguishing absence from provider failure.
+
+        Providers whose normal reads already raise on failure inherit this
+        default. A provider with compatibility-oriented tolerant reads must
+        override this method.
+        """
+
+        return await self.get_secret(key)
+
+    async def list_secret_keys(self, metadata_key: str) -> list[str]:
+        """Return one provider-derived inventory without exposing values."""
+
+        raw = await self.get_secret_strict(metadata_key)
+        return _parse_secret_inventory(raw, metadata_key=metadata_key)
+
     def can_write(self) -> bool:
         return False
 
@@ -149,16 +218,9 @@ class ISecretsManager(ABC):
         await self.delete_secret(build_user_secret_key(user_id=user_id, key=key, bundle_id=bundle_id))
 
     async def list_user_secret_keys(self, *, user_id: str, bundle_id: str | None = None) -> list[str]:
-        raw = await self.get_secret(build_user_secret_metadata_key(user_id=user_id, bundle_id=bundle_id))
-        if not raw:
-            return []
-        try:
-            data = json.loads(raw)
-        except Exception:
-            return []
-        if isinstance(data, list):
-            return [str(item) for item in data if str(item).strip()]
-        return []
+        return await self.list_secret_keys(
+            build_user_secret_metadata_key(user_id=user_id, bundle_id=bundle_id)
+        )
 
 
 class InMemorySecretsManager(ISecretsManager):
@@ -170,6 +232,15 @@ class InMemorySecretsManager(ISecretsManager):
 
     async def get_secret(self, key: str) -> Optional[str]:
         with self._lock:
+            prefix = _secret_inventory_prefix(key)
+            if prefix is not None:
+                keys = sorted(
+                    item
+                    for item in self._data
+                    if item.startswith(prefix)
+                    and _secret_inventory_prefix(item) is None
+                )
+                return json.dumps(keys, ensure_ascii=False) if keys else None
             return self._data.get(key)
 
     def can_write(self) -> bool:
@@ -177,10 +248,14 @@ class InMemorySecretsManager(ISecretsManager):
 
     async def set_secret(self, key: str, value: str) -> None:
         with self._lock:
+            if _secret_inventory_prefix(key) is not None:
+                return
             self._data[key] = value
 
     async def delete_secret(self, key: str) -> None:
         with self._lock:
+            if _secret_inventory_prefix(key) is not None:
+                return
             self._data.pop(key, None)
 
 
@@ -262,10 +337,12 @@ def _flatten_mapping(prefix: str, node: Any, out: dict[str, str]) -> None:
         for idx, value in enumerate(node):
             _flatten_mapping(f"{prefix}.{idx}" if prefix else str(idx), value, out)
         return
-    text = str(node).strip()
-    if not text:
+    if isinstance(node, str):
+        if node == "":
+            return
+        out[prefix] = node
         return
-    out[prefix] = text
+    out[prefix] = str(node)
 
 
 def _flatten_global_secrets_descriptor(data: Mapping[str, Any]) -> dict[str, str]:
@@ -294,19 +371,28 @@ def _flatten_bundle_secrets_descriptor(data: Mapping[str, Any]) -> dict[str, str
     return flattened
 
 
-def _bundle_secret_metadata(flattened: Mapping[str, str]) -> dict[str, str]:
-    keys_by_bundle: dict[str, list[str]] = {}
-    for key in flattened.keys():
-        parsed = _split_bundle_secret_key(key)
-        if not parsed:
+def _secret_inventory_metadata(flattened: Mapping[str, str]) -> dict[str, str]:
+    keys_by_inventory: dict[str, set[str]] = {}
+    for key in flattened:
+        if _secret_inventory_prefix(key) is not None:
             continue
-        bundle_id, tail = parsed
-        if tail == "__keys":
-            continue
-        keys_by_bundle.setdefault(bundle_id, []).append(key)
+        bundle = _split_bundle_secret_key(key)
+        if bundle is not None:
+            bundle_id, _tail = bundle
+            metadata_key = f"bundles.{bundle_id}.secrets.__keys"
+        else:
+            user = _split_user_secret_key(key)
+            if user is None:
+                continue
+            user_id, bundle_id, _tail = user
+            metadata_key = build_user_secret_metadata_key(
+                user_id=user_id,
+                bundle_id=bundle_id,
+            )
+        keys_by_inventory.setdefault(metadata_key, set()).add(key)
     return {
-        f"bundles.{bundle_id}.secrets.__keys": json.dumps(sorted(keys), ensure_ascii=False)
-        for bundle_id, keys in keys_by_bundle.items()
+        metadata_key: json.dumps(sorted(keys), ensure_ascii=False)
+        for metadata_key, keys in keys_by_inventory.items()
     }
 
 
@@ -542,17 +628,27 @@ class SecretsFileSecretsManager(ISecretsManager):
     def _load_current_data(self) -> dict[str, str]:
         merged: dict[str, str] = {}
         if self._global_uri:
-            merged.update(
-                _flatten_global_secrets_descriptor(
-                    _load_yaml_mapping_from_storage(self._global_uri, missing_ok=True)
-                )
+            global_flat = _flatten_global_secrets_descriptor(
+                _load_yaml_mapping_from_storage(self._global_uri, missing_ok=True)
             )
+            global_flat = {
+                key: value
+                for key, value in global_flat.items()
+                if _secret_inventory_prefix(key) is None
+            }
+            merged.update(global_flat)
+            merged.update(_secret_inventory_metadata(global_flat))
         if self._bundle_uri:
             bundle_flat = _flatten_bundle_secrets_descriptor(
                 _load_yaml_mapping_from_storage(self._bundle_uri, missing_ok=True)
             )
+            bundle_flat = {
+                key: value
+                for key, value in bundle_flat.items()
+                if _secret_inventory_prefix(key) is None
+            }
             merged.update(bundle_flat)
-            merged.update(_bundle_secret_metadata(bundle_flat))
+            merged.update(_secret_inventory_metadata(bundle_flat))
         return merged
 
     def _get_redis(self):
@@ -608,64 +704,6 @@ class SecretsFileSecretsManager(ISecretsManager):
     def can_write(self) -> bool:
         return True
 
-    def _set_global_secret(self, key: str, value: str) -> None:
-        if not self._global_uri:
-            raise SecretsManagerWriteError(
-                "GLOBAL_SECRETS_YAML is not configured for the secrets-file provider"
-            )
-        data = _load_yaml_mapping_from_storage(self._global_uri, missing_ok=True)
-        _set_nested_value(_global_descriptor_root(data), key, value)
-        _write_yaml_mapping_to_storage(self._global_uri, data)
-
-    def _delete_global_secret(self, key: str) -> None:
-        if not self._global_uri:
-            raise SecretsManagerWriteError(
-                "GLOBAL_SECRETS_YAML is not configured for the secrets-file provider"
-            )
-        data = _load_yaml_mapping_from_storage(self._global_uri, missing_ok=True)
-        _delete_nested_value(_global_descriptor_root(data), key)
-        _write_yaml_mapping_to_storage(self._global_uri, data)
-
-    def _set_bundle_secret(self, bundle_id: str, tail: str, value: str) -> None:
-        if tail == "__keys":
-            return
-        if not self._bundle_uri:
-            raise SecretsManagerWriteError(
-                "BUNDLE_SECRETS_YAML is not configured for the secrets-file provider"
-            )
-        data = _load_yaml_mapping_from_storage(self._bundle_uri, missing_ok=True)
-        items = _bundle_descriptor_items(data)
-        item = _find_bundle_item(items, bundle_id)
-        if item is None:
-            item = {"id": bundle_id, "secrets": {}}
-            items.append(item)
-        secrets = item.get("secrets")
-        if not isinstance(secrets, dict):
-            secrets = {}
-            item["secrets"] = secrets
-        _set_nested_value(secrets, tail, value)
-        _write_yaml_mapping_to_storage(self._bundle_uri, data)
-
-    def _delete_bundle_secret(self, bundle_id: str, tail: str) -> None:
-        if tail == "__keys":
-            return
-        if not self._bundle_uri:
-            raise SecretsManagerWriteError(
-                "BUNDLE_SECRETS_YAML is not configured for the secrets-file provider"
-            )
-        data = _load_yaml_mapping_from_storage(self._bundle_uri, missing_ok=True)
-        items = _bundle_descriptor_items(data)
-        item = _find_bundle_item(items, bundle_id)
-        if item is None:
-            return
-        secrets = item.get("secrets")
-        if not isinstance(secrets, dict):
-            return
-        _delete_nested_value(secrets, tail)
-        if not secrets:
-            item.pop("secrets", None)
-        _write_yaml_mapping_to_storage(self._bundle_uri, data)
-
     async def set_secret(self, key: str, value: str) -> None:
         await self.set_many({key: value})
 
@@ -686,6 +724,8 @@ class SecretsFileSecretsManager(ISecretsManager):
                 global_dirty = False
                 bundle_dirty = False
                 for key, value in values.items():
+                    if _secret_inventory_prefix(key) is not None:
+                        continue
                     bundle_match = _split_bundle_secret_key(key)
                     if bundle_match:
                         bundle_id, tail = bundle_match
@@ -738,6 +778,8 @@ class SecretsFileSecretsManager(ISecretsManager):
                 global_dirty = False
                 bundle_dirty = False
                 for key in key_list:
+                    if _secret_inventory_prefix(key) is not None:
+                        continue
                     bundle_match = _split_bundle_secret_key(key)
                     if bundle_match:
                         bundle_id, tail = bundle_match
@@ -817,8 +859,10 @@ class SecretsServiceSecretsManager(ISecretsManager):
                 f"secrets-service {operation} returned an invalid generation"
             )
 
-    async def get_secret(self, key: str) -> Optional[str]:
+    async def _read_secret(self, key: str, *, strict: bool) -> Optional[str]:
         if not self._url:
+            if strict:
+                raise SecretsManagerError("Secrets service is not configured")
             return None
         httpx = _get_httpx()
         headers: dict[str, str] = {}
@@ -828,23 +872,52 @@ class SecretsServiceSecretsManager(ISecretsManager):
             async with httpx.AsyncClient(timeout=self._read_timeout) as client:
                 response = await client.get(self._key_url(key), headers=headers)
             if response.status_code == 200:
-                payload = response.json() or {}
+                try:
+                    payload = response.json()
+                except Exception:
+                    if strict:
+                        raise SecretsManagerError(
+                            "Secrets service returned an invalid read response"
+                        ) from None
+                    return None
+                if not isinstance(payload, dict) or "value" not in payload:
+                    if strict:
+                        raise SecretsManagerError(
+                            "Secrets service returned an invalid read response"
+                        )
+                    return None
                 value = payload.get("value")
                 return str(value) if value is not None else None
-            if response.status_code in {403, 404}:
+            if response.status_code == 404:
+                return None
+            if response.status_code == 403 and not strict:
                 return None
             if response.status_code == 503:
                 logger.warning("Secrets service GET unavailable")
             else:
                 logger.warning("Secrets service GET failed with status %s", response.status_code)
+            if strict:
+                raise SecretsManagerError("Secrets service read failed")
+        except SecretsManagerError:
+            raise
         except Exception as exc:
             logger.debug("Secrets service GET failed: %s", type(exc).__name__)
+            if strict:
+                raise SecretsManagerError("Secrets service read request failed") from None
         return None
+
+    async def get_secret(self, key: str) -> Optional[str]:
+        return await self._read_secret(key, strict=False)
+
+    async def get_secret_strict(self, key: str) -> Optional[str]:
+        return await self._read_secret(key, strict=True)
 
     def can_write(self) -> bool:
         return bool(self._url and self._admin_token)
 
     async def set_secret(self, key: str, value: str) -> None:
+        if _secret_inventory_prefix(key) is not None:
+            return
         if not self.can_write():
             raise SecretsManagerWriteError("secrets-service provider is not configured for writes")
         httpx = _get_httpx()
@@ -860,6 +933,8 @@ class SecretsServiceSecretsManager(ISecretsManager):
         self._validate_write_response(response, operation="set")
 
     async def delete_secret(self, key: str) -> None:
+        if _secret_inventory_prefix(key) is not None:
+            return
         if not self.can_write():
             raise SecretsManagerWriteError("secrets-service provider is not configured for writes")
         httpx = _get_httpx()
@@ -1000,33 +1075,69 @@ class AwsSecretsManagerSecretsManager(ISecretsManager):
         except Exception:
             logger.debug("Failed to release distributed aws-sm write lock", exc_info=True)
 
-    async def _get_secret_string_by_id(self, secret_id: str, *, log_key: str) -> str | None:
+    async def _get_secret_string_by_id(
+        self,
+        secret_id: str,
+        *,
+        strict: bool,
+    ) -> str | None:
         try:
             async with self._client_cm() as client:
                 response = await client.get_secret_value(SecretId=secret_id)
         except Exception as exc:
             if self._error_code(exc) == "ResourceNotFoundException":
                 return None
-            logger.warning("AWS Secrets Manager GET %s failed", log_key, exc_info=True)
+            logger.warning(
+                "AWS Secrets Manager GET failed (%s)",
+                type(exc).__name__,
+            )
+            if strict:
+                raise SecretsManagerError("AWS Secrets Manager read failed") from None
             return None
         if "SecretString" in response:
             value = response.get("SecretString")
             return str(value) if value is not None else None
         binary = response.get("SecretBinary")
         if binary is None:
+            if strict:
+                raise SecretsManagerError(
+                    "AWS Secrets Manager returned an invalid secret value"
+                )
             return None
-        if isinstance(binary, (bytes, bytearray)):
-            return bytes(binary).decode("utf-8")
-        return str(binary)
+        try:
+            if isinstance(binary, (bytes, bytearray)):
+                return bytes(binary).decode("utf-8")
+            return str(binary)
+        except Exception:
+            if strict:
+                raise SecretsManagerError(
+                    "AWS Secrets Manager returned an invalid secret value"
+                ) from None
+            return None
 
-    async def _get_secret_mapping_by_id(self, secret_id: str, *, log_key: str) -> dict[str, Any] | None:
-        raw = await self._get_secret_string_by_id(secret_id, log_key=log_key)
-        return _parse_secret_mapping_payload(raw)
+    async def _get_secret_mapping_by_id(
+        self,
+        secret_id: str,
+        *,
+        strict: bool,
+    ) -> dict[str, Any] | None:
+        raw = await self._get_secret_string_by_id(secret_id, strict=strict)
+        payload = _parse_secret_mapping_payload(raw)
+        if strict and raw is not None and payload is None:
+            raise SecretsManagerError(
+                "AWS Secrets Manager returned an invalid secret document"
+            )
+        return payload
 
-    async def _bundle_mapping_from_aggregate(self, bundle_id: str) -> dict[str, Any] | None:
+    async def _bundle_mapping_from_aggregate(
+        self,
+        bundle_id: str,
+        *,
+        strict: bool,
+    ) -> dict[str, Any] | None:
         payload = await self._get_secret_mapping_by_id(
             self._aggregate_bundle_secret_id(),
-            log_key=f"bundles.{bundle_id}.secrets",
+            strict=strict,
         )
         if not isinstance(payload, dict):
             return None
@@ -1064,19 +1175,36 @@ class AwsSecretsManagerSecretsManager(ISecretsManager):
         keys = [
             f"{prefix}.{tail}" if prefix else tail
             for tail in sorted(flattened.keys())
-            if tail != "__keys"
+            if _secret_inventory_prefix(
+                f"{prefix}.{tail}" if prefix else tail
+            )
+            is None
         ]
         return json.dumps(keys, ensure_ascii=False) if keys else None
 
-    async def _load_grouped_payload_for_key(self, key: str) -> dict[str, Any] | None:
+    async def _load_grouped_payload_for_key(
+        self,
+        key: str,
+        *,
+        strict: bool,
+    ) -> dict[str, Any] | None:
         bundle_match = _split_bundle_secret_key(key)
         if bundle_match:
             bundle_id, _tail = bundle_match
-            payload = await self._get_secret_mapping_by_id(self._secret_id(key), log_key=key)
+            payload = await self._get_secret_mapping_by_id(
+                self._secret_id(key),
+                strict=strict,
+            )
             if isinstance(payload, dict):
                 return payload
-            return await self._bundle_mapping_from_aggregate(bundle_id)
-        payload = await self._get_secret_mapping_by_id(self._secret_id(key), log_key=key)
+            return await self._bundle_mapping_from_aggregate(
+                bundle_id,
+                strict=strict,
+            )
+        payload = await self._get_secret_mapping_by_id(
+            self._secret_id(key),
+            strict=strict,
+        )
         return payload if isinstance(payload, dict) else None
 
     async def _put_secret_string_by_id(self, secret_id: str, value: str, *, key: str) -> None:
@@ -1107,14 +1235,16 @@ class AwsSecretsManagerSecretsManager(ISecretsManager):
                 return
             raise SecretsManagerWriteError(f"aws-sm delete failed for {key}") from exc
 
-    async def get_secret(self, key: str) -> Optional[str]:
-        payload = await self._load_grouped_payload_for_key(key)
+    async def _read_secret(self, key: str, *, strict: bool) -> Optional[str]:
         if key.endswith(".__keys"):
-            if isinstance(payload, dict):
-                metadata = self._virtual_metadata_value(key, payload)
-                if metadata:
-                    return metadata
-            return await self._get_secret_string_by_id(self._legacy_secret_id(key), log_key=key)
+            try:
+                keys = await self.list_secret_keys(key)
+            except SecretsManagerError:
+                if strict:
+                    raise
+                return None
+            return json.dumps(keys, ensure_ascii=False) if keys else None
+        payload = await self._load_grouped_payload_for_key(key, strict=strict)
         if isinstance(payload, dict):
             bundle_match = _split_bundle_secret_key(key)
             if bundle_match:
@@ -1128,7 +1258,49 @@ class AwsSecretsManagerSecretsManager(ISecretsManager):
             value = _resolve_nested_value(payload, tail)
             if value is not None:
                 return str(value)
-        return await self._get_secret_string_by_id(self._legacy_secret_id(key), log_key=key)
+        return await self._get_secret_string_by_id(
+            self._legacy_secret_id(key),
+            strict=strict,
+        )
+
+    async def get_secret(self, key: str) -> Optional[str]:
+        return await self._read_secret(key, strict=False)
+
+    async def get_secret_strict(self, key: str) -> Optional[str]:
+        return await self._read_secret(key, strict=True)
+
+    async def list_secret_keys(self, metadata_key: str) -> list[str]:
+        prefix = _secret_inventory_prefix(metadata_key)
+        if prefix is None:
+            raise SecretsManagerError("Secret inventory key is invalid")
+        payload = await self._load_grouped_payload_for_key(
+            metadata_key,
+            strict=True,
+        )
+        derived = _parse_secret_inventory(
+            self._virtual_metadata_value(metadata_key, payload)
+            if isinstance(payload, dict)
+            else None,
+            metadata_key=metadata_key,
+        )
+        legacy = _parse_secret_inventory(
+            await self._get_secret_string_by_id(
+                self._legacy_secret_id(metadata_key),
+                strict=True,
+            ),
+            metadata_key=metadata_key,
+        )
+        live = set(derived)
+        for candidate in legacy:
+            if candidate in live:
+                continue
+            if await self._read_secret(candidate, strict=True) is not None:
+                live.add(candidate)
+                if len(live) > _MAX_SECRET_INVENTORY_KEYS:
+                    raise SecretsManagerError(
+                        "Secret inventory response is invalid"
+                    )
+        return sorted(live)
 
     def can_write(self) -> bool:
         return True
@@ -1165,7 +1337,10 @@ class AwsSecretsManagerSecretsManager(ISecretsManager):
                 redis, token = await self._acquire_distributed_lock(secret_id)
                 try:
                     first_key = next(iter(doc_values.keys()))
-                    payload = await self._load_grouped_payload_for_key(first_key) or {}
+                    payload = await self._load_grouped_payload_for_key(
+                        first_key,
+                        strict=True,
+                    ) or {}
                     for key, value in doc_values.items():
                         _set_nested_value(payload, self._tail_for_key(key), value)
                     await self._put_secret_string_by_id(
@@ -1186,7 +1361,10 @@ class AwsSecretsManagerSecretsManager(ISecretsManager):
             async with self._write_lock:
                 redis, token = await self._acquire_distributed_lock(secret_id)
                 try:
-                    payload = await self._load_grouped_payload_for_key(doc_keys[0]) or {}
+                    payload = await self._load_grouped_payload_for_key(
+                        doc_keys[0],
+                        strict=True,
+                    ) or {}
                     for key in doc_keys:
                         _delete_nested_value(payload, self._tail_for_key(key))
                     if payload:

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Host vault first-phase proofs (the handoff's required-test list).
+"""Host-vault protocol, identity, durability, and secret-boundary proofs.
 
 Every identity here is FAKE test material minted in memory by the same X.509
 code the host CA uses; no real secret value, key, or deployment identity is
@@ -7,15 +7,32 @@ read or written. The root-key provider is the labeled in-memory fake."""
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Any
 
 import pytest
-
-from kdcube_ai_app.infra.secrets.host_vault import audit, broker, identity, keys, protocol, service, storage, transport
-from kdcube_ai_app.infra.secrets.host_vault.protocol import ErrorCode, Operation, SecretNamespace, SecretReference, VaultError, VaultRequest
+from kdcube_ai_app.infra.secrets.host_vault import (
+    audit,
+    broker,
+    identity,
+    keys,
+    protocol,
+    service,
+    storage,
+    transport,
+)
+from kdcube_ai_app.infra.secrets.host_vault.protocol import (
+    ErrorCode,
+    Operation,
+    SecretNamespace,
+    SecretReference,
+    VaultError,
+    VaultRequest,
+)
 
 NS = SecretNamespace("demo-tenant", "demo-project", "connection-hub@1-0")
 OTHER_APP = SecretNamespace("demo-tenant", "demo-project", "other-app@1-0")
@@ -74,6 +91,86 @@ def test_namespace_authorization_is_exact(rig: Rig):
     cert2, _ = rig.registry.enroll(ticket_id=ticket.ticket_id, csr_pem=key2.csr())
     assert rig.call(rig.request(Operation.GET, OTHER_APP), cert=cert2).code is ErrorCode.NOT_FOUND
     assert rig.call(rig.request(Operation.GET, OTHER_TENANT), cert=cert2).code is ErrorCode.FORBIDDEN
+
+
+def test_inventory_lists_only_live_names_in_the_exact_prefix(rig: Rig):
+    prefix = "users.u1.bundles.b1.secrets."
+    first = f"{prefix}token"
+    second = f"{prefix}refresh_token"
+    outside = "users.u1.bundles.other.secrets.token"
+    selector = f"{prefix}__keys"
+
+    assert rig.call(rig.request(Operation.SET, key=first, value=CANARY)).ok
+    assert rig.call(rig.request(Operation.SET, key=second, value="second")).ok
+    assert rig.call(rig.request(Operation.SET, key=outside, value="outside")).ok
+
+    listed = rig.call(rig.request(Operation.LIST, key=selector))
+    assert listed.ok and listed.extra["names"] == sorted([first, second])
+    assert rig.call(rig.request(Operation.LIST, OTHER_TENANT, selector)).code is (
+        ErrorCode.FORBIDDEN
+    )
+
+    assert rig.call(rig.request(Operation.DELETE, key=second)).ok
+    assert rig.call(rig.request(Operation.LIST, key=selector)).extra["names"] == [
+        first
+    ]
+
+    serialized_records = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (rig.root / "store").rglob("*.json")
+    )
+    assert first not in serialized_records
+    assert second not in serialized_records
+    assert CANARY not in serialized_records
+
+
+def test_reference_accepts_longest_management_bundle_provider_key() -> None:
+    bundle_id = "b" * 256
+    secret_key = "k" * 512
+    provider_key = f"bundles.{bundle_id}.secrets.{secret_key}"
+
+    reference = SecretReference(NS, provider_key)
+
+    assert reference.name == provider_key
+    assert len(provider_key) < protocol.MAX_NAME_CHARS
+
+
+def test_legacy_record_without_encrypted_name_remains_readable(rig: Rig):
+    prefix = "users.u1.bundles.b1.secrets."
+    key = f"{prefix}legacy"
+    selector = f"{prefix}__keys"
+    assert rig.call(rig.request(Operation.SET, key=key, value=CANARY)).ok
+
+    path = next((rig.root / "store").rglob("*.json"))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload.pop("sealed_name")
+    payload.pop("integrity")
+    payload["integrity"] = storage.FileDurableSecretStore._digest(payload)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert rig.call(rig.request(Operation.GET, key=key)).value == CANARY
+    assert rig.call(rig.request(Operation.LIST, key=selector)).extra["names"] == []
+
+
+def test_broker_validates_inventory_response(rig: Rig):
+    prefix = "users.u1.bundles.b1.secrets."
+    key = f"{prefix}token"
+    selector = f"{prefix}__keys"
+    transport_ = _Direct(rig)
+    target = broker.SecretsBroker(
+        transport=transport_,
+        tenant="demo-tenant",
+        project="demo-project",
+    )
+
+    assert target.set(application="connection-hub@1-0", key=key, value=CANARY).ok
+    listed = target.list_names(
+        application="connection-hub@1-0",
+        metadata_key=selector,
+    )
+
+    assert listed.ok
+    assert listed.names == (key,)
 
 
 # 2. certificate identity and live ACL ─────────────────────────────────────
@@ -164,6 +261,59 @@ def test_replayed_mutation_returns_the_original_result_without_a_second_commit(r
     assert rig.call(stale).code is ErrorCode.REPLAY_REJECTED
 
 
+def test_concurrent_replay_cannot_enter_the_store_twice(
+    rig: Rig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = rig.request(Operation.SET, value=CANARY)
+    original_put = rig.store.put
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    count_lock = threading.Lock()
+    calls = 0
+
+    def delayed_put(*args, **kwargs):
+        nonlocal calls
+        with count_lock:
+            calls += 1
+            call_number = calls
+        if call_number == 1:
+            first_entered.set()
+            assert release_first.wait(timeout=5)
+        return original_put(*args, **kwargs)
+
+    monkeypatch.setattr(rig.store, "put", delayed_put)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(rig.call, request)
+        assert first_entered.wait(timeout=5)
+        second = executor.submit(rig.call, request)
+        try:
+            time.sleep(0.05)
+            assert not second.done()
+        finally:
+            release_first.set()
+        first_result = first.result(timeout=5)
+        second_result = second.result(timeout=5)
+
+    assert calls == 1
+    assert first_result.generation == second_result.generation == 1
+
+
+def test_replay_receipt_is_explicitly_process_lifetime(rig: Rig) -> None:
+    request = rig.request(Operation.SET, value=CANARY)
+    assert rig.call(request).generation == 1
+
+    restarted = service.HostVaultService(
+        store=rig.store,
+        registry=rig.registry,
+        audit=rig.audit,
+    )
+    repeated = restarted.handle(request.to_wire(), peer_cert_pem=rig.cert)
+
+    assert repeated.ok
+    assert repeated.generation == 2
+
+
 # 5. atomic set / replace / delete and generation conflicts ────────────────
 
 
@@ -200,6 +350,28 @@ def test_crash_before_commit_preserves_the_previous_value(rig: Rig, monkeypatch)
     assert not list(rig.root.rglob("*.candidate"))
     record, value = restarted.get(SecretReference(NS, KEY))
     assert value == b"committed" and record.generation == 1
+
+
+def test_atomic_record_writer_completes_partial_os_writes(
+    rig: Rig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_write = storage.os.write
+    calls = 0
+
+    def partial_write(fd: int, data: memoryview) -> int:
+        nonlocal calls
+        calls += 1
+        chunk_size = max(1, len(data) // 2)
+        return original_write(fd, data[:chunk_size])
+
+    monkeypatch.setattr(storage.os, "write", partial_write)
+
+    response = rig.call(rig.request(Operation.SET, value=CANARY))
+
+    assert response.ok
+    assert calls > 1
+    assert rig.call(rig.request(Operation.GET)).value == CANARY
 
 
 # 7. restart preserves committed values and deletions ─────────────────────
@@ -336,12 +508,29 @@ def test_root_key_rotation_rewraps_without_touching_values(rig: Rig):
     assert rig.store.rewrap_all() == 1
     after = json.loads(_record_path(rig).read_text())
     assert after["sealed"]["root_key_id"] == new_key_id
+    assert after["sealed_name"]["root_key_id"] == new_key_id
     assert after["sealed"]["ciphertext"] == before["sealed"]["ciphertext"]  # value bytes untouched
     assert after["sealed"]["wrapped_data_key"] != before["sealed"]["wrapped_data_key"]
     assert rig.call(rig.request(Operation.GET)).value == CANARY
     rig.call(rig.request(Operation.SET, ns=NS, key="fresh", value="new"))
     fresh_payload = [json.loads(p.read_text()) for p in (rig.root / "store").rglob("*.json")]
     assert all(row["sealed"]["root_key_id"] == new_key_id for row in fresh_payload if not row["deleted"])
+
+
+def test_root_key_rotation_skips_records_that_fail_normal_integrity_decode(
+    rig: Rig,
+) -> None:
+    rig.call(rig.request(Operation.SET, value=CANARY))
+    path = _record_path(rig)
+    payload = json.loads(path.read_text())
+    payload["generation"] = 99
+    path.write_text(json.dumps(payload))
+    before = path.read_bytes()
+    rig.keys.rotate()
+
+    assert rig.store.rewrap_all() == 0
+    assert path.read_bytes() == before
+    assert rig.call(rig.request(Operation.GET)).code is ErrorCode.CORRUPT_RECORD
 
 
 def test_file_root_key_provider_refuses_readable_keys(tmp_path: Path):
@@ -387,6 +576,24 @@ def test_mtls_round_trip_and_identity_file_modes(rig: Rig, served):
     assert b.get(application="connection-hub@1-0", key=KEY) == CANARY
 
 
+def test_transport_rejects_non_json_request_content_type(rig: Rig, served):
+    connection = _client(rig, served)._connect()
+    try:
+        connection.request(
+            "POST",
+            transport.VAULT_PATH,
+            body=json.dumps(rig.request(Operation.HEALTH).to_wire()),
+            headers={"Content-Type": "text/plain"},
+        )
+        response = connection.getresponse()
+        payload = json.loads(response.read())
+    finally:
+        connection.close()
+
+    assert response.status == 400
+    assert payload["code"] == ErrorCode.INVALID_REQUEST.value
+
+
 def test_bearer_without_client_certificate_is_not_workload_proof(rig: Rig, served):
     import http.client
     import ssl
@@ -396,7 +603,7 @@ def test_bearer_without_client_certificate_is_not_workload_proof(rig: Rig, serve
     ctx.check_hostname = False
     connection = http.client.HTTPSConnection(host, port, context=ctx, timeout=5)
     body = json.dumps({**rig.request(Operation.GET).to_wire(), "deployment_id": "dep-1", "bearer": "kst1.copied"})
-    with pytest.raises(Exception):  # the handshake itself refuses: no client certificate
+    with pytest.raises((OSError, http.client.HTTPException)):
         connection.request("POST", transport.VAULT_PATH, body=body, headers={
             "Authorization": "Bearer kst1.copied", "X-KDCUBE-ADMIN-TOKEN": "copied",
         })
@@ -439,6 +646,133 @@ def test_reference_grammar_rejects_arbitrary_paths():
     assert SecretReference.derive(namespace=NS, internal_key="users.u1.secrets.token") == ref
 
 
+def test_direct_reference_construction_normalizes_canonical_text() -> None:
+    namespace = SecretNamespace(" demo-tenant ", " demo-project ", " app@1-0 ")
+    reference = SecretReference(namespace, " services.provider.token ")
+
+    assert namespace.path == "demo-tenant/demo-project/app@1-0"
+    assert reference.name == "services.provider.token"
+    assert reference.wire == (
+        "kdv1:demo-tenant/demo-project/app@1-0/services.provider.token"
+    )
+
+
 def test_values_are_bounded(rig: Rig):
     too_big = "x" * (protocol.MAX_VALUE_BYTES + 1)
     assert rig.call(rig.request(Operation.SET, value=too_big)).code is ErrorCode.TOO_LARGE
+
+
+def test_list_requires_an_exact_inventory_selector(rig: Rig):
+    response = rig.call(rig.request(Operation.LIST, key=KEY))
+
+    assert response.ok is False
+    assert response.code is ErrorCode.INVALID_REQUEST
+    assert response.extra == {}
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"unknown": "ignored-before"},
+        {"request_id": 12345678},
+        {"issued_at": True},
+        {"issued_at": float("inf")},
+        {"expected_generation": True},
+        {"expected_generation": -1},
+    ],
+)
+def test_mutation_request_rejects_ambiguous_wire_fields(changes: dict[str, Any]):
+    body = VaultRequest.new(
+        Operation.SET,
+        SecretReference(NS, KEY),
+        value=CANARY,
+    ).to_wire()
+    body.update(changes)
+
+    with pytest.raises(VaultError) as captured:
+        VaultRequest.from_wire(body, deployment_id="dep-1")
+
+    assert captured.value.code is ErrorCode.INVALID_REQUEST
+
+
+@pytest.mark.parametrize(
+    "operation,changes",
+    [
+        (Operation.HEALTH, {"reference": SecretReference(NS, KEY).wire}),
+        (Operation.GET, {"value": CANARY}),
+        (Operation.GET, {"expected_generation": 0}),
+        (Operation.DELETE, {"value": CANARY}),
+        (Operation.LIST, {"expected_generation": 0}),
+    ],
+)
+def test_read_request_rejects_operation_inapplicable_fields(
+    operation: Operation,
+    changes: dict[str, Any],
+):
+    reference = None
+    if operation is not Operation.HEALTH:
+        key = "users.u1.bundles.b1.secrets.__keys" if operation is Operation.LIST else KEY
+        reference = SecretReference(NS, key)
+    body = VaultRequest.new(operation, reference).to_wire()
+    body.update(changes)
+
+    with pytest.raises(VaultError) as captured:
+        VaultRequest.from_wire(body, deployment_id="dep-1")
+
+    assert captured.value.code is ErrorCode.INVALID_REQUEST
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"ok": "true"},
+        {"ok": True, "code": "forbidden"},
+        {"generation": True},
+        {"names": "not-a-list"},
+        {"deployment_id": "not/a/segment"},
+        {"unknown": "ignored-before"},
+    ],
+)
+def test_response_rejects_ambiguous_wire_fields(changes: dict[str, Any]):
+    response = protocol.VaultResponse.success(
+        VaultRequest.new(Operation.HEALTH),
+    ).to_wire()
+    response.update(changes)
+
+    with pytest.raises(VaultError) as captured:
+        protocol.VaultResponse.from_wire(response)
+
+    assert captured.value.code is ErrorCode.INTERNAL
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        ["services.valid.token", "services.valid.token"],
+        ["services.valid.token", "services.before.token"],
+        ["services...token"],
+        ["services.__keys"],
+    ],
+)
+def test_response_rejects_noncanonical_inventory_names(names: list[str]) -> None:
+    response = protocol.VaultResponse.success(
+        VaultRequest.new(Operation.LIST, SecretReference(NS, "services.__keys")),
+        names=names,
+    )
+
+    with pytest.raises(VaultError) as captured:
+        response.to_wire()
+
+    assert captured.value.code is ErrorCode.INTERNAL
+
+
+def test_response_extra_cannot_override_protocol_fields() -> None:
+    response = protocol.VaultResponse.success(
+        VaultRequest.new(Operation.HEALTH),
+        protocol="attacker-controlled",
+    )
+
+    with pytest.raises(VaultError) as captured:
+        response.to_wire()
+
+    assert captured.value.code is ErrorCode.INTERNAL

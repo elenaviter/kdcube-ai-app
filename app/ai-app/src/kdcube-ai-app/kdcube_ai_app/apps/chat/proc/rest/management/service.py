@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import copy
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping, Protocol
+from typing import Any, Protocol
 
 from kdcube_ai_app.apps.chat.proc.rest.management.admission import (
     AdmissionDecision,
@@ -28,6 +29,19 @@ from kdcube_ai_app.apps.chat.proc.rest.management.effect_ledger import (
     ACTION_REPLAY,
     ACTION_UNKNOWN,
     EffectLedger,
+)
+from kdcube_ai_app.apps.chat.proc.rest.management.secret_contracts import (
+    SECRET_DELETE_OPERATION,
+    SECRET_METADATA_OPERATION,
+    SECRET_OPERATIONS,
+    SECRET_READ_OPERATION,
+    SECRET_WRITE_OPERATION,
+    SecretTarget,
+)
+from kdcube_ai_app.apps.chat.proc.rest.management.secret_runtime import (
+    ManagementSecretNotFound,
+    ManagementSecretsProviderReadOnly,
+    ManagementSecretsProviderUnavailable,
 )
 
 LOGGER = logging.getLogger("ChatProc.DelegatedManagement")
@@ -63,6 +77,27 @@ class ManagementRuntime(Protocol):
 
     async def reload_application(
         self, application_id: str, *, caller_profile: str
+    ) -> Mapping[str, Any]: ...
+
+
+class SecretRuntime(Protocol):
+    async def metadata(self, target: SecretTarget) -> Mapping[str, Any]: ...
+
+    async def read(self, target: SecretTarget) -> Mapping[str, Any]: ...
+
+    async def write(
+        self,
+        target: SecretTarget,
+        *,
+        value: str,
+        caller_profile: str,
+    ) -> Mapping[str, Any]: ...
+
+    async def delete(
+        self,
+        target: SecretTarget,
+        *,
+        caller_profile: str,
     ) -> Mapping[str, Any]: ...
 
 
@@ -144,6 +179,8 @@ class DelegatedManagementService:
         admission: AdmissionEvaluator,
         ledger: EffectLedger,
         runtime: ManagementRuntime,
+        secret_runtime: SecretRuntime | None = None,
+        request_digest_secret: str = "",
     ) -> None:
         self._tenant = tenant
         self._project = project
@@ -152,6 +189,8 @@ class DelegatedManagementService:
         self._admission = admission
         self._ledger = ledger
         self._runtime = runtime
+        self._secret_runtime = secret_runtime
+        self._request_digest_secret = str(request_digest_secret or "")
 
     def _error(
         self,
@@ -163,12 +202,13 @@ class DelegatedManagementService:
         status_code: int,
         retryable: bool = False,
         recovery: Mapping[str, Any] | None = None,
+        resource: str = "",
     ) -> ManagementResponse:
         return ManagementResponse(
             status_code,
             management_error(
                 operation=operation,
-                resource=self._resource,
+                resource=resource or self._resource,
                 tenant=self._tenant,
                 project=self._project,
                 invocation_id=invocation_id,
@@ -187,24 +227,44 @@ class DelegatedManagementService:
         invocation_id: str,
         application_id: str = "",
         body: Mapping[str, Any] | None = None,
+        resource: str = "",
+        approval_context: Mapping[str, str] | None = None,
+        secret_target: SecretTarget | None = None,
     ) -> ManagementResponse:
-        request_digest = management_request_digest(
-            resource=self._resource,
-            operation=operation,
-            application_id=application_id,
-            body=body,
-        )
-        approval_context = (
-            {"application_id": application_id} if application_id else {}
-        )
+        effective_resource = str(resource or self._resource).strip()
+        try:
+            request_digest = management_request_digest(
+                resource=effective_resource,
+                operation=operation,
+                application_id=application_id,
+                body=body,
+                secret=(
+                    self._request_digest_secret
+                    if operation in SECRET_OPERATIONS
+                    else ""
+                ),
+            )
+        except ValueError:
+            return self._error(
+                operation=operation,
+                invocation_id=invocation_id,
+                code="management_request_digest_unavailable",
+                message="Secure management request binding is unavailable.",
+                status_code=503,
+                retryable=True,
+                resource=effective_resource,
+            )
+        safe_approval_context = dict(approval_context or {})
+        if application_id:
+            safe_approval_context.setdefault("application_id", application_id)
         try:
             decision = await self._admission.evaluate(
                 delegated_bearer=delegated_bearer,
-                resource=self._resource,
+                resource=effective_resource,
                 operation=operation,
                 invocation_id=invocation_id,
                 request_digest=request_digest,
-                approval_context=approval_context,
+                approval_context=safe_approval_context,
             )
         except AdmissionUnavailable:
             return self._error(
@@ -214,6 +274,7 @@ class DelegatedManagementService:
                 message="Connection Hub admission is unavailable.",
                 status_code=503,
                 retryable=True,
+                resource=effective_resource,
             )
         except Exception:
             LOGGER.exception(
@@ -230,6 +291,7 @@ class DelegatedManagementService:
                 message="Connection Hub admission is unavailable.",
                 status_code=503,
                 retryable=True,
+                resource=effective_resource,
             )
 
         if not decision.allowed:
@@ -260,6 +322,7 @@ class DelegatedManagementService:
                 status_code=status_code,
                 retryable=retryable,
                 recovery=_admission_recovery(decision.payload),
+                resource=effective_resource,
             )
 
         authority = _authority_evidence(decision.payload)
@@ -280,12 +343,13 @@ class DelegatedManagementService:
                 message="Connection Hub returned incomplete caller authority.",
                 status_code=503,
                 retryable=True,
+                resource=effective_resource,
             )
         audit = {
             **authority,
             "tenant": self._tenant,
             "project": self._project,
-            "resource": self._resource,
+            "resource": effective_resource,
             "operation": operation,
             "application_id": application_id,
             "invocation_id": invocation_id,
@@ -295,7 +359,7 @@ class DelegatedManagementService:
         try:
             reservation = await self._ledger.reserve(
                 access_id=access_id,
-                resource=self._resource,
+                resource=effective_resource,
                 operation=operation,
                 invocation_id=invocation_id,
                 request_digest=request_digest,
@@ -316,11 +380,24 @@ class DelegatedManagementService:
                 message="Management effect tracking is unavailable.",
                 status_code=503,
                 retryable=True,
+                resource=effective_resource,
             )
 
         if reservation.action == ACTION_REPLAY:
             record = _mapping(reservation.record)
             stored = _mapping(record.get("response"))
+            if operation == SECRET_READ_OPERATION and stored.get("ok") is True:
+                return self._error(
+                    operation=operation,
+                    invocation_id=invocation_id,
+                    code="secret_value_result_not_replayable",
+                    message=(
+                        "The secret value was already disclosed for this "
+                        "Idempotency-Key and is not retained for replay."
+                    ),
+                    status_code=409,
+                    resource=effective_resource,
+                )
             replayed = copy.deepcopy(dict(stored))
             invocation = replayed.get("invocation")
             if isinstance(invocation, Mapping):
@@ -333,6 +410,7 @@ class DelegatedManagementService:
                 code="invocation_id_conflict",
                 message="This Idempotency-Key belongs to a different request.",
                 status_code=409,
+                resource=effective_resource,
             )
         if reservation.action == ACTION_PENDING:
             return self._error(
@@ -342,6 +420,7 @@ class DelegatedManagementService:
                 message="The accepted management operation is still in progress.",
                 status_code=409,
                 retryable=True,
+                resource=effective_resource,
             )
         if reservation.action == ACTION_UNKNOWN:
             return self._error(
@@ -350,6 +429,7 @@ class DelegatedManagementService:
                 code="effect_outcome_unknown",
                 message="The accepted management operation has no recorded outcome.",
                 status_code=409,
+                resource=effective_resource,
             )
 
         try:
@@ -362,6 +442,37 @@ class DelegatedManagementService:
                     application_id,
                     caller_profile=caller_profile,
                 )
+            elif operation == SECRET_METADATA_OPERATION:
+                if self._secret_runtime is None or secret_target is None:
+                    raise ManagementSecretsProviderUnavailable(
+                        "Delegated secret management is unavailable"
+                    )
+                result = await self._secret_runtime.metadata(secret_target)
+            elif operation == SECRET_READ_OPERATION:
+                if self._secret_runtime is None or secret_target is None:
+                    raise ManagementSecretsProviderUnavailable(
+                        "Delegated secret management is unavailable"
+                    )
+                result = await self._secret_runtime.read(secret_target)
+            elif operation == SECRET_WRITE_OPERATION:
+                if self._secret_runtime is None or secret_target is None:
+                    raise ManagementSecretsProviderUnavailable(
+                        "Delegated secret management is unavailable"
+                    )
+                result = await self._secret_runtime.write(
+                    secret_target,
+                    value=str(_mapping(body).get("value", "")),
+                    caller_profile=caller_profile,
+                )
+            elif operation == SECRET_DELETE_OPERATION:
+                if self._secret_runtime is None or secret_target is None:
+                    raise ManagementSecretsProviderUnavailable(
+                        "Delegated secret management is unavailable"
+                    )
+                result = await self._secret_runtime.delete(
+                    secret_target,
+                    caller_profile=caller_profile,
+                )
             else:
                 raise ValueError("unsupported management operation")
         except ManagementApplicationNotFound:
@@ -371,6 +482,7 @@ class DelegatedManagementService:
                 code="application_not_found",
                 message="The exact application is not declared by this deployment.",
                 status_code=404,
+                resource=effective_resource,
             )
             await self._settle(
                 reservation=reservation,
@@ -380,6 +492,68 @@ class DelegatedManagementService:
                 request_digest=request_digest,
                 response=response,
                 failed=True,
+                resource=effective_resource,
+            )
+            return response
+        except ManagementSecretNotFound:
+            response = self._error(
+                operation=operation,
+                invocation_id=invocation_id,
+                code="secret_not_found",
+                message="The exact secret does not exist.",
+                status_code=404,
+                resource=effective_resource,
+            )
+            await self._settle(
+                reservation=reservation,
+                access_id=access_id,
+                operation=operation,
+                invocation_id=invocation_id,
+                request_digest=request_digest,
+                response=response,
+                failed=True,
+                resource=effective_resource,
+            )
+            return response
+        except ManagementSecretsProviderReadOnly:
+            response = self._error(
+                operation=operation,
+                invocation_id=invocation_id,
+                code="secrets_provider_read_only",
+                message="The configured secrets provider does not accept writes.",
+                status_code=503,
+                resource=effective_resource,
+            )
+            await self._settle(
+                reservation=reservation,
+                access_id=access_id,
+                operation=operation,
+                invocation_id=invocation_id,
+                request_digest=request_digest,
+                response=response,
+                failed=True,
+                resource=effective_resource,
+            )
+            return response
+        except ManagementSecretsProviderUnavailable:
+            response = self._error(
+                operation=operation,
+                invocation_id=invocation_id,
+                code="secrets_provider_unavailable",
+                message="The configured secrets provider is unavailable.",
+                status_code=503,
+                retryable=True,
+                resource=effective_resource,
+            )
+            await self._settle(
+                reservation=reservation,
+                access_id=access_id,
+                operation=operation,
+                invocation_id=invocation_id,
+                request_digest=request_digest,
+                response=response,
+                failed=True,
+                resource=effective_resource,
             )
             return response
         except ManagementRuntimeUnavailable:
@@ -390,6 +564,7 @@ class DelegatedManagementService:
                 message="The KDCube management runtime is unavailable.",
                 status_code=503,
                 retryable=True,
+                resource=effective_resource,
             )
             await self._settle(
                 reservation=reservation,
@@ -399,6 +574,7 @@ class DelegatedManagementService:
                 request_digest=request_digest,
                 response=response,
                 failed=True,
+                resource=effective_resource,
             )
             return response
         except Exception:
@@ -415,6 +591,7 @@ class DelegatedManagementService:
                 code="management_operation_failed",
                 message="The KDCube management operation failed.",
                 status_code=500,
+                resource=effective_resource,
             )
             await self._settle(
                 reservation=reservation,
@@ -424,6 +601,7 @@ class DelegatedManagementService:
                 request_digest=request_digest,
                 response=response,
                 failed=True,
+                resource=effective_resource,
             )
             return response
 
@@ -431,7 +609,7 @@ class DelegatedManagementService:
             200,
             management_success(
                 operation=operation,
-                resource=self._resource,
+                resource=effective_resource,
                 tenant=self._tenant,
                 project=self._project,
                 invocation_id=invocation_id,
@@ -439,13 +617,28 @@ class DelegatedManagementService:
                 result=result,
             ),
         )
+        ledger_response = response
+        if operation == SECRET_READ_OPERATION:
+            ledger_response = ManagementResponse(
+                200,
+                management_success(
+                    operation=operation,
+                    resource=effective_resource,
+                    tenant=self._tenant,
+                    project=self._project,
+                    invocation_id=invocation_id,
+                    authority=authority,
+                    result={"disclosed": True, "replayable": False},
+                ),
+            )
         settled = await self._settle(
             reservation=reservation,
             access_id=access_id,
             operation=operation,
             invocation_id=invocation_id,
             request_digest=request_digest,
-            response=response,
+            response=ledger_response,
+            resource=effective_resource,
         )
         if not settled:
             return self._error(
@@ -454,6 +647,7 @@ class DelegatedManagementService:
                 code="effect_outcome_unrecorded",
                 message="The management effect completed but its outcome was not recorded.",
                 status_code=503,
+                resource=effective_resource,
             )
         LOGGER.info(
             "delegated management completed operation=%s application=%s "
@@ -477,11 +671,12 @@ class DelegatedManagementService:
         request_digest: str,
         response: ManagementResponse,
         failed: bool = False,
+        resource: str = "",
     ) -> bool:
         try:
             await self._ledger.finish(
                 access_id=access_id,
-                resource=self._resource,
+                resource=resource or self._resource,
                 operation=operation,
                 invocation_id=invocation_id,
                 request_digest=request_digest,
@@ -508,4 +703,5 @@ __all__ = [
     "ManagementResponse",
     "ManagementRuntime",
     "ManagementRuntimeUnavailable",
+    "SecretRuntime",
 ]

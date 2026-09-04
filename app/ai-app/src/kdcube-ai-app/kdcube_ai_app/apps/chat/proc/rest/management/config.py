@@ -30,6 +30,103 @@ def _positive_float(value: Any, default: float) -> float:
     return result if result > 0 else default
 
 
+def _configured_bool(value: Any, *, name: str) -> bool:
+    if not isinstance(value, bool):
+        raise TypeError(f"secret export {name} policy is invalid")
+    return value
+
+
+def _configured_int(value: Any, *, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"secret export {name} policy is invalid")
+    return value
+
+
+@dataclass(frozen=True)
+class HumanSecretExportConfig:
+    """Descriptor-owned policy for owner-performed plaintext export."""
+
+    enabled: bool
+    required_assurance: str
+    max_evidence_age_seconds: int
+    transaction_ttl_seconds: int
+    consumed_tombstone_seconds: int
+    max_targets: int
+    max_total_value_bytes: int
+
+    @classmethod
+    def from_settings(cls, settings: Any) -> HumanSecretExportConfig:
+        plain = settings.plain
+        return cls(
+            enabled=_configured_bool(
+                plain("management.secret_export.enabled", default=False),
+                name="enabled",
+            ),
+            required_assurance=_text(
+                plain(
+                    "management.secret_export.required_assurance",
+                    default="session_confirmation",
+                )
+            ).lower(),
+            max_evidence_age_seconds=_configured_int(
+                plain(
+                    "management.secret_export.max_evidence_age_seconds",
+                    default=300,
+                ),
+                name="evidence age",
+            ),
+            transaction_ttl_seconds=_configured_int(
+                plain(
+                    "management.secret_export.transaction_ttl_seconds",
+                    default=180,
+                ),
+                name="transaction TTL",
+            ),
+            consumed_tombstone_seconds=_configured_int(
+                plain(
+                    "management.secret_export.consumed_tombstone_seconds",
+                    default=600,
+                ),
+                name="consumed tombstone",
+            ),
+            max_targets=_configured_int(
+                plain("management.secret_export.max_targets", default=64),
+                name="target count",
+            ),
+            max_total_value_bytes=_configured_int(
+                plain(
+                    "management.secret_export.max_total_value_bytes",
+                    default=1048576,
+                ),
+                name="result bytes",
+            ),
+        )
+
+    def validate(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise TypeError("secret export enabled policy is invalid")
+        if self.required_assurance not in {
+            "session_confirmation",
+            "fresh_authentication",
+            "user_verification",
+        }:
+            raise ValueError("secret export assurance policy is invalid")
+        limits = (
+            ("evidence age", self.max_evidence_age_seconds, 900),
+            ("transaction TTL", self.transaction_ttl_seconds, 900),
+            ("consumed tombstone", self.consumed_tombstone_seconds, 86400),
+            ("target count", self.max_targets, 256),
+            ("result bytes", self.max_total_value_bytes, 8 * 1024 * 1024),
+        )
+        for name, value, maximum in limits:
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or not 1 <= value <= maximum
+            ):
+                raise ValueError(f"secret export {name} policy is invalid")
+
+
 @dataclass(frozen=True)
 class DelegatedManagementConfig:
     enabled: bool
@@ -43,7 +140,7 @@ class DelegatedManagementConfig:
     effect_pending_seconds: float = 120.0
 
     @classmethod
-    def from_settings(cls, settings: Any) -> "DelegatedManagementConfig":
+    def from_settings(cls, settings: Any) -> DelegatedManagementConfig:
         plain = settings.plain
         return cls(
             enabled=_bool(plain("management.delegated.enabled", default=False)),
@@ -112,4 +209,4 @@ class DelegatedManagementConfig:
             raise ValueError("Connection Hub protected-service identity is required")
 
 
-__all__ = ["DelegatedManagementConfig"]
+__all__ = ["DelegatedManagementConfig", "HumanSecretExportConfig"]

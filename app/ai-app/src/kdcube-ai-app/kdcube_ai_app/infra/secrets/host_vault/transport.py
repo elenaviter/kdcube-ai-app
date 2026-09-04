@@ -17,19 +17,49 @@ certificate, and the service still consults the live trust registry for it.
 from __future__ import annotations
 
 import json
+import socket
 import ssl
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
-import socket
 from http.client import HTTPSConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from kdcube_ai_app.infra.secrets.host_vault.protocol import ErrorCode, VaultError, VaultRequest, VaultResponse
+from kdcube_ai_app.infra.secrets.host_vault.protocol import (
+    ErrorCode,
+    VaultError,
+    VaultRequest,
+    VaultResponse,
+)
 
 VAULT_PATH = "/v1/vault"
 MAX_BODY_BYTES = 256 * 1024
+
+
+def _reject_json_constant(_value: str) -> None:
+    raise ValueError("non-standard JSON constant")
+
+
+def _object_without_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def _decode_json_object(raw: bytes) -> dict[str, Any]:
+    value = json.loads(
+        raw.decode("utf-8"),
+        object_pairs_hook=_object_without_duplicate_keys,
+        parse_constant=_reject_json_constant,
+    )
+    if not isinstance(value, dict):
+        raise TypeError("JSON body is not an object")
+    return value
 
 
 @dataclass(frozen=True)
@@ -81,7 +111,7 @@ class _VaultHTTPHandler(BaseHTTPRequestHandler):
     server_version = "kdcube-host-vault/1"
     handler: Handler  # set per server class
 
-    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - stdlib signature
+    def log_message(self, format: str, *args: Any) -> None:
         # No request logging: bodies carry values, and the audit sink is the record.
         return
 
@@ -94,16 +124,35 @@ class _VaultHTTPHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def do_POST(self) -> None:  # noqa: N802 - stdlib name
+    def do_POST(self) -> None:
         if self.path != VAULT_PATH:
             self._reply(404, VaultResponse.failure(VaultError(ErrorCode.INVALID_REQUEST, "unknown path")))
             return
-        length = int(self.headers.get("Content-Length") or 0)
-        if length <= 0 or length > MAX_BODY_BYTES:
+        content_types = self.headers.get_all("Content-Type") or []
+        if (
+            len(content_types) != 1
+            or content_types[0].partition(";")[0].strip().lower()
+            != "application/json"
+            or self.headers.get_all("Transfer-Encoding")
+            or self.headers.get_all("Content-Encoding")
+        ):
+            self._reply(
+                400,
+                VaultResponse.failure(VaultError(ErrorCode.INVALID_REQUEST)),
+            )
+            return
+        lengths = self.headers.get_all("Content-Length") or []
+        if (
+            len(lengths) != 1
+            or not lengths[0].strip().isdecimal()
+            or int(lengths[0]) <= 0
+            or int(lengths[0]) > MAX_BODY_BYTES
+        ):
             self._reply(413, VaultResponse.failure(VaultError(ErrorCode.TOO_LARGE)))
             return
+        length = int(lengths[0])
         try:
-            body = json.loads(self.rfile.read(length).decode("utf-8"))
+            body = _decode_json_object(self.rfile.read(length))
         except Exception:  # noqa: BLE001
             self._reply(400, VaultResponse.failure(VaultError(ErrorCode.INVALID_REQUEST)))
             return
@@ -159,7 +208,7 @@ class HostVaultClient:
         server_hostname = self._server_hostname
 
         class _NamedHTTPSConnection(HTTPSConnection):
-            def connect(self) -> None:  # noqa: D401 - stdlib override
+            def connect(self) -> None:
                 raw = socket.create_connection((self.host, self.port), self.timeout)
                 self.sock = context.wrap_socket(raw, server_hostname=server_hostname)
 
@@ -170,24 +219,53 @@ class HostVaultClient:
         try:
             data = json.dumps(request.to_wire()).encode("utf-8")
             connection.request("POST", VAULT_PATH, body=data, headers={"Content-Type": "application/json"})
-            raw = connection.getresponse().read()
-        except Exception as exc:  # noqa: BLE001 - TLS/socket text never reaches callers
+            response = connection.getresponse()
+            content_types = response.headers.get_all("Content-Type") or []
+            if (
+                len(content_types) != 1
+                or content_types[0].partition(";")[0].strip().lower()
+                != "application/json"
+                or response.headers.get_all("Content-Encoding")
+            ):
+                raise VaultError(
+                    ErrorCode.BACKEND_UNAVAILABLE,
+                    detail="invalid response content type",
+                )
+            lengths = response.headers.get_all("Content-Length") or []
+            if (
+                len(lengths) != 1
+                or not lengths[0].strip().isdecimal()
+                or int(lengths[0]) <= 0
+                or int(lengths[0]) > MAX_BODY_BYTES
+            ):
+                raise VaultError(
+                    ErrorCode.BACKEND_UNAVAILABLE,
+                    detail="invalid response length",
+                )
+            expected_length = int(lengths[0])
+            raw = response.read(MAX_BODY_BYTES + 1)
+            if len(raw) != expected_length or len(raw) > MAX_BODY_BYTES:
+                raise VaultError(
+                    ErrorCode.BACKEND_UNAVAILABLE,
+                    detail="invalid response body length",
+                )
+        except Exception as exc:
             raise VaultError(ErrorCode.BACKEND_UNAVAILABLE, detail=type(exc).__name__) from exc
         finally:
             connection.close()
         try:
-            return VaultResponse.from_wire(json.loads(raw.decode("utf-8")))
+            return VaultResponse.from_wire(_decode_json_object(raw))
         except VaultError:
             raise
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise VaultError(ErrorCode.INTERNAL, detail=type(exc).__name__) from exc
 
 
 __all__ = [
+    "MAX_BODY_BYTES",
+    "VAULT_PATH",
     "ClientTLS",
     "HostVaultClient",
     "HostVaultServer",
-    "MAX_BODY_BYTES",
     "ServerTLS",
-    "VAULT_PATH",
 ]

@@ -70,23 +70,29 @@ One JSON request per POST to `/v1/vault`. Fields:
 | field | meaning |
 | --- | --- |
 | `protocol` | `kdcube-host-vault/1` |
-| `operation` | `health`, `secret.get`, `secret.set`, `secret.delete`, `secret.rotate` |
-| `reference` | `kdv1:<tenant>/<project>/<application>/<name>`; each segment matches `[A-Za-z0-9][A-Za-z0-9._@-]{0,127}` |
+| `operation` | `health`, `secret.get`, `secret.list`, `secret.set`, `secret.delete`, `secret.rotate` |
+| `reference` | `kdv1:<tenant>/<project>/<application>/<name>`; namespace segments match `[A-Za-z0-9][A-Za-z0-9._@-]{0,127}` and the bounded name uses the protocol's dotted/slashed internal-key grammar |
 | `request_id` | 8 to 64 chars of `[A-Za-z0-9-]`, unique per request |
 | `issued_at` | Unix seconds; the server rejects requests outside a 300 s skew window |
 | `value` | present for set and rotate, at most 64 KiB |
 | `expected_generation` | optional optimistic guard for set, rotate, delete |
 
 Responses carry `ok`, `code`, `message`, `request_id`, and for successes
-`value` (get) and `generation` (mutations). Codes: `ok`, `invalid_request`,
+`value` (get), `names` (list), and `generation` (mutations). Codes: `ok`, `invalid_request`,
 `unauthenticated`, `forbidden`, `not_found`, `conflict`, `replay_rejected`,
 `too_large`, `corrupt_record`, `backend_unavailable`, `internal`. Failure
 messages are fixed phrases per code, so backend or TLS exception text never
 reaches a caller.
 
-Replay: the service remembers `(deployment_id, request_id)` with the body
-digest. The same request again returns the original result without a second
-commit. The same id with a different body is `replay_rejected`.
+Replay: during one host-vault service process, a bounded cache remembers
+`(deployment_id, request_id)` with the body digest. The same cached request
+returns the original result without a second commit; the same id with a
+different body is `replay_rejected`. This receipt cache is intentionally not a
+durable effect ledger and is empty after service restart. Trusted callers use
+generation guards for cross-restart mutation conflicts. Card-governed KDCube
+management calls additionally use the Redis effect ledger documented in
+[Delegated KDCube Management Service](../cicd/delegated-management-service-README.md)
+for durable one-effect semantics.
 
 Generations: every committed change to a reference increments its
 generation, deletions included (a deletion is a tombstone record). A caller
@@ -95,11 +101,14 @@ that passes `expected_generation` gets `conflict` when the store moved on.
 ## 3. Persistence
 
 Records live under `<home>/store/<digest[:2]>/<digest>.json`, keyed by a
-SHA-256 digest of the reference so names never appear on disk. Each record
-holds the generation, an integrity digest over its metadata, and the sealed
-value: AES-256-GCM under a fresh data key, the data key wrapped by the
-current root key, with additional authenticated data binding the record to
-its reference digest and generation.
+SHA-256 digest of the reference so plaintext names never appear on disk. Each
+new live record holds the encrypted name used for scoped inventory, the
+generation, an integrity digest over its metadata, and the sealed value:
+AES-256-GCM under a fresh data key, the data key wrapped by the current root
+key, with additional authenticated data binding the record to its reference
+digest and generation. Legacy records without an encrypted name remain
+readable; their old `.__keys` metadata is accepted only as a bounded hint and
+each referenced value is verified live before it appears in inventory.
 
 Writes are atomic: candidate file, fsync, `os.replace`, directory fsync. A
 crash between candidate and commit leaves the previous value in place, and
@@ -391,11 +400,13 @@ fake certificates and the labeled in-memory root-key provider and covers:
 - one-use and expiring enrollment tickets
 - revoked and expired identities, rotation overlap and lapse
 - revocation from another process landing on the next identification
-- replay with the same and with a different body, and a stale `issued_at`
+- process-lifetime replay with the same and with a different body, a stale
+  `issued_at`, and an explicit proof that the receipt cache resets on restart
 - generation conflicts on set, rotate, and delete
-- a crash between candidate write and commit
+- partial OS writes and a crash between candidate write and commit
 - restart durability of values and deletions
-- tampered ciphertext, metadata, and root-key version failing closed
+- tampered ciphertext, metadata, and root-key version failing closed,
+  including rotation refusing to rewrite a record that fails normal decode
 - audit fields without secret bytes
 - backend exceptions with canaries sanitized
 - a stateless broker that acknowledges only committed writes

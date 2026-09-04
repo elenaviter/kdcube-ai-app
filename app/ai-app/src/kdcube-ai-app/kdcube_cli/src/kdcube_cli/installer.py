@@ -4652,16 +4652,6 @@ def gather_configuration(
     if use_bundles_secrets and bundles_secrets_data:
         flat_bundle_secrets = _flatten_bundle_secrets(bundles_secrets_data)
         runtime_secrets.update(flat_bundle_secrets)
-        # Store bundle secret key lists in the sidecar so admin UI can show "known keys"
-        # even when secrets were provisioned via bundles.secrets.yaml.
-        keys_by_bundle: Dict[str, List[str]] = {}
-        for key in flat_bundle_secrets.keys():
-            parts = key.split(".")
-            if len(parts) >= 4 and parts[0] == "bundles" and parts[2] == "secrets":
-                bundle_id = parts[1]
-                keys_by_bundle.setdefault(bundle_id, []).append(key)
-        for bundle_id, keys in keys_by_bundle.items():
-            runtime_secrets[f"bundles.{bundle_id}.secrets.__keys"] = json.dumps(sorted(keys))
     if force_prompt or is_placeholder(env_proc.entries.get("OPENAI_API_KEY", (None, None))[1]):
         update_env_value(env_proc, "OPENAI_API_KEY", "")
     if force_prompt or is_placeholder(env_proc.entries.get("ANTHROPIC_API_KEY", (None, None))[1]):

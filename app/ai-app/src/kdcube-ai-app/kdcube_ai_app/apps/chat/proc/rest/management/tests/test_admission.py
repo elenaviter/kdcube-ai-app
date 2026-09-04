@@ -5,7 +5,6 @@ from urllib.parse import urlencode
 
 import httpx
 import pytest
-
 from connection_hub.delegated_credentials.request_approval import (
     RequestApprovalTicket,
     issue_request_approval_ticket,
@@ -14,7 +13,6 @@ from kdcube_ai_app.apps.chat.proc.rest.management.admission import (
     AdmissionUnavailable,
     ConnectionHubAdmissionClient,
 )
-
 
 SERVICE_SECRET = "management-service-secret-with-at-least-32-bytes"
 RESOURCE = "urn:kdcube:management:deployment:tenant-a:project-a"

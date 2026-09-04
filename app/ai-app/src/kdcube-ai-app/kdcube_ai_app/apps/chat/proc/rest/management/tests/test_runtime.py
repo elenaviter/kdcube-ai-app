@@ -3,8 +3,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from starlette.requests import Request
-
 from kdcube_ai_app.apps.chat.proc.rest.management.runtime import (
     KDCubeManagementRuntime,
 )
@@ -20,7 +18,7 @@ from kdcube_ai_app.infra.plugin.bundle_loader import (
     OnMessageSpec,
     UIWidgetSpec,
 )
-
+from starlette.requests import Request
 
 APPLICATION_ID = "workspace@1-0"
 
@@ -59,8 +57,8 @@ def _registry() -> SimpleNamespace:
 
 @pytest.mark.asyncio
 async def test_surface_discovery_returns_declared_relative_routes(monkeypatch) -> None:
-    from kdcube_ai_app.apps.chat.proc.rest.management import runtime as runtime_module
     from kdcube_ai_app.apps.chat.proc.rest.integrations import integrations
+    from kdcube_ai_app.apps.chat.proc.rest.management import runtime as runtime_module
 
     async def _load_registry(*_args, **_kwargs):
         return _registry()
@@ -148,8 +146,8 @@ async def test_surface_discovery_returns_declared_relative_routes(monkeypatch) -
 
 @pytest.mark.asyncio
 async def test_reload_passes_one_exact_declared_application(monkeypatch) -> None:
-    from kdcube_ai_app.apps.chat.proc.rest.management import runtime as runtime_module
     from kdcube_ai_app.apps.chat.proc.rest.integrations import integrations
+    from kdcube_ai_app.apps.chat.proc.rest.management import runtime as runtime_module
 
     async def _load_registry(*_args, **_kwargs):
         return _registry()
@@ -197,8 +195,8 @@ async def test_reload_passes_one_exact_declared_application(monkeypatch) -> None
 async def test_reload_rejects_an_undeclared_application_before_internal_reload(
     monkeypatch,
 ) -> None:
-    from kdcube_ai_app.apps.chat.proc.rest.management import runtime as runtime_module
     from kdcube_ai_app.apps.chat.proc.rest.integrations import integrations
+    from kdcube_ai_app.apps.chat.proc.rest.management import runtime as runtime_module
 
     async def _load_registry(*_args, **_kwargs):
         return _registry()
