@@ -32,6 +32,60 @@ agents/
 Each directory contains its agent, requirements, behavior YAML, standard
 platform descriptors, skill, Compose services, and setup command.
 
+## The first-run journey
+
+```text
+Developer opens agents/
+          |
+          v
+Choose one agent core
+   |          |          |
+   v          v          v
+ native    langgraph    claude
+   |          |          |
+   +----------+----------+
+              |
+              v
+Enter that agent's self-contained directory
+              |
+              v
+Create a Python environment and install requirements
+              |
+              v
+Create local YAML configuration and descriptors
+              |
+              v
+Start the directory's Redis and Postgres services
+              |
+              v
+Run --check, then --infra-check
+              |
+              v
+Run the multi-turn demonstration
+              |
+              v
+Web research -> retained context -> PDF + XLSX
+              |
+              v
+Inspect output files, communicator events, and accounting
+              |
+              v
+Change instructions, model, tools, skills, or limits in YAML
+              |
+              +-----------------------------+
+              |                             |
+              v                             v
+Keep running the direct SDK agent    Adopt the full KDCube runtime
+                                     for UI, authentication, governed
+                                     tools, isolated workspaces, and
+                                     application hosting
+```
+
+The direct path imports KDCube SDK source but does not require a running
+KDCube server. The selected directory is the complete first-use boundary;
+reusable hosting code remains in the SDK rather than appearing as another
+choice beside the three agents.
+
 ## 0. Prerequisites
 
 Install Git, Python 3.11, and Docker Engine or Docker Desktop with Compose.
