@@ -1,0 +1,25 @@
+# Merge fragment for the existing workspace bundle. Do not replace its complete
+# tool inventory with this excerpt.
+bundles:
+  items:
+    - id: workspace@2026-03-31-13-36
+      config:
+        surfaces:
+          as_consumer:
+            default_agent: main
+            agents:
+              main:
+                tools:
+                  - name: exec
+                    kind: python
+                    module: kdcube_ai_app.apps.chat.sdk.tools.exec_tools
+                    alias: exec_tools
+                    allowed: [execute_code_python]
+                  - name: web
+                    kind: python
+                    module: kdcube_ai_app.apps.chat.sdk.tools.web_tools
+                    alias: web_tools
+                    allowed: [web_search, web_fetch]
+        execution:
+          runtime:
+            mode: docker

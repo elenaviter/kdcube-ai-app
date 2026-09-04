@@ -1,0 +1,9 @@
+# Merge fragment. Keep the rest of the deployment's assembly.yaml intact.
+platform:
+  services:
+    proc:
+      exec:
+        exec_workspace_root: /exec-workspace
+        py_code_exec_image: py-code-exec:latest
+        py_code_exec_timeout: 600
+        py_code_exec_container_strategy: split

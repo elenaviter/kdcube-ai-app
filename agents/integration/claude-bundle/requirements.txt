@@ -1,0 +1,2 @@
+# No bundle-local Python packages. The SDK is supplied by the KDCube runtime,
+# and artifact_writer.py intentionally uses only the Python standard library.

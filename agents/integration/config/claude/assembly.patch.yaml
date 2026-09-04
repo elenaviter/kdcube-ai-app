@@ -1,0 +1,6 @@
+# Merge fragment. A git store preserves Claude Code session lineage when turns
+# land on different processor workers. Use a repository scoped for this purpose.
+storage:
+  claude_code_session:
+    type: git
+    repo: git@github.com:YOUR_ORG/YOUR_PRIVATE_SESSION_STORE.git

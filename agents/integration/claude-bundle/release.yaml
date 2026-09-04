@@ -1,0 +1,8 @@
+bundle:
+  repo: "https://github.com/kdcube/kdcube.git"
+  ref: "unreleased"
+  description: |
+    A focused Claude Code Agent Harness demonstration. It runs as a normal
+    economics-aware chat bundle, keeps one session lineage per conversation,
+    exposes live follow-up and steer at Claude Code tool boundaries, and
+    publishes selected PDF/XLSX outputs through the turn workspace.

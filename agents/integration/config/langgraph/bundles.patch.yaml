@@ -1,0 +1,21 @@
+# Merge these tool rows into lg-react's existing list. Arrays are replacement
+# values in descriptors, so do not apply this excerpt as the bundle's whole config.
+bundles:
+  items:
+    - id: ported-langgraph-agents@2026-07-13
+      config:
+        surfaces:
+          as_consumer:
+            agents:
+              lg-react:
+                tools:
+                  - name: code_exec
+                    kind: python
+                    alias: code_exec
+                    allowed: [run_python]
+                    code_exec:
+                      timeout_s: 180
+                  - name: web
+                    kind: python
+                    alias: web
+                    allowed: [web_search, web_fetch]

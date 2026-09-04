@@ -1,0 +1,36 @@
+bundles:
+  version: "1"
+  items:
+    - id: harness-claude-demo@1-0
+      name: Agent Harness Claude Demo
+      path: /bundles/kdcube/kdcube-ai-app/agents/integration/claude-bundle
+      module: entrypoint
+      singleton: false
+      description: Runtime-backed Claude Code Agent Harness demonstration
+      config:
+        role_models:
+          harness.claude.title:
+            provider: anthropic
+            model: claude-haiku-4-5-20251001
+        surfaces:
+          as_provider:
+            bundle:
+              default_chat: true
+              visibility:
+                allowed_roles: []
+          as_consumer:
+            default_agent: claude
+            agents:
+              claude:
+                capabilities:
+                  conversation:
+                    accepts_steer: true
+                    accepts_followup: true
+        agent:
+          command: claude
+          model: claude-sonnet-4-6
+          credential_ref: b:agent.claude_code_key
+          credential_env: CLAUDE_CODE_KEY
+          live_control: true
+          timeout_seconds: 900
+          allowed_tools: [Read, Grep, Glob, Edit, Write, Bash, WebSearch, WebFetch]
