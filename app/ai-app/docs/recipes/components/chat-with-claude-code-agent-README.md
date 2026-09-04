@@ -7,6 +7,7 @@ tags: ["recipes", "component", "chat", "claude-code", "hosted-agent", "run-to-co
 updated_at: 2026-09-04
 keywords: ["default_chat", "accepts_steer", "accepts_followup", "live_control", "VITE_CHAT_AGENT_ID", "run-to-completion turn", "turn frame", "PreToolUse hook", "fail-closed spend gate", "in-band answer", "conversation record", "hosted agent chat"]
 see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/chat-with-react-agent-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/app-with-resident-coding-agent-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/claude/claude-code-README.md

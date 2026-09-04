@@ -15,6 +15,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/use-cases-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/how-to-integrate-with-kdcube-apps-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/quick-start-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/architecture-of-what-we-built-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/architecture-of-what-you-build-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/control-plane-web-app-README.md
@@ -39,6 +40,7 @@ Curated index of platform, service, and SDK documentation.
 * Use Cases — What Problem Does KDCube Solve: [use-cases-README.md](recipes/use-cases-README.md)
 * How To Integrate With KDCube Apps: [how-to-integrate-with-kdcube-apps-README.md](how-to-integrate-with-kdcube-apps-README.md)
 * Quick Start: [quick-start-README.md](quick-start-README.md)
+* Run The Agent Harness From Python: [run-agent-harness-from-python-README.md](recipes/quickstart/run-agent-harness-from-python-README.md)
 * Security And Trust Model: [security-and-trust-model-README.md](arch/security-and-trust-model-README.md)
 * Delegated Authority And Admission: [delegated-authority-and-admission-README.md](arch/delegated-authority-and-admission-README.md)
 * Delegated KDCube Management Service: [delegated-management-service-README.md](service/cicd/delegated-management-service-README.md)
@@ -95,6 +97,7 @@ Curated index of platform, service, and SDK documentation.
 ## Agents, Tools, Skills, And Memory
 
 * App Agent Integration: [bundle-agent-integration-README.md](sdk/bundle/bundle-agent-integration-README.md)
+* Direct Agent Harness Recipe: [run-agent-harness-from-python-README.md](recipes/quickstart/run-agent-harness-from-python-README.md)
 * Agent Harness Runtime: [harness/README.md](runtime/harness/README.md)
 * Agent Harness Events: [events/README.md](runtime/harness/events/README.md)
 * Agent Harness Timeline: [timeline/README.md](runtime/harness/timeline/README.md)

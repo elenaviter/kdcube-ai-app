@@ -16,6 +16,7 @@ keywords:
     "app as service provider",
   ]
 see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/architecture-of-what-you-build-README.md
   - repo:kdcube/app/ai-app/docs/arch/application-hosted-websites-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/ecosystem-component/components-ecosystem-README.md
@@ -41,6 +42,7 @@ Read order for app builders:
 
 | Recipe | Use when |
 | --- | --- |
+| [Run The Agent Harness From Python](../quickstart/run-agent-harness-from-python-README.md) | You want a shell-runnable SDK agent before mounting it in a managed chat app. |
 | [Your Component](your-component-README.md) | You are adding a new app/widget and need to choose which ecosystem planes it uses. |
 | [Named-Service App](named-service-README.md) | You want a regular app/domain realm to become an agent-usable service provider. |
 | [Scene](scene-README.md) | You are composing multiple widgets/surfaces into one browser scene. |

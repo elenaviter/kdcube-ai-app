@@ -3,4 +3,5 @@
 **/output/
 **/.env
 **/config.local.yaml
+**/descriptors.local/
 *.pyc

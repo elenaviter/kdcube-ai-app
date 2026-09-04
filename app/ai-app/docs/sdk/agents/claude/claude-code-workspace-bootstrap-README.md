@@ -3,7 +3,7 @@ id: repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/claude/claude-code-workspace-b
 title: "Claude Code Workspace Management"
 summary: "How KDCube manages Claude Code session continuity and binds shared pull, checkout, publication, and optional turn-summary capabilities to a hosted Claude turn."
 tags: ["sdk", "agents", "claude", "claude-code", "workspace", "git", "bootstrap"]
-updated_at: 2026-08-22
+updated_at: 2026-09-04
 keywords:
   [
     "Claude Code workspace",
@@ -18,6 +18,7 @@ keywords:
     "Claude Code turn summary contribution",
   ]
 see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/claude/claude-code-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/claude/claude-code-accounting-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/service-runtime-configuration-mapping-README.md
@@ -210,12 +211,17 @@ Claude session storage supports two implementations:
 - `local`
 - `git`
 
-Env vars:
+The standard `assembly.yaml` fields are the authoring contract:
 
-```text
-CLAUDE_CODE_SESSION_STORE_IMPLEMENTATION=local|git
-CLAUDE_CODE_SESSION_GIT_REPO=<remote git repo>
+```yaml
+storage:
+  claude_code_session:
+    type: local   # local | git
+    repo: ""      # local path, HTTPS URL, or SSH URL when type is git
 ```
+
+A direct SDK host points `get_settings()` at that descriptor set. The runnable
+contract is [Run the Agent Harness from Python](../../../recipes/quickstart/run-agent-harness-from-python-README.md).
 
 Meaning:
 
@@ -378,7 +384,7 @@ Behavior:
 
 ### Regular turn
 
-If `CLAUDE_CODE_SESSION_STORE_IMPLEMENTATION=git`:
+If `storage.claude_code_session.type` is `git`:
 
 1. bootstrap the local Claude root from the conversation branch
 2. optionally refresh bundle-owned support files inside that root
@@ -450,7 +456,7 @@ to its own:
 
 ## Assembly descriptor support
 
-The installer reads Claude session-store settings from `assembly.yaml`:
+Claude session storage is configured in `assembly.yaml`:
 
 ```yaml
 storage:
@@ -459,13 +465,15 @@ storage:
     repo: ""      # used only when type=git
 ```
 
-It maps those values into `.env.proc`:
+HTTPS credentials use `services.git.http_token` and
+`services.git.http_user` in `secrets.yaml`. SSH transport uses the
+`services.git.git_ssh_key_path`, `git_ssh_known_hosts`, and
+`git_ssh_strict_host_key_checking` fields in `assembly.yaml`. The shared Git
+helper resolves this standard descriptor-backed configuration for bootstrap
+and publish.
 
-- `CLAUDE_CODE_SESSION_STORE_IMPLEMENTATION`
-- `CLAUDE_CODE_SESSION_GIT_REPO`
-
-This makes Claude session-store policy deployable at the same layer as the ReAct Agent's
-git-backed workspace settings.
+This keeps Claude session-store policy at the same platform configuration
+layer as the ReAct agent's Git-backed workspace settings.
 
 ## Relationship to the core Claude runner
 

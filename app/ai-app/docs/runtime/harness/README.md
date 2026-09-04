@@ -16,6 +16,7 @@ keywords:
     "event ref resolver",
   ]
 see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/events/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/timeline/README.md
@@ -142,6 +143,10 @@ KDCube conversation tables in Postgres and durable payload storage. LangGraph
 additionally uses its own Postgres checkpoint tables for graph continuation.
 The examples run the same two-turn web-research and PDF/XLSX task and expose
 real `ChatCommunicator` events in the terminal.
+
+The copy-and-run contract, including YAML-selected tools and skills and the
+optional isolated-execution image, is
+[Run The Agent Harness From Python](../../recipes/quickstart/run-agent-harness-from-python-README.md).
 
 ## Remaining Source Extraction
 

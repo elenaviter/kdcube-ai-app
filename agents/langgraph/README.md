@@ -7,64 +7,53 @@ keywords: ["KDCubeChatModel", "stream_model_text_tracked", "AsyncPostgresSaver",
 updated_at: 2026-09-04
 see_also:
   - repo:kdcube-ai-app/agents/README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/chat-with-langgraph-agent-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/langgraph/langgraph-agent-README.md
 ---
 # Run the LangGraph Example
 
 ## What it is
 
-This program runs LangChain `create_agent` with KDCube's `KDCubeChatModel`.
-It uses the direct self-hosted SDK mode defined in the [parent
-README](../README.md). The graph keeps normal LangGraph messages, tools, and
-checkpoints while the KDCube harness records events, accounting, and the
-durable conversation.
+This program runs LangChain `create_agent` through KDCube's
+`KDCubeChatModel`. The shared platform descriptors configure the model,
+secrets, Redis, Postgres, storage, and economics. `config.local.yaml` selects
+the graph's instructions, tools, skills, limits, and task.
 
 ## Run it
 
-Start Redis and Postgres with the [parent instructions](../README.md), then:
+Initialize `agents/shared/descriptors.local` and start Redis/Postgres using the
+[parent instructions](../README.md), then run:
 
 ```bash
 cd agents/langgraph
 python3.11 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+.venv/bin/python -m pip install -r requirements.txt
 cp config.template.yaml config.local.yaml
-set -a
-. ../.env
-set +a
-.venv/bin/python agent.py --config config.local.yaml --check
-.venv/bin/python agent.py --config config.local.yaml --infra-check
-export OPENAI_API_KEY='...'
-.venv/bin/python agent.py --config config.local.yaml
+.venv/bin/python agent.py --config config.local.yaml --descriptors ../shared/descriptors.local --check
+.venv/bin/python agent.py --config config.local.yaml --descriptors ../shared/descriptors.local --infra-check
+.venv/bin/python agent.py --config config.local.yaml --descriptors ../shared/descriptors.local
 ```
 
-`--check` builds the graph without services or a model call. `--infra-check`
-opens Redis and storage and creates both the KDCube conversation tables and
-the LangGraph checkpoint tables.
+`--check` constructs the graph before contacting services or a model provider.
+`--infra-check` creates both the harness conversation tables and LangGraph's
+checkpoint tables, then verifies Redis and storage.
 
 ## What the demo shows
 
-Turn one searches the web. Turn two recalls the graph state and creates:
-
-```text
-output/research-brief.pdf
-output/research-data.xlsx
-```
-
-A passing run proves tool events, streamed answer deltas, Redis accounting,
-LangGraph checkpoint continuity, two durable KDCube conversation turns, and
-readable storage payloads. It ends with `demonstration: PASS`.
+Turn one searches the web. Turn two resumes the graph thread and creates
+`output/runs/langgraph-*/research-brief.pdf` and `research-data.xlsx`. A passing
+run proves streamed tool/model events, accounted calls, Postgres checkpoint
+continuity, and two durable harness turns. It ends with `demonstration: PASS`.
 
 ## Change the demo
 
-- Change `agent.topic`, model, limits, infrastructure, storage, or output in
+- Change instructions, enabled tools, skills, topic, or limits in
   `config.local.yaml`.
-- Change `prompts` or the system prompt in `agent.py`.
-- Add or replace LangChain tools in `tools.py`; `build_tools()` supplies them
-  to `create_agent`.
-- Change the final required-file check in `agent.py` when the task creates
-  different outputs.
+- Change the model in `../shared/descriptors.local/assembly.yaml` and put its
+  canonical provider key in `../shared/descriptors.local/secrets.yaml`.
+- Add a LangChain tool in `tools.py`, add its ID to the supported set in
+  `agent.py`, and select it in `config.local.yaml`.
+- Change `prompts` and `expected_files` in `agent.py` for another scenario.
 
-Keep `KDCubeChatModel` when the demonstration should include KDCube model
-accounting. A provider model used directly remains outside that accounting
-adapter.
+Keep `KDCubeChatModel` when model streaming must pass through the harness's
+accounting and communicator bridge.

@@ -5,7 +5,7 @@ summary: "Maintenance boundaries for the focused Claude Code Agent Harness demon
 status: active
 tags: ["agents", "claude-code", "harness", "demonstration"]
 see_also:
-  - "repo:kdcube-ai-app/agents/integration/README.md"
+  - "repo:kdcube-ai-app/agents/advanced/integration/README.md"
   - "repo:kdcube-ai-app/agents/claude/README.md"
   - "repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/claude/claude-code-workspace-bootstrap-README.md"
 ---

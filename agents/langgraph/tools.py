@@ -38,7 +38,7 @@ def _normalise_results(value: Any) -> list[dict[str, str]]:
     return rows
 
 
-def build_tools(output_dir: Path) -> list[BaseTool]:
+def build_tools(output_dir: Path, *, enabled_ids: set[str] | None = None) -> list[BaseTool]:
     @tool
     def web_search(query: str, max_results: int = 5) -> str:
         """Search the public web. Returns JSON rows containing title, excerpt, and URL."""
@@ -95,4 +95,7 @@ def build_tools(output_dir: Path) -> list[BaseTool]:
             {"ok": True, "files": [pdf_path.name, xlsx_path.name], "rows": len(rows)}
         )
 
-    return [web_search, create_briefing]
+    available = [web_search, create_briefing]
+    if enabled_ids is None:
+        return available
+    return [item for item in available if item.name in enabled_ids]

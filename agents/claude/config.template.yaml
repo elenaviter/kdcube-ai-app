@@ -1,37 +1,43 @@
 claude:
   command: claude
   model: sonnet
-  api_key_ref: CLAUDE_CODE_KEY
   timeout_seconds: 900
-  allowed_tools:
-    - Read
-    - Write
-    - Edit
-    - Grep
-    - Glob
-    - Bash
-    - WebSearch
-    - WebFetch
-
-infra:
-  postgres:
-    host: 127.0.0.1
-    port: 55432
-    user: kdcube_agents
-    database: kdcube_agents
-    password_ref: AGENT_DEMO_POSTGRES_PASSWORD
-    sslmode: disable
-  redis:
-    host: 127.0.0.1
-    port: 56379
-    database: 0
-    password_ref: AGENT_DEMO_REDIS_PASSWORD
-    turn_cache_ttl_seconds: 3600
-  storage:
-    uri: ./output/conversation-store
 
 agent:
+  conversation_id: claude-demo
   topic: "the current stable Python release and its release date"
+  instructions: |
+    You are a research agent. Work only inside this workspace, preserve source
+    URLs, create the requested deliverables, and follow enabled skills.
+  tools:
+    - id: Read
+      enabled: true
+      runtime: local
+    - id: Write
+      enabled: true
+      runtime: local
+    - id: Edit
+      enabled: true
+      runtime: local
+    - id: Grep
+      enabled: true
+      runtime: local
+    - id: Glob
+      enabled: true
+      runtime: local
+    - id: Bash
+      enabled: true
+      runtime: local
+    - id: WebSearch
+      enabled: true
+      runtime: local
+    - id: WebFetch
+      enabled: true
+      runtime: local
+  skills:
+    root: ../shared/skills
+    enabled:
+      - demo.research-brief
 
 output:
   directory: ./output

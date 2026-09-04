@@ -16,6 +16,7 @@ keywords:
     "Save changes",
   ]
 see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/how/how-to-construct-react-agent-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/chat-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/user-settings/capabilities-README.md
@@ -175,7 +176,10 @@ in one Python process. It runs a two-turn web-research and PDF/XLSX scenario
 with the SDK's real conversation and accounting boundaries. Redis carries the
 accounting mirror, Postgres carries conversation metadata/search, and
 configured storage carries the turn and timeline payloads. The two demo tools
-run in-process, so this direct example has no execution-image prerequisite.
+run in-process by default. The executable direct-host recipe shows how YAML
+selects tools and skills and how to replace local briefing generation with the
+Docker-isolated Python tool:
+[Run The Agent Harness From Python](../quickstart/run-agent-harness-from-python-README.md).
 
 Use the neighboring [LangGraph](./chat-with-langgraph-agent-README.md) and
 [Claude Code](./chat-with-claude-code-agent-README.md) recipes when the loop is

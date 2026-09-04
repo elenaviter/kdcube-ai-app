@@ -1,12 +1,12 @@
 ---
-id: repo:kdcube-ai-app/agents/integration/claude-bundle/README.md
+id: repo:kdcube-ai-app/agents/advanced/integration/claude-bundle/README.md
 title: "Run the Hosted Claude Fixture"
 summary: "Stage the Claude Code fixture used by optional hosted acceptance, verify its runtime behavior, and change its task."
 tags: ["bundle", "claude-code", "agent-harness", "workspace", "economics"]
 keywords: ["ClaudeCodeAgent", "turn workspace publish", "LiveLaneWatch", "session lineage"]
 updated_at: 2026-09-04
 see_also:
-  - repo:kdcube-ai-app/agents/integration/README.md
+  - repo:kdcube-ai-app/agents/advanced/integration/README.md
   - repo:kdcube-ai-app/agents/claude/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/agent-in-the-runtimes-README.md
 ---
@@ -14,7 +14,7 @@ see_also:
 
 ## What it is
 
-This app bundle is the target used by `agents/integration/claude.py`. The
+This app bundle is the target used by `agents/advanced/integration/claude.py`. The
 bundle runs Claude Code inside a prepared KDCube deployment; the parent script
 drives it through chat and SSE.
 
@@ -25,7 +25,7 @@ files from `../config/claude/` into the runtime configuration, reload the
 bundle, then run from the repository root:
 
 ```bash
-.venv/bin/python agents/integration/claude.py \
+.venv/bin/python agents/advanced/integration/claude.py \
   --workdir ~/.kdcube/kdcube-runtime/<tenant>__<project>
 ```
 

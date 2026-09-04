@@ -1,5 +1,5 @@
 ---
-id: repo:kdcube-ai-app/agents/integration/README.md
+id: repo:kdcube-ai-app/agents/advanced/integration/README.md
 title: "Run Optional Hosted Acceptance"
 summary: "Verify a prepared KDCube deployment over its real chat and SSE boundary after the direct agent example works."
 tags: ["agents", "integration-testing", "sse", "hosted-runtime"]
@@ -14,8 +14,8 @@ see_also:
 ## What it is
 
 These scripts test an already prepared KDCube deployment through its public
-chat and SSE transport. Start with a direct example in the [parent
-README](../README.md); use this check when you also need deployment evidence.
+chat and SSE transport. Start with a direct example in the [agents
+README](../../README.md); use this check when you also need deployment evidence.
 
 ## Run it
 
@@ -25,8 +25,8 @@ root:
 
 ```bash
 python -m venv .venv
-.venv/bin/pip install -r agents/integration/requirements.txt
-.venv/bin/python agents/integration/native.py \
+.venv/bin/pip install -r agents/advanced/integration/requirements.txt
+.venv/bin/python agents/advanced/integration/native.py \
   --workdir ~/.kdcube/kdcube-runtime/<tenant>__<project>
 ```
 

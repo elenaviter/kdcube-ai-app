@@ -7,6 +7,7 @@ tags: ["recipes", "components", "chat", "langgraph", "langchain", "agent-harness
 updated_at: 2026-09-04
 keywords: ["chat with langgraph agent", "KDCubeChatModel", "create_agent", "astream_events", "LangGraph checkpointer", "automatic accounting", "foreign runtime", "run_python"]
 see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/langgraph/langgraph-agent-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/chat-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/settle-your-solution-in-kdcube-README.md

@@ -23,4 +23,5 @@ class ConsoleEmitter:
             stream.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
         kind = str(data.get("type") or event)
         detail = data.get("delta") if kind == "chat.delta" else data.get("event")
-        print(f"[communicator] {kind}: {json.dumps(detail or {}, ensure_ascii=False, default=str)}")
+        rendered = json.dumps(detail or {}, ensure_ascii=False, default=str)
+        print(f"[communicator] {kind}: {rendered}")

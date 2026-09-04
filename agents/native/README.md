@@ -7,68 +7,56 @@ keywords: ["ReactSolverV2", "DirectAgentHarness", "Postgres conversation", "Chat
 updated_at: 2026-09-04
 see_also:
   - repo:kdcube-ai-app/agents/README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/chat-with-react-agent-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/how/how-to-construct-react-agent-README.md
 ---
 # Run the Native ReAct Example
 
 ## What it is
 
-This program runs KDCube's maintained `ReactSolverV2` as a local Python
-process. It uses the direct self-hosted SDK mode defined in the [parent
-README](../README.md) and gives the agent two local tools: web search and
-PDF/XLSX creation.
+This program runs KDCube's `ReactSolverV2` in your Python process. The shared
+platform descriptors configure its model, secrets, Redis, Postgres, storage,
+economics, and isolated executor. `config.local.yaml` selects its instructions,
+tools, skills, limits, and task.
 
 ## Run it
 
-Start Redis and Postgres with the [parent instructions](../README.md), then:
+Initialize `agents/shared/descriptors.local` and start Redis/Postgres using the
+[parent instructions](../README.md), then run:
 
 ```bash
 cd agents/native
 python3.11 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+.venv/bin/python -m pip install -r requirements.txt
 cp config.template.yaml config.local.yaml
-set -a
-. ../.env
-set +a
-.venv/bin/python agent.py --config config.local.yaml --check
-.venv/bin/python agent.py --config config.local.yaml --infra-check
-export OPENAI_API_KEY='...'
-.venv/bin/python agent.py --config config.local.yaml
+.venv/bin/python agent.py --config config.local.yaml --descriptors ../shared/descriptors.local --check
+.venv/bin/python agent.py --config config.local.yaml --descriptors ../shared/descriptors.local --infra-check
+.venv/bin/python agent.py --config config.local.yaml --descriptors ../shared/descriptors.local
 ```
 
-`--check` builds the agent without services or a model call. `--infra-check`
-opens Redis, creates the Postgres conversation tables, and opens storage.
+`--check` constructs the agent before contacting services or a model provider.
+`--infra-check` creates the conversation tables and verifies Redis and storage.
 
 ## What the demo shows
 
-Turn one searches the web. Turn two recalls the findings and creates a PDF and
-an XLSX file. A passing run ends with `demonstration: PASS`.
+The first turn searches the web. The second creates a PDF and XLSX. A third
+conversation must call `react.memsearch` and recover a source from the first
+conversation for the same user. Success ends with `demonstration: PASS`.
 
-Inspect:
-
-```text
-output/
-  communicator.jsonl
-  conversation-store/
-  turn-01-*/
-  turn-02-*/
-```
-
-This proves streamed communicator events, Redis accounting, two durable
-Postgres turns, readable storage payloads, and native ReAct timeline
-continuity. The PDF and XLSX are under the second turn's output directory.
+Inspect `output/communicator.jsonl`, `output/turn-*`, and the shared
+`../shared/output/conversation-store`. Postgres holds the durable conversation index;
+Redis holds the per-turn accounted-event mirror.
 
 ## Change the demo
 
-- Change `agent.topic`, model, limits, infrastructure, storage, or output in
+- Change instructions, enabled tools, skills, topic, or limits in
   `config.local.yaml`.
-- Change the two `prompt=` arguments in `main_async()` in `agent.py`.
-- Add or replace tools in `tools.py`, then update `tools_specs`,
-  `tool_runtime`, and the allowed tool names in `agent.py`.
-- Change the final required-file check in `agent.py` when the task creates
-  different outputs.
+- Change the model in `../shared/descriptors.local/assembly.yaml` and put its
+  canonical provider key in `../shared/descriptors.local/secrets.yaml`.
+- Change local tool implementations in `tools.py` and their supported IDs in
+  `configuration.py`.
+- Enable `exec_tools.execute_code_python` in `config.local.yaml` after building
+  the image configured under `platform.services.proc.exec` in `assembly.yaml`.
 
-To use another provider, change `model.provider`, `model.name`, and
-`model.api_key_ref` together. The model-service helper recognizes OpenAI,
-Anthropic, Google, and OpenRouter.
+The full executor procedure is in
+[Run the Agent Harness from Python](../../app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md#8-enable-isolated-python-execution).

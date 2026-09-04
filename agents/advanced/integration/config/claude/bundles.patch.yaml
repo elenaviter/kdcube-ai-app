@@ -3,7 +3,7 @@ bundles:
   items:
     - id: harness-claude-demo@1-0
       name: Agent Harness Claude Demo
-      path: /bundles/kdcube/kdcube-ai-app/agents/integration/claude-bundle
+      path: /bundles/kdcube/kdcube-ai-app/agents/advanced/integration/claude-bundle
       module: entrypoint
       singleton: false
       description: Runtime-backed Claude Code Agent Harness demonstration

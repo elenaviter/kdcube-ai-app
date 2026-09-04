@@ -7,7 +7,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from agents.integration.runtime_client import (
+from agents.advanced.integration.runtime_client import (
     AgentTarget,
     DemoError,
     LaneEvent,
