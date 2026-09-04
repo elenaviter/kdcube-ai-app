@@ -136,7 +136,9 @@ uses `DirectAgentHarness` with explicit identity, Redis, Postgres, and storage
 configuration. The facade binds one accounted turn, writes the common KDCube
 conversation record, and verifies that each Postgres row points to a
 materializable storage payload. The concrete adapter retains ownership of its
-loop and private continuation.
+loop and private continuation. Reusable direct-host descriptor, model,
+configuration, setup, and console-evidence helpers live under
+`sdk/runtime/direct_hosting`; they are SDK APIs rather than a fourth example.
 
 Redis holds the short-lived per-turn accounting mirror. All three use the
 KDCube conversation tables in Postgres and durable payload storage. LangGraph

@@ -17,7 +17,7 @@ agent:
       enabled: false
       runtime: docker
   skills:
-    root: ../shared/skills
+    root: ./skills
     enabled:
       - demo.research-brief
 

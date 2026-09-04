@@ -1,0 +1,44 @@
+name: kdcube-agent-langgraph
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${AGENT_DEMO_POSTGRES_USER:-kdcube_agents}
+      POSTGRES_PASSWORD: ${AGENT_DEMO_POSTGRES_PASSWORD:?set AGENT_DEMO_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${AGENT_DEMO_POSTGRES_DATABASE:-kdcube_agents}
+    ports:
+      - "${AGENT_DEMO_POSTGRES_PORT:-55433}:5432"
+    volumes:
+      - agent-demo-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    environment:
+      AGENT_DEMO_REDIS_PASSWORD: ${AGENT_DEMO_REDIS_PASSWORD:?set AGENT_DEMO_REDIS_PASSWORD}
+    command:
+      - sh
+      - -c
+      - exec redis-server --appendonly yes --requirepass "$${AGENT_DEMO_REDIS_PASSWORD}"
+    ports:
+      - "${AGENT_DEMO_REDIS_PORT:-56380}:6379"
+    volumes:
+      - agent-demo-redis:/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - redis-cli -a "$${AGENT_DEMO_REDIS_PASSWORD}" ping | grep PONG
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  agent-demo-postgres:
+  agent-demo-redis:

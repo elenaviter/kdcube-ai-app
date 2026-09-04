@@ -18,23 +18,22 @@ import yaml
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[1]
-SHARED_ROOT = HERE.parent / "shared"
 SDK_ROOT = REPO_ROOT / "app" / "ai-app" / "src" / "kdcube-ai-app"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 if str(SDK_ROOT) not in sys.path:
     sys.path.insert(0, str(SDK_ROOT))
 
-from agents.shared.infrastructure import (  # noqa: E402
+from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.infrastructure import (  # noqa: E402
     activate_platform_descriptors,
     direct_harness_config,
 )
-from agents.shared.configuration import (  # noqa: E402
+from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.configuration import (  # noqa: E402
     activate_configured_skills,
     agent_instructions,
     configured_tools,
 )
-from agents.shared.evidence import (  # noqa: E402
+from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.evidence import (  # noqa: E402
     ConsoleEmitter,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_harness import (  # noqa: E402
@@ -329,10 +328,21 @@ async def main_async(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default=str(HERE / "config.template.yaml"))
+    parser.add_argument(
+        "--config",
+        default=str(
+            HERE / "config.local.yaml"
+            if (HERE / "config.local.yaml").is_file()
+            else HERE / "config.template.yaml"
+        ),
+    )
     parser.add_argument(
         "--descriptors",
-        default=str(SHARED_ROOT / "descriptors.template"),
+        default=str(
+            HERE / "descriptors.local"
+            if (HERE / "descriptors.local").is_dir()
+            else HERE / "descriptors.template"
+        ),
         help="Directory containing the standard platform descriptor set.",
     )
     parser.add_argument(

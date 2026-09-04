@@ -1,0 +1,40 @@
+context:
+  tenant: standalone
+  project: agent-harness-langgraph
+
+infra:
+  postgres:
+    host: 127.0.0.1
+    port: 55433
+    user: kdcube_agents
+    database: kdcube_agents
+    postgres_ssl: false
+  redis:
+    host: 127.0.0.1
+    port: 56380
+    topology: standalone
+
+storage:
+  kdcube: ../output/conversation-store
+  workspace:
+    type: local
+    repo: ""
+
+models:
+  default_llm_model_id: gpt-4o-mini
+
+secrets:
+  provider: secrets-file
+
+platform:
+  services:
+    proc:
+      exec:
+        py_code_exec_image: py-code-exec:latest
+        py_code_exec_timeout: 600
+        py_code_exec_network_mode: none
+        py_code_exec_container_strategy: split
+        max_file_bytes: 100m
+        max_exec_workspace_delta_bytes: 250m
+        max_workspace_bytes: 500m
+        workspace_monitor_interval_s: 0.5

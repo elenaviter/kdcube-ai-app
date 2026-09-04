@@ -13,7 +13,7 @@ agent:
       enabled: true
       runtime: local
   skills:
-    root: ../shared/skills
+    root: ./skills
     enabled:
       - demo.research-brief
 

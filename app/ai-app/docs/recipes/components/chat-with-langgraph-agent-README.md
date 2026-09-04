@@ -231,18 +231,10 @@ The detailed repair contract is owned by
 
 The repository-level direct launcher supplies `create_agent` and its tools to
 the SDK's `DirectAgentHarness`. The facade binds `ChatCommunicator`, accounting,
-and the framework-neutral conversation record. It performs two real model
-turns, then requires a PDF and XLSX from the retained research. Start with the
-short support-service procedure in the [direct examples README](../../../../../agents/README.md):
-
-```bash
-cd agents/langgraph
-python3.11 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-.venv/bin/python agent.py --check
-export OPENAI_API_KEY='...'
-.venv/bin/python agent.py
-```
+and the framework-neutral conversation record. Follow the canonical
+[direct Agent Harness recipe](../quickstart/run-agent-harness-from-python-README.md)
+and choose `langgraph`; its self-contained directory owns the descriptors,
+services, skills, checks, and two-turn PDF/XLSX demonstration.
 
 The independent Redis service mirrors per-turn accounting events. Every direct
 runner uses the KDCube conversation tables in Postgres plus configured payload

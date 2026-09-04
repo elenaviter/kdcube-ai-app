@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from agents.shared.configuration import (
+from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.configuration import (
     ConfiguredTool,
     configured_tools,
     require_supported_tools,
