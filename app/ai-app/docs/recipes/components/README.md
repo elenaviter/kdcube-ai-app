@@ -4,7 +4,7 @@ title: "Component Recipes"
 summary: "Short recipes for composing KDCube app components, with links to the canonical architecture and provider contracts."
 status: current
 tags: ["recipes", "components", "scene", "chat", "pinboard", "named-services", "ecosystem"]
-updated_at: 2026-08-13
+updated_at: 2026-09-04
 keywords:
   [
     "component recipes",
@@ -49,6 +49,7 @@ Read order for app builders:
 | [Canvas Pinboard](pinboard-README.md) | You want objects from different realms pinned, searched, moved, opened, and reused as context. |
 | [Chat Widget](chat-README.md) | You are embedding a ReAct chat surface that attaches, emits, and consumes context. |
 | [Chat With A ReAct Agent](chat-with-react-agent-README.md) | You are declaring the agent behind the chat — per-agent config incl. `supported_models` and the tools/skills inventory — and letting users customize it via the composer menu. |
+| [Chat With A LangGraph Agent](chat-with-langgraph-agent-README.md) | You want to preserve a LangGraph or LangChain agent loop while binding platform identity, durable state, governed tools, streaming, accounting, and conversation recording around it. |
 | [Chat With A Claude Code Agent](chat-with-claude-code-agent-README.md) | The agent behind the chat is the Claude Code CLI: a lane whose loop you do not own, so the turn is ordered by hand, the run is reached through a hook, and the conversation record is written by you. |
 
 ## Planes Checklist

@@ -10,19 +10,40 @@ CREATE SCHEMA IF NOT EXISTS <SCHEMA>;
 CREATE TABLE IF NOT EXISTS <SCHEMA>.conv_messages (
                                                       id               BIGSERIAL PRIMARY KEY,
                                                       user_id          TEXT NOT NULL,
+                                                      bundle_id        TEXT,
                                                       agent_id         TEXT,                           -- owning agent; NULL when no agent_id is provided
                                                       conversation_id  TEXT NOT NULL,
                                                       message_id       TEXT,                           -- ConversationStore id; present for artifacts
                                                       role             TEXT NOT NULL,                  -- 'user' | 'assistant' | 'artifact'
                                                       text             TEXT NOT NULL,
-                                                      hosted_uri           TEXT NOT NULL,
+                                                      hosted_uri       TEXT NOT NULL,
                                                       ts               TIMESTAMPTZ NOT NULL DEFAULT now(),
     ttl_days         INT NOT NULL DEFAULT 365,
     user_type        TEXT NOT NULL DEFAULT 'anonymous',
     tags             TEXT[] NOT NULL DEFAULT '{}',
     embedding        VECTOR(1536),
-    turn_id          TEXT
+    turn_id          TEXT,
+    anchors_text     TEXT NOT NULL DEFAULT '',
+    search_tsv       TSVECTOR GENERATED ALWAYS AS (
+        setweight(to_tsvector('simple',  coalesce(anchors_text, '')), 'A') ||
+        setweight(to_tsvector('english', coalesce(text,         '')), 'B')
+    ) STORED
     );
+
+-- Keep this focused bootstrap usable against an older conversation-only
+-- schema as well as a fresh database. Full deployments still use the project
+-- schema provisioner; direct SDK hosts need only these conversation tables.
+ALTER TABLE <SCHEMA>.conv_messages
+  ADD COLUMN IF NOT EXISTS bundle_id TEXT,
+  ADD COLUMN IF NOT EXISTS agent_id TEXT,
+  ADD COLUMN IF NOT EXISTS turn_id TEXT,
+  ADD COLUMN IF NOT EXISTS anchors_text TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE <SCHEMA>.conv_messages
+  ADD COLUMN IF NOT EXISTS search_tsv TSVECTOR GENERATED ALWAYS AS (
+      setweight(to_tsvector('simple',  coalesce(anchors_text, '')), 'A') ||
+      setweight(to_tsvector('english', coalesce(text,         '')), 'B')
+  ) STORED;
 
 -- Handle historical rename of table column s3_uri -> hosted_uri
 DO $$
@@ -48,6 +69,15 @@ END $$;
 CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_conv_user_conversation_ts
   ON <SCHEMA>.conv_messages (user_id, conversation_id, ts DESC);
 
+CREATE INDEX IF NOT EXISTS conv_messages_bundle_id_idx
+  ON <SCHEMA>.conv_messages (bundle_id);
+
+CREATE INDEX IF NOT EXISTS conv_messages_user_conv_bundle_ts_idx
+  ON <SCHEMA>.conv_messages (user_id, conversation_id, bundle_id, ts DESC);
+
+CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_conv_user_conv_turn
+  ON <SCHEMA>.conv_messages (user_id, conversation_id, turn_id);
+
 CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_conv_user_type_ts
   ON <SCHEMA>.conv_messages (user_type, ts DESC);
 
@@ -60,6 +90,9 @@ CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_cm_scope_time ON <SCHEMA>.conv_messages
 
 CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_cm_text_trgm
 ON <SCHEMA>.conv_messages USING gin (text gin_trgm_ops);
+
+CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_cm_search_tsv
+ON <SCHEMA>.conv_messages USING gin (search_tsv);
 
 -- ANN (embeddings)
 CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_conv_embedding
@@ -103,6 +136,7 @@ CREATE TABLE IF NOT EXISTS <SCHEMA>.conv_track_tickets (
                                                            ticket_id   TEXT PRIMARY KEY,
                                                            user_id     TEXT NOT NULL,
                                                            conversation_id TEXT NOT NULL,
+                                                           turn_id     TEXT,
                                                            title       TEXT NOT NULL,
                                                            description TEXT NOT NULL DEFAULT '',
                                                            status      TEXT NOT NULL DEFAULT 'open',
@@ -111,9 +145,17 @@ CREATE TABLE IF NOT EXISTS <SCHEMA>.conv_track_tickets (
                                                            tags        TEXT[] NOT NULL DEFAULT '{}',
                                                            created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    embedding   VECTOR(1536)
+    embedding   VECTOR(1536),
+    data        JSONB NOT NULL DEFAULT '{}'::jsonb
     );
+ALTER TABLE <SCHEMA>.conv_track_tickets
+  ADD COLUMN IF NOT EXISTS turn_id TEXT,
+  ADD COLUMN IF NOT EXISTS data JSONB NOT NULL DEFAULT '{}'::jsonb;
 CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_tickets_status
   ON <SCHEMA>.conv_track_tickets (status, priority DESC);
 CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_tickets_embedding
   ON <SCHEMA>.conv_track_tickets USING ivfflat (embedding vector_cosine_ops) WITH (lists=50);
+CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_tickets_conv_user
+  ON <SCHEMA>.conv_track_tickets (conversation_id, user_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_tickets_turn
+  ON <SCHEMA>.conv_track_tickets (turn_id);

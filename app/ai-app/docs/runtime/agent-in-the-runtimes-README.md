@@ -21,7 +21,7 @@ keywords:
     "rehosting",
     "turn lifecycle",
   ]
-updated_at: 2026-08-18
+updated_at: 2026-09-04
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/runtimes-map-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/README.md
@@ -37,6 +37,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/conversation/search-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/timeline/fork-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/claude/claude-code-README.md
+  - repo:kdcube-ai-app/agents/README.md
 ---
 # The Agent In The Runtimes Fusion
 
@@ -414,3 +415,10 @@ on the right-hand side becomes timeline blocks or durable refs; framework
 checkpoints and app-domain state remain in their own stores. That is the
 fusion: one agent, any declared surface in, several runtimes underneath, one
 platform-owned conversation record out.
+
+Run the same observable task through the three direct adapter paths with
+[`agents/`](../../../../agents/README.md). Each self-contained program records
+real communicator, accounting, and durable conversation evidence while its
+agent keeps the loop and private working-state model appropriate to that
+adapter. Redis, Postgres, and configured storage are its only shared service
+prerequisites.

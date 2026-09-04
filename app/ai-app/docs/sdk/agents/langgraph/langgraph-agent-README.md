@@ -4,7 +4,7 @@ title: "LangGraph Agent"
 summary: "The SDK surface a LangGraph or LangChain agent binds to in KDCube: the chat model that routes and bills through the platform, the foreign-runtime seam that supplies identity, tools, events and recording to a loop the platform does not own, and the obligations that come with being stoppable."
 status: current
 tags: ["sdk", "agents", "langgraph", "langchain", "foreign-runtime", "run-to-completion"]
-updated_at: 2026-08-18
+updated_at: 2026-09-04
 keywords: ["KDCubeChatModel", "foreign runtime", "AgentSpec", "fold_turn_external_events", "LiveLaneWatch", "run_until_stopped", "checkpointer", "create_agent", "run-to-completion", "turn identity", "named services door", "MCP bridge", "stop repair", "dangling tool call"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/settle-your-solution-in-kdcube-README.md
@@ -12,6 +12,8 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/events/reactive-turn-delivery-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/claude/claude-code-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/conversation/hosted-agent-conversation-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/chat-with-langgraph-agent-README.md
+  - repo:kdcube-ai-app/agents/langgraph/README.md
 ---
 # LangGraph Agent
 
@@ -43,8 +45,11 @@ model = KDCubeChatModel(models_service=ms, role="lg-react.answer")
 The role is the point. Your graph names a role, never a model id; the platform
 resolves it per deployment, and a per-turn override from the capabilities widget
 overlays it for that turn only. Accounting, provider selection and streaming all
-follow from the same binding, so a graph written against this model needs no
-KDCube-specific code anywhere else in its node functions.
+follow from the same binding. `_astream()` starts its producer inside the
+active turn accounting context and calls `stream_model_text_tracked()`, then
+returns ordinary LangChain chunks to the graph. A graph written against this
+model needs no KDCube-specific code in its node functions. A direct provider
+client bypasses this adapter and is not covered by that accounting guarantee.
 
 It also reports what the platform did to a response: a generation that spends
 its whole output budget is logged as INTERRUPTED with the token count rather
@@ -138,6 +143,13 @@ agent in two projects never shares one.
 
 ## Where to read further
 
+- [Chat With A LangGraph Agent](../../../recipes/components/chat-with-langgraph-agent-README.md)
+  - the end-to-end host recipe, descriptor shape, and verification checklist.
+- [`agents/langgraph`](../../../../../../agents/langgraph/README.md) - a
+  deployment-free two-turn demonstration of `create_agent` over
+  `KDCubeChatModel`, with communicator evidence, Redis-backed turn accounting,
+  a Postgres/storage-backed KDCube conversation, Postgres-checkpointed private
+  graph continuity, web tooling, PDF, and XLSX output.
 - The reference bundle: `sdk/examples/bundles/ported-langgraph-agents@2026-07-13/README.md`
   — two agents behind one `execute_core`, its storage layout, code execution,
   degradation, and the generic porting procedure.

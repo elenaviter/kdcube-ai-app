@@ -47,8 +47,12 @@ class ConversationStore:
     """
 
     def __init__(self, storage_uri: Optional[str] = None):
-        self._settings = get_settings()
-        self.storage_uri = storage_uri or self._settings.STORAGE_PATH
+        self._settings = None
+        if storage_uri:
+            self.storage_uri = storage_uri
+        else:
+            self._settings = get_settings()
+            self.storage_uri = self._settings.STORAGE_PATH
         self.backend = create_storage_backend(self.storage_uri)
         parsed = urlparse(self.storage_uri)
         self.scheme = parsed.scheme or "file"

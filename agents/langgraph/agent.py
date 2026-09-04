@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+"""Run LangGraph create_agent through KDCubeChatModel without a KDCube deployment."""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import sys
+import uuid
+from contextlib import AsyncExitStack, asynccontextmanager
+from pathlib import Path
+from typing import Any
+
+import yaml
+from langchain.agents import create_agent
+from langgraph.checkpoint.memory import MemorySaver
+
+
+HERE = Path(__file__).resolve().parent
+REPO_ROOT = HERE.parents[1]
+SDK_ROOT = HERE.parents[1] / "app" / "ai-app" / "src" / "kdcube-ai-app"
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+if str(SDK_ROOT) not in sys.path:
+    sys.path.insert(0, str(SDK_ROOT))
+
+from agents.infrastructure import (  # noqa: E402
+    direct_harness_config,
+    postgres_label,
+)
+from agents.evidence import (  # noqa: E402
+    ConsoleEmitter,
+)
+from agents.langgraph.tools import build_tools  # noqa: E402
+from agents.model_service import build_model_service  # noqa: E402
+from kdcube_ai_app.apps.chat.emitters import ChatCommunicator  # noqa: E402
+from kdcube_ai_app.apps.chat.sdk.frameworks.langchain import KDCubeChatModel  # noqa: E402
+from kdcube_ai_app.apps.chat.sdk.runtime.direct_harness import (  # noqa: E402
+    DirectAgentHarness,
+)
+
+
+ROLE = "standalone.langgraph.answer"
+
+
+def _content_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(
+            str(item.get("text") or "") if isinstance(item, dict) else str(item)
+            for item in value
+        )
+    return str(value or "")
+
+
+def load_config(path: Path) -> dict[str, Any]:
+    value = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(value, dict):
+        raise ValueError("configuration root must be a mapping")
+    return value
+
+
+def build_graph(model: KDCubeChatModel, checkpointer: Any, tools: list[Any]) -> Any:
+    return create_agent(
+        model=model,
+        tools=tools,
+        checkpointer=checkpointer,
+        system_prompt=(
+            "You are a standalone research agent. Use web_search for current facts and preserve "
+            "source URLs. Use create_briefing when asked for PDF and spreadsheet deliverables."
+        ),
+    )
+
+
+@asynccontextmanager
+async def open_postgres_checkpointer(config: dict[str, Any], database_url: str):
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+    stack = AsyncExitStack()
+    try:
+        checkpointer = await stack.enter_async_context(
+            AsyncPostgresSaver.from_conn_string(database_url)
+        )
+        await checkpointer.setup()
+    except Exception as exc:
+        await stack.aclose()
+        raise RuntimeError(
+            f"Postgres checkpoint bootstrap failed at {postgres_label(config)}; "
+            "start the independent agent-example services and verify the configured secret reference"
+        ) from exc
+    try:
+        yield checkpointer
+    finally:
+        await stack.aclose()
+
+
+async def stream_turn(graph: Any, prompt: str, run_config: dict[str, Any], comm: ChatCommunicator) -> str:
+    index = 0
+    await comm.start(message=prompt)
+    async for event in graph.astream_events({"messages": [{"role": "user", "content": prompt}]}, run_config, version="v2"):
+        kind = str(event.get("event") or "")
+        name = str(event.get("name") or "")
+        node = str((event.get("metadata") or {}).get("langgraph_node") or "")
+        if kind == "on_chat_model_stream" and node == "model":
+            chunk = (event.get("data") or {}).get("chunk")
+            if getattr(chunk, "tool_call_chunks", None):
+                continue
+            text = _content_text(getattr(chunk, "content", ""))
+            if text:
+                await comm.delta(text=text, index=index, marker="answer", agent="langgraph")
+                index += 1
+        elif kind == "on_tool_start":
+            await comm.step(
+                step=f"tool.{name}.{str(event.get('run_id') or '')[:8]}",
+                status="running",
+                title=f"Calling {name}",
+                markdown=json.dumps((event.get("data") or {}).get("input") or {}, ensure_ascii=False, default=str),
+                agent="langgraph",
+            )
+        elif kind == "on_tool_end":
+            await comm.step(
+                step=f"tool.{name}.{str(event.get('run_id') or '')[:8]}",
+                status="completed",
+                title=f"Completed {name}",
+                markdown=str((event.get("data") or {}).get("output") or ""),
+                agent="langgraph",
+            )
+    snapshot = await graph.aget_state(run_config)
+    messages = list((snapshot.values or {}).get("messages") or [])
+    answer = _content_text(getattr(messages[-1], "content", "")) if messages else ""
+    return answer
+
+
+async def main_async(args: argparse.Namespace) -> None:
+    config_path = Path(args.config).expanduser().resolve()
+    config = load_config(config_path)
+    output_dir = (config_path.parent / str((config.get("output") or {}).get("directory") or "./output")).resolve()
+    harness_config = direct_harness_config(
+        config,
+        config_path=config_path,
+        project="langgraph-agent-demo",
+        bundle_id="standalone-langgraph-demo@1-0",
+        agent_id="langgraph",
+        check_only=args.check,
+    )
+    agent_cfg = dict(config.get("agent") or {})
+    print("mode: standalone SDK process (no KDCube runtime)")
+    print(f"adapter: LangGraph create_agent -> KDCubeChatModel ({ROLE})")
+    print(f"output: {output_dir}")
+    print(f"conversation storage: {harness_config.storage_uri}")
+    if args.infra_check:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        harness = DirectAgentHarness(
+            config=harness_config,
+            model_service=None,
+            emitter=ConsoleEmitter(output_dir / "communicator.jsonl"),
+        )
+        async with harness:
+            async with open_postgres_checkpointer(config, harness_config.postgres_url):
+                print("infrastructure: Redis, Postgres conversation/checkpoint tables, and storage ready")
+        print("infrastructure check: PASS")
+        return
+
+    service = build_model_service(config, role=ROLE, check_only=args.check)
+    tools = build_tools(output_dir)
+    model = KDCubeChatModel(
+        models_service=service,
+        role=ROLE,
+        temperature=0.2,
+        max_tokens=int(agent_cfg.get("max_tokens") or 12000),
+    )
+    if args.check:
+        graph = build_graph(model, MemorySaver(), tools)
+        if graph is None:
+            raise RuntimeError("LangGraph construction failed")
+        print("check: PASS")
+        return
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    emitter = ConsoleEmitter(output_dir / "communicator.jsonl")
+    harness = DirectAgentHarness(
+        config=harness_config,
+        model_service=service,
+        emitter=emitter,
+    )
+    conversation_id = f"langgraph-{uuid.uuid4().hex[:10]}"
+    run_config = {
+        "configurable": {"thread_id": conversation_id},
+        "recursion_limit": int(agent_cfg.get("recursion_limit") or 24),
+    }
+    topic = str(agent_cfg.get("topic") or "accountable agent runtimes")
+    prompts = [
+        f"Search the web for recent, concrete information about {topic}. Return five sourced findings and retain them for the next turn.",
+        "Use the findings from the previous turn. Call create_briefing to create research-brief.pdf and research-data.xlsx, then report the exact filenames.",
+    ]
+    turn_ids: list[str] = []
+    async with harness:
+        async with open_postgres_checkpointer(config, harness_config.postgres_url) as checkpointer:
+            print("infrastructure: Redis, Postgres conversation/checkpoint tables, and storage ready")
+            graph = build_graph(model, checkpointer, tools)
+            for number, prompt in enumerate(prompts, start=1):
+                turn_id = f"turn-{number:02d}-{uuid.uuid4().hex[:8]}"
+                async with harness.turn(conversation_id=conversation_id, turn_id=turn_id) as turn:
+                    answer = await stream_turn(graph, prompt, run_config, turn.comm)
+                    await turn.complete(prompt=prompt, final_answer=answer)
+                turn_ids.append(turn_id)
+                print(f"[accounting] Redis turn cache contains {len(turn.accounting_events)} event(s)")
+                print(f"\n[turn {number} answer]\n{answer}\n")
+        records = await harness.verify_conversation(
+            conversation_id=conversation_id,
+            expected_turn_ids=turn_ids,
+        )
+        print(f"[conversation] materialized {len(records)} durable turn record(s)")
+
+    missing = [name for name in ("research-brief.pdf", "research-data.xlsx") if not (output_dir / name).is_file()]
+    if missing:
+        raise RuntimeError(f"agent completed without required artifacts: {', '.join(missing)}")
+    print("demonstration: PASS")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", default=str(HERE / "config.template.yaml"))
+    parser.add_argument("--check", action="store_true", help="Construct the direct SDK path without calling a provider.")
+    parser.add_argument(
+        "--infra-check",
+        action="store_true",
+        help="Verify Redis and bootstrap Postgres checkpoint tables without calling a provider.",
+    )
+    asyncio.run(main_async(parser.parse_args()))
+
+
+if __name__ == "__main__":
+    main()

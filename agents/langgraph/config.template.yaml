@@ -1,0 +1,29 @@
+model:
+  provider: openai
+  name: gpt-5-mini
+  api_key_ref: OPENAI_API_KEY
+
+infra:
+  postgres:
+    host: 127.0.0.1
+    port: 55432
+    user: kdcube_agents
+    database: kdcube_agents
+    password_ref: AGENT_DEMO_POSTGRES_PASSWORD
+    sslmode: disable
+  redis:
+    host: 127.0.0.1
+    port: 56379
+    database: 0
+    password_ref: AGENT_DEMO_REDIS_PASSWORD
+    turn_cache_ttl_seconds: 3600
+  storage:
+    uri: ./output/conversation-store
+
+agent:
+  max_tokens: 12000
+  recursion_limit: 24
+  topic: "the current stable Python release and its release date"
+
+output:
+  directory: ./output

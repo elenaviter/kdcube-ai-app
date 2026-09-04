@@ -1,9 +1,9 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/conversation/hosted-agent-conversation-README.md
 title: "The Conversation For Any Agent"
-summary: "How KDCube maintains the conversation for any hosted agent: the native KDCube ReAct Agent or a wrapped external framework such as LangGraph, LangChain, or a raw loop. The agent owns private continuation in its native checkpointer/store, while KDCube owns the platform conversation record used for list, reload, search, files, and titles. Hosted agents may also contribute one optional searchable turn summary through an ordinary configurable tool."
-tags: ["sdk", "solutions", "conversation", "hosting", "langgraph", "port", "checkpointer", "turn-recorder", "conversation-record", "reload", "turn-log"]
-updated_at: 2026-08-22
+summary: "How KDCube maintains the conversation for native and wrapped agents in hosted or direct processes. The agent owns private continuation in its native checkpointer or session, while KDCube owns the framework-neutral record used for list, reload, search, files, and titles."
+tags: ["sdk", "solutions", "conversation", "hosting", "direct-agent", "langgraph", "port", "checkpointer", "turn-recorder", "conversation-record", "reload", "turn-log"]
+updated_at: 2026-09-04
 keywords:
   [
     "hosted agent conversation",
@@ -44,6 +44,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/conversation/search-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/chat/chat-widget-solution-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/timeline/turn-summary-contributions-README.md
+  - repo:kdcube-ai-app/agents/README.md
 ---
 # The Conversation For Any Agent
 
@@ -70,6 +71,14 @@ The two are separate stores. The conversation record is what the user sees on
 screen after a reload; the working memory is what the model sees inside a turn.
 An app keeps its own working memory (its store is internal and unchanged) and
 lets the platform own the record. Both must reflect the same conversation.
+
+The ownership model also applies when an agent core runs as a direct Python
+process. `DirectAgentHarness` accepts explicit Redis, Postgres, and storage
+configuration and supplies the framework-neutral record without starting a
+KDCube deployment. Native ReAct uses its rich timeline as working memory;
+LangGraph keeps a separate checkpointer; Claude Code keeps its stable session
+and workspace. The runnable examples are indexed at
+[`agents/`](../../../../../../agents/README.md).
 
 ## What the record consists of, per turn
 

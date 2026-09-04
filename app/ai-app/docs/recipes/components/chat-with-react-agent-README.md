@@ -4,7 +4,7 @@ title: "Recipe: Chat With A ReAct Agent"
 summary: "End-to-end steps: declare a ReAct agent with per-agent config, wire the chat component to it, and let users explicitly save model/capability choices for each conversation."
 status: current
 tags: ["recipes", "components", "chat", "react", "agent", "supported-models", "composer-menu"]
-updated_at: 2026-07-12
+updated_at: 2026-09-04
 keywords:
   [
     "chat with react agent",
@@ -21,6 +21,8 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/user-settings/capabilities-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/chat/chat-widget-solution-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/npm/components-core/chat-engine-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/chat-with-langgraph-agent-README.md
+  - repo:kdcube-ai-app/agents/native/README.md
 ---
 # Recipe: Chat With A ReAct Agent
 
@@ -164,3 +166,17 @@ chat widget) renders the composer "+" menu automatically for signed-in users.
   message, and confirm the
   agent's tool catalog for that turn excludes the group (the selection is also
   logged as `[agent_selection.applied]` in the app logs).
+
+## Run the direct proof
+
+[`agents/native`](../../../../../agents/native/README.md) constructs
+`ReactSolverV2`, its timeline, `ToolSubsystem`, and `ChatCommunicator` directly
+in one Python process. It runs a two-turn web-research and PDF/XLSX scenario
+with the SDK's real conversation and accounting boundaries. Redis carries the
+accounting mirror, Postgres carries conversation metadata/search, and
+configured storage carries the turn and timeline payloads. The two demo tools
+run in-process, so this direct example has no execution-image prerequisite.
+
+Use the neighboring [LangGraph](./chat-with-langgraph-agent-README.md) and
+[Claude Code](./chat-with-claude-code-agent-README.md) recipes when the loop is
+owned by those runtimes. The chat component does not change.

@@ -8,6 +8,17 @@ from kdcube_ai_app.apps.chat.sdk.storage.conversation_store import ConversationS
 from kdcube_ai_app.apps.chat.sdk.storage.rn import parse_file_path
 
 
+def test_explicit_storage_uri_does_not_read_ambient_settings(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "kdcube_ai_app.apps.chat.sdk.storage.conversation_store.get_settings",
+        lambda: (_ for _ in ()).throw(AssertionError("ambient settings were read")),
+    )
+
+    store = ConversationStore(storage_uri=tmp_path.as_uri())
+
+    assert store.storage_uri == tmp_path.as_uri()
+
+
 @pytest.mark.asyncio
 async def test_file_attachment_uri_is_absolute_file_uri(tmp_path):
     store = ConversationStore(storage_uri=tmp_path.as_uri())

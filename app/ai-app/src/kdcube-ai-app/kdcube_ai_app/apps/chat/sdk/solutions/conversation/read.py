@@ -284,8 +284,10 @@ def build_conversation_ctx_client(*, pg_pool: Any, tenant: str, project: str, mo
     from kdcube_ai_app.apps.chat.sdk.context.vector.conv_index import ConvIndex
     from kdcube_ai_app.ops.deployment.sql.db_deployment import project_schema
 
-    conv_idx = ConvIndex(pool=pg_pool)
-    conv_idx.schema = project_schema(tenant, project)
+    conv_idx = ConvIndex(
+        pool=pg_pool,
+        schema=project_schema(tenant, project),
+    )
     return ContextRAGClient(conv_idx=conv_idx, store=store, model_service=model_service)
 
 

@@ -58,22 +58,27 @@ def _base_state_tags() -> list[str]:
 
 class ConvIndex:
     def __init__(self,
-                 pool: Optional[asyncpg.Pool] = None):
+                 pool: Optional[asyncpg.Pool] = None,
+                 *,
+                 schema: Optional[str] = None):
         self._pool: Optional[asyncpg.Pool] = pool
-        self._settings = get_settings()
-
-        tenant = self._settings.TENANT.replace("-", "_").replace(" ", "_")
-        project = self._settings.PROJECT.replace("-", "_").replace(" ", "_")
-
-        schema_name = f"{tenant}_{project}"
-        if schema_name and not schema_name.startswith("kdcube_"):
-            schema_name = f"kdcube_{schema_name}"
-
-        self.schema: str = schema_name
         self.shared_pool = pool is not None
+        self._settings = None
+        if schema:
+            self.schema = str(schema)
+        else:
+            self._settings = get_settings()
+            tenant = self._settings.TENANT.replace("-", "_").replace(" ", "_")
+            project = self._settings.PROJECT.replace("-", "_").replace(" ", "_")
+            schema_name = f"{tenant}_{project}"
+            if schema_name and not schema_name.startswith("kdcube_"):
+                schema_name = f"kdcube_{schema_name}"
+            self.schema = schema_name
 
     async def init(self):
         if not self._pool:
+            if self._settings is None:
+                self._settings = get_settings()
             self._pool = await asyncpg.create_pool(
                 host=self._settings.PGHOST,
                 port=self._settings.PGPORT,
@@ -132,22 +137,19 @@ class ConvIndex:
     async def ensure_schema(self):
         sql_raw = (await self._read_sql()).decode()
         sql = sql_raw.replace("<SCHEMA>", self.schema)
-        # Execute statements defensively (simple splitter; keep statements single-purpose)
+        # Use one simple-query execution. The schema contains PostgreSQL DO $$
+        # blocks whose bodies contain semicolons, so textual splitting corrupts
+        # valid SQL and can never be made reliable here.
         async with self._pool.acquire() as con:
-            for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
-                await con.execute(stmt)
+            await con.execute(sql)
 
     async def _read_sql(self) -> bytes:
-        import pkgutil
+        from pathlib import Path
 
-        # Try both names so packaging can pick either
-        data = pkgutil.get_data(__package__, "conversation_history.sql")
-        if data:
-            return data
-        data = pkgutil.get_data(__package__, "deploy-conversation-history.sql")
-        if data:
-            return data
-        raise FileNotFoundError("conversation_history.sql / deploy-conversation-history.sql not found in package")
+        path = Path(__file__).with_name("conv_index.sql")
+        if not path.is_file():
+            raise FileNotFoundError(f"conversation index schema not found: {path}")
+        return path.read_bytes()
 
     async def get_conversation_state_row(
             self,

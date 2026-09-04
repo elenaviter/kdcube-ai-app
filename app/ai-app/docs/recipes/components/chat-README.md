@@ -1,12 +1,31 @@
+---
+id: repo:kdcube-ai-app/app/ai-app/docs/recipes/components/chat-README.md
+title: "Recipe: Chat Widget"
+summary: "Wire the framework-neutral KDCube chat component to an app-declared native ReAct, LangGraph, Claude Code, or other hosted agent adapter."
+status: current
+tags: ["recipes", "components", "chat", "agent-harness", "scene"]
+updated_at: 2026-09-04
+keywords: ["chat widget", "hosted agent chat", "native ReAct", "LangGraph", "Claude Code", "communicator"]
+see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/chat-with-react-agent-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/chat-with-langgraph-agent-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/chat-with-claude-code-agent-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/README.md
+---
 # Recipe: Chat Widget
 
-The chat widget is an app widget that hosts a ReAct conversation and participates in the scene as a context producer and context consumer. It should not know memory, task, or canvas internals.
+The chat widget is an app widget that hosts a KDCube conversation and
+participates in the scene as a context producer and context consumer. Its agent
+may be native ReAct, LangGraph, Claude Code, or another adapter that honors the
+hosted conversation contract. The widget does not know the framework's loop or
+memory internals.
 
 Read [Architecture Of What You Build](../../arch/architecture-of-what-you-build-README.md)
-first for the app/service-provider map. This recipe covers only the Chat/ReAct
-surface. Declaring the AGENT behind the chat (per-agent config, tools/skills
-inventory, `supported_models`, the user-facing composer menu) is the
-[Chat With A ReAct Agent recipe](./chat-with-react-agent-README.md).
+first for the app/service-provider map. This recipe covers the component and
+transport surface. Use the matching agent recipe for backend behavior:
+[native ReAct](./chat-with-react-agent-README.md),
+[LangGraph](./chat-with-langgraph-agent-README.md), or
+[Claude Code](./chat-with-claude-code-agent-README.md).
 
 ## Runtime Shape
 
@@ -22,7 +41,7 @@ chat iframe
   context adapter
     drag context out
     attach context in
-  ReAct backend
+  hosted agent adapter
     tools
     artifacts
     named-service object pull/read
@@ -47,10 +66,9 @@ Four wiring points put this widget on your own app, backed by your own agent:
    build mechanics:
    [Widget Integration](../../sdk/npm/widget-integration-README.md).
 3. Bind the agent. The widget talks to the app it is served from; the agent
-   key (`agentId`, default `main`) selects which of the app's declared agents
-   answers. Declaring that agent — inventory, react block,
-   `supported_models`, per-user customization — is the
-   [Chat With A ReAct Agent recipe](./chat-with-react-agent-README.md).
+   key (`agentId`, default `main`) selects which declared adapter answers.
+   Declare that adapter's capabilities and inventory using its recipe. The
+   widget transport stays the same.
 4. Declare the chat surface: `surfaces.as_provider.bundle.default_chat: true`
    in the descriptor makes the control plane draw the conversation UI for the
    app (absent means the app presents its widget scene instead). Auth rides
@@ -133,6 +151,8 @@ A scene should declare chat as a context drop target:
 - [Component Recipes](./README.md)
 - [Scene Recipe](./scene-README.md)
 - [Chat With A ReAct Agent](./chat-with-react-agent-README.md)
+- [Chat With A LangGraph Agent](./chat-with-langgraph-agent-README.md)
+- [Chat With A Claude Code Agent](./chat-with-claude-code-agent-README.md)
 - [Components Ecosystem Architecture](../../sdk/solutions/ecosystem-component/components-ecosystem-README.md)
 - [Chat Widget Solution](../../sdk/solutions/chat/chat-widget-solution-README.md)
 - [Widget Integration](../../sdk/npm/widget-integration-README.md)

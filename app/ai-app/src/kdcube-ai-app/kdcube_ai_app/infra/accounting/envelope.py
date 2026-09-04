@@ -113,12 +113,28 @@ def build_envelope_from_session(session, *, tenant_id,
     )
 
 @asynccontextmanager
-async def bind_accounting(envelope: AccountingEnvelope, storage_backend, *, enabled: bool = True):
+async def bind_accounting(
+    envelope: AccountingEnvelope,
+    storage_backend,
+    *,
+    enabled: bool = True,
+    redis_turn_cache: bool = True,
+    turn_cache_ttl_s: int = 3600,
+    redis_url: Optional[str] = None,
+):
     """
     Init storage + set base context for the current task.
+    Direct SDK callers can provide ``redis_url`` explicitly. Hosted callers
+    keep using the descriptor-derived default when it is omitted.
     Clears context on exit.
     """
-    AccountingSystem.init_storage(storage_backend, enabled)
+    AccountingSystem.init_storage(
+        storage_backend,
+        enabled,
+        redis_turn_cache=redis_turn_cache,
+        turn_cache_ttl_s=turn_cache_ttl_s,
+        redis_url=redis_url,
+    )
     # When we spawn a task with asyncio.create_task(...), the current ContextVars are copied.
     # That copy still references the same AccountingContext object so we set a new one.
     # Create a brand-new AccountingContext for this bind scope
@@ -150,11 +166,27 @@ async def bind_accounting(envelope: AccountingEnvelope, storage_backend, *, enab
         _storage_var.reset(store_token)
 
 @contextmanager
-def bind_accounting_sync(envelope: AccountingEnvelope, storage_backend, *, enabled: bool = True):
+def bind_accounting_sync(
+    envelope: AccountingEnvelope,
+    storage_backend,
+    *,
+    enabled: bool = True,
+    redis_turn_cache: bool = True,
+    turn_cache_ttl_s: int = 3600,
+    redis_url: Optional[str] = None,
+):
     """
     Same behavior as bind_accounting but for sync code.
+    Explicit Redis settings let direct SDK callers use an independent turn
+    cache without mutating process-global platform configuration.
     """
-    AccountingSystem.init_storage(storage_backend, enabled)
+    AccountingSystem.init_storage(
+        storage_backend,
+        enabled,
+        redis_turn_cache=redis_turn_cache,
+        turn_cache_ttl_s=turn_cache_ttl_s,
+        redis_url=redis_url,
+    )
     AccountingSystem.set_context(
         user_id=envelope.user_id,
         session_id=envelope.session_id,

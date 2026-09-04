@@ -3,7 +3,7 @@ id: repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/README.md
 title: "Agent Harness Runtime"
 summary: "Framework-neutral event, timeline, and workspace contracts shared by KDCube agent adapters."
 tags: ["runtime", "harness", "agents", "events", "timeline", "workspace"]
-updated_at: 2026-08-21
+updated_at: 2026-09-04
 keywords:
   [
     "agent harness",
@@ -21,6 +21,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/timeline/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/workspace/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/structure-README.md
+  - repo:kdcube-ai-app/agents/README.md
 ---
 # Agent Harness Runtime
 
@@ -94,7 +95,7 @@ implementation imports a harness helper.
 | --- | --- |
 | Native ReAct Agent v2/v3 | All three scopes, plus ReAct-owned rounds, tools, prompts, cache, and online governance. |
 | Ported LangGraph example | Current-event framing, shared pull and checkout, canonical file refs, and the common code-exec artifact layout. |
-| Foreign-runtime wrappers | Shared pull/checkout can be exposed through local MCP; a trusted wrapper may also bind explicit conversation-file publication. The Press Claude Code wrapper is the worked implementation. |
+| Foreign-runtime wrappers | Shared pull/checkout can be exposed through local MCP; a trusted wrapper may also bind explicit conversation-file publication. `harness-claude-demo@1-0` is the focused public implementation. |
 | Conversation solution | Timeline payload parsing, turn-log persistence, turn-view reconstruction, and canonical ref presentation. |
 | Chat/canvas surfaces | Canonical `conv:fi:` refs and generic object download/action resolution. |
 | Namespace providers | Owner refs can be materialized through registered rehosters without teaching the harness each provider's storage layout. |
@@ -125,6 +126,22 @@ kdcube_ai_app/apps/chat/sdk/runtime/harness/
 Framework code belongs outside this tree. ReAct-specific implementations live
 under `sdk/solutions/react`; the worked ported-agent adapter lives under the
 `ported-langgraph-agents@2026-07-13` example app.
+
+## Direct SDK host
+
+The repository's [`agents/`](../../../../../agents/README.md) directory contains
+three direct SDK programs for native ReAct, LangGraph, and Claude Code. Each
+uses `DirectAgentHarness` with explicit identity, Redis, Postgres, and storage
+configuration. The facade binds one accounted turn, writes the common KDCube
+conversation record, and verifies that each Postgres row points to a
+materializable storage payload. The concrete adapter retains ownership of its
+loop and private continuation.
+
+Redis holds the short-lived per-turn accounting mirror. All three use the
+KDCube conversation tables in Postgres and durable payload storage. LangGraph
+additionally uses its own Postgres checkpoint tables for graph continuation.
+The examples run the same two-turn web-research and PDF/XLSX task and expose
+real `ChatCommunicator` events in the terminal.
 
 ## Remaining Source Extraction
 

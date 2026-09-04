@@ -4,7 +4,7 @@ title: "Recipe: Chat With A Claude Code Agent"
 summary: "End-to-end steps for putting the hosted Claude Code lane behind the chat component: declare the chat surface and the agent's runtime block, order the turn so refusals happen before spend, watch the lane so the run can be reached and stopped, and record a conversation that reloads without a ReAct timeline."
 status: active
 tags: ["recipes", "component", "chat", "claude-code", "hosted-agent", "run-to-completion"]
-updated_at: 2026-08-18
+updated_at: 2026-09-04
 keywords: ["default_chat", "accepts_steer", "accepts_followup", "live_control", "VITE_CHAT_AGENT_ID", "run-to-completion turn", "turn frame", "PreToolUse hook", "fail-closed spend gate", "in-band answer", "conversation record", "hosted agent chat"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/chat-with-react-agent-README.md
@@ -13,6 +13,8 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/claude/claude-code-workspace-bootstrap-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/conversation/hosted-agent-conversation-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/events/reactive-turn-delivery-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/chat-with-langgraph-agent-README.md
+  - repo:kdcube-ai-app/agents/claude/README.md
 ---
 
 # Recipe: Chat With A Claude Code Agent
@@ -208,6 +210,15 @@ having been visible live, which is the worst version of that bug.
   turn, but is never lost
 - reload shows every message of a folded turn, in the order they were sent
 - a conversation gets a title on its first turn
+
+The direct reference at
+[`agents/claude`](../../../../../agents/claude/README.md) constructs
+`ClaudeCodeAgent` around the local Claude Code executable. It runs two turns in
+one stable Claude session, records real communicator and accounting events,
+and creates a PDF and XLSX in a local workspace. Redis holds the accounting
+mirror; Postgres and configured storage hold the common KDCube conversation
+record. Claude's stable CLI session remains its private continuation. Its
+Bash/file tools run at the trusted local Claude Code process boundary.
 
 ## Common failures
 
