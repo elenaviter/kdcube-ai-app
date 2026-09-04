@@ -38,6 +38,10 @@ bundles:
       surfaces:
         as_provider:
           mcp:
+            delegated_mcp_gateway:
+              auth:
+                mode: delegated_proxy
+                authority_id: delegated_client
             remote_mcp_proxy:
               auth:
                 mode: delegated_proxy
@@ -61,6 +65,10 @@ bundles:
             allow_private_networks: false
             allowed_hosts: []
         delegated_credentials:
+          gateway:
+            requestable_discovery:
+              caller_types:
+              - resident
           catalog:
             active_cache_seconds: 300
             version_cache_seconds: 3600
@@ -424,6 +432,10 @@ bundles:
                   description: Reload one exact application from descriptor authority.
                   grants:
                   - kdcube.management.application.reload
+            - resource: '*/api/integrations/bundles/*/*/connection-hub@1-0/public/mcp/delegated_mcp_gateway*'
+              label: Connection Hub delegated MCP gateway
+              identity_scope: grantor
+              resource_selection: true
             - resource: '*/api/integrations/bundles/*/*/connection-hub@1-0/public/mcp/remote_mcp_proxy*'
               label: Connected external MCP tools
               identity_scope: grantor
@@ -3081,6 +3093,20 @@ bundles:
           default_agent: main
           agents:
             main:
+              delegated_resource_families:
+              - id: user_external_mcp
+                resource_kinds:
+                - remote_mcp
+                authority_sources:
+                - delegated_card
+                transports:
+                - streamable-http
+                resource_patterns:
+                - urn:connection-hub:remote-mcp:*
+                allowed_tools:
+                - '*'
+                max_resources: 8
+                max_tools_per_resource: 64
               tools:
               - kind: python
                 module: kdcube_ai_app.apps.chat.sdk.tools.io_tools

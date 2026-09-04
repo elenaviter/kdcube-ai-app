@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Mapping, Optional
 _core = import_module("connection_hub.delegated_mcp")
 
 
-def _kdcube_runtime_local_base() -> str:
+def kdcube_runtime_local_base() -> str:
     try:
         from kdcube_ai_app.apps.chat.sdk.config import get_settings
 
@@ -20,6 +20,11 @@ def _kdcube_runtime_local_base() -> str:
     except Exception:
         port = 8020
     return f"http://127.0.0.1:{port}"
+
+
+# Kept for callers outside this checkout that imported the earlier private
+# helper before the public host adapter was added.
+_kdcube_runtime_local_base = kdcube_runtime_local_base
 
 
 async def _kdcube_default_minter(
@@ -48,7 +53,7 @@ def self_hosted_url(
     return _core.self_hosted_url(
         conn,
         url,
-        runtime_local_base=runtime_local_base or _kdcube_runtime_local_base(),
+        runtime_local_base=runtime_local_base or kdcube_runtime_local_base(),
     )
 
 
@@ -73,7 +78,7 @@ async def resolve_mcp_server_map(
         consent_gate=consent_gate,
         bearer_provider=bearer_provider,
         drop_sink=drop_sink,
-        runtime_local_base=runtime_local_base or _kdcube_runtime_local_base(),
+        runtime_local_base=runtime_local_base or kdcube_runtime_local_base(),
     )
 
 
@@ -86,5 +91,6 @@ def __dir__() -> list[str]:
 
 
 __all__ = sorted(
-    name for name in dir(_core) if not name.startswith("_")
+    {name for name in dir(_core) if not name.startswith("_")}
+    | {"kdcube_runtime_local_base"}
 )

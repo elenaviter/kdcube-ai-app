@@ -17,7 +17,7 @@ hooks against its chosen storage. No storage choice lives in this module.
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import Any
+from typing import Any, Mapping
 
 from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers import (
     NamedServiceContext,
@@ -187,15 +187,61 @@ class ConnectionsProviderBase(NamedServiceProvider):
         payload = dict(request.payload or {})
         client_id = str(payload.get("client_id") or "").strip()
         resource = str(payload.get("resource") or "").strip()
-        if not client_id or not resource:
+        access_id = str(payload.get("access_id") or "").strip()
+        resident_profile_lookup = bool(access_id)
+        if not client_id or (not resident_profile_lookup and not resource):
             return self._error(
                 "connections_agent_grant_args_required",
-                "client_id and resource are required", status=400,
+                (
+                    "client_id and either resource or resident profile "
+                    "access_id are required"
+                ),
+                status=400,
             )
         try:
-            token = await self.agent_grant_token(ctx, client_id=client_id, resource=resource)
+            if resident_profile_lookup:
+                resident = await self.resident_agent_grant_for_access_id(
+                    ctx,
+                    client_id=client_id,
+                    access_id=access_id,
+                )
+                if resident is None:
+                    token = None
+                else:
+                    raw = dict(resident)
+                    token_value = str(raw.get("access_token") or "").strip()
+                    card = raw.get("card")
+                    if (
+                        not token_value
+                        or str(raw.get("client_id") or "").strip() != client_id
+                        or not str(raw.get("access_id") or "").strip()
+                        or not isinstance(card, Mapping)
+                    ):
+                        raise ValueError("resident agent grant contract is invalid")
+                    token = {
+                        "access_token": token_value,
+                        "expires_at": str(raw.get("expires_at") or "") or None,
+                        "access_id": str(raw["access_id"]),
+                        "client_id": client_id,
+                        "identity_scope": str(
+                            raw.get("identity_scope") or "grantor"
+                        ),
+                        "card_revision": int(raw.get("card_revision") or 0),
+                        "card": dict(card),
+                    }
+            else:
+                token = await self.agent_grant_token(
+                    ctx,
+                    client_id=client_id,
+                    resource=resource,
+                )
         except Exception as exc:
-            return self._error("connections_agent_grant_token_failed", str(exc))
+            message = (
+                "resident Card resolution failed"
+                if resident_profile_lookup
+                else str(exc)
+            )
+            return self._error("connections_agent_grant_token_failed", message)
         if token is None:
             # Consent pending: the user has not granted THIS agent the resource.
             return NamedServiceResponse.ok_response(
@@ -204,10 +250,14 @@ class ConnectionsProviderBase(NamedServiceProvider):
                 object={},
                 attrs={"has_token": False},
             )
+        if resident_profile_lookup:
+            result = dict(token)
+        else:
+            result = ConnectionToken.coerce(token).to_dict()
         return NamedServiceResponse.ok_response(
             provider=self.provider_identity(),
             namespace=NAMESPACE,
-            object=ConnectionToken.coerce(token).to_dict(),
+            object=result,
             attrs={"has_token": True},
         )
 
@@ -285,6 +335,23 @@ class ConnectionsProviderBase(NamedServiceProvider):
         Concrete default: no grant (``None``). A bundle that backs per-agent
         delegated grants (the Connection Hub) overrides this over its automation
         access store; providers that do not simply expose no agent grants."""
+        return None
+
+    async def resident_agent_grant_for_access_id(
+        self,
+        ctx: NamedServiceContext,
+        *,
+        client_id: str,
+        access_id: str,
+    ) -> Mapping[str, Any] | None:
+        """Return one resident profile's exact card-bound credential.
+
+        The default exposes no resident authority. Connection Hub implements
+        this against its live Card service; the response includes the public
+        Card view observed with the credential so runtime projection can
+        reject a subsequent Gateway observation race.
+        """
+
         return None
 
     async def agent_grant_state(

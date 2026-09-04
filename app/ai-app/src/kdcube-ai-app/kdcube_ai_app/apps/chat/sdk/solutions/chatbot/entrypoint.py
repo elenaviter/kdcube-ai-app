@@ -503,6 +503,11 @@ class BaseEntrypoint:
             bundle_id=bundle_id,
             timeout_seconds=timeout,
         )
+        catalog = await self._attach_resident_resource_catalog(
+            catalog,
+            agent_id,
+            conversation_id=conversation_id,
+        )
         catalog = await self._attach_named_service_realms(catalog)
         catalog = await self._attach_claim_coverage(
             catalog,
@@ -510,6 +515,119 @@ class BaseEntrypoint:
             conversation_id=conversation_id,
         )
         return await self._attach_delegated_mcp_consent(catalog, agent_id)
+
+    RESIDENT_RESOURCE_CATALOG_BUDGET_SECONDS = 3.0
+
+    async def _attach_resident_resource_catalog(
+        self,
+        catalog: Dict[str, Any],
+        agent_id: str,
+        *,
+        conversation_id: str = "",
+    ) -> Dict[str, Any]:
+        """Attach current effective resources when the host supplies a loader."""
+
+        loader = getattr(self, "resident_resource_facts_loader", None)
+        fallback_catalog = copy.deepcopy(dict(catalog))
+        rows = fallback_catalog.get("mcp")
+        if isinstance(rows, list):
+            fallback_catalog["mcp"] = [
+                row
+                for row in rows
+                if not (
+                    isinstance(row, Mapping)
+                    and str(row.get("authority_source") or "").strip()
+                    == "delegated_card"
+                )
+            ]
+        try:
+            from kdcube_ai_app.apps.chat.sdk.runtime.resident_resources import (
+                attach_effective_resource_catalog,
+                delegated_mcp_bindings_from_catalog,
+                resident_agent_ceiling_from_bundle_props,
+                resolve_current_resident_runtime_projection,
+            )
+
+            declared, _delegated_servers, _delegated_aliases = (
+                delegated_mcp_bindings_from_catalog(catalog)
+            )
+            if (
+                loader is None
+                and not declared
+                and not catalog.get("delegated_resource_families")
+            ):
+                return catalog
+            identity = self._agent_selection_identity()
+            grantor_subject = str(identity.get("user_id") or "").strip()
+            application = str(identity.get("bundle_id") or "").strip()
+            if not grantor_subject or not application:
+                return fallback_catalog
+            disabled: Dict[str, Any] = {}
+            if self.pg_pool is not None:
+                selection = await self._agent_selection_store(identity).get_selection(
+                    user_id=grantor_subject,
+                    bundle_id=application,
+                    agent_id=agent_id,
+                    conversation_id=conversation_id,
+                )
+                if isinstance((selection or {}).get("disabled"), Mapping):
+                    disabled = dict(selection["disabled"])
+            ceiling = resident_agent_ceiling_from_bundle_props(
+                self.bundle_props,
+                tenant=str(identity.get("tenant") or ""),
+                project=str(identity.get("project") or ""),
+                application=application,
+                agent_id=agent_id,
+                declared_resource_ids=declared,
+            )
+            if loader is None:
+                if not ceiling.resource_families and not ceiling.declared_resource_ids:
+                    return fallback_catalog
+                from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.resident_gateway import (
+                    build_resident_gateway_runtime_ports,
+                )
+
+                loader = build_resident_gateway_runtime_ports(
+                    self,
+                    tenant=ceiling.tenant,
+                    project=ceiling.project,
+                    application=ceiling.application,
+                    agent_id=ceiling.agent_id,
+                ).facts_loader
+            resolved = await asyncio.wait_for(
+                resolve_current_resident_runtime_projection(
+                    loader=loader,
+                    ceiling=ceiling,
+                    grantor_subject=grantor_subject,
+                    disabled_selection=disabled,
+                ),
+                timeout=self.RESIDENT_RESOURCE_CATALOG_BUDGET_SECONDS,
+            )
+            out = attach_effective_resource_catalog(catalog, resolved.inventory)
+            out["resource_offers_by_access_id"] = {
+                access_id: [item.to_dict() for item in resources]
+                for access_id, resources in (
+                    resolved.requestable_resources_by_access_id.items()
+                )
+            }
+            out["resource_discovery_by_access_id"] = dict(
+                resolved.requestable_discovery_by_access_id
+            )
+            return out
+        except asyncio.TimeoutError:
+            self.logger.log(
+                "[agent_capabilities] resident resource resolution exceeded "
+                f"{self.RESIDENT_RESOURCE_CATALOG_BUDGET_SECONDS}s; "
+                "delegated resource rows stay unavailable",
+                "WARNING",
+            )
+        except Exception:
+            self.logger.log(
+                "[agent_capabilities] resident resource resolution unavailable; "
+                "delegated resource rows stay unavailable",
+                "WARNING",
+            )
+        return fallback_catalog
 
     # Realm resolution rides the same fail-open discipline as coverage: the
     # menu renders with plain namespace rows on any miss.
@@ -818,7 +936,8 @@ class BaseEntrypoint:
         """Merge-write partial selection toggles, clamped to the live inventory.
 
         Body: ``{"data": {"agent": "main", "disabled": {"tools": {"web_tools": true},
-        "mcp": {}, "named_services": {}, "skills": [...], "subagents": true}}}``.
+        "mcp": {}, "named_services": {}, "resources": {}, "skills": [...],
+        "subagents": true}}}``.
         Per-key toggles: ``true``/name-list disables, ``false`` re-enables; keys
         absent from the patch keep their state. ``replace: true`` swaps the
         whole record. ``subagents`` is the one bare toggle (delegation on/off

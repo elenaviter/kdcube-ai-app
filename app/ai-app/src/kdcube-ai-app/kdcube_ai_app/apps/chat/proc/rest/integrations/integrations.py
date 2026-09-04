@@ -53,11 +53,15 @@ from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.discovery im
     bind_named_service_discovery,
 )
 from kdcube_ai_app.apps.chat.sdk.infra.bundle_operations import (
+    BundleMCPCall,
+    BundleMCPCaller,
+    BundleMCPResult,
     BundleNamedServiceCall,
     BundleNamedServiceResult,
     BundleOperationCall,
     BundleOperationStreamCall,
     BundleOperationStreamResult,
+    bind_bundle_mcp_caller,
     bind_bundle_named_service_caller,
     bind_bundle_operation_caller,
     bind_bundle_operation_stream_caller,
@@ -4950,6 +4954,126 @@ async def _call_bundle_mcp_limited(
         return await _mcp_application_not_ready_response(request, exc)
 
 
+def _build_peer_bundle_mcp_caller(
+        *,
+        request: Request,
+        session: UserSession,
+        tenant_id: str,
+        project_id: str,
+        bundle_id: str,
+        route: str,
+        surface_alias: str,
+) -> BundleMCPCaller:
+    async def _call_peer_bundle_mcp(call: BundleMCPCall) -> BundleMCPResult:
+        target_tenant = call.tenant or tenant_id
+        target_project = call.project or project_id
+        target = (
+            target_tenant,
+            target_project,
+            call.bundle_id,
+            call.route,
+            call.endpoint_alias,
+        )
+        state = dict(request.scope.get("state") or {})
+        chain = tuple(state.get("_kdcube_peer_mcp_chain") or ())
+        current = (
+            tenant_id,
+            project_id,
+            bundle_id,
+            route,
+            surface_alias,
+        )
+        if target in chain or target == current or len(chain) >= 8:
+            raise RuntimeError("Peer bundle MCP call cycle detected")
+        try:
+            body = json.dumps(
+                dict(call.message or {}),
+                ensure_ascii=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Peer bundle MCP message must be JSON") from exc
+        if len(body) > 1024 * 1024:
+            raise ValueError("Peer bundle MCP message is too large")
+
+        state["_kdcube_peer_mcp_chain"] = (*chain, current)
+        peer_scope = dict(request.scope)
+        peer_scope["method"] = "POST"
+        route_prefix = "/public" if call.route == "public" else ""
+        target_path = (
+            f"/api/integrations/bundles/{target_tenant}/{target_project}/"
+            f"{call.bundle_id}{route_prefix}/mcp/{call.endpoint_alias}"
+        )
+        if call.mcp_path:
+            target_path = f"{target_path}/{call.mcp_path}"
+        peer_scope["path"] = target_path
+        peer_scope["raw_path"] = target_path.encode("utf-8")
+        peer_scope["query_string"] = b""
+        peer_scope["state"] = state
+        # This is a new MCP hop with its own JSON-RPC envelope. Preserve the
+        # authenticated request and tracing headers, but never project the
+        # outer client's protocol/session/argument routing onto the peer.
+        # A modern outer request paired with the minimal internal envelope is
+        # otherwise rejected by the peer as a mismatched MCP request.
+        representation_headers = {
+            b"accept",
+            b"connection",
+            b"content-encoding",
+            b"content-length",
+            b"content-type",
+            b"last-event-id",
+            b"te",
+            b"transfer-encoding",
+        }
+        headers = []
+        for key, value in request.scope.get("headers", ()):
+            normalized = key.lower()
+            if normalized in representation_headers or normalized.startswith(
+                b"mcp-"
+            ):
+                continue
+            headers.append((key, value))
+        headers.extend(
+            (
+                (b"accept", b"application/json"),
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode("ascii")),
+            )
+        )
+        peer_scope["headers"] = headers
+        delivered = False
+
+        async def _receive() -> dict[str, Any]:
+            nonlocal delivered
+            if delivered:
+                return {"type": "http.request", "body": b"", "more_body": False}
+            delivered = True
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        peer_request = Request(peer_scope, _receive)
+        response = await _call_bundle_mcp_inner(
+            tenant=target_tenant,
+            project=target_project,
+            bundle_id=call.bundle_id,
+            request=peer_request,
+            endpoint_alias=call.endpoint_alias,
+            route=call.route,
+            mcp_path=call.mcp_path,
+            session=session,
+        )
+        response_body = bytes(getattr(response, "body", b""))
+        return BundleMCPResult(
+            status_code=int(response.status_code),
+            body=response_body,
+            headers={
+                "content-type": str(response.headers.get("content-type") or "")
+            },
+        )
+
+    return _call_peer_bundle_mcp
+
+
 async def _call_bundle_mcp_inner(
         *,
         tenant: str,
@@ -5067,12 +5191,23 @@ async def _call_bundle_mcp_inner(
                 pg_pool=_get_app_pg_pool(request),
             )
 
+        _call_peer_bundle_mcp = _build_peer_bundle_mcp_caller(
+            request=request,
+            session=resolved_session,
+            tenant_id=tenant_id,
+            project_id=project_id,
+            bundle_id=spec_resolved.id,
+            route=route,
+            surface_alias=endpoint_alias,
+        )
+
         with (
             bind_current_request_context(comm_context, comm=runtime_comm),
             bind_named_service_discovery(
                 RedisNamedServiceDiscovery(peer_redis, tenant=tenant_id, project=project_id)
             ),
             bind_bundle_named_service_caller(_call_peer_bundle_named_service),
+            bind_bundle_mcp_caller(_call_peer_bundle_mcp),
             bind_bundle_operation_caller(_call_peer_bundle_operation),
             bind_bundle_operation_stream_caller(_call_peer_bundle_operation_stream),
         ):
@@ -5681,12 +5816,23 @@ async def _call_bundle_op_inner(
                 pg_pool=_get_app_pg_pool(request),
             )
 
+        _call_peer_bundle_mcp = _build_peer_bundle_mcp_caller(
+            request=request,
+            session=session,
+            tenant_id=tenant_id,
+            project_id=project_id,
+            bundle_id=spec_resolved.id,
+            route=route,
+            surface_alias=operation,
+        )
+
         with (
             bind_current_request_context(comm_context, comm=runtime_comm),
             bind_named_service_discovery(
                 RedisNamedServiceDiscovery(peer_redis, tenant=tenant_id, project=project_id)
             ),
             bind_bundle_named_service_caller(_call_peer_bundle_named_service),
+            bind_bundle_mcp_caller(_call_peer_bundle_mcp),
             bind_bundle_operation_caller(_call_peer_bundle_operation),
             bind_bundle_operation_stream_caller(_call_peer_bundle_operation_stream),
         ):

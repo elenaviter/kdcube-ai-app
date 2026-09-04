@@ -249,6 +249,34 @@ class _AgentGrantProvider(FakeConnectionsProvider):
             return ConnectionToken(access_token="agent-bound-tok", scope=("memories:read",))
         return None
 
+    async def resident_agent_grant_for_access_id(
+        self,
+        ctx,
+        *,
+        client_id,
+        access_id,
+    ):
+        del ctx
+        expected_access_id = "agent-profile"
+        if (
+            client_id != "kdcube-agent:app:lg-react"
+            or access_id != expected_access_id
+        ):
+            return None
+        return {
+            "access_token": "resident-bound-tok",
+            "expires_at": 1_900_000_000,
+            "access_id": expected_access_id,
+            "client_id": client_id,
+            "identity_scope": "grantor",
+            "card_revision": 7,
+            "card": {
+                "access_id": expected_access_id,
+                "client_id": client_id,
+                "caller_kind": "resident",
+            },
+        }
+
     async def agent_grant_state(self, ctx, *, client_id, namespace, operation):
         if namespace != "mail":
             return {"governed": False}
@@ -281,6 +309,22 @@ async def test_agent_grant_token_pending_returns_none():
     connections = _agent_client()
     # A different agent has no grant -> consent pending -> None (not an error).
     assert await connections.agent_grant_token("kdcube-agent:app:other", "https://h/mcp/mem") is None
+
+
+@pytest.mark.asyncio
+async def test_resident_agent_grant_requires_exact_access_id():
+    connections = _agent_client()
+    exact = await connections.resident_agent_grant_for_access_id(
+        "kdcube-agent:app:lg-react",
+        access_id="agent-profile",
+    )
+    assert exact["access_token"] == "resident-bound-tok"
+    assert exact["access_id"] == "agent-profile"
+    assert exact["card_revision"] == 7
+    assert await connections.resident_agent_grant_for_access_id(
+        "kdcube-agent:app:lg-react",
+        access_id="another-card",
+    ) is None
 
 
 @pytest.mark.asyncio

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Protocol
 
 import logging
 import os
@@ -23,6 +23,9 @@ from kdcube_ai_app.apps.chat.sdk.runtime.mcp.client import (
 logger = logging.getLogger(__name__)
 
 
+MCPAuthHeadersProvider = Callable[[str], Awaitable[Mapping[str, str]]]
+
+
 @dataclass
 class MCPServerSpec:
     server_id: str
@@ -33,6 +36,11 @@ class MCPServerSpec:
     args: List[str] = field(default_factory=list)
     env: Optional[Dict[str, str]] = None
     auth_profile: Optional[Dict[str, Any]] = None
+    auth_headers_provider: Optional[MCPAuthHeadersProvider] = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
     protocol_mode: str = "auto"
     read_timeout_seconds: Optional[float] = None
     follow_redirects: bool = True
@@ -127,6 +135,31 @@ class PythonSDKMCPAdapter:
         )
 
     async def _auth_headers(self) -> Dict[str, str]:
+        provider = self.server.auth_headers_provider
+        if provider is not None:
+            try:
+                provided = await provider(self.server.server_id)
+                if not isinstance(provided, Mapping):
+                    raise TypeError
+                headers: Dict[str, str] = {}
+                for raw_name, raw_value in provided.items():
+                    name = str(raw_name or "").strip()
+                    value = str(raw_value or "").strip()
+                    if (
+                        not name
+                        or not value
+                        or len(name) > 256
+                        or len(value) > 16_384
+                        or "\n" in name
+                        or "\r" in name
+                        or "\n" in value
+                        or "\r" in value
+                    ):
+                        raise ValueError
+                    headers[name] = value
+                return headers
+            except Exception:
+                raise RuntimeError("MCP authorization provider unavailable") from None
         auth = self.server.auth_profile or {}
         if not isinstance(auth, dict):
             return {}

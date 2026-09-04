@@ -5,7 +5,7 @@ summary: "Connection Hub role for consented connections where a credential/proof
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "delegated-connections", "oauth", "mcp", "consent", "grants"]
 keywords: ["delegated connections", "Delegated by KDCube", "delegated access cards", "OAuth client grant", "manual automation token", "registry_access_id", "grant revocation"]
-updated_at: 2026-08-26
+updated_at: 2026-09-04
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authority-providers/authority-provider-runtime-README.md
@@ -386,10 +386,12 @@ OAuth rows follow these rules:
   disconnect orphan);
 - the row's label is the client's DCR registration name, so users see
   "Claude", not a `dcr-…` id;
-- a fresh consent from a NEW `dcr-…` registration supersedes the old row
-  (same grantor + resource, matching redirect origin — the app's stable
-  identity across re-registrations): the account binding carries over and the
-  stale row is revoked, so DCR reconnects never pile up rows;
+- every server-issued `dcr-…` id is a separate caller and receives its own
+  row; loopback redirect details are callback channels rather than reconnect
+  identity, so one native client never inherits from or retires another;
+- reconsent and refresh under the same client id update that exact row, while
+  RFC 7009 disconnect, owner revocation, and expiry clean up cards whose clients
+  no longer use them;
 - the row expires with the refresh-token TTL, so a connection whose refresh
   token can no longer be used disappears on its own;
 - registry writes never fail token issuance.

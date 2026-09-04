@@ -5,6 +5,8 @@ import asyncio
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
+import pytest
+
 from kdcube_ai_app.apps.chat.sdk.runtime.mcp.mcp_adapter import (
     MCPServerSpec,
     MCPToolSchema,
@@ -102,6 +104,140 @@ def test_mcp_services_config_accepts_dict_payload():
     assert server.protocol_mode == "legacy"
     assert server.read_timeout_seconds == 17.5
     assert server.auth_profile == {"type": "bearer", "secret": "bundles.react.mcp@2026-03-09.secrets.docs.token"}
+
+
+def test_trusted_process_provider_only_binds_explicitly_marked_server():
+    async def _headers(_server_id):
+        return {"Authorization": "Bearer current-card"}
+
+    services_cfg = {
+        "mcpServers": {
+            "gateway": {
+                "transport": "http",
+                "url": "https://hub.example/mcp",
+                "auth": {"type": "trusted_process"},
+            },
+            "static": {
+                "transport": "http",
+                "url": "https://static.example/mcp",
+                "auth": {"type": "bearer", "secret": "b:mcp.static.token"},
+            },
+        }
+    }
+    subsystem = MCPToolsSubsystem(
+        bundle_id="b1",
+        mcp_tool_specs=[
+            {"server_id": "gateway", "alias": "gateway"},
+            {"server_id": "static", "alias": "static"},
+        ],
+        adapter_factory=_dummy_factory,
+        services_config=services_cfg,
+        auth_headers_provider=_headers,
+    )
+
+    gateway = subsystem._server_spec("gateway")
+    static = subsystem._server_spec("static")
+    assert gateway is not None
+    assert gateway.auth_headers_provider is _headers
+    assert static is not None
+    assert static.auth_headers_provider is None
+    assert static.auth_profile == {
+        "type": "bearer",
+        "secret": "b:mcp.static.token",
+    }
+
+
+def test_trusted_process_server_without_provider_fails_closed():
+    subsystem = MCPToolsSubsystem(
+        bundle_id="b1",
+        mcp_tool_specs=[{"server_id": "gateway", "alias": "gateway"}],
+        adapter_factory=_dummy_factory,
+        services_config={
+            "mcpServers": {
+                "gateway": {
+                    "transport": "http",
+                    "url": "https://hub.example/mcp",
+                    "auth": {"type": "trusted_process"},
+                }
+            }
+        },
+    )
+
+    assert subsystem._server_spec("gateway") is None
+
+
+def test_auth_provider_failure_is_secret_safe_and_provider_is_not_repr():
+    marker = "provider-secret-must-not-escape"
+
+    async def _failing_provider(_server_id):
+        raise RuntimeError(marker)
+
+    spec = MCPServerSpec(
+        server_id="gateway",
+        display_name="Gateway",
+        transport="http",
+        endpoint="https://hub.example/mcp",
+        auth_headers_provider=_failing_provider,
+    )
+    assert marker not in repr(spec)
+
+    with pytest.raises(RuntimeError) as caught:
+        asyncio.run(PythonSDKMCPAdapter(spec)._auth_headers())
+    assert str(caught.value) == "MCP authorization provider unavailable"
+    assert marker not in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_trusted_process_transport_errors_are_secret_safe(caplog):
+    marker = "transport-error-with-runtime-only-token"
+
+    async def _headers(_server_id):
+        return {"Authorization": "Bearer runtime-only-token"}
+
+    class _FailingAdapter:
+        def __init__(self, server):
+            self.server = server
+
+        async def list_tools(self):
+            raise RuntimeError(marker)
+
+        async def call_tool(self, tool_id, params, *, trace_id=None):
+            del tool_id, params, trace_id
+            raise RuntimeError(marker)
+
+    subsystem = MCPToolsSubsystem(
+        bundle_id="bundle@1-0",
+        mcp_tool_specs=[
+            {"server_id": "gateway", "alias": "gateway", "tools": ["search"]}
+        ],
+        services_config={
+            "mcpServers": {
+                "gateway": {
+                    "transport": "streamable-http",
+                    "url": "https://gateway.example.test/mcp",
+                    "auth": {"type": "trusted_process"},
+                    "ttl_seconds": 0,
+                }
+            }
+        },
+        auth_headers_provider=_headers,
+        adapter_factory=_FailingAdapter,
+        cache=None,
+    )
+
+    assert await subsystem.build_tool_entries() == []
+    result = await subsystem.call_tool(
+        alias="gateway",
+        tool_id="search",
+        params={"query": "test"},
+    )
+
+    assert result == {
+        "error": "MCP call_tool failed: authorized transport unavailable"
+    }
+    assert marker not in caplog.text
+    assert "runtime-only-token" not in caplog.text
+    assert marker not in repr(result)
 
 
 def test_export_services_config_round_trips_server_map():

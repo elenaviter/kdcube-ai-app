@@ -36,6 +36,7 @@ LOGGER = logging.getLogger("kdcube.sdk.bundle_operations")
 BundleOperationCaller = Callable[["BundleOperationCall"], Awaitable[Mapping[str, Any]]]
 BundleOperationStreamCaller = Callable[["BundleOperationStreamCall"], Awaitable["BundleOperationStreamResult"]]
 BundleNamedServiceCaller = Callable[["BundleNamedServiceCall"], Awaitable["BundleNamedServiceResult"]]
+BundleMCPCaller = Callable[["BundleMCPCall"], Awaitable["BundleMCPResult"]]
 
 BUNDLE_OPERATION_CALLER_CV: ContextVar[BundleOperationCaller | None] = ContextVar(
     "BUNDLE_OPERATION_CALLER_CV",
@@ -47,6 +48,10 @@ BUNDLE_OPERATION_STREAM_CALLER_CV: ContextVar[BundleOperationStreamCaller | None
 )
 BUNDLE_NAMED_SERVICE_CALLER_CV: ContextVar[BundleNamedServiceCaller | None] = ContextVar(
     "BUNDLE_NAMED_SERVICE_CALLER_CV",
+    default=None,
+)
+BUNDLE_MCP_CALLER_CV: ContextVar[BundleMCPCaller | None] = ContextVar(
+    "BUNDLE_MCP_CALLER_CV",
     default=None,
 )
 
@@ -102,6 +107,31 @@ class BundleNamedServiceCall:
 @dataclass(frozen=True)
 class BundleNamedServiceResult:
     value: Any
+
+
+@dataclass(frozen=True)
+class BundleMCPCall:
+    """Credential-free call to another MCP surface in the same KDCube.
+
+    Platform ingress owns the authenticated request and binds the caller. The
+    app supplies only target coordinates and one JSON-RPC message; cookies,
+    bearers, and delegated credential state never cross this SDK contract.
+    """
+
+    bundle_id: str
+    endpoint_alias: str
+    message: dict[str, Any]
+    tenant: str | None = None
+    project: str | None = None
+    route: str = "public"
+    mcp_path: str = ""
+
+
+@dataclass(frozen=True)
+class BundleMCPResult:
+    status_code: int
+    body: bytes
+    headers: dict[str, str] = field(default_factory=dict)
 
 
 _DISABLED_PROP_VALUES: frozenset[str] = frozenset({"false", "disable", "disabled", "off", "0"})
@@ -882,6 +912,19 @@ def get_current_bundle_named_service_caller() -> BundleNamedServiceCaller | None
     return BUNDLE_NAMED_SERVICE_CALLER_CV.get()
 
 
+@contextmanager
+def bind_bundle_mcp_caller(caller: BundleMCPCaller | None):
+    token = BUNDLE_MCP_CALLER_CV.set(caller)
+    try:
+        yield caller
+    finally:
+        BUNDLE_MCP_CALLER_CV.reset(token)
+
+
+def get_current_bundle_mcp_caller() -> BundleMCPCaller | None:
+    return BUNDLE_MCP_CALLER_CV.get()
+
+
 async def call_bundle_operation(
     *,
     bundle_id: str,
@@ -956,7 +999,39 @@ async def call_bundle_named_service(
     )
 
 
+async def call_bundle_mcp_surface(
+    *,
+    bundle_id: str,
+    endpoint_alias: str,
+    message: Mapping[str, Any],
+    tenant: str | None = None,
+    project: str | None = None,
+    route: str = "public",
+    mcp_path: str = "",
+) -> BundleMCPResult:
+    caller = get_current_bundle_mcp_caller()
+    if caller is None:
+        raise RuntimeError("No request-bound bundle MCP caller is available")
+    selected_route = str(route or "public").strip().lower()
+    if selected_route not in {"public", "operations"}:
+        raise ValueError("Bundle MCP route must be public or operations")
+    return await caller(
+        BundleMCPCall(
+            bundle_id=str(bundle_id or "").strip(),
+            endpoint_alias=str(endpoint_alias or "").strip(),
+            message=copy.deepcopy(dict(message or {})),
+            tenant=str(tenant or "").strip() or None,
+            project=str(project or "").strip() or None,
+            route=selected_route,
+            mcp_path=str(mcp_path or "").strip().strip("/"),
+        )
+    )
+
+
 __all__ = [
+    "BundleMCPCall",
+    "BundleMCPCaller",
+    "BundleMCPResult",
     "BundleOperationCall",
     "BundleOperationCaller",
     "BundleNamedServiceCall",
@@ -966,12 +1041,15 @@ __all__ = [
     "BundleOperationStreamCaller",
     "BundleOperationStreamResult",
     "bind_bundle_named_service_caller",
+    "bind_bundle_mcp_caller",
     "bind_bundle_operation_caller",
     "bind_bundle_operation_stream_caller",
     "call_bundle_named_service",
+    "call_bundle_mcp_surface",
     "call_bundle_operation",
     "call_bundle_operation_stream",
     "get_current_bundle_named_service_caller",
+    "get_current_bundle_mcp_caller",
     "get_current_bundle_operation_caller",
     "get_current_bundle_operation_stream_caller",
     "invoke_local_bundle_named_service",

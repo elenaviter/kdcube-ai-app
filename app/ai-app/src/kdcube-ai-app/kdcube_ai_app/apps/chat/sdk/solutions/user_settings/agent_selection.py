@@ -17,6 +17,7 @@ policy. The value is a deny-list record:
         "tools": {"<alias>": true | ["<tool_name>", ...]},
         "mcp": {"<server_id>": true | ["<tool_name>", ...]},
         "named_services": {"<namespace>": true},
+        "resources": {"<resource_id>": true | ["<operation>", ...]},
         "skills": ["<namespace>.<skill_id>", ...],
         "subagents": true
       },
@@ -66,7 +67,7 @@ _MODEL_UNSET = object()
 _INSTRUCTIONS_UNSET = object()
 _PRESENTATION_UNSET = object()
 
-_DICT_CATEGORIES = ("tools", "mcp", "named_services")
+_DICT_CATEGORIES = ("tools", "mcp", "named_services", "resources")
 
 
 def agent_selection_key(agent_id: str, *, conversation_id: str = "") -> str:
@@ -83,7 +84,7 @@ def merge_selection_patch(
 ) -> dict[str, Any]:
     """Merge a partial toggle patch over the current ``disabled`` record.
 
-    Dict categories (tools / mcp / named_services): per-key toggles —
+    Dict categories (tools / mcp / named_services / resources): per-key toggles —
     ``true`` or a non-empty name list sets/replaces the denial, ``false`` /
     ``null`` / empty list removes it; keys absent from the patch keep their
     current state. Skills accept either a list (replaces the whole denied set)

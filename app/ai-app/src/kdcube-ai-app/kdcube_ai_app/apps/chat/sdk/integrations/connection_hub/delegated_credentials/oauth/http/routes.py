@@ -1181,8 +1181,7 @@ def _accounts_needed_for_consent(request, scopes, connected_accounts, *, cfg=Non
 async def _seed_account_scope_for_consent(
     request, *, subject: str, client_id: str, resource: str, cfg
 ) -> dict:
-    """Pre-check the picker from the client's existing card (re-consent) and
-    from a DCR sibling this consent will supersede."""
+    """Pre-check the picker from this exact client's existing Card."""
     try:
         service = get_automation_access(request)
         return await service.oauth_seed_account_scope(

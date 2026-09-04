@@ -17,7 +17,10 @@ from starlette.routing import Route
 from kdcube_ai_app.apps.chat.proc.rest.integrations import integrations
 from kdcube_ai_app.auth.sessions import UserType
 from kdcube_ai_app.apps.chat.sdk.runtime.http_ops import BundleBinaryResponse
-from kdcube_ai_app.apps.chat.sdk.infra.bundle_operations import call_bundle_operation
+from kdcube_ai_app.apps.chat.sdk.infra.bundle_operations import (
+    call_bundle_mcp_surface,
+    call_bundle_operation,
+)
 from kdcube_ai_app.apps.chat.sdk.solutions.chatbot.entrypoint import BaseEntrypoint
 from kdcube_ai_app.apps.chat.sdk.solutions.chatbot.entrypoint_with_economic import BaseEntrypointWithEconomics
 from kdcube_ai_app.infra.plugin.bundle_loader import (
@@ -1481,6 +1484,287 @@ async def test_call_bundle_mcp_inner_keeps_request_context_during_asgi_dispatch(
         "bundle_id": "bundle.demo",
         "routing_bundle_id": "bundle.demo",
     }
+
+
+@pytest.mark.asyncio
+async def test_call_bundle_op_inner_binds_authenticated_peer_mcp_dispatch(monkeypatch):
+    class _TargetWorkflow:
+        @mcp(alias="target", route="public")
+        def target_mcp(self, request=None, **kwargs):
+            access_id = (
+                (request.scope.get("state") or {})
+                .get("delegated_credential", {})
+                .get("grant_record", {})
+                .get("access_id")
+            )
+
+            async def _app(scope, receive, send):
+                body = b""
+                while True:
+                    message = await receive()
+                    body += message.get("body", b"")
+                    if not message.get("more_body", False):
+                        break
+                response_body = json.dumps(
+                    {
+                        "body": json.loads(body.decode("utf-8")),
+                        "authorization": dict(scope.get("headers") or {}).get(
+                            b"authorization", b""
+                        ).decode("utf-8"),
+                        "access_id": access_id,
+                    }
+                ).encode("utf-8")
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 200,
+                        "headers": [(b"content-type", b"application/json")],
+                    }
+                )
+                await send(
+                    {
+                        "type": "http.response.body",
+                        "body": response_body,
+                        "more_body": False,
+                    }
+                )
+
+            return _app
+
+    class _GatewayWorkflow:
+        @api(method="GET", alias="gateway_access", route="public")
+        async def gateway_access(self, **kwargs):
+            result = await call_bundle_mcp_surface(
+                bundle_id="target@1-0",
+                endpoint_alias="target",
+                message={"jsonrpc": "2.0", "id": 7, "method": "tools/list"},
+            )
+            return json.loads(result.body.decode("utf-8"))
+
+    async def _load_bundle_workflow(*, bundle_id, **kwargs):
+        del kwargs
+        workflow = _GatewayWorkflow() if bundle_id == "gateway@1-0" else _TargetWorkflow()
+        return workflow, SimpleNamespace(id=bundle_id), "tenant-a", "project-a"
+
+    monkeypatch.setattr(integrations, "_load_bundle_workflow", _load_bundle_workflow)
+    request = _request(
+        method="GET",
+        path=(
+            "/api/integrations/bundles/tenant-a/project-a/"
+            "gateway@1-0/public/gateway_access"
+        ),
+        headers=[(b"authorization", b"Bearer delegated-token")],
+    )
+    request.scope.setdefault("state", {})["delegated_credential"] = {
+        "grant_record": {"access_id": "access-1"}
+    }
+
+    result = await integrations._call_bundle_op_inner(
+        tenant="tenant-a",
+        project="project-a",
+        bundle_id="gateway@1-0",
+        payload=integrations.BundleSuggestionsRequest(),
+        request=request,
+        operation="gateway_access",
+        route="public",
+        session=_session(),
+        method_override="GET",
+    )
+
+    assert result["gateway_access"] == {
+        "body": {"jsonrpc": "2.0", "id": 7, "method": "tools/list"},
+        "authorization": "Bearer delegated-token",
+        "access_id": "access-1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_call_bundle_mcp_inner_binds_authenticated_peer_mcp_dispatch(monkeypatch):
+    class _TargetWorkflow:
+        @mcp(alias="target", route="public")
+        def target_mcp(self, request=None, **kwargs):
+            access_id = (
+                (request.scope.get("state") or {})
+                .get("delegated_credential", {})
+                .get("grant_record", {})
+                .get("access_id")
+            )
+
+            async def _app(scope, receive, send):
+                body = b""
+                while True:
+                    message = await receive()
+                    body += message.get("body", b"")
+                    if not message.get("more_body", False):
+                        break
+                request_headers = dict(scope.get("headers") or {})
+                payload = json.dumps(
+                    {
+                        "path": scope.get("path"),
+                        "body": json.loads(body.decode("utf-8")),
+                        "authorization": request_headers.get(
+                            b"authorization", b""
+                        ).decode("utf-8"),
+                        "accept": request_headers.get(b"accept", b"").decode(
+                            "utf-8"
+                        ),
+                        "outer_mcp_headers": sorted(
+                            key.decode("utf-8")
+                            for key in request_headers
+                            if key.startswith(b"mcp-")
+                        ),
+                        "last_event_id": request_headers.get(
+                            b"last-event-id", b""
+                        ).decode("utf-8"),
+                        "access_id": access_id,
+                    }
+                ).encode("utf-8")
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 200,
+                        "headers": [(b"content-type", b"application/json")],
+                    }
+                )
+                await send(
+                    {
+                        "type": "http.response.body",
+                        "body": payload,
+                        "more_body": False,
+                    }
+                )
+
+            return _app
+
+    class _GatewayWorkflow:
+        @mcp(alias="gateway", route="public")
+        async def gateway_mcp(self, **kwargs):
+            result = await call_bundle_mcp_surface(
+                bundle_id="target@1-0",
+                endpoint_alias="target",
+                message={"jsonrpc": "2.0", "id": 7, "method": "tools/list"},
+            )
+
+            async def _app(scope, receive, send):
+                del scope, receive
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": result.status_code,
+                        "headers": [(b"content-type", b"application/json")],
+                    }
+                )
+                await send(
+                    {
+                        "type": "http.response.body",
+                        "body": result.body,
+                        "more_body": False,
+                    }
+                )
+
+            return _app
+
+    async def _load_bundle_workflow(*, bundle_id, **kwargs):
+        del kwargs
+        workflow = _GatewayWorkflow() if bundle_id == "gateway@1-0" else _TargetWorkflow()
+        return workflow, SimpleNamespace(id=bundle_id), "tenant-a", "project-a"
+
+    monkeypatch.setattr(integrations, "_load_bundle_workflow", _load_bundle_workflow)
+    request = _request(
+        method="POST",
+        path=(
+            "/api/integrations/bundles/tenant-a/project-a/"
+            "gateway@1-0/public/mcp/gateway"
+        ),
+        body=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+        headers=[
+            (b"content-type", b"application/json"),
+            (b"authorization", b"Bearer delegated-token"),
+            (b"accept", b"application/json, text/event-stream"),
+            (b"mcp-protocol-version", b"2026-07-28"),
+            (b"mcp-method", b"tools/list"),
+            (b"mcp-param-query", b"outer-value"),
+            (b"mcp-session-id", b"outer-session"),
+            (b"last-event-id", b"outer-event"),
+        ],
+    )
+    request.scope.setdefault("state", {})["delegated_credential"] = {
+        "grant_record": {"access_id": "access-1"}
+    }
+
+    response = await integrations._call_bundle_mcp_inner(
+        tenant="tenant-a",
+        project="project-a",
+        bundle_id="gateway@1-0",
+        request=request,
+        endpoint_alias="gateway",
+        route="public",
+        mcp_path="",
+    )
+
+    assert response.status_code == 200
+    payload = json.loads(response.body.decode("utf-8"))
+    assert payload == {
+        "path": "/mcp",
+        "body": {"jsonrpc": "2.0", "id": 7, "method": "tools/list"},
+        "authorization": "Bearer delegated-token",
+        "accept": "application/json",
+        "outer_mcp_headers": [],
+        "last_event_id": "",
+        "access_id": "access-1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_call_bundle_mcp_inner_rejects_peer_dispatch_cycles(monkeypatch):
+    class _PeerAWorkflow:
+        @mcp(alias="peer_a", route="public")
+        async def peer_a_mcp(self, **kwargs):
+            await call_bundle_mcp_surface(
+                bundle_id="peer-b@1-0",
+                endpoint_alias="peer_b",
+                message={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            )
+            return _RecordingMCPProvider()
+
+    class _PeerBWorkflow:
+        @mcp(alias="peer_b", route="public")
+        async def peer_b_mcp(self, **kwargs):
+            await call_bundle_mcp_surface(
+                bundle_id="peer-a@1-0",
+                endpoint_alias="peer_a",
+                message={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            )
+            return _RecordingMCPProvider()
+
+    async def _load_bundle_workflow(*, bundle_id, **kwargs):
+        del kwargs
+        workflow = _PeerAWorkflow() if bundle_id == "peer-a@1-0" else _PeerBWorkflow()
+        return workflow, SimpleNamespace(id=bundle_id), "tenant-a", "project-a"
+
+    monkeypatch.setattr(integrations, "_load_bundle_workflow", _load_bundle_workflow)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await integrations._call_bundle_mcp_inner(
+            tenant="tenant-a",
+            project="project-a",
+            bundle_id="peer-a@1-0",
+            request=_request(
+                method="POST",
+                path=(
+                    "/api/integrations/bundles/tenant-a/project-a/"
+                    "peer-a@1-0/public/mcp/peer_a"
+                ),
+                body=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+                headers=[(b"content-type", b"application/json")],
+            ),
+            endpoint_alias="peer_a",
+            route="public",
+            mcp_path="",
+        )
+
+    assert exc_info.value.status_code == 500
+    assert "Peer bundle MCP call cycle detected" in str(exc_info.value.detail)
 
 
 @pytest.mark.asyncio

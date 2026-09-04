@@ -746,7 +746,9 @@ class BaseWorkflow():
                  graph: GraphCtx = None,
                  pg_pool: Any = None,
                  redis: Any = None,
-                 bundle_props: Optional[Dict[str, Any]] = None):
+                 bundle_props: Optional[Dict[str, Any]] = None,
+                 resident_resource_facts_loader: Any = None,
+                 resident_gateway_bearer_provider: Any = None):
 
         self.graph = graph
         self.kb = kb
@@ -788,6 +790,8 @@ class BaseWorkflow():
         self.conv_idx = conv_idx
         self.pg_pool = pg_pool
         self.redis = redis
+        self.resident_resource_facts_loader = resident_resource_facts_loader
+        self.resident_gateway_bearer_provider = resident_gateway_bearer_provider
 
         self.conv_ticket_store = conv_ticket_store
         self.ticket_index = ConvTicketIndex(conv_ticket_store)
@@ -967,43 +971,75 @@ class BaseWorkflow():
     def bundle_prop(self, path: str, default: Any = None) -> Any:
         return self.get_prop_path(self.bundle_props or {}, path, default)
 
+    def _with_resident_gateway_services(self, configured: Any) -> Any:
+        runtime_ctx = getattr(self, "runtime_ctx", None)
+        plan = getattr(runtime_ctx, "resident_gateway_runtime_plan", None)
+        if plan is None:
+            return configured
+        try:
+            from kdcube_ai_app.apps.chat.sdk.runtime.resident_resources import (
+                GatewayRuntimePlan,
+            )
+
+            if not isinstance(plan, GatewayRuntimePlan):
+                raise TypeError
+            return plan.native_services_config(configured)
+        except Exception:
+            try:
+                self.logger.log(
+                    "[resident_resources] Gateway service binding unavailable; "
+                    "descriptor MCP services remain active",
+                    level="WARNING",
+                )
+            except Exception:
+                pass
+            return configured
+
     def _resolve_mcp_services_config(self) -> Any:
         props = self.bundle_props or {}
 
         raw = self.get_prop_path(props, "surfaces.as_consumer.mcp.services", default=None)
         if isinstance(raw, dict) and raw:
-            return copy.deepcopy(raw)
+            return self._with_resident_gateway_services(copy.deepcopy(raw))
         if isinstance(raw, str) and raw.strip():
-            return raw
+            return self._with_resident_gateway_services(raw)
 
         mcp_block = self.get_prop_path(props, "surfaces.as_consumer.mcp", default=None)
         if isinstance(mcp_block, dict):
             if isinstance(mcp_block.get("mcpServers"), dict) and mcp_block.get("mcpServers"):
-                return {"mcpServers": copy.deepcopy(mcp_block["mcpServers"])}
+                return self._with_resident_gateway_services(
+                    {"mcpServers": copy.deepcopy(mcp_block["mcpServers"])}
+                )
             if isinstance(mcp_block.get("servers"), dict) and mcp_block.get("servers"):
-                return {"servers": copy.deepcopy(mcp_block["servers"])}
+                return self._with_resident_gateway_services(
+                    {"servers": copy.deepcopy(mcp_block["servers"])}
+                )
 
         raw = self.get_prop_path(props, "mcp.services", default=None)
         if isinstance(raw, dict) and raw:
-            return copy.deepcopy(raw)
+            return self._with_resident_gateway_services(copy.deepcopy(raw))
         if isinstance(raw, str) and raw.strip():
-            return raw
+            return self._with_resident_gateway_services(raw)
 
         mcp_block = self.get_prop_path(props, "mcp", default=None)
         if isinstance(mcp_block, dict):
             if isinstance(mcp_block.get("mcpServers"), dict) and mcp_block.get("mcpServers"):
-                return {"mcpServers": copy.deepcopy(mcp_block["mcpServers"])}
+                return self._with_resident_gateway_services(
+                    {"mcpServers": copy.deepcopy(mcp_block["mcpServers"])}
+                )
             if isinstance(mcp_block.get("servers"), dict) and mcp_block.get("servers"):
-                return {"servers": copy.deepcopy(mcp_block["servers"])}
+                return self._with_resident_gateway_services(
+                    {"servers": copy.deepcopy(mcp_block["servers"])}
+                )
 
         raw = self.get_prop_path(props, "mcp_services", default=None)
         if isinstance(raw, dict) and raw:
-            return copy.deepcopy(raw)
+            return self._with_resident_gateway_services(copy.deepcopy(raw))
         if isinstance(raw, str) and raw.strip():
-            return raw
+            return self._with_resident_gateway_services(raw)
 
         env_json = os.environ.get("MCP_SERVICES") or ""
-        return env_json or None
+        return self._with_resident_gateway_services(env_json or None)
 
     def _mem_consumer_namespace_config(self) -> Mapping[str, Any]:
         """Return the agent's ``as_consumer`` ``mem`` namespace config (or empty).
@@ -2749,6 +2785,139 @@ class BaseWorkflow():
         except Exception:
             return False
 
+    def _clear_resident_runtime_projection(self) -> None:
+        runtime_ctx = getattr(self, "runtime_ctx", None)
+        if runtime_ctx is None:
+            return
+        for name in (
+            "effective_resident_inventory",
+            "resident_gateway_runtime_plan",
+            "resident_mcp_auth_headers_provider",
+            "resident_requestable_resources",
+            "resident_requestable_discovery",
+        ):
+            try:
+                setattr(runtime_ctx, name, None)
+            except Exception:
+                pass
+
+    async def _apply_resident_runtime_projection(
+        self,
+        tool_config: Any,
+        *,
+        disabled_selection: Mapping[str, Any] | None,
+    ) -> Any:
+        """Add current Card/Gateway tools when the host supplied both ports."""
+
+        loader = getattr(self, "resident_resource_facts_loader", None)
+        default_bearer_provider = None
+        runtime_ctx = getattr(self, "runtime_ctx", None)
+        if runtime_ctx is None:
+            return tool_config
+        safe_tool_config = tool_config
+        try:
+            from kdcube_ai_app.apps.chat.sdk.runtime.agent_inventory import (
+                agent_capabilities_catalog,
+            )
+            from kdcube_ai_app.apps.chat.sdk.runtime.resident_resources import (
+                bind_gateway_runtime_context,
+                delegated_mcp_bindings_from_catalog,
+                remove_direct_delegated_mcp_bindings,
+                resident_agent_ceiling_from_bundle_props,
+                resolve_current_resident_runtime_projection,
+            )
+
+            agent_id = str(getattr(runtime_ctx, "agent_id", "") or "").strip()
+            application = str(
+                getattr(runtime_ctx, "bundle_id", "")
+                or getattr(getattr(self.config, "ai_bundle_spec", None), "id", "")
+                or ""
+            ).strip()
+            catalog = agent_capabilities_catalog(
+                self.bundle_props,
+                agent_id,
+                bundle_root=self.bundle_root(),
+            )
+            declared, delegated_servers, delegated_aliases = (
+                delegated_mcp_bindings_from_catalog(catalog)
+            )
+            safe_tool_config = remove_direct_delegated_mcp_bindings(
+                tool_config,
+                server_ids=delegated_servers,
+                aliases=delegated_aliases,
+            )
+            ceiling = resident_agent_ceiling_from_bundle_props(
+                self.bundle_props,
+                tenant=str(getattr(runtime_ctx, "tenant", "") or ""),
+                project=str(getattr(runtime_ctx, "project", "") or ""),
+                application=application,
+                agent_id=agent_id,
+                declared_resource_ids=declared,
+            )
+            if loader is None:
+                if not ceiling.resource_families and not ceiling.declared_resource_ids:
+                    return safe_tool_config
+                from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.resident_gateway import (
+                    build_resident_gateway_runtime_ports,
+                )
+
+                ports = build_resident_gateway_runtime_ports(
+                    self,
+                    tenant=ceiling.tenant,
+                    project=ceiling.project,
+                    application=ceiling.application,
+                    agent_id=ceiling.agent_id,
+                )
+                loader = ports.facts_loader
+                default_bearer_provider = ports.bearer_provider
+            projection = await resolve_current_resident_runtime_projection(
+                loader=loader,
+                ceiling=ceiling,
+                grantor_subject=str(
+                    getattr(runtime_ctx, "user_id", "") or ""
+                ).strip(),
+                disabled_selection=disabled_selection,
+            )
+            runtime_ctx.effective_resident_inventory = projection.inventory
+            runtime_ctx.resident_requestable_resources = (
+                projection.requestable_resources_by_access_id
+            )
+            runtime_ctx.resident_requestable_discovery = (
+                projection.requestable_discovery_by_access_id
+            )
+            if not projection.gateway_plan.connections:
+                return safe_tool_config
+            bearer_provider = getattr(
+                self,
+                "resident_gateway_bearer_provider",
+                None,
+            ) or default_bearer_provider
+            if not callable(bearer_provider):
+                self.logger.log(
+                    "[resident_resources] effective delegated resources have no "
+                    "trusted bearer resolver; Gateway tools stay unavailable",
+                    level="WARNING",
+                )
+                return safe_tool_config
+            bind_gateway_runtime_context(
+                runtime_ctx,
+                projection.gateway_plan,
+                user_subject=str(getattr(runtime_ctx, "user_id", "") or ""),
+                bearer_provider=bearer_provider,
+            )
+            return projection.gateway_plan.native_tool_config(safe_tool_config)
+        except Exception:
+            BaseWorkflow._clear_resident_runtime_projection(self)
+            try:
+                self.logger.log(
+                    "[resident_resources] current projection unavailable; "
+                    "Gateway tools stay unavailable",
+                    level="WARNING",
+                )
+            except Exception:
+                pass
+            return safe_tool_config
+
     async def apply_user_agent_selection(self, tool_config: Any, skill_config: Any) -> tuple:
         """Narrow the configured tool/skill configs to this user's saved selection.
 
@@ -2764,6 +2933,7 @@ class BaseWorkflow():
         via ``runtime_ctx.agent_role_models`` — the channel the ReAct runtimes
         bind into the request role_models the model router overlays.
         """
+        BaseWorkflow._clear_resident_runtime_projection(self)
         try:
             from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.client_tools import (
                 set_denied_named_service_entries,
@@ -2781,8 +2951,15 @@ class BaseWorkflow():
             conversation_id = str(getattr(runtime_ctx, "conversation_id", "") or "").strip()
             tenant = str(getattr(runtime_ctx, "tenant", "") or "").strip()
             project = str(getattr(runtime_ctx, "project", "") or "").strip()
-            if not user_id or not bundle_id or self.pg_pool is None:
+            if not user_id or not bundle_id:
                 return tool_config, skill_config
+            if self.pg_pool is None:
+                projected_tools = await BaseWorkflow._apply_resident_runtime_projection(
+                    self,
+                    tool_config,
+                    disabled_selection={},
+                )
+                return projected_tools, skill_config
 
             from kdcube_ai_app.apps.chat.sdk.runtime.agent_inventory import (
                 SELECTION_CHANGE_CAPABILITY,
@@ -3049,7 +3226,12 @@ class BaseWorkflow():
                     )
 
             if not disabled and not applied_model:
-                return tool_config, skill_config
+                projected_tools = await BaseWorkflow._apply_resident_runtime_projection(
+                    self,
+                    tool_config,
+                    disabled_selection=disabled,
+                )
+                return projected_tools, skill_config
 
             narrowed_tools = tool_config
             narrowed_skills = skill_config
@@ -3080,6 +3262,12 @@ class BaseWorkflow():
                         runtime_ctx.memory_hotset_error = None
                 if denied_entries:
                     set_denied_named_service_entries(denied_entries)
+
+            narrowed_tools = await BaseWorkflow._apply_resident_runtime_projection(
+                self,
+                narrowed_tools,
+                disabled_selection=disabled,
+            )
 
             try:
                 self.logger.log(
@@ -3179,6 +3367,11 @@ class BaseWorkflow():
             mcp_tool_specs=mcp_tools_spec or [],
             mcp_services_config=self._resolve_mcp_services_config(),
             mcp_env_json=os.environ.get("MCP_SERVICES") or "",
+            mcp_auth_headers_provider=getattr(
+                runtime_ctx,
+                "resident_mcp_auth_headers_provider",
+                None,
+            ),
             hosting_service=hosting_service,
         )
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Mapping, Optional
 
 from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers import (
     NamedServiceContext,
@@ -237,6 +237,30 @@ class ConnectionHubProvider(ConnectionsProviderBase):
         grants = result.get("resource_grants") or {}
         scope = grants.get(resource) or next(iter(grants.values()), [])
         return ConnectionToken(access_token=access_token, scope=tuple(scope or ()))
+
+    async def resident_agent_grant_for_access_id(
+        self,
+        ctx: NamedServiceContext,
+        *,
+        client_id: str,
+        access_id: str,
+    ) -> Mapping[str, Any] | None:
+        """Resolve one live resident Card for the request-bound grantor."""
+
+        if self._automation_access_factory is None:
+            return None
+        user_id = self._user_id(ctx)
+        if not user_id:
+            return None
+        service = self._automation_access_factory()
+        if service is None:
+            return None
+        result = await service.resident_agent_access_token_for_access_id(
+            grantor_subject=user_id,
+            client_id=client_id,
+            access_id=access_id,
+        )
+        return dict(result) if result else None
 
     async def agent_grant_state(
         self,

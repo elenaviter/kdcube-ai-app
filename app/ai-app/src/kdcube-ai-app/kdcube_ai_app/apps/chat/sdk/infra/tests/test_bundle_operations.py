@@ -3,11 +3,16 @@ from __future__ import annotations
 import pytest
 
 from kdcube_ai_app.apps.chat.sdk.infra.bundle_operations import (
+    BundleMCPCall,
+    BundleMCPResult,
     BundleOperationCall,
     _apply_request_projection_to_session,
     _target_comm_context,
+    bind_bundle_mcp_caller,
     bind_bundle_operation_caller,
+    call_bundle_mcp_surface,
     call_bundle_operation,
+    get_current_bundle_mcp_caller,
     get_current_bundle_operation_caller,
 )
 from kdcube_ai_app.apps.chat.sdk.protocol import (
@@ -55,6 +60,49 @@ async def test_call_bundle_operation_uses_bound_request_caller():
 async def test_call_bundle_operation_requires_request_caller():
     with pytest.raises(RuntimeError, match="No request-bound bundle operation caller"):
         await call_bundle_operation(bundle_id="task-tracker@1-0", operation="named_service")
+
+
+@pytest.mark.asyncio
+async def test_call_bundle_mcp_surface_uses_bound_credential_free_caller():
+    calls: list[BundleMCPCall] = []
+
+    async def _caller(call: BundleMCPCall) -> BundleMCPResult:
+        calls.append(call)
+        return BundleMCPResult(status_code=200, body=b'{"jsonrpc":"2.0"}')
+
+    message = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+    with bind_bundle_mcp_caller(_caller):
+        result = await call_bundle_mcp_surface(
+            tenant="tenant-a",
+            project="project-a",
+            bundle_id="knowledge@1-0",
+            endpoint_alias="knowledge",
+            message=message,
+            route="public",
+        )
+
+    assert result.status_code == 200
+    assert calls == [
+        BundleMCPCall(
+            tenant="tenant-a",
+            project="project-a",
+            bundle_id="knowledge@1-0",
+            endpoint_alias="knowledge",
+            message=message,
+            route="public",
+        )
+    ]
+    assert get_current_bundle_mcp_caller() is None
+
+
+@pytest.mark.asyncio
+async def test_call_bundle_mcp_surface_requires_request_caller():
+    with pytest.raises(RuntimeError, match="No request-bound bundle MCP caller"):
+        await call_bundle_mcp_surface(
+            bundle_id="knowledge@1-0",
+            endpoint_alias="knowledge",
+            message={"jsonrpc": "2.0", "method": "tools/list"},
+        )
 
 
 def test_target_comm_context_preserves_identity_authority():

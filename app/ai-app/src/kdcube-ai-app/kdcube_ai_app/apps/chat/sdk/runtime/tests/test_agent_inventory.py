@@ -183,6 +183,9 @@ def test_catalog_lists_mcp_servers_and_named_service_namespaces():
 
     assert [e["server_id"] for e in catalog["mcp"]] == ["knowledge"]
     assert catalog["mcp"][0]["tools"] == ["*"]
+    assert catalog["mcp"][0]["authority_source"] == "application"
+    assert catalog["mcp"][0]["resource_id"] == "urn:kdcube:mcp:knowledge"
+    assert catalog["delegated_resource_families"] == []
 
     by_ns = {e["namespace"]: e for e in catalog["named_services"]}
     assert set(by_ns) == {"task", "mem"}
@@ -229,10 +232,46 @@ def test_catalog_carries_delegated_mcp_facts():
     by_server = {e["server_id"]: e for e in catalog["mcp"]}
     delegated = by_server["memories"]
     assert delegated["delegated"] is True
+    assert delegated["authority_source"] == "delegated_card"
+    assert delegated["resource_id"] == "https://h/api/mcp/mem"
     assert delegated["claims"] == ["memories:read"]
     assert delegated["resource"] == "https://h/api/mcp/mem"
     plain = by_server["docs"]
     assert "delegated" not in plain and "claims" not in plain and "resource" not in plain
+    assert plain["authority_source"] == "application"
+
+
+def test_catalog_carries_dynamic_resource_family_ceiling_without_connector_ids():
+    props = _props()
+    props["surfaces"]["as_consumer"]["agents"]["main"][
+        "delegated_resource_families"
+    ] = [
+        {
+            "id": "user_external_mcp",
+            "resource_kinds": ["remote_mcp"],
+            "transports": ["streamable-http"],
+            "resource_patterns": ["urn:connection-hub:remote-mcp:*"],
+            "allowed_tools": ["search", "read_*"],
+            "max_resources": 3,
+            "max_tools_per_resource": 20,
+        }
+    ]
+    catalog = agent_capabilities_catalog(props, "main")
+    assert catalog["delegated_resource_families"] == [
+        {
+            "id": "user_external_mcp",
+            "resource_kinds": ["remote_mcp"],
+            "authority_sources": ["delegated_card"],
+            "transports": ["streamable-http"],
+            "resource_patterns": ["urn:connection-hub:remote-mcp:*"],
+            "allowed_tools": ["search", "read_*"],
+            "endpoint_schemes": [],
+            "endpoint_hosts": [],
+            "max_resources": 3,
+            "max_tools_per_resource": 20,
+        }
+    ]
+    assert "connector-1" not in repr(catalog["delegated_resource_families"])
 
 
 def test_catalog_agent_defaults():
@@ -262,6 +301,28 @@ def test_clamp_rejects_out_of_inventory_ids():
     assert clamped["mcp"] == {"knowledge": True}
     assert clamped["named_services"] == {"task": True}
     assert "skills" not in clamped
+
+
+def test_clamp_resource_selection_to_live_resource_operations():
+    catalog = agent_capabilities_catalog(_props(), "main")
+    catalog["resources"] = [
+        {
+            "resource_id": "urn:connection-hub:remote-mcp:one",
+            "tools": [{"name": "search"}, {"name": "delete"}],
+        }
+    ]
+    clamped = clamp_selection(
+        {
+            "resources": {
+                "urn:connection-hub:remote-mcp:one": ["delete", "unknown"],
+                "urn:connection-hub:remote-mcp:other": True,
+            }
+        },
+        catalog,
+    )
+    assert clamped == {
+        "resources": {"urn:connection-hub:remote-mcp:one": ["delete"]}
+    }
 
 
 def test_clamp_strips_system_aliases():
@@ -1663,6 +1724,25 @@ def test_selection_snapshot_carries_presentation_and_change_classifies():
     # same presentation both sides -> no change
     same = classify_selection_change(switched, selection_snapshot({}, None, None, {"tool_catalog": "compact"}))
     assert "presentation_switch" not in same["reasons"]
+
+
+def test_resource_selection_change_is_a_capability_toggle():
+    from kdcube_ai_app.apps.chat.sdk.runtime.agent_inventory import (
+        SELECTION_CHANGE_CAPABILITY,
+        classify_selection_change,
+        selection_snapshot,
+    )
+
+    resource = "urn:connection-hub:remote-mcp:one"
+    before = selection_snapshot({}, None)
+    after = selection_snapshot(
+        {"resources": {resource: ["delete"]}},
+        None,
+    )
+    change = classify_selection_change(before, after)
+    assert change["changed"] is True
+    assert change["reasons"] == ["resource_toggle"]
+    assert change["classes"] == [SELECTION_CHANGE_CAPABILITY]
 
 
 def test_react_presentation_facets_defaults_from_agent_config():

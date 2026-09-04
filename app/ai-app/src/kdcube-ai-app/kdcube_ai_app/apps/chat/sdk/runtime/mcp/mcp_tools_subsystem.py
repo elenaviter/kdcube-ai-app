@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Protocol
 
 from kdcube_ai_app.apps.chat.sdk.runtime.mcp.mcp_adapter import (
     MCPAdapter,
+    MCPAuthHeadersProvider,
     MCPServerSpec,
     MCPToolSchema,
     PythonSDKMCPAdapter,
@@ -29,6 +30,8 @@ from kdcube_ai_app.infra.namespaces import REDIS
 from kdcube_ai_app.apps.chat.sdk.config import get_settings, get_plain, get_secret
 
 logger = logging.getLogger(__name__)
+
+_TRUSTED_PROCESS_AUTH_TYPE = "trusted_process"
 
 
 @dataclass
@@ -101,6 +104,14 @@ def _normalize_mcp_specs(raw_specs: List[Dict[str, Any]]) -> List[MCPToolSpec]:
     return out
 
 
+def _uses_trusted_process_auth(auth: Any) -> bool:
+    return bool(
+        isinstance(auth, dict)
+        and str(auth.get("type") or "").strip().lower()
+        == _TRUSTED_PROCESS_AUTH_TYPE
+    )
+
+
 class MCPToolsSubsystem:
     """
     MCP tools loader + cache manager. All MCP-specific logic lives here.
@@ -115,9 +126,11 @@ class MCPToolsSubsystem:
         cache: Optional[Any] = None,
         services_config: Optional[Any] = None,
         env_json: Optional[str] = None,
+        auth_headers_provider: Optional[MCPAuthHeadersProvider] = None,
     ):
         self.bundle_id = bundle_id or "default"
         self.adapter_factory = adapter_factory
+        self._auth_headers_provider = auth_headers_provider
         self.mcp_specs = _normalize_mcp_specs(mcp_tool_specs)
 
         services_config = services_config if services_config is not None else (env_json or "")
@@ -187,6 +200,14 @@ class MCPToolsSubsystem:
         if _is_interactive_auth(auth):
             return None
 
+        trusted_process_auth = _uses_trusted_process_auth(auth)
+        if trusted_process_auth and self._auth_headers_provider is None:
+            logger.warning(
+                "MCP server requires trusted-process authorization: %s",
+                server_id,
+            )
+            return None
+
         if transport in {"stdio", "local"}:
             if not command:
                 return None
@@ -203,6 +224,9 @@ class MCPToolsSubsystem:
             args=[str(x) for x in (args or [])],
             env=env if isinstance(env, dict) else None,
             auth_profile=auth if isinstance(auth, dict) else None,
+            auth_headers_provider=(
+                self._auth_headers_provider if trusted_process_auth else None
+            ),
             protocol_mode=protocol_mode,
             read_timeout_seconds=read_timeout_seconds,
         )
@@ -305,6 +329,15 @@ class MCPToolsSubsystem:
         try:
             return await adapter.call_tool(tool_id, params, trace_id=trace_id)
         except Exception as e:
+            if server.auth_headers_provider is not None:
+                logger.warning(
+                    "MCP call_tool failed for trusted-process server=%s tool=%s",
+                    server_id,
+                    tool_id,
+                )
+                return {
+                    "error": "MCP call_tool failed: authorized transport unavailable"
+                }
             logger.exception("MCP call_tool failed for %s.%s: %s", server_id, tool_id, e)
             return {"error": f"MCP call_tool failed: {type(e).__name__}: {e}"}
 
@@ -320,8 +353,8 @@ class MCPToolsSubsystem:
 
     async def _tools_for_server(self, server: MCPServerSpec) -> List[MCPToolSchema]:
         ttl = _ttl_for_server(self._services_cfg.get(server.server_id) or {})
-        cache_key = await self._tools_cache_key(server)
-        cached = await self.cache.get_json(cache_key) if self.cache and ttl > 0 else None
+        cache_key = await self._tools_cache_key(server) if ttl > 0 else ""
+        cached = await self.cache.get_json(cache_key) if self.cache and cache_key else None
         if cached:
             logger.info("MCP _tools_for_server: server=%s cache hit (%d tools)", server.server_id, len(cached))
             return [MCPToolSchema(**t) for t in cached if isinstance(t, dict)]
@@ -335,9 +368,15 @@ class MCPToolsSubsystem:
             tools = await adapter.list_tools()
             logger.info("MCP _tools_for_server: server=%s list_tools returned %d tools: %s", server.server_id, len(tools), [t.id for t in tools])
         except Exception as e:
+            if server.auth_headers_provider is not None:
+                logger.warning(
+                    "MCP list_tools failed for trusted-process server=%s",
+                    server.server_id,
+                )
+                return []
             logger.exception("MCP list_tools failed for %s: %s", server.server_id, e)
             return []
-        if self.cache and ttl > 0:
+        if self.cache and cache_key:
             await self.cache.set_json(cache_key, [t.__dict__ for t in tools], ttl_seconds=ttl)
             logger.info("MCP _tools_for_server: server=%s cached %d tools (ttl=%ds)", server.server_id, len(tools), ttl)
         elif ttl <= 0:
@@ -384,6 +423,8 @@ def _json_hash(payload: Any, *, length: int = 24) -> str:
 
 
 async def _resolved_auth_headers_for_cache(server: MCPServerSpec) -> Dict[str, str]:
+    if server.auth_headers_provider is not None:
+        return await PythonSDKMCPAdapter(server)._auth_headers()
     auth = server.auth_profile or {}
     if not isinstance(auth, dict):
         return {}

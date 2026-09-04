@@ -62,6 +62,12 @@ class _Redis:
     async def expire(self, key: str, ttl: int):
         self.ttls[key] = ttl
 
+    async def zremrangebyscore(self, *_args):
+        return 0
+
+    async def zrange(self, *_args):
+        return []
+
 
 class _Store:
     def __init__(self) -> None:
@@ -1617,7 +1623,7 @@ async def test_the_native_gate_reads_the_boundary_not_the_intent(card_persistenc
     # against. An operation the deployment adds later is outside it, and the
     # claims the card already holds must not be enough on their own.
     record = await service._load_record(
-        agent_grant_access_id("platform-user-1", _AGENT_CLIENT, [ns_resource]),
+        created["access"]["access_id"],
         grantor_subject="platform-user-1",
     )
     namespaces = record.named_services["namespaces"]
@@ -1648,14 +1654,15 @@ async def test_a_boundary_refusal_says_the_card_refused_not_the_claims(card_pers
     """
     service = _named_services_agent_service(card_persistence)
     ns_resource = "*/kdcube-services@1-0/public/mcp/named_services*"
-    assert (await service.create_access(
+    created = await service.create_access(
         _AGENT_USER, label="agent", client_id=_AGENT_CLIENT,
         resource_grants={ns_resource: ["mail:read", "named_services:use"]},
         named_service_operations="*",
-    ))["ok"] is True
+    )
+    assert created["ok"] is True
 
     record = await service._load_record(
-        agent_grant_access_id("platform-user-1", _AGENT_CLIENT, [ns_resource]),
+        created["access"]["access_id"],
         grantor_subject="platform-user-1",
     )
     record.named_services["namespaces"]["mail"]["tools"].pop("search")
@@ -2725,9 +2732,9 @@ def test_a_coherent_catalog_reports_nothing():
 async def test_consent_seeds_the_account_binding_from_the_clients_own_card(card_persistence):
     """The pre-check a re-consent screen shows comes from durable storage.
 
-    The client's own card is one of two seed sources; the other is a superseded
-    DCR sibling. Reading the card through anything but the durable store finds
-    nothing, and the screen silently drops the binding it should pre-check.
+    The exact client's Card is the only seed source. Reading it through
+    anything but the durable store finds nothing, and the screen silently
+    drops the binding it should pre-check.
     """
     service = AutomationAccessService(
         catalog_resolver=_CatalogResolver(connections=_connections()),
@@ -2961,8 +2968,8 @@ async def test_mixed_identity_scopes_are_refused_with_their_reason(card_persiste
     assert refused["error"] == "delegated_access_resources_have_conflicting_identity_scopes"
     # The refusal names the conflict rather than only its code.
     assert refused["identity_scopes"] == ["grantor", "grantor_identity_family"]
-    assert "identity_scope" in refused["message"]
-    assert "separate cards" in refused["message"]
+    assert "different identity scopes" in refused["message"]
+    assert "without creating another Card" in refused["message"]
 
 
 async def test_a_save_decides_against_the_catalog_not_the_descriptor(card_persistence):

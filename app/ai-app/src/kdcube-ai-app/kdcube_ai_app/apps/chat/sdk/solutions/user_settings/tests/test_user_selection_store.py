@@ -444,6 +444,15 @@ def test_merge_patch_namespace_entry_lists_round_trip():
     assert "named_services" not in merged or "mail" not in merged.get("named_services", {})
 
 
+def test_merge_patch_resource_operation_lists_round_trip():
+    resource = "urn:connection-hub:remote-mcp:one"
+    merged = merge_selection_patch({}, {"resources": {resource: ["delete"]}})
+    assert merged == {"resources": {resource: ["delete"]}}
+    merged = merge_selection_patch(merged, {"resources": {resource: True}})
+    assert merged == {"resources": {resource: True}}
+    assert merge_selection_patch(merged, {"resources": {resource: False}}) == {}
+
+
 @pytest.mark.asyncio
 async def test_presentation_pick_round_trip_merge_and_clear():
     pool = _FakePool()

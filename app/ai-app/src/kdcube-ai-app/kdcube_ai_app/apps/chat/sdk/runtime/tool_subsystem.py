@@ -1341,6 +1341,7 @@ def create_tool_subsystem_with_mcp(
         mcp_tool_specs: Optional[List[Dict[str, Any]]] = None,
         mcp_services_config: Optional[Any] = None,
         mcp_env_json: Optional[str] = None,
+        mcp_auth_headers_provider: Optional[Any] = None,
         hosting_service: Optional[Any] = None,
 ):
     """
@@ -1356,6 +1357,7 @@ def create_tool_subsystem_with_mcp(
                 mcp_tool_specs=mcp_tool_specs,
                 services_config=mcp_services_config,
                 env_json=mcp_env_json or "",
+                auth_headers_provider=mcp_auth_headers_provider,
             )
     except Exception:
         mcp_subsystem = None

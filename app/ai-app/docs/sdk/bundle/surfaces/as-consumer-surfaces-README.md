@@ -1,10 +1,11 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/surfaces/as-consumer-surfaces-README.md
 title: "Consumer Surfaces (surfaces.as_consumer)"
-summary: "The surface model for what a KDCube app CONSUMES: the MCP service registry, the per-agent tool inventory that governs which agent sees which tools with which identity (static app credential vs delegated per-user, per-agent consent), and scene UI consumption."
+summary: "The surface model for what a KDCube app consumes: fixed MCP connections, bounded families of user-owned resources, per-agent tool authority, and scene UI consumption."
 status: active
 tags: ["sdk", "bundle", "surfaces", "as-consumer", "agents", "tools", "mcp", "delegated", "governance"]
-updated_at: 2026-07-18
+keywords: ["delegated resource families", "resident agent resources", "user-owned MCP", "effective authority intersection"]
+updated_at: 2026-09-04
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/surfaces/as-provider-surfaces-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/consume-mcp-service-README.md
@@ -24,6 +25,8 @@ surfaces.as_consumer
   mcp.services            connection registry: where servers are, how to authenticate
   default_agent           which agent answers when none is addressed
   agents.<agent_id>.tools per-agent inventory: what THIS agent may see and call
+  agents.<agent_id>.delegated_resource_families
+                          ceiling for compatible user-owned resources
   ui.scene                scene surfaces this app's UI summons from hosts
 ```
 
@@ -61,6 +64,62 @@ pending the connection stays unbound and a consent demand rises in chat —
 [Agents Acting On Behalf Of The User](../../solutions/connections/agent-acting-for-user/agent-acting-for-user-README.md).
 The consent states each mode surfaces in the picker are unified claim-first:
 [Claim-Driven Consent](../../solutions/connections/claim-driven-consent/claim-driven-consent-README.md).
+
+## Dynamic User-Owned Resource Families
+
+An app can let a resident agent use compatible resources that a user adds after
+deployment. The descriptor declares a bounded family; the user's live
+Connection Hub card selects the exact resource ids and operations inside that
+family:
+
+```yaml
+surfaces:
+  as_consumer:
+    agents:
+      main:
+        delegated_resource_families:
+          - id: user_external_mcp
+            resource_kinds: [remote_mcp]
+            authority_sources: [delegated_card]
+            transports: [streamable-http]
+            resource_patterns:
+              - "urn:connection-hub:remote-mcp:*"
+            allowed_tools: [search, read_*]
+            max_resources: 4
+            max_tools_per_resource: 20
+```
+
+`id`, `resource_kinds`, `transports`, and `resource_patterns` are required.
+`authority_sources` defaults to `delegated_card`; `allowed_tools` defaults to
+`["*"]`; `max_resources` and `max_tools_per_resource` default to 8 and 64.
+Endpoint scheme and host patterns are optional additional ceilings.
+
+The descriptor stores resource classes and limits. Connection Hub stores the
+user's exact connector ids, selected operations, accepted descriptor evidence,
+and Once/Always policies on the resident caller's one stable card. Fixed
+managed resources and compatible user-owned resources coexist on that card.
+Saving a connector makes
+it available for delegation; the card grants it to the caller profile. A
+conversation selection can then remove a resource or operation for that
+conversation.
+
+```text
+effective tools
+  = app and agent descriptor ceiling
+  intersect current user-owned delegated card
+  intersect current provider and connected-account readiness
+  intersect conversation narrowing
+```
+
+The host supplies a current Card/Gateway facts loader and a trusted per-call
+bearer resolver. KDCube rebuilds the projection for each turn and binds the
+aggregate delegated MCP Gateway in the trusted supervisor. Provider credentials
+and delegated bearers remain outside model context and generated-code runtime
+globals.
+
+Fixed app-owned MCP connections continue to use `mcp.services` plus an agent's
+`tools` entry. Their `authority_source` is `application`; the capability view
+keeps them separate from resources delegated by the user.
 
 ## Scene UI consumption
 

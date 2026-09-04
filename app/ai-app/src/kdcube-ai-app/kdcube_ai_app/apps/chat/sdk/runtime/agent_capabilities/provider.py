@@ -158,7 +158,8 @@ class AgentCapabilitiesProvider(Protocol):
         self, *, bundle_props: Any, bundle_root: Any, agent_id: str
     ) -> CapabilityBlocks:
         """The adapter-owned inventory blocks for this agent. Merged into the
-        neutral ``tools/mcp/named_services`` catalog by the platform shell."""
+        neutral ``tools/mcp/named_services/resources`` catalog by the platform
+        shell."""
         ...
 
     async def apply_selection(

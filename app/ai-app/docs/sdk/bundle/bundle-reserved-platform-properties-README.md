@@ -573,7 +573,7 @@ Supported keys and defaults:
 |---|---|---|---|
 | `mode` | docker, fargate | no default | Typical values: `docker`, `fargate` |
 | `image` | docker | `PY_CODE_EXEC_IMAGE` -> `py-code-exec:latest` | Docker image used for `docker run` |
-| `network_mode` | docker | `PY_CODE_EXEC_NETWORK_MODE` -> `host` | Passed as `--network` |
+| `network_mode` | docker | `PY_CODE_EXEC_NETWORK_MODE` -> maintained local value `auto`; SDK fallback `host` | `auto` selects host networking for a host-run processor and the current processor namespace inside Docker-in-Docker; explicit Docker modes are passed as `--network` |
 | `cpus` | docker | unset | Passed as `--cpus <value>` |
 | `memory` | docker | unset | Passed as `--memory <value>` |
 | `extra_args` | docker | unset | Extra raw `docker run` args; list or shell-style string |

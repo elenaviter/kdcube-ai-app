@@ -134,12 +134,12 @@ def test_an_advanced_catalog_that_touches_nothing_is_not_a_change():
     assert drift["saved_version"] != drift["current_version"]
 
 
-def test_a_missing_baseline_still_reports_removals_but_no_additions():
+def test_a_missing_baseline_still_classifies_proven_removals_as_changed():
     active = _document(_trim(drop_named_service_tool="schema"))
 
     drift = card_drift(card=_card(), active=active, baseline=None, baseline_confirmed_absent=True)
 
-    assert drift["status"] == DRIFT_BASELINE_MISSING
+    assert drift["status"] == DRIFT_CHANGED
     assert drift["baseline_confirmed_absent"] is True
     assert [row["operation"] for row in drift["removed"]["named_service_operations"]] == [
         "object.schema"
@@ -149,6 +149,18 @@ def test_a_missing_baseline_still_reports_removals_but_no_additions():
         "outer_operations": [],
         "named_service_operations": [],
     }
+
+
+def test_a_missing_baseline_without_proven_change_reports_baseline_missing():
+    drift = card_drift(
+        card=_card(),
+        active=_document(),
+        baseline=None,
+        baseline_confirmed_absent=True,
+    )
+
+    assert drift["status"] == DRIFT_BASELINE_MISSING
+    assert drift["baseline_confirmed_absent"] is True
 
 
 def test_unavailability_is_its_own_status():

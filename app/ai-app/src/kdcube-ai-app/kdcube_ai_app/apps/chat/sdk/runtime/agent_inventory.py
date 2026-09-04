@@ -14,6 +14,7 @@ Selection record shape (deny-list; absent key/entry = enabled):
     {
       "tools": {"<alias>": true | ["<tool_name>", ...]},
       "mcp": {"<server_id>": true | ["<tool_name>", ...]},
+      "resources": {"<resource_id>": true | ["<operation>", ...]},
       "named_services": {"<namespace>": true},
       "skills": ["<namespace>.<skill_id>", ...],
       "subagents": true
@@ -34,6 +35,9 @@ from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
 
 from kdcube_ai_app.apps.chat.sdk.event_identity import normalize_agent_id
+from kdcube_ai_app.apps.chat.sdk.runtime.resident_resources.descriptor import (
+    resource_family_catalog_from_bundle_props,
+)
 from kdcube_ai_app.apps.chat.sdk.runtime.skill_config import AgentSkillConfig
 from kdcube_ai_app.apps.chat.sdk.runtime.tool_config import (
     _NAMED_SERVICE_OPERATION_TO_TOOL,
@@ -669,6 +673,7 @@ _DISABLED_REASONS = (
     ("tools", "tool_toggle"),
     ("mcp", "mcp_toggle"),
     ("named_services", "namespace_toggle"),
+    ("resources", "resource_toggle"),
     ("skills", "skill_toggle"),
     ("subagents", "subagents_toggle"),
 )
@@ -967,6 +972,14 @@ def agent_capabilities_catalog(
                 "alias": alias or f"mcp_{server_id}",
                 "name": _norm(connection.get("name")) or server_id,
                 "tools": allowed,
+                "authority_source": (
+                    "delegated_card" if connection.get("delegated") else "application"
+                ),
+                "resource_id": _norm(
+                    connection.get("resource")
+                    or connection.get("url")
+                    or f"urn:kdcube:mcp:{server_id}"
+                ),
             }
             # Concrete configured names give per-tool toggles with no handshake.
             # Wildcard servers get `tool_entries` best-effort via the cached
@@ -1038,6 +1051,10 @@ def agent_capabilities_catalog(
         "tools": tools_out,
         "mcp": mcp_out,
         "named_services": namespaces_out,
+        "delegated_resource_families": resource_family_catalog_from_bundle_props(
+            bundle_props,
+            agent_id=_norm(agent_id) or default_agent_id,
+        ),
     }
 
     # The adapter-owned inventory blocks (skills / model pick / subagents) come
@@ -1920,6 +1937,15 @@ def clamp_selection(
         if _norm_namespace(e.get("namespace"))
     }
     skill_ids = {_norm(s.get("id")) for s in (catalog.get("skills") or []) if _norm(s.get("id"))}
+    resource_tool_names: dict[str, set[str]] = {
+        _norm(entry.get("resource_id")): {
+            _norm(tool.get("operation") or tool.get("name"))
+            for tool in (entry.get("tools") or [])
+            if isinstance(tool, Mapping) and _norm(tool.get("name"))
+        }
+        for entry in (catalog.get("resources") or [])
+        if isinstance(entry, Mapping) and _norm(entry.get("resource_id"))
+    }
 
     out_tools: dict[str, Any] = {}
     raw_tools = disabled.get("tools")
@@ -1984,6 +2010,21 @@ def clamp_selection(
             if keys:
                 out_namespaces[namespace] = keys
 
+    out_resources: dict[str, Any] = {}
+    raw_resources = disabled.get("resources")
+    if isinstance(raw_resources, Mapping):
+        for resource_id, value in raw_resources.items():
+            resource_id = _norm(resource_id)
+            if not resource_id or resource_id not in resource_tool_names:
+                continue
+            if value is True:
+                out_resources[resource_id] = True
+                continue
+            known = resource_tool_names[resource_id]
+            names = [name for name in _string_list(value) if name in known]
+            if names:
+                out_resources[resource_id] = names
+
     out_skills: list[str] = []
     for skill_id in _string_list(disabled.get("skills")):
         if skill_id in skill_ids and skill_id not in out_skills:
@@ -2004,6 +2045,8 @@ def clamp_selection(
         out["mcp"] = out_mcp
     if out_namespaces:
         out["named_services"] = out_namespaces
+    if out_resources:
+        out["resources"] = out_resources
     if out_skills:
         out["skills"] = out_skills
     if subagents_offered and "subagents" in disabled:
@@ -2341,6 +2384,7 @@ def selection_deltas(disabled: Mapping[str, Any] | None) -> dict[str, Any]:
         "tool_names_off": {alias: sorted(names) for alias, names in per_tool.items()},
         "mcp_off": sorted(_disabled_flag_set(disabled, "mcp")),
         "named_services_off": sorted(_disabled_flag_set(disabled, "named_services", namespace=True)),
+        "resources_off": sorted(_disabled_flag_set(disabled, "resources")),
         "skills_off": _string_list((disabled or {}).get("skills")),
         "subagents_off": subagents_denied(disabled),
     }

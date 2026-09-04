@@ -4,7 +4,7 @@ title: "Connect An MCP Service To A KDCube Agent"
 summary: "Builder recipe for registering an MCP server once, exposing an allow-listed tool view to each KDCube agent through surfaces.as_consumer, resolving secrets, and verifying the resulting mcp.<alias>.<tool> catalog and runtime calls."
 status: active
 tags: ["recipes", "kdcube-for-agents", "mcp", "as-consumer", "agents", "tools", "governance"]
-updated_at: 2026-08-12
+updated_at: 2026-09-04
 keywords: ["MCP consumer surface", "protocol_mode", "MCP server registry", "per-agent MCP tools", "MCP 2026-07-28", "legacy initialize", "streamable HTTP"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/integrate-cross-app-surface-README.md
@@ -48,6 +48,12 @@ surfaces.as_consumer.agents.<agent_id>.tools
 
 Registering a server does not expose it to every agent. Attaching a server to one
 agent does not expose it to another. That separation is the governance boundary.
+
+For user-owned MCP connectors added after deployment, declare a bounded
+`agents.<agent_id>.delegated_resource_families` ceiling instead of copying exact
+connector ids into this registry. The complete field contract and authority
+intersection are documented in
+[Consumer Surfaces](../../sdk/bundle/surfaces/as-consumer-surfaces-README.md#dynamic-user-owned-resource-families).
 
 ```text
                            app config

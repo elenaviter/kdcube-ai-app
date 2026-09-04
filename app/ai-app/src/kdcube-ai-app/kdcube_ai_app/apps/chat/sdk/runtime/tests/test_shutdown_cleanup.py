@@ -316,6 +316,48 @@ def test_docker_argv_grants_network_namespace_capability(tmp_path):
     assert "apparmor=unconfined" not in argv
 
 
+def test_trusted_network_mode_auto_uses_host_outside_docker():
+    assert (
+        docker_runtime._resolve_trusted_network_mode(
+            "auto",
+            environ={},
+            running_in_docker=False,
+        )
+        == "host"
+    )
+
+
+def test_trusted_network_mode_auto_shares_current_proc_namespace():
+    assert (
+        docker_runtime._resolve_trusted_network_mode(
+            "auto",
+            environ={"HOSTNAME": "98ac60fe7b83"},
+            running_in_docker=True,
+        )
+        == "container:98ac60fe7b83"
+    )
+
+
+def test_trusted_network_mode_auto_fails_closed_without_container_identity():
+    with pytest.raises(ValueError, match="identity is unavailable"):
+        docker_runtime._resolve_trusted_network_mode(
+            "auto",
+            environ={},
+            running_in_docker=True,
+        )
+
+
+def test_trusted_network_mode_preserves_explicit_docker_mode():
+    assert (
+        docker_runtime._resolve_trusted_network_mode(
+            "bridge",
+            environ={},
+            running_in_docker=True,
+        )
+        == "bridge"
+    )
+
+
 def test_split_executor_argv_is_networkless_and_does_not_mount_supervisor_data(tmp_path):
     workdir = tmp_path / "work"
     outdir = tmp_path / "out"
@@ -367,6 +409,10 @@ def test_split_executor_argv_is_networkless_and_does_not_mount_supervisor_data(t
     assert any(item == "LOG_FILE_PREFIX=executor-entry" for item in argv)
     assert all("/tmp/kdcube-supervisor/bundles" not in item for item in argv)
     assert all("KDCUBE_RUNTIME_SECRETS_YAML_B64=" not in item for item in argv)
+    assert all("/config" not in item for item in argv)
+    assert all("secrets.yaml" not in item for item in argv)
+    assert all("bundles.secrets.yaml" not in item for item in argv)
+    assert all("/var/run/docker.sock" not in item for item in argv)
 
 
 def test_split_bind_source_prepare_argv_is_networkless_and_scoped(tmp_path):
