@@ -12,6 +12,8 @@ see_also:
   - repo:kdcube/app/ai-app/docs/recipes/operations/install-from-descriptors-README.md
   - repo:kdcube/app/ai-app/docs/recipes/operations/operate-runtime-README.md
   - repo:kdcube/app/ai-app/docs/service/cicd/cli-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/secrets/secrets-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/secrets/host-vault-README.md
   - repo:kdcube/app/ai-app/docs/runtime/harness/README.md
   - repo:kdcube/app/ai-app/docs/sdk/bundle/build/how-to-write-bundle-README.md
   - https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/quick-start-local.md
@@ -225,6 +227,66 @@ kdcube refresh --tenant acme --project local --latest
 Use `refresh`, not `init`, after the workdir exists. `refresh` preserves the
 staged descriptors. See [Operate A KDCube Runtime](recipes/operations/operate-runtime-README.md)
 for configuration updates, app reloads, logs, and cleanup.
+
+### Optional: Move Local Secrets To The Host Vault
+
+The first local run deliberately uses the file-backed secret provider so the
+runtime can bootstrap from `secrets.yaml` and `bundles.secrets.yaml`. Current
+KDCube source also includes an opt-in durable host-vault path. It keeps the
+same `ISecretsManager` contract used by apps and moves the active source of
+truth behind the private `kdcube-secrets` broker.
+
+This is a staged transition, not a single descriptor toggle:
+
+```text
+files active -> host vault enrolled -> shadow copy verified
+             -> transactional activation -> host vault active
+```
+
+After the vault service and deployment identity are provisioned, configure
+these non-secret fields in the runtime's `config/assembly.yaml`:
+
+```yaml
+secrets:
+  provider: secrets-file
+  service:
+    backend: host-vault
+    host_vault:
+      address: host.docker.internal:7781
+      server_name: host.docker.internal
+      identity_dir: /absolute/path/outside-the-runtime-workdir
+
+platform:
+  services:
+    proc:
+      exec:
+        py_code_exec_network_mode: auto
+```
+
+Then prepare the shadow broker, verify the copy, and activate through the CLI:
+
+```bash
+kdcube secrets host-vault prepare --tenant acme --project local --dry-run
+kdcube secrets host-vault prepare --tenant acme --project local
+kdcube secrets host-vault stage --tenant acme --project local --dry-run
+kdcube secrets host-vault stage --tenant acme --project local
+kdcube secrets host-vault activate --tenant acme --project local --dry-run
+kdcube secrets host-vault activate --tenant acme --project local --yes
+```
+
+`prepare` projects only the descriptor-owned Host Vault fields into the
+generated Compose environment and recreates only `kdcube-secrets`; file-backed
+consumers remain active. Activation changes `secrets.provider` to
+`secrets-service`, recreates the
+affected consumers, verifies real reads, and rolls back ordinary failures.
+Do not manually flip only the provider. The host service provisioning,
+certificate enrollment, field meanings, recovery command, security boundary,
+and current release gates are owned by
+[Host Vault for Provider Secrets](service/secrets/host-vault-README.md). The
+[CLI reference](service/cicd/cli-README.md#host-vault-lifecycle) owns the
+command contract. Until a released `kdcube-cli` contains the `secrets
+host-vault` command group, use this optional flow only from a source-installed
+CLI that matches the staged platform source.
 
 ## Build Or Connect An App
 

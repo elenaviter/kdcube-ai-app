@@ -67,6 +67,12 @@ from kdcube_cli.secrets_migration import (
     load_file_secret_inventory,
     stage_file_secrets,
 )
+from kdcube_cli.secrets_prepare import (
+    ComposeHostVaultPrepareRuntime,
+    HostVaultPrepareError,
+    HostVaultPrepareResult,
+    prepare_host_vault_shadow,
+)
 from kdcube_cli.tty_keys import (
     KEY_DOWN,
     KEY_ENTER,
@@ -365,6 +371,72 @@ def start_compose_stack(
     console.print("[green]Docker compose started.[/green]")
     console.print("Open the UI:")
     console.print(f"  [link={result.url}]{result.url}[/link]")
+
+
+def prepare_host_vault_secrets(
+    console: Console,
+    *,
+    repo_root: Path,
+    workdir: Path,
+    dry_run: bool,
+    json_output: bool,
+    wait_seconds: float,
+) -> HostVaultPrepareResult:
+    config_dir = workdir / "config"
+    assembly = installer_mod.load_release_descriptor_soft(config_dir / "assembly.yaml")
+    try:
+        vault_config = validate_host_vault_assembly_for_start(
+            assembly,
+            workdir=workdir,
+        )
+    except HostVaultConfigurationError as exc:
+        raise SystemExit(f"Host-vault preparation preflight failed: {exc}") from exc
+    if not vault_config.enabled:
+        raise SystemExit(
+            "Host-vault preparation requires secrets.service.backend 'host-vault'."
+        )
+    if vault_config.provider != "secrets-file":
+        raise SystemExit(
+            "Host-vault preparation requires secrets.provider 'secrets-file'; "
+            "activation owns the later provider switch."
+        )
+
+    ctx = _build_paths_for_repo(repo_root, workdir)
+    env_file = config_dir / ".env"
+    if not env_file.is_file():
+        raise SystemExit(f"Compose env file not found: {env_file}")
+    _ensure_docker_responsive()
+    try:
+        result = prepare_host_vault_shadow(
+            config_dir=config_dir,
+            config=vault_config,
+            runtime=ComposeHostVaultPrepareRuntime(
+                docker_dir=ctx.docker_dir,
+                env_file=env_file,
+                timeout_seconds=wait_seconds,
+            ),
+            dry_run=dry_run,
+        )
+    except HostVaultPrepareError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    if json_output:
+        _print_json(result.to_dict())
+        return result
+    if dry_run:
+        console.print("[green]Host-vault shadow preparation preflight passed.[/green]")
+        console.print(
+            f"[dim]Generated configuration change required:[/dim] "
+            f"{'yes' if result.config_changed else 'no'}  "
+            "[dim]Runtime changed:[/dim] no"
+        )
+        return result
+    console.print("[green]Host-vault shadow broker prepared and healthy.[/green]")
+    console.print(
+        "[dim]secrets-file remains authoritative; chat consumers were not restarted "
+        "and no secret value was copied.[/dim]"
+    )
+    return result
 
 
 def stage_host_vault_secrets(
@@ -4231,6 +4303,36 @@ def main() -> None:
         help="Operate the local host-vault backend",
     )
     _hv_actions = _hv.add_subparsers(dest="secrets_action", required=True)
+    _prepare = _hv_actions.add_parser(
+        "prepare",
+        help="Project shadow configuration and recreate only the secrets broker",
+    )
+    _add_quiet_arg(_prepare)
+    _prepare.add_argument("--tenant", default="", help="Tenant of the local runtime")
+    _prepare.add_argument("--project", default="", help="Project of the local runtime")
+    _prepare.add_argument(
+        "--workdir",
+        default=None,
+        help="(Advanced) Fully-qualified namespaced runtime workdir",
+    )
+    _prepare.add_argument("--path", default=str(DEFAULT_DIR), help="Platform repo path")
+    _prepare.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate and report whether generated broker configuration would change",
+    )
+    _prepare.add_argument(
+        "--wait-seconds",
+        type=float,
+        default=120.0,
+        help="Maximum wait for broker readiness (default: 120)",
+    )
+    _prepare.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print machine-readable, secret-free results",
+    )
     _stage = _hv_actions.add_parser(
         "stage",
         help="Copy and verify file-backed values without changing providers",
@@ -4614,6 +4716,7 @@ def main() -> None:
     try:
         if args.command == "secrets":
             if args.secrets_backend != "host-vault" or args.secrets_action not in {
+                "prepare",
                 "stage",
                 "activate",
                 "recover",
@@ -4631,6 +4734,18 @@ def main() -> None:
                 workdir=_resolved,
                 path_provided=_arg_provided("--path"),
             )
+            if args.secrets_action == "prepare":
+                if args.wait_seconds < 5 or args.wait_seconds > 600:
+                    raise SystemExit("--wait-seconds must be between 5 and 600.")
+                prepare_host_vault_secrets(
+                    console,
+                    repo_root=_repo,
+                    workdir=_resolved,
+                    dry_run=bool(args.dry_run),
+                    json_output=bool(args.json_output),
+                    wait_seconds=float(args.wait_seconds),
+                )
+                return
             if args.secrets_action == "stage":
                 stage_host_vault_secrets(
                     console,

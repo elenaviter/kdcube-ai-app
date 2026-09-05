@@ -4,13 +4,15 @@ title: "Platform Documentation Index"
 summary: "Curated top-level map of the KDCube documentation tree for app builders, integrators, operators, and agents."
 tags: ["docs", "index", "sdk", "service", "ops", "architecture"]
 keywords: ["documentation index", "platform architecture", "configuration guides", "service runtime docs", "app sdk docs", "execution docs", "deployment and operations docs", "app builder docs", "client widgets", "streaming", "memory", "claude code"]
-updated_at: 2026-08-31
+updated_at: 2026-09-05
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/procedures/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/procedures/platform-source-testing-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/delegated-authority-and-admission-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/delegated-management-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/secrets/secrets-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/secrets/host-vault-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/what-you-can-do-with-kdcube-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/use-cases-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/how-to-integrate-with-kdcube-apps-README.md
@@ -140,6 +142,8 @@ Curated index of platform, service, and SDK documentation.
 * Apps Descriptor: [bundles-descriptor-README.md](configuration/bundles-descriptor-README.md)
 * Apps Secrets Descriptor: [bundles-secrets-descriptor-README.md](configuration/bundles-secrets-descriptor-README.md)
 * Platform Secrets Descriptor: [secrets-descriptor-README.md](configuration/secrets-descriptor-README.md)
+* Secret Provider Selection And Runtime Flows: [secrets-service-README.md](service/secrets/secrets-service-README.md)
+* Local Host Vault: [host-vault-README.md](service/secrets/host-vault-README.md)
 * Service Runtime Configuration Mapping: [service-runtime-configuration-mapping-README.md](configuration/service-runtime-configuration-mapping-README.md)
 * App Runtime Settings, Configuration, And Secrets: [bundle-runtime-configuration-and-secrets-README.md](configuration/bundle-runtime-configuration-and-secrets-README.md)
 * App Properties And Secrets Lifecycle: [bundle-properties-and-secrets-lifecycle-README.md](sdk/bundle/bundle-properties-and-secrets-lifecycle-README.md)

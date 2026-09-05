@@ -1,12 +1,15 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/service/secrets/host-vault-README.md
 title: "Host Vault for Provider Secrets"
-summary: "Durable, host-owned vault for provider credentials with an opt-in local Compose broker, deployment workload identity over mTLS, envelope-encrypted storage, and explicit migration and hardening gates."
+summary: "Durable host-owned secret storage for local KDCube: selector states, system and trust-boundary flows, deployment workload identity over mTLS, migration, activation, and recovery."
 tags: ["service", "secrets", "security", "vault", "runtime"]
-keywords: ["host vault", "kdcube-host-vault/1", "workload identity", "mTLS", "kdcube-secrets broker", "envelope encryption", "trust registry", "hostvaultctl"]
+keywords: ["host vault", "kdcube-host-vault/1", "secrets.service.backend", "workload identity", "mTLS", "kdcube-secrets broker", "envelope encryption", "trust registry", "hostvaultctl", "shadow staging", "activation"]
+updated_at: 2026-09-05
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/secrets/secrets-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/runtime/cross-runtime-context-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/delegated-management-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/secrets-descriptor-README.md
 ---
 # Host Vault for Provider Secrets
@@ -30,7 +33,220 @@ provider for shadow staging, then selected explicitly as the backing
 implementation of `secrets-service` after acceptance. Selecting the broker
 never migrates or deletes an existing secret descriptor.
 
-## 1. Trust model in one pass
+## 1. Selection and operating states
+
+The accepted backend name is `host-vault`. An active local host-vault setup
+uses both selectors:
+
+```yaml
+secrets:
+  provider: secrets-service
+  service:
+    backend: host-vault
+    host_vault:
+      address: host.docker.internal:7781
+      server_name: host.docker.internal
+      identity_dir: /absolute/service-owned/path/deployment-identity
+
+platform:
+  services:
+    proc:
+      exec:
+        py_code_exec_network_mode: auto
+```
+
+| Field | Operational meaning |
+| --- | --- |
+| `provider` | Manager used by trusted KDCube consumers. `secrets-service` sends reads and mutations to `kdcube-secrets`. |
+| `service.backend` | Program started inside `kdcube-secrets`. `host-vault` starts the stateless mTLS broker. |
+| `host_vault.address` | `host:port` reached from the broker container. `host.docker.internal:7781` reaches the Docker host in the maintained local layouts. |
+| `host_vault.server_name` | DNS name or IP verified against the vault server certificate's subject alternative names. It authenticates the destination independently of routing. |
+| `host_vault.identity_dir` | Host directory containing the deployment client certificate, private key, and issuing CA certificate. The installer mounts only these files, read-only, into the broker. |
+| `py_code_exec_network_mode` | `auto` preserves the trusted supervisor route to the private secrets service while split generated execution stays restricted. |
+
+`secrets.provider` routes trusted KDCube consumers. `service.backend` chooses
+what the local `kdcube-secrets` container fronts. Setting the backend prepares
+the broker; it does not provision a vault service, enroll the deployment, copy
+values, or reroute consumers by itself. `identity_dir: null` is a template
+placeholder and must become an absolute host path before the backend can start.
+
+The supported transition is deliberately staged:
+
+```text
+initial local state
+  provider: secrets-file
+  backend:  ephemeral
+          |
+          | provision vault, create deployment key, enroll certificate
+          | configure address, server_name, identity_dir, network mode
+          v
+shadow state
+  provider: secrets-file       files remain the runtime source of truth
+  backend:  host-vault         broker can receive staged copies
+          |
+          | kdcube secrets host-vault stage
+          | kdcube secrets host-vault activate --yes
+          v
+active durable local state
+  provider: secrets-service    consumers call kdcube-secrets
+  backend:  host-vault         broker calls the durable vault over mTLS
+```
+
+Use `kdcube secrets host-vault activate` for the final switch. It coordinates
+configuration, consumer quiescing, service recreation, real-read verification,
+and rollback. Hand-editing `provider` skips those guarantees. The broader
+provider matrix is in
+[Secrets Manager Implementations](secrets-service-README.md#11-two-selectors-with-different-jobs).
+
+This implementation is a local Compose topology. ECS deployments continue to
+select `aws-sm`; changing these local fields does not alter ECS task IAM,
+Terraform, or AWS Secrets Manager storage.
+
+## 2. Connection to the rest of KDCube
+
+### 2.1 Read and provider-call flow
+
+```text
+external client, resident agent, automation, or user
+                |
+                | authenticated request / delegated bearer
+                v
+KDCube or Connection Hub operation surface
+                |
+                | live admission and operation policy where required
+                v
+trusted KDCube app or provider adapter
+                |
+                | resolves one exact internal secret key
+                v
+SecretsServiceSecretsManager
+                |
+                | private HTTP + deployment read token
+                v
+kdcube-secrets broker
+  - receives no caller-selected vault namespace
+  - owns the deployment certificate and private key
+                |
+                | mTLS + protocol-bound reference
+                v
+host vault
+  - authenticates the broker certificate
+  - checks live deployment registration and namespace ACL
+  - decrypts the exact value and records a value-free audit event
+                |
+                | plaintext returns through the protected path
+                v
+trusted app/provider adapter performs the provider call
+                |
+                v
+bounded operation result returns to the original caller
+```
+
+For the Connection Hub external-MCP proxy, the trusted app resolves the
+user-owned connector credential, calls the upstream MCP server itself, and
+returns the tool result. The external agent receives the proxy's OAuth or
+delegated credential and never receives the upstream provider credential.
+
+The secret value necessarily exists briefly in the trusted implementation
+that uses it. The vault authenticates the deployment broker, not an individual
+installed bundle. In the current deployment-wide manager, installed KDCube
+apps are administrator-approved trusted code and the broker binds them under
+the logical `kdcube-runtime` application namespace. Per-bundle process
+isolation is a separate platform boundary.
+
+### 2.2 Runtime boundaries
+
+```text
+agent/model/generated code
+        |
+        | ordinary tool arguments; no secret value or vault credential
+        v
+trusted supervisor-side tool implementation
+        |
+        | same selected ISecretsManager contract in each execution mode
+        +-- in-process / venv
+        +-- local subprocess supervisor
+        `-- Docker/Fargate supervisor
+                |
+                | private secrets-service route
+                v
+          kdcube-secrets broker
+
+restricted split executor
+  - minimal environment
+  - supervisor socket
+  - no SECRETS_TOKEN
+  - no descriptor payload
+  - no deployment certificate or key
+  - no direct host-vault route
+```
+
+With `py_code_exec_network_mode: auto`, a host-launched trusted supervisor uses
+the host network. Under Docker-in-Docker it shares the processor network
+namespace and can reach the private secrets-service network. The restricted
+executor remains networkless and asks the trusted supervisor to perform
+approved tools. This preserves provider-backed tools across in-process,
+subprocess, and isolated execution without placing secret material in
+generated code. See
+[Cross-Runtime Context](../../runtime/cross-runtime-context-README.md).
+
+### 2.3 Write, delete, and owner export
+
+```text
+authenticated admin settings surface
+                  OR
+delegated agent or operator with a user-provided live Card bearer
+        |
+        | metadata.read / value.read / value.write / delete
+        v
+KDCube secret management boundary
+        |
+        | selected ISecretsManager
+        v
+kdcube-secrets broker -> host vault commit
+
+owner-controlled descriptor export
+        |
+        | current admin browser session + explicit one-use approval + PKCE
+        v
+selected ISecretsManager -> new owner-controlled YAML files
+```
+
+After activation, ordinary mutations commit to the host vault and update
+provider-derived inventory; they do not rewrite the old plaintext descriptor
+files. A delegated operator or agent can set, get, or delete only the exact
+secret resources and operations approved on its live Card. Reconstructing
+descriptor files is an owner-performed export ceremony rather than a Card
+grant. See
+[Delegated KDCube Management Service](../cicd/delegated-management-service-README.md).
+
+The delegated bearer and the vault workload identity solve different hops:
+
+```text
+user grants Card authority to agent
+        |
+        | opaque bearer: who may request this KDCube operation?
+        v
+KDCube management API + Connection Hub admission
+        |
+        | selected internal secret reference; no caller bearer forwarded
+        v
+kdcube-secrets broker
+        |
+        | deployment certificate: which enrolled KDCube may use this vault?
+        v
+host vault
+```
+
+The agent can administer KDCube because the user delegated the exact
+management operations to it. It does not become the vault service, deployment
+workload, Docker operator, or host administrator. Conversely, the broker's
+deployment certificate cannot be used as a Connection Hub Card or user
+session. If the Card grants `secret.value.read`, returning that one plaintext
+value is the intended operation; omitting that grant keeps reads closed while
+still allowing metadata, write, or delete independently.
+
+## 3. Trust model in one pass
 
 ```text
 KDCube service ──(internal secrets-service HTTP, in-deployment)──▶ kdcube-secrets broker
@@ -63,7 +279,61 @@ discarded). Rotation issues a new certificate that overlaps the old for a
 bounded interval. Revocation is a registry edit and blocks the next
 connection: the running server reloads the registry when the file changes.
 
-## 2. Protocol `kdcube-host-vault/1`
+### 3.1 Physical placement and threat boundary
+
+The same protocol supports a host-local service and a separate vault machine.
+
+```text
+single machine
+
+ordinary desktop user processes             dedicated vault service identity
+  agents and local clients                   /var/lib/kdcube-host-vault
+            |                                          ^
+            v                                          | mTLS :7781
+  Docker KDCube deployment                             |
+    chat-proc / ingress -> kdcube-secrets broker ------'
+                              |
+                              `-- read-only deployment identity mount
+```
+
+```text
+two machines
+
+KDCube machine                                      vault machine
+  Docker deployment                                  dedicated service
+  kdcube-secrets broker ===== mutually authenticated TLS =====> encrypted store
+  deployment private key                             CA, trust registry, root keys
+```
+
+| Deployment situation | Security property |
+| --- | --- |
+| Vault runs as the desktop user and agents have the same filesystem or Docker-administrator authority | Durable encrypted storage and removal of provider values from active descriptors; those agents remain inside the administrative trust boundary. |
+| Vault runs under a dedicated OS account and agents cannot use its account, vault home, Docker daemon, or broker identity mount | The broker certificate and service ACL create a meaningful local process boundary. |
+| Vault runs on a separate machine or appliance and the KDCube host protects Docker control plus the broker identity | Physical placement separates caller-side agents from storage; the enrolled deployment certificate is the only KDCube credential accepted by the vault protocol. |
+| KDCube runs on ECS | AWS Secrets Manager and task IAM provide the cloud boundary; the local host-vault path is not selected. |
+
+A principal with host root, the vault service account, the KDCube Docker
+daemon, or the broker's mounted private key can act within this deployment
+boundary. The host vault makes that boundary explicit; it does not relabel an
+already-administrative local process as untrusted.
+
+### 3.2 What is stored where
+
+| Location | Contents and lifetime |
+| --- | --- |
+| `assembly.yaml` | Non-secret provider/backend choice, route, TLS server name, and identity-directory path. |
+| `secrets.yaml` and `bundles.secrets.yaml` during migration | Plaintext bootstrap source retained through shadow staging, activation, and rollback acceptance. |
+| Deployment `identity_dir` outside the workdir | Client certificate, owner-only client private key, and vault CA certificate. |
+| `kdcube-secrets` container | Read-only identity mounts and internal door tokens; broker state is stateless and its runtime directory is `tmpfs`. |
+| Host-vault home | Issuing CA, root keys, encrypted records, live trust registry, and value-free audit log under a dedicated service identity. |
+| Redis | Provider-derived key inventory and management/export coordination metadata; no provider secret values. |
+| Trusted consumer memory | The exact plaintext value while an approved implementation uses it for a provider operation. |
+
+Activation changes the active source of truth; it intentionally retains the
+bootstrap files for verified rollback. Plaintext cleanup is a later explicit
+operator action after restart and connector regression acceptance.
+
+## 4. Protocol `kdcube-host-vault/1`
 
 One JSON request per POST to `/v1/vault`. Fields:
 
@@ -98,7 +368,7 @@ Generations: every committed change to a reference increments its
 generation, deletions included (a deletion is a tombstone record). A caller
 that passes `expected_generation` gets `conflict` when the store moved on.
 
-## 3. Persistence
+## 5. Persistence
 
 Records live under `<home>/store/<digest[:2]>/<digest>.json`, keyed by a
 SHA-256 digest of the reference so plaintext names never appear on disk. Each
@@ -129,7 +399,7 @@ private key is the operator's host isolation (the code does not claim a
 production local boundary until a service-owned appliance or VM is
 exercised).
 
-## 4. Modules
+## 6. Modules
 
 ```text
 kdcube_ai_app/infra/secrets/host_vault/
@@ -141,7 +411,7 @@ kdcube_ai_app/infra/secrets/host_vault/
   service.py    HostVaultService.handle(body, peer_cert_pem)
   transport.py  ServerTLS, ClientTLS, HostVaultServer, HostVaultClient (stdlib ssl)
   broker.py     SecretsBroker: get/set/rotate/delete/health over a VaultTransport
-  tests/        the proofs in section 7
+  tests/        the proofs in section 9
 ```
 
 The broker derives the vault reference from the deployment's canonical
@@ -154,7 +424,7 @@ when the vault committed it. Reads that are forbidden or unreachable come
 back as `None`, the same shape the existing
 `SecretsServiceSecretsManager.get_secret` returns.
 
-## 5. Deployment files
+## 7. Deployment files
 
 ```text
 app/ai-app/deployment/docker/all_in_one_kdcube/secrets/host_vault/
@@ -179,26 +449,77 @@ trust.json       TrustRegistry (atomically replaced on every change)
 audit.log        append-only JSON lines
 ```
 
-Operator flow:
+### Provision and enroll
+
+This phase is source-operated. The host service package/installer and
+service-manager unit remain release gates in section 10. Use two filesystem
+locations with different ownership:
+
+- `VAULT_HOME`, owned only by the dedicated vault service identity
+- `IDENTITY_DIR`, owned by the KDCube deployment identity, outside its runtime
+  workdir and inaccessible to ordinary agent processes
+
+Until the host service is packaged, run it from a matching KDCube source
+checkout. Prepare a dedicated virtual environment and explicit source origin:
 
 ```bash
-# host, as the vault user
-python hostvaultctl.py init --server-name vault.internal --server-name 10.0.0.5
-python vault_server.py
+export KDCUBE_SOURCE=/path/to/kdcube-ai-app
+export HOST_VAULT_TOOLS="$KDCUBE_SOURCE/app/ai-app/deployment/docker/all_in_one_kdcube/secrets/host_vault"
+export HOST_VAULT_PYTHON=/path/to/host-vault-venv/bin/python
+export PYTHONPATH="$KDCUBE_SOURCE/app/ai-app/src/kdcube-ai-app"
 
-# inside the deployment boundary
-python hostvaultctl.py deployment-keygen --dir /run/kdcube-host-vault-identity
-# hand ONLY host-vault-client.csr to the host operator
-
-# host
-python hostvaultctl.py enroll --deployment-id dep-prod-1 \
-  --namespace demo-tenant/demo-project/kdcube-runtime \
-  --csr host-vault-client.csr --out dep-prod-1.crt
-
-# inside the deployment boundary
-python hostvaultctl.py deployment-install --dir /run/kdcube-host-vault-identity \
-  --cert dep-prod-1.crt --ca ca.crt
+python3 -m venv /path/to/host-vault-venv
+/path/to/host-vault-venv/bin/pip install \
+  -r "$HOST_VAULT_TOOLS/requirements.txt"
 ```
+
+Keep `PYTHONPATH` and the scripts from the same source revision used to stage
+the KDCube runtime. `hostvaultctl.py --help` prints the operator/deployment
+subcommands without reading secret values.
+
+The provisioning sequence is:
+
+```bash
+# 1. Vault host, as the dedicated vault service identity.
+export KDCUBE_HOST_VAULT_HOME=/var/lib/kdcube-host-vault
+"$HOST_VAULT_PYTHON" "$HOST_VAULT_TOOLS/hostvaultctl.py" init \
+  --server-name host.docker.internal \
+  --server-name 10.0.0.5
+
+# 2. KDCube deployment boundary. This is the host source directory that
+# Compose later mounts read-only into kdcube-secrets.
+export IDENTITY_DIR=/var/lib/kdcube-deployments/demo/host-vault-identity
+"$HOST_VAULT_PYTHON" "$HOST_VAULT_TOOLS/hostvaultctl.py" \
+  deployment-keygen --dir "$IDENTITY_DIR"
+# Transfer only $IDENTITY_DIR/host-vault-client.csr to the vault operator.
+
+# 3. Vault host. Register only this deployment namespace and issue its cert.
+"$HOST_VAULT_PYTHON" "$HOST_VAULT_TOOLS/hostvaultctl.py" \
+  enroll --deployment-id dep-prod-1 \
+  --namespace demo-tenant/demo-project/kdcube-runtime \
+  --csr /trusted-transfer/host-vault-client.csr \
+  --out /trusted-transfer/dep-prod-1.crt
+# Transfer dep-prod-1.crt and $KDCUBE_HOST_VAULT_HOME/tls/ca.crt back to
+# the deployment boundary. Neither file is secret.
+
+# 4. KDCube deployment boundary. Install public certificate material beside
+# the private key that never left IDENTITY_DIR.
+"$HOST_VAULT_PYTHON" "$HOST_VAULT_TOOLS/hostvaultctl.py" \
+  deployment-install --dir "$IDENTITY_DIR" \
+  --cert /trusted-transfer/dep-prod-1.crt \
+  --ca /trusted-transfer/ca.crt
+
+# 5. Vault host. Bind to an interface reachable from the broker container;
+# restrict port 7781 to enrolled deployment networks at the host firewall.
+export KDCUBE_HOST_VAULT_BIND=0.0.0.0
+export KDCUBE_HOST_VAULT_PORT=7781
+"$HOST_VAULT_PYTHON" "$HOST_VAULT_TOOLS/vault_server.py"
+```
+
+The server certificate must contain the descriptor's `server_name`. The
+descriptor `address` chooses where the broker connects; it may be a different
+routing name or IP. mTLS authenticates the server certificate and the enrolled
+deployment certificate on every new connection.
 
 The broker reads `KDCUBE_HOST_VAULT_ADDR`, `KDCUBE_HOST_VAULT_SERVER_NAME`,
 `KDCUBE_HOST_VAULT_IDENTITY_DIR`, `KDCUBE_SECRETS_TENANT`, and
@@ -232,9 +553,9 @@ platform:
         py_code_exec_network_mode: auto
 ```
 
-After staging and regression acceptance, changing `provider` to
-`secrets-service` selects the already populated broker. That cutover is a
-separate operator action.
+After staging and regression acceptance, the activation command changes
+`provider` to `secrets-service` and selects the already populated broker. That
+cutover is a separate, confirmed operator action.
 
 `identity_dir` is a host path outside the KDCube workdir containing exactly:
 
@@ -244,16 +565,22 @@ host-vault-client.key
 host-vault-ca.crt
 ```
 
-The CLI projects this non-secret topology into Compose. Both maintained local
+`kdcube secrets host-vault prepare` projects this non-secret topology into
+Compose for an already running file-backed deployment and recreates only the
+`kdcube-secrets` broker. Its dry-run validates the descriptor, enrolled
+identity, running broker, and generated configuration without changing a file
+or container. Both maintained local
 Compose layouts run the same `kdcube-secrets` image. Its default
 `secrets.service.backend` is `ephemeral`, which runs the existing temporary
 sidecar. `host-vault` runs the mTLS broker instead. Only that broker receives
 read-only mounts for the three identity files and network access to the host;
 ingress, proc, metrics, and generated executors receive none of them.
 
-Before `kdcube start`, the CLI verifies that the provider/backend combination
-is coherent, the identity directory is outside the workdir, all three files
-exist and are regular files, and the private key is owner-only on POSIX.
+`prepare` and every later `kdcube start` verify that the provider/backend
+combination is coherent, the identity directory is outside the workdir, all
+three files exist and are regular files, and the private key is owner-only on
+POSIX. Preparation restores the exact previous generated environment and
+broker if the shadow broker does not become healthy.
 `host.docker.internal` is mapped to the Docker host on Linux as well as Docker
 Desktop. The vault service must bind an address reachable from Docker; mTLS
 still authenticates both ends.
@@ -270,8 +597,22 @@ only when invoked.
 
 ### Shadow-stage existing file secrets
 
-With the host vault enrolled, the broker running, and `secrets-file` still
-selected, inspect the destination without writing:
+With the host vault enrolled and the file-backed runtime running, project the
+shadow configuration and recreate only the broker:
+
+```bash
+kdcube secrets host-vault prepare \
+  --tenant demo-tenant --project demo-project \
+  --dry-run --json
+
+kdcube secrets host-vault prepare \
+  --tenant demo-tenant --project demo-project \
+  --json
+```
+
+Preparation never reads or copies a provider secret, changes the provider, or
+restarts `chat-ingress` or `chat-proc`. With the shadow broker healthy and
+`secrets-file` still selected, inspect the destination without writing:
 
 ```bash
 kdcube secrets host-vault stage \
@@ -375,6 +716,24 @@ If recovery fails, the marker remains and startup continues to fail closed.
 This covers interrupted configuration activation; service, Docker, and host
 restart durability of the active vault is still a separate acceptance gate.
 
+### Normal operation after activation
+
+The provider contract remains uniform after cutover:
+
+| Intent | Surface | Durable effect |
+| --- | --- | --- |
+| Resolve a secret for Brave, Slack, an external MCP connector, or another trusted provider adapter | Runtime `get_secret()` through `SecretsServiceSecretsManager` | Read the exact host-vault record; no descriptor mutation. |
+| Add or replace a bundle/user secret from an existing authenticated settings surface | Existing KDCube secret mutation API | Commit the value through the broker and refresh provider-derived inventory. |
+| Let an approved agent or operator inspect, set, retrieve, or delete one exact secret | Delegated KDCube management API, normally through `connection-hub host secret ...` | Enforce the live Card operation and invocation policy, then use the same broker. |
+| Reconstruct selected descriptor files for the owner | `connection-hub host secret export` plus browser approval | Create a new owner-controlled output directory once; active vault records remain unchanged. |
+| Revoke the deployment's vault access | `hostvaultctl revoke` as the vault operator | Reject the broker certificate on its next connection. |
+| Rotate deployment identity or the root key | `hostvaultctl rotate-identity` or `rotate-root-key` | Replace identity with bounded overlap, or rewrap data keys without changing secret values. |
+
+There is no automatic vault-to-descriptor synchronization. The old source
+files are rollback material until the operator explicitly cleans them up.
+Later writes change the selected provider only. Human export is the explicit
+reverse path and names every requested key before the vault is read.
+
 Broker verification retries a small number of transient connection and
 `502`/`503`/`504` failures. Permission, conflict, and malformed-request errors
 remain immediate failures.
@@ -383,14 +742,14 @@ This selection is local-Compose-specific. ECS descriptors continue to select
 `aws-sm`; no ECS task definition, IAM policy, or Terraform path is changed by
 the host-vault switch.
 
-## 6. Audit
+## 8. Audit
 
 Every handled request appends one event: time, deployment id, certificate
 fingerprint, operation, application, reference digest, request id, result
 code, generation, and expected generation. Names and values never appear.
 `FileAuditSink` opens the log with `O_APPEND` and fsyncs each line.
 
-## 7. Proofs
+## 9. Proofs
 
 `kdcube_ai_app/infra/secrets/host_vault/tests/test_host_vault.py` runs with
 fake certificates and the labeled in-memory root-key provider and covers:
@@ -426,12 +785,12 @@ app/venvs/ai-app/chat-processor/bin/python -m pytest \
 default import mode would put `kdcube_ai_app/infra` on `sys.path`, where
 the `secrets` package shadows the standard library module.
 
-## 8. Current gates
+## 10. Current gates
 
-The protocol, opt-in local Compose broker, idempotent file-to-vault shadow
-stage, operator-confirmed activation, automatic ordinary-failure rollback,
-and explicit interrupted-activation recovery are implemented. The remaining
-gates are deliberately separate:
+The protocol, opt-in local Compose broker, focused shadow preparation,
+idempotent file-to-vault shadow stage, operator-confirmed activation,
+automatic ordinary-failure rollback, and explicit interrupted-activation
+recovery are implemented. The remaining gates are deliberately separate:
 
 - run Connection Hub connector create, invoke, replace, and delete plus Brave
   and connected-account regressions against the broker-backed provider

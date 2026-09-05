@@ -5,7 +5,7 @@ summary: "Documents KDCube's deployment-scoped management service: Card-governed
 status: current-source; live-deployment-acceptance-pending
 tags: ["service", "cicd", "management", "connection-hub", "delegated-authority", "idempotency"]
 keywords: ["KDCube management resource", "application reload", "request-bound permit", "secret provider", "secret descriptor export", "human approval", "PKCE", "effect ledger", "OAuth protected resource"]
-updated_at: 2026-09-04
+updated_at: 2026-09-05
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/deployment-target-control-api-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/delegated-authority-and-admission-README.md
@@ -21,6 +21,18 @@ Hub can inspect deployment state, discover one application's declared
 surfaces, reload one exact declared application, and manage one exact secret
 through the deployment-selected provider when its live delegated card grants
 the corresponding operation.
+
+The approving user provides the Card-bound authority to an agent or operator.
+The current Connection Hub host CLI obtains and stores that bearer through
+`connection-hub host authorize`, using OAuth Authorization Code plus PKCE; it
+does not accept a bearer command-line argument. Another API client may present
+an opaque bearer issued through its approved caller flow. In either case, the
+caller is a delegated KDCube administrator for the Card's exact resources and
+operations: the token is the user's explicit authority to administer those API
+surfaces. KDCube preserves the external actor, `access_id`, grantor, Card
+revision, and invocation policy on every call. This authority does not grant
+host login, Docker control, descriptor-file access, or a secret-provider
+workload identity.
 
 The same service exposes a separate owner-performed export ceremony. It reads
 an explicit list of secret keys after browser confirmation and returns the
@@ -90,7 +102,7 @@ with that metadata URL in `WWW-Authenticate`.
 delegated automation
 
 agent or operator CLI
-  -> card-bound bearer
+  -> user-approved OAuth/PKCE session or issued Card-bound bearer
   -> exact resource + operation + invocation policy
   -> Connection Hub admission on every call
   -> KDCube selected secret provider
@@ -111,6 +123,13 @@ For delegated automation, choosing `Once` updates the caller's Card and its
 invocation policy. The Card continues to identify who may attempt the
 operation, while the policy consumes the one admitted invocation. Choosing
 `Always` records reusable Card authority.
+
+The selected provider is reached by trusted KDCube code after admission. For
+the local host-vault backend, the internal `kdcube-secrets` broker uses its own
+deployment mTLS identity; the caller's bearer is neither forwarded to nor
+recognized by the vault. For AWS Secrets Manager, the trusted workload uses
+its configured task or deployment identity. Provider choice therefore changes
+storage and workload authentication, not the user's delegated API contract.
 
 For human export, the person performs the action directly. The transaction
 therefore stands alone: it is short-lived, exact-manifest-bound, and consumed

@@ -4,6 +4,7 @@ title: "KDCube CLI"
 summary: "Installs, initializes, and operates local KDCube runtimes and exposes the typed deployment-target control API used by application-specific CLIs."
 tags: ["kdcube", "cli", "runtime", "deployment-target", "python-api"]
 keywords: ["kdcube-cli", "kdcube init", "kdcube start", "kdcube stop", "kdcube_cli.control"]
+updated_at: 2026-09-05
 see_also:
   - repo:kdcube/app/ai-app/docs/service/cicd/cli-README.md
   - repo:kdcube/app/ai-app/docs/service/cicd/deployment-target-control-api-README.md
@@ -53,11 +54,23 @@ structured errors.
 
 The CLI also stages an existing local file-backed secret inventory into an
 enrolled host vault, then performs an explicit verified provider switch with
-automatic ordinary-failure rollback. See
+automatic ordinary-failure rollback:
+
+```bash
+kdcube secrets host-vault prepare --tenant <tenant> --project <project> --dry-run
+kdcube secrets host-vault prepare --tenant <tenant> --project <project>
+kdcube secrets host-vault stage --tenant <tenant> --project <project> --dry-run
+kdcube secrets host-vault stage --tenant <tenant> --project <project>
+kdcube secrets host-vault activate --tenant <tenant> --project <project> --dry-run
+kdcube secrets host-vault activate --tenant <tenant> --project <project> --yes
+```
+
+The active backend is spelled `host-vault`. Its address, certificate server
+name, deployment identity directory, and supervisor network mode are
+descriptor-owned. See
 [Host Vault for Provider Secrets](../../../docs/service/secrets/host-vault-README.md)
-for `kdcube secrets host-vault stage`, `kdcube secrets host-vault activate`,
-`kdcube secrets host-vault recover`, their no-value-output contracts, and the
-remaining durability gates.
+for `kdcube secrets host-vault prepare`, `stage`, `activate`, and `recover`,
+their no-value-output contracts, and the remaining durability gates.
 ---
 
 ## What You Build

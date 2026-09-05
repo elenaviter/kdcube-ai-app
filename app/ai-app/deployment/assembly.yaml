@@ -258,6 +258,15 @@ routines:
 
 # ---------------------------------------------------------------------------
 # Secrets provider
+# `provider` selects the ISecretsManager used by trusted KDCube consumers.
+# `service.backend` selects what the local kdcube-secrets service fronts.
+# Active local host-vault use requires both:
+#   provider: "secrets-service"
+#   service.backend: "host-vault"
+# Verified shadow staging keeps provider="secrets-file" while setting
+# service.backend="host-vault". Run `kdcube secrets host-vault prepare`, then
+# `stage`, then `activate` for the transactional provider cutover; do not
+# hand-edit the active runtime into that state.
 # ---------------------------------------------------------------------------
 secrets:
   provider: "secrets-file"  # SECRETS_PROVIDER: secrets-service | aws-sm | in-memory | secrets-file

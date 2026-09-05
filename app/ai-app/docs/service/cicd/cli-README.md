@@ -1,10 +1,10 @@
 ---
 id: repo:kdcube/app/ai-app/docs/service/cicd/cli-README.md
 title: "Current KDCube CLI"
-summary: "Current implemented CLI surface for local environment bootstrapping, workdir preparation, Docker Compose startup, descriptor validation, bundle config and secret patching, maintainer package-source builds, and local deployment selection."
+summary: "Current implemented CLI surface for local environment bootstrapping, workdir preparation, Docker Compose startup, descriptor validation, bundle config and secret patching, host-vault activation, maintainer package-source builds, and local deployment selection."
 tags: ["service", "cicd", "cli", "env", "deployment", "bundle"]
-keywords: ["kdcube cli", "local environment bootstrap", "workdir setup", "docker compose control", "descriptor validation", "current cli contract", "local deployment tooling", "multiple local runtime snapshots", "single active local deployment", "tenant project workdir namespace", "bundle config patch", "bundle secret patch", "kdcube bundle command", "bundle reload internals", "reload-authority", "maintainer local Python package", "unpublished package candidate"]
-updated_at: 2026-09-03
+keywords: ["kdcube cli", "local environment bootstrap", "workdir setup", "docker compose control", "descriptor validation", "current cli contract", "local deployment tooling", "multiple local runtime snapshots", "single active local deployment", "tenant project workdir namespace", "bundle config patch", "bundle secret patch", "host vault stage", "host vault activate", "host vault recover", "kdcube bundle command", "bundle reload internals", "reload-authority", "maintainer local Python package", "unpublished package candidate"]
+updated_at: 2026-09-05
 see_also:
   - repo:kdcube/app/ai-app/docs/service/cicd/release-README.md
   - repo:kdcube/app/ai-app/docs/service/cicd/descriptors-README.md
@@ -15,6 +15,8 @@ see_also:
   - repo:kdcube/app/ai-app/docs/configuration/bundles-descriptor-README.md
   - repo:kdcube/app/ai-app/docs/configuration/service-runtime-configuration-mapping-README.md
   - repo:kdcube/app/ai-app/docs/configuration/gateway-descriptor-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/secrets/secrets-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/secrets/host-vault-README.md
   - repo:kdcube/app/ai-app/docs/service/environment/setup-dev-env-README.md
   - repo:kdcube/app/ai-app/docs/service/environment/setup-for-dockercompose-README.md
 ---
@@ -1088,6 +1090,118 @@ Runtime resolves those files from the staged workspace descriptor directory via
 `PLATFORM_DESCRIPTORS_DIR=/config`.
 
 See: [docs/configuration/secrets-descriptor-README.md](../../configuration/secrets-descriptor-README.md)
+
+### 2.5a Host-vault lifecycle<a id="host-vault-lifecycle"></a>
+
+The current CLI can copy an existing local file-backed inventory into an
+enrolled host vault and switch the running consumers only after parity is
+verified. The commands never print secret names or values.
+
+The lifecycle applies to a local Compose runtime. It preserves the same
+provider-neutral secret API used by trusted apps, admin settings, and delegated
+management callers. ECS deployments continue to use `aws-sm` and task IAM.
+
+#### Prerequisites
+
+Before staging:
+
+1. Provision and start the host-vault service.
+2. Enroll this tenant/project deployment and place its three identity files in
+   an absolute host directory outside the KDCube runtime workdir:
+   `host-vault-client.crt`, `host-vault-client.key`, and
+   `host-vault-ca.crt`.
+3. Make `host-vault-client.key`, `config/secrets.yaml`, and
+   `config/bundles.secrets.yaml` owner-only (`0600`) on POSIX systems.
+4. Configure `secrets.provider: secrets-file`,
+   `secrets.service.backend: host-vault`, the vault address, TLS server name,
+   identity directory, and `py_code_exec_network_mode: auto` in
+   `config/assembly.yaml`.
+5. Keep the file-backed runtime running and use `host-vault prepare` to project
+   only the broker settings and recreate `kdcube-secrets`.
+
+The exact descriptor shape and the source-operated provisioning commands are
+in [Host Vault for Provider Secrets](../secrets/host-vault-README.md).
+
+#### Prepare the shadow broker
+
+```bash
+kdcube secrets host-vault prepare \
+  --tenant <tenant> --project <project> --dry-run
+
+kdcube secrets host-vault prepare \
+  --tenant <tenant> --project <project>
+```
+
+`prepare` validates the descriptor and enrolled identity, projects only the
+Host Vault settings into the generated Compose environment, recreates only
+`kdcube-secrets`, and waits for broker health. `chat-ingress` and `chat-proc`
+remain file-backed and are not restarted. A failed preparation restores the
+exact previous generated environment and broker. Use `--json` for a
+secret-free machine result and `--wait-seconds` to bound readiness from 5
+through 600 seconds.
+
+#### Stage without changing the provider
+
+```bash
+kdcube secrets host-vault stage \
+  --tenant <tenant> --project <project> --dry-run
+
+kdcube secrets host-vault stage \
+  --tenant <tenant> --project <project>
+```
+
+`stage` reads the owner-only descriptor inventory, skips recognized
+placeholders, creates only absent vault records, and reads each destination
+back through the broker to verify it. Existing values must match; a conflict
+fails the operation instead of overwriting either side. `secrets-file` remains
+the active provider and no source value is deleted.
+
+Use `--json` for a secret-free machine result. `--workdir` selects an explicit
+runtime and `--path` selects the matching platform source when defaults cannot
+resolve them.
+
+#### Activate transactionally
+
+```bash
+kdcube secrets host-vault activate \
+  --tenant <tenant> --project <project> --dry-run
+
+kdcube secrets host-vault activate \
+  --tenant <tenant> --project <project> --yes
+```
+
+The dry run verifies source/destination parity and runtime readiness. The
+confirmed operation quiesces affected consumers, changes the active provider
+to `secrets-service`, recreates the broker and consumers, and verifies real
+reads from `chat-ingress` and `chat-proc`. It records a recovery marker before
+the switch and clears it only after successful verification. Ordinary
+activation failures roll back to the retained file provider automatically.
+
+Activation intentionally retains `secrets.yaml` and
+`bundles.secrets.yaml` as rollback material. New writes after activation go to
+the host vault through the selected `ISecretsManager`; they are not mirrored
+back into those files. Owner-controlled descriptor reconstruction is a
+separate explicit export operation.
+
+#### Recover an interrupted activation
+
+If the CLI or host is interrupted after the recovery marker is written,
+`kdcube start` refuses to guess which source is authoritative. Recover first:
+
+```bash
+kdcube secrets host-vault recover \
+  --tenant <tenant> --project <project> --yes
+```
+
+Recovery restores `secrets.provider: secrets-file`, resets the service backend
+to `ephemeral`, recreates and verifies the file-backed consumers, then removes
+the marker. Reconfigure shadow mode, restage, and activate again when the vault
+path is ready. `--wait-seconds` on `activate` and `recover` controls each
+readiness wait from 5 through 600 seconds.
+
+The valid backend name is `host-vault`; `secret-vault` is not accepted. Do not
+replace the activation sequence with a manual provider edit because that
+omits parity checks, service ordering, live-read verification, and rollback.
 
 ### 2.6 Gateway config descriptor (optional)
 If you provide a `gateway.yaml`, the CLI stages it into `workdir/config` and

@@ -4,6 +4,7 @@ title: "Service and Infrastructure Documentation Index"
 summary: "Entry index for platform service runtime docs: auth, gateway, environment setup, monitoring, scaling, secrets, descriptor wiring, and infrastructure-facing operational guides."
 tags: ["service", "index", "infrastructure"]
 keywords: ["service docs index", "runtime infrastructure docs", "gateway and auth guides", "monitoring and scaling docs", "environment setup docs", "descriptor and secrets wiring", "service operations"]
+updated_at: 2026-09-05
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/auth/auth-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md
@@ -15,6 +16,8 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/environment/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/service-runtime-configuration-mapping-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/delegated-management-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/secrets/secrets-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/secrets/host-vault-README.md
 ---
 # Service and Infrastructure Index
 
@@ -29,5 +32,7 @@ Core entry points:
 - Control plane configuration: [instance-config-README.md](maintenance/instance-config-README.md)
 - Descriptor model and mode differences: [descriptors-README.md](cicd/descriptors-README.md)
 - Delegated management of a running deployment: [delegated-management-service-README.md](cicd/delegated-management-service-README.md)
+- Secret provider selection and end-to-end flows: [secrets-service-README.md](secrets/secrets-service-README.md)
+- Local durable host-vault lifecycle and trust boundary: [host-vault-README.md](secrets/host-vault-README.md)
 - Runtime env and descriptor mapping: [service-runtime-configuration-mapping-README.md](../configuration/service-runtime-configuration-mapping-README.md)
 - All-in-one deployment: [README.md](../../deployment/docker/all_in_one/README.md)
