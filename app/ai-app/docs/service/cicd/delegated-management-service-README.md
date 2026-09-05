@@ -1,17 +1,21 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/service/cicd/delegated-management-service-README.md
 title: "Delegated KDCube Management Service"
-summary: "Documents KDCube's deployment-scoped management service: Card-governed automation, exact secret operations through the selected provider, and browser-approved one-use descriptor export."
+summary: "Documents KDCube's deployment-scoped management service: Card-governed automation, exact secret operations, and request-bound human approval through platform login or WebAuthn."
 status: current-source; live-deployment-acceptance-pending
 tags: ["service", "cicd", "management", "connection-hub", "delegated-authority", "idempotency"]
-keywords: ["KDCube management resource", "application reload", "request-bound permit", "secret provider", "secret descriptor export", "human approval", "PKCE", "effect ledger", "OAuth protected resource"]
+keywords: ["KDCube management resource", "application reload", "request-bound permit", "secret provider", "secret descriptor export", "human approval", "Cognito Managed Login", "Google auth_time", "WebAuthn", "passkey", "PKCE", "effect ledger", "OAuth protected resource"]
 updated_at: 2026-09-05
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/deployment-target-control-api-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/delegated-authority-and-admission-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/secrets/secret-management-cli-README.md
   - https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/package/delegated-authority-and-admission.md
   - https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/recipes/direct-protected-service.md
+  - https://docs.aws.amazon.com/cognito/latest/developerguide/authorization-endpoint.html
+  - https://developers.google.com/identity/openid-connect/reference
+  - https://www.w3.org/TR/webauthn-3/
 ---
 # Delegated KDCube Management Service
 
@@ -23,10 +27,12 @@ through the deployment-selected provider when its live delegated card grants
 the corresponding operation.
 
 The approving user provides the Card-bound authority to an agent or operator.
-The current Connection Hub host CLI obtains and stores that bearer through
-`connection-hub host authorize`, using OAuth Authorization Code plus PKCE; it
-does not accept a bearer command-line argument. Another API client may present
-an opaque bearer issued through its approved caller flow. In either case, the
+The canonical `kdcube secrets` commands accept that bearer through a hidden
+prompt or stdin, never through a command-line argument. The Connection Hub
+host CLI obtains and stores its bearer through `connection-hub host authorize`
+using OAuth Authorization Code plus PKCE, then calls the same KDCube management
+library. Another API client may present an opaque bearer issued through its
+approved caller flow. In every case, the
 caller is a delegated KDCube administrator for the Card's exact resources and
 operations: the token is the user's explicit authority to administer those API
 surfaces. KDCube preserves the external actor, `access_id`, grantor, Card
@@ -110,7 +116,7 @@ agent or operator CLI
 
 owner-performed descriptor export
 
-Connection Hub CLI
+KDCube CLI or a product CLI using its management library
   -> exact non-secret key manifest + PKCE challenge + loopback callback
   -> KDCube browser page
   -> current platform admin session + explicit Export once decision
@@ -138,16 +144,23 @@ once, with no Card mutation and no reusable export credential.
 ## Human Secret Export
 
 The CLI names every requested key explicitly. This works uniformly with file,
-host-vault, and cloud secret providers, including providers whose durable
-storage intentionally retains only digests of key names and cannot enumerate
-the original names.
+host-vault, and cloud secret providers. Host Vault encrypts names in its
+records and exposes scoped inventory to its authenticated KDCube broker, but
+the owner export protocol deliberately requires an exact manifest rather than
+providing a bulk plaintext export.
 
 ```bash
-connection-hub host secret export \
+kdcube secrets export \
   --platform-key services.brave.api_key \
   --bundle-key connection-hub@1-0=connections.oauth_state_secret \
-  --output-directory ./kdcube-secret-export-20260904
+  --output-directory ./kdcube-secret-export-20260905
 ```
+
+`connection-hub secrets host ...` remains the Connection Hub convenience
+surface. It supplies the selected host and native-store OAuth session while
+reusing KDCube's management protocol, validation, and private writers. The
+canonical command contract is documented in
+[Manage KDCube Secrets](../secrets/secret-management-cli-README.md).
 
 The output directory must be new. It contains canonical `secrets.yaml` and
 `bundles.secrets.yaml` documents. POSIX hosts create the directory with mode
@@ -180,8 +193,8 @@ partly completed export.
 | Value | Evidence contract | Built-in state |
 | --- | --- | --- |
 | `session_confirmation` | Current KDCube platform admin browser cookie plus the exact form decision. | Implemented through the deployment's configured KDCube browser authority. |
-| `fresh_authentication` | A recent authentication event whose time and subject are verified. | Fails closed with `human_approval_step_up_unavailable` until the deployment installs a capable verifier. |
-| `user_verification` | A fresh user-verifying authenticator ceremony, such as WebAuthn/passkey. | Fails closed until the deployment installs a capable verifier. |
+| `fresh_authentication` | A recent signed authentication event for the same KDCube subject. | Implemented for Cognito Managed Login and direct Google OIDC. |
+| `user_verification` | A fresh WebAuthn assertion whose signed authenticator data has the user-verification flag. | Implemented with passkey enrollment bootstrapped by `fresh_authentication`. |
 
 Explicit `Authorization` and ID-token headers are rejected at this boundary,
 and Connection Hub delegated authentication is disabled in the verifier. A
@@ -212,39 +225,120 @@ turns a newly returned challenge into approval; it fails with
 before presenting the decision again. KDCube independently checks the evidence
 type, digest, age, clock skew, and assurance level before recording approval.
 
-An IdP reauthentication or WebAuthn adapter implements
-`HumanApprovalVerifier` and is installed as
-`request.app.state.human_approval_verifier` during processor assembly. The
-adapter owns provider state and nonce validation, binds the authenticated
-subject and authentication time to the supplied context, and verifies the
-required platform administrator authority. The export transaction, callback,
-and exchange contracts remain provider-neutral.
+The built-in adapters use shared Redis state so a callback and the final
+decision may reach different processor workers. A random state or WebAuthn
+challenge is bound to the exact action, transaction id, request digest,
+tenant/project, KDCube subject, platform session id, hash of the active browser
+cookies, return URL, and required assurance. Provider tokens are verified and
+discarded. Redis retains only bounded challenge data, public WebAuthn
+credentials, and short-lived proof. The proof is consumed at `commit`, before
+the one-use export code is issued.
 
-A production adapter uses this sequence:
+### Fresh authentication adapters
 
-1. Persist one short-lived adapter transaction keyed by a random
-   `state`, bound to the supplied action, transaction id, request digest,
-   subject, return URL, nonce, and required assurance.
-2. Redirect to the authority configured by this KDCube deployment. A Cognito
-   managed-login adapter requests `prompt=login`; a direct Google OIDC adapter
-   requests and validates `auth_time` plus `nonce`. Google does not expose a
-   provider-neutral promise that every such redirect displays a password
-   challenge, so evidence is accepted only when the returned `auth_time` is
-   within the configured age.
-3. Exchange the authorization code server-side and validate signature,
-   issuer, audience, nonce, state, exact subject continuity, authentication
-   time, and current KDCube administrator role.
-4. During `present`, return typed evidence for the original request digest but
-   retain the completed proof until the decision form is submitted. During
-   `commit`, atomically consume that proof and return the same evidence. A
-   WebAuthn adapter instead verifies RP id, origin, challenge, signature
-   counter, and the user-verification flag before returning
-   `user_verification` evidence.
+The provider is selected from the active platform session. `auto` follows a
+Google bundle-session identity or the exact Cognito issuer and app-client
+audience. A deployment with both provider families and no trustworthy session
+hint fails closed instead of choosing one by configuration order.
 
-Until one of those adapters is assembled and live-tested for the deployment's
-authority, selecting its stronger assurance level remains an intentional
-fail-closed configuration. The built-in cookie verifier is never promoted to
-fresh-authentication evidence.
+**Cognito Managed Login** uses Authorization Code with S256 PKCE,
+`prompt=login`, `openid`, state, and nonce. KDCube validates the returned ID
+token's signature, issuer, app-client audience, token use, nonce, exact subject,
+and signed `auth_time`. The authentication time must be after the challenge,
+allowing bounded clock skew. Set `cognito.managed_login: true` only after
+confirming that the configured domain serves Managed Login: Cognito's classic
+Hosted UI does not provide the required `prompt=login` behavior. The app client
+must permit this exact callback:
+
+```text
+https://<kdcube-host>/api/integrations/management/v1/human-approval/oidc/callback
+```
+
+The implementation is a public-client PKCE flow and does not read or send a
+Cognito client secret.
+
+**Google OIDC** requests an ID token with `nonce`, `form_post`, account
+selection, and the signed `auth_time` claim. KDCube validates Google's
+signature, issuer, client audience, authorization-response issuer, nonce,
+exact `google:<sub>` continuity, and `auth_time`. A new token's `iat` is never
+treated as evidence that the user authenticated again. Google documents
+account selection, consent, and silent prompt values, but not a portable
+password-forcing prompt or `max_age`; consequently this adapter accepts only a
+Google-signed authentication time within the configured evidence age. A stale
+or absent claim fails with a structured restart/step-up error. Enable the
+`auth_time` claim for the Google client and register the same exact callback
+shown above. Use WebAuthn when the operation requires a reliable new local
+user-verification gesture.
+
+### WebAuthn user verification
+
+`user_verification` requires `navigator.credentials.get()` with
+`userVerification: required`. KDCube verifies the RP id, exact HTTPS origin
+(local HTTP is accepted only for loopback), random challenge, credential id,
+signature, sign counter, backup flags, and signed UV bit. A successful
+assertion creates one proof for one pending management action; replay cannot
+approve a second action.
+
+When the subject has no credential compatible with current policy, KDCube
+starts passkey registration. Registration first completes the configured
+fresh-authentication adapter, then requires WebAuthn user verification and
+stores only credential id, public key, counter, AAGUID, attestation metadata,
+backup state, label, and creation time. Private key material stays with the
+authenticator.
+
+| `credential_policy` | Accepted credential | Security meaning |
+| --- | --- | --- |
+| `verified_passkey` | Any credential with a valid signed UV bit, including synced passkeys. | Portable user verification; not a hardware-bound claim. |
+| `single_device` | UV credential whose WebAuthn backup-eligibility state identifies a single-device credential. | Device-bound credential; it may still be a platform authenticator rather than a separate hardware key. |
+| `attested_hardware` | Credential enrolled under direct attestation whose format and certificate chain validate against operator-supplied roots. | Explicit deployment trust in approved authenticator hardware and attestation policy. |
+
+Changing to a stronger policy does not upgrade older credentials. They become
+ineligible and the owner enrolls a qualifying credential. An
+`attested_hardware` descriptor without absolute PEM trust-root paths fails
+validation.
+
+Credential listing, naming, and revocation are required before
+`user_verification` becomes a deployment default. Until that lifecycle surface
+is enabled, deployments use `session_confirmation` or `fresh_authentication`
+for owner export and may exercise WebAuthn in controlled acceptance runs.
+
+### Descriptor configuration
+
+```yaml
+management:
+  human_approval:
+    fresh_authentication_provider: auto  # auto | cognito | google
+    challenge_ttl_seconds: 180
+    http_timeout_seconds: 10
+    cognito:
+      managed_login: false
+      hosted_ui_domain: ""  # inherit the selected Cognito authority
+    google:
+      client_id: ""         # inherit the selected Google authenticator
+      jwks_url: https://www.googleapis.com/oauth2/v3/certs
+    webauthn:
+      enabled: true
+      rp_id: ""              # derive current public host, or pin a stable host
+      rp_name: KDCube
+      allowed_origins: []    # derive current public origin, or list exact origins
+      credential_policy: verified_passkey
+      trusted_attestation_root_files: {}
+      timeout_milliseconds: 60000
+      max_credentials_per_user: 8
+  secret_export:
+    required_assurance: user_verification
+```
+
+For local development, a stable HTTPS tunnel origin should be pinned when a
+passkey must survive tunnel changes. For ECS, set `rp_id` to the deployment
+domain and `allowed_origins` to its exact HTTPS origin. Proof and public-key
+state stay in deployment Redis; secret values remain in AWS Secrets Manager.
+The Cognito app client must include the management callback above. These
+settings do not introduce Host Vault into ECS.
+
+Selecting a stronger assurance while its provider, callback, claim, RP, or
+attestation policy is unavailable fails closed. The current browser-cookie
+verifier is never promoted to fresh-authentication or WebAuthn evidence.
 
 ## End-To-End Authority Flow
 

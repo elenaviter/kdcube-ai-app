@@ -12,6 +12,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/delegated-authority-and-admission-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/delegated-management-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/secrets/secrets-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/secrets/secret-management-cli-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/secrets/host-vault-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/what-you-can-do-with-kdcube-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/use-cases-README.md
@@ -143,6 +144,7 @@ Curated index of platform, service, and SDK documentation.
 * Apps Secrets Descriptor: [bundles-secrets-descriptor-README.md](configuration/bundles-secrets-descriptor-README.md)
 * Platform Secrets Descriptor: [secrets-descriptor-README.md](configuration/secrets-descriptor-README.md)
 * Secret Provider Selection And Runtime Flows: [secrets-service-README.md](service/secrets/secrets-service-README.md)
+* Exact Secret Management And Export: [secret-management-cli-README.md](service/secrets/secret-management-cli-README.md)
 * Local Host Vault: [host-vault-README.md](service/secrets/host-vault-README.md)
 * Service Runtime Configuration Mapping: [service-runtime-configuration-mapping-README.md](configuration/service-runtime-configuration-mapping-README.md)
 * App Runtime Settings, Configuration, And Secrets: [bundle-runtime-configuration-and-secrets-README.md](configuration/bundle-runtime-configuration-and-secrets-README.md)

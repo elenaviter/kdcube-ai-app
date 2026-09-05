@@ -327,6 +327,12 @@ def test_settings_reads_bundle_session_transport_from_connection_hub(monkeypatch
                                             "providers": {
                                                 "workspace_google_session": {
                                                     "type": "bundle_session_login",
+                                                    "input": {
+                                                        "authenticator_ref": {
+                                                            "authority_id": "google.accounts",
+                                                            "provider_id": "google_oidc",
+                                                        }
+                                                    },
                                                     "issuer": {
                                                         "type": "kdcube_session_token",
                                                         "cookie": {
@@ -337,6 +343,16 @@ def test_settings_reads_bundle_session_transport_from_connection_hub(monkeypatch
                                                     },
                                                 }
                                             },
+                                        },
+                                        "google.accounts": {
+                                            "providers": {
+                                                "google_oidc": {
+                                                    "type": "google_id_token",
+                                                    "authenticator": {
+                                                        "client_id": "google-client-id"
+                                                    },
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -359,6 +375,17 @@ def test_settings_reads_bundle_session_transport_from_connection_hub(monkeypatch
     assert settings.AUTH.AUTH_TOKEN_COOKIE_NAME == "__Secure-AUTH"
     assert settings.AUTH.ID_TOKEN_COOKIE_NAME == "__Secure-ID"
     assert settings.AUTH.MASQUERADED_TOKEN_COOKIE_NAME == "__Secure-MASK"
+    platform = settings.connection_hub_platform_auth_config()
+    assert platform["authority_id"] == "kdcube.platform"
+    assert platform["provider_id"] == "workspace_google_session"
+    assert platform["provider_type"] == "bundle_session_login"
+    assert platform["upstream_authority_provider"]["authority_id"] == (
+        "google.accounts"
+    )
+    assert platform["upstream_authority_provider"]["provider_id"] == "google_oidc"
+    assert platform["upstream_authority_provider"]["provider"]["authenticator"] == {
+        "client_id": "google-client-id"
+    }
 
 
 def test_get_plain_returns_default_when_path_missing(monkeypatch, tmp_path):

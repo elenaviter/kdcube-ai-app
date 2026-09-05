@@ -25,6 +25,8 @@ langgraph-checkpoint-postgres==3.0.5
 langmem==0.0.30
 dramatiq==1.18.0
 PyJWT[crypto]==2.10.1
+# Standards-compliant WebAuthn parsing and signature/attestation verification.
+webauthn==2.8.0
 pydantic==2.13.4
 python-dotenv==1.1.1
 PyYAML==6.0.2

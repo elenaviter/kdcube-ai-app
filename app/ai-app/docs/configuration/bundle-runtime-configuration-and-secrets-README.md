@@ -14,6 +14,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/bundles-secrets-descriptor-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/assembly-descriptor-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/delegated-management-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/secrets/secret-management-cli-README.md
 ---
 # Bundle Runtime Settings, Configuration, and Secrets
 
@@ -623,11 +624,11 @@ It never exports:
 
 For a runtime whose selected provider is the live secret authority, an
 administrator can reconstruct an explicit platform/bundle key manifest with
-`connection-hub host secret export`. KDCube displays the exact keys through
-its configured browser identity, then a one-use PKCE exchange writes a new
+`kdcube secrets export`. KDCube displays the exact keys through its configured
+browser identity, then a one-use PKCE exchange writes a new
 `secrets.yaml` and `bundles.secrets.yaml` directory. This works for file,
 host-vault, and cloud providers without requiring provider key enumeration.
-See [Delegated KDCube Management Service](../service/cicd/delegated-management-service-README.md#human-secret-export).
+See [Manage KDCube Secrets](../service/secrets/secret-management-cli-README.md#owner-only-export).
 
 So the rule is:
 

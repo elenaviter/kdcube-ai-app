@@ -1,13 +1,14 @@
 ---
 id: repo:kdcube/app/ai-app/src/kdcube-ai-app/kdcube_cli/README.md
 title: "KDCube CLI"
-summary: "Installs, initializes, and operates local KDCube runtimes and exposes the typed deployment-target control API used by application-specific CLIs."
-tags: ["kdcube", "cli", "runtime", "deployment-target", "python-api"]
-keywords: ["kdcube-cli", "kdcube init", "kdcube start", "kdcube stop", "kdcube_cli.control"]
+summary: "Installs and operates KDCube runtimes, manages exact secrets through their selected provider, and exposes typed deployment and management APIs for application-specific CLIs."
+tags: ["kdcube", "cli", "runtime", "deployment-target", "secrets", "python-api"]
+keywords: ["kdcube-cli", "kdcube init", "kdcube start", "kdcube stop", "kdcube secrets", "kdcube_cli.control", "kdcube_cli.management"]
 updated_at: 2026-09-05
 see_also:
   - repo:kdcube/app/ai-app/docs/service/cicd/cli-README.md
   - repo:kdcube/app/ai-app/docs/service/cicd/deployment-target-control-api-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/secrets/secret-management-cli-README.md
   - repo:kdcube/app/ai-app/docs/service/secrets/host-vault-README.md
 ---
 # KDCube CLI
@@ -52,25 +53,41 @@ See the
 for capabilities, explicit surface selection, endpoint-only behavior, and
 structured errors.
 
-The CLI also stages an existing local file-backed secret inventory into an
-enrolled host vault, then performs an explicit verified provider switch with
-automatic ordinary-failure rollback:
+## Secret Management
+
+Logical secret operations are backend-neutral. They address one exact
+platform or bundle key through the running KDCube management service, which
+uses the `ISecretsManager` selected by that deployment:
 
 ```bash
-kdcube secrets host-vault prepare --tenant <tenant> --project <project> --dry-run
-kdcube secrets host-vault prepare --tenant <tenant> --project <project>
-kdcube secrets host-vault stage --tenant <tenant> --project <project> --dry-run
-kdcube secrets host-vault stage --tenant <tenant> --project <project>
-kdcube secrets host-vault activate --tenant <tenant> --project <project> --dry-run
-kdcube secrets host-vault activate --tenant <tenant> --project <project> --yes
+kdcube secrets metadata services.brave.api_key --scope platform
+kdcube secrets set services.brave.api_key --scope platform
+kdcube secrets get services.brave.api_key --scope platform --output ./secret.txt
+kdcube secrets delete services.brave.api_key --scope platform
 ```
 
-The active backend is spelled `host-vault`. Its address, certificate server
-name, deployment identity directory, and supervisor network mode are
-descriptor-owned. See
+Delegated operations require an exact live Card grant and accept the bearer
+only through a hidden prompt or `--credential-stdin`. `get` writes a private
+file while the terminal receives a receipt. `export` is a separate
+browser-confirmed, one-use owner ceremony that reconstructs only explicitly
+named descriptor keys.
+
+Storage selection and migration are grouped beneath `secrets backend`:
+
+```bash
+kdcube secrets backend status --tenant <tenant> --project <project> --json
+kdcube secrets backend host-vault prepare --tenant <tenant> --project <project>
+kdcube secrets backend host-vault stage --tenant <tenant> --project <project>
+kdcube secrets backend host-vault activate --tenant <tenant> --project <project> --yes
+```
+
+The former `kdcube secrets host-vault ...` spelling remains an alias. Read
+[Manage KDCube Secrets](../../../docs/service/secrets/secret-management-cli-README.md)
+for local and remote targeting, human and agent credential input, consent
+recovery, exact-key operations, export, and backend status. Read
 [Host Vault for Provider Secrets](../../../docs/service/secrets/host-vault-README.md)
-for `kdcube secrets host-vault prepare`, `stage`, `activate`, and `recover`,
-their no-value-output contracts, and the remaining durability gates.
+for provisioning, mTLS identity, migration, activation, and recovery.
+
 ---
 
 ## What You Build

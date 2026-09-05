@@ -6,8 +6,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
-from urllib.parse import quote
+from pathlib import Path
+from typing import Any, Mapping
+from urllib.parse import quote, urlsplit
 
 
 def _text(value: Any) -> str:
@@ -30,16 +31,305 @@ def _positive_float(value: Any, default: float) -> float:
     return result if result > 0 else default
 
 
-def _configured_bool(value: Any, *, name: str) -> bool:
+def _configured_bool(
+    value: Any,
+    *,
+    name: str,
+    section: str = "secret export",
+) -> bool:
     if not isinstance(value, bool):
-        raise TypeError(f"secret export {name} policy is invalid")
+        raise TypeError(f"{section} {name} policy is invalid")
     return value
 
 
-def _configured_int(value: Any, *, name: str) -> int:
+def _configured_int(
+    value: Any,
+    *,
+    name: str,
+    section: str = "secret export",
+) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
-        raise TypeError(f"secret export {name} policy is invalid")
+        raise TypeError(f"{section} {name} policy is invalid")
     return value
+
+
+def _mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _string_list(value: Any, *, name: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise TypeError(f"human approval {name} must be a list")
+    rows = tuple(_text(item) for item in value)
+    if any(not item for item in rows) or len(set(rows)) != len(rows):
+        raise ValueError(f"human approval {name} is invalid")
+    return rows
+
+
+def _origin_list(value: Any, *, name: str) -> tuple[str, ...]:
+    rows = tuple(item.rstrip("/") for item in _string_list(value, name=name))
+    if len(set(rows)) != len(rows):
+        raise ValueError(f"human approval {name} is invalid")
+    return rows
+
+
+@dataclass(frozen=True)
+class CognitoFreshAuthenticationProvider:
+    alias: str
+    region: str
+    user_pool_id: str
+    app_client_id: str
+    hosted_ui_domain: str
+
+    @property
+    def issuer(self) -> str:
+        return f"https://cognito-idp.{self.region}.amazonaws.com/{self.user_pool_id}"
+
+
+@dataclass(frozen=True)
+class GoogleFreshAuthenticationConfig:
+    client_id: str
+    jwks_url: str
+
+
+@dataclass(frozen=True)
+class WebAuthnApprovalConfig:
+    enabled: bool
+    rp_id: str
+    rp_name: str
+    allowed_origins: tuple[str, ...]
+    credential_policy: str
+    trusted_attestation_root_files: dict[str, tuple[str, ...]]
+    timeout_milliseconds: int
+    max_credentials_per_user: int
+
+    def validate(self) -> None:
+        if self.credential_policy not in {
+            "verified_passkey",
+            "single_device",
+            "attested_hardware",
+        }:
+            raise ValueError("human approval WebAuthn credential policy is invalid")
+        if not self.rp_name or len(self.rp_name) > 128:
+            raise ValueError("human approval WebAuthn RP name is invalid")
+        if self.rp_id and (
+            ":" in self.rp_id or "/" in self.rp_id or len(self.rp_id) > 253
+        ):
+            raise ValueError("human approval WebAuthn RP id is invalid")
+        for origin in self.allowed_origins:
+            parsed = urlsplit(origin)
+            if (
+                parsed.scheme not in {"https", "http"}
+                or not parsed.hostname
+                or parsed.path not in {"", "/"}
+                or parsed.query
+                or parsed.fragment
+                or parsed.username is not None
+                or parsed.password is not None
+                or (
+                    parsed.scheme == "http"
+                    and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}
+                )
+            ):
+                raise ValueError("human approval WebAuthn origin is invalid")
+        if not 10000 <= self.timeout_milliseconds <= 300000:
+            raise ValueError("human approval WebAuthn timeout is invalid")
+        if not 1 <= self.max_credentials_per_user <= 32:
+            raise ValueError("human approval WebAuthn credential limit is invalid")
+        for fmt, paths in self.trusted_attestation_root_files.items():
+            if not fmt or not paths:
+                raise ValueError(
+                    "human approval WebAuthn attestation roots are invalid"
+                )
+            for path in paths:
+                if not Path(path).is_absolute():
+                    raise ValueError(
+                        "human approval WebAuthn attestation roots must be absolute paths"
+                    )
+        if (
+            self.credential_policy == "attested_hardware"
+            and not self.trusted_attestation_root_files
+        ):
+            raise ValueError(
+                "attested hardware requires configured attestation trust roots"
+            )
+
+
+@dataclass(frozen=True)
+class HumanApprovalConfig:
+    """Descriptor-owned adapters for stronger one-use human approval."""
+
+    fresh_authentication_provider: str
+    challenge_ttl_seconds: int
+    http_timeout_seconds: float
+    cognito_managed_login: bool
+    cognito_providers: tuple[CognitoFreshAuthenticationProvider, ...]
+    google: GoogleFreshAuthenticationConfig
+    webauthn: WebAuthnApprovalConfig
+
+    @classmethod
+    def from_settings(cls, settings: Any) -> HumanApprovalConfig:
+        plain = settings.plain
+        try:
+            platform = settings.connection_hub_platform_auth_config()
+        except Exception:
+            platform = {}
+        platform = _mapping(platform)
+        platform_provider = _mapping(platform.get("provider"))
+
+        raw_cognito = _mapping(plain("management.human_approval.cognito", default={}))
+        hosted_fallback = _text(
+            raw_cognito.get("hosted_ui_domain")
+            or platform.get("hosted_ui_domain")
+            or _mapping(platform_provider.get("authenticator")).get("hosted_ui_domain")
+        )
+        providers: list[CognitoFreshAuthenticationProvider] = []
+        for provider in list(
+            getattr(getattr(settings, "AUTH", None), "COGNITO_TRUSTED_PROVIDERS", None)
+            or []
+        ):
+            hosted = _text(getattr(provider, "hosted_ui_domain", None))
+            if not hosted and not providers:
+                hosted = hosted_fallback
+            candidate = CognitoFreshAuthenticationProvider(
+                alias=_text(getattr(provider, "alias", None)),
+                region=_text(getattr(provider, "region", None)),
+                user_pool_id=_text(getattr(provider, "user_pool_id", None)),
+                app_client_id=_text(getattr(provider, "app_client_id", None)),
+                hosted_ui_domain=hosted.rstrip("/"),
+            )
+            if all(
+                (
+                    candidate.alias,
+                    candidate.region,
+                    candidate.user_pool_id,
+                    candidate.app_client_id,
+                    candidate.hosted_ui_domain,
+                )
+            ):
+                providers.append(candidate)
+
+        raw_google = _mapping(plain("management.human_approval.google", default={}))
+        upstream = _mapping(platform.get("upstream_authority_provider"))
+        upstream_provider = _mapping(upstream.get("provider"))
+        upstream_authenticator = _mapping(upstream_provider.get("authenticator"))
+        google = GoogleFreshAuthenticationConfig(
+            client_id=_text(
+                raw_google.get("client_id")
+                or upstream_authenticator.get("client_id")
+                or upstream_authenticator.get("audience")
+            ),
+            jwks_url=_text(
+                raw_google.get("jwks_url")
+                or upstream_authenticator.get("jwks_url")
+                or "https://www.googleapis.com/oauth2/v3/certs"
+            ),
+        )
+
+        raw_webauthn = _mapping(plain("management.human_approval.webauthn", default={}))
+        raw_roots = _mapping(raw_webauthn.get("trusted_attestation_root_files"))
+        roots = {
+            _text(fmt): _string_list(paths, name="attestation root files")
+            for fmt, paths in raw_roots.items()
+        }
+        webauthn = WebAuthnApprovalConfig(
+            enabled=_configured_bool(
+                raw_webauthn.get("enabled", False),
+                name="WebAuthn enabled",
+                section="human approval",
+            ),
+            rp_id=_text(raw_webauthn.get("rp_id")).lower(),
+            rp_name=_text(raw_webauthn.get("rp_name") or "KDCube"),
+            allowed_origins=_origin_list(
+                raw_webauthn.get("allowed_origins", []),
+                name="WebAuthn origins",
+            ),
+            credential_policy=_text(
+                raw_webauthn.get("credential_policy") or "verified_passkey"
+            ).lower(),
+            trusted_attestation_root_files=roots,
+            timeout_milliseconds=_configured_int(
+                raw_webauthn.get("timeout_milliseconds", 60000),
+                name="WebAuthn timeout",
+                section="human approval",
+            ),
+            max_credentials_per_user=_configured_int(
+                raw_webauthn.get("max_credentials_per_user", 8),
+                name="WebAuthn credential limit",
+                section="human approval",
+            ),
+        )
+
+        result = cls(
+            fresh_authentication_provider=_text(
+                plain(
+                    "management.human_approval.fresh_authentication_provider",
+                    default="auto",
+                )
+            ).lower(),
+            challenge_ttl_seconds=_configured_int(
+                plain(
+                    "management.human_approval.challenge_ttl_seconds",
+                    default=180,
+                ),
+                name="challenge TTL",
+                section="human approval",
+            ),
+            http_timeout_seconds=_positive_float(
+                plain(
+                    "management.human_approval.http_timeout_seconds",
+                    default=10,
+                ),
+                10,
+            ),
+            cognito_managed_login=_configured_bool(
+                raw_cognito.get("managed_login", False),
+                name="Cognito managed login",
+                section="human approval",
+            ),
+            cognito_providers=tuple(providers),
+            google=google,
+            webauthn=webauthn,
+        )
+        result.validate()
+        return result
+
+    def validate(self) -> None:
+        if self.fresh_authentication_provider not in {
+            "auto",
+            "cognito",
+            "google",
+        }:
+            raise ValueError("human approval fresh-authentication provider is invalid")
+        if not 30 <= self.challenge_ttl_seconds <= 900:
+            raise ValueError("human approval challenge TTL is invalid")
+        if not 1 <= self.http_timeout_seconds <= 30:
+            raise ValueError("human approval HTTP timeout is invalid")
+        for provider in self.cognito_providers:
+            parsed = urlsplit(provider.hosted_ui_domain)
+            if (
+                parsed.scheme != "https"
+                or not parsed.hostname
+                or parsed.path not in {"", "/"}
+                or parsed.query
+                or parsed.fragment
+                or parsed.username is not None
+                or parsed.password is not None
+            ):
+                raise ValueError("human approval Cognito domain is invalid")
+        if self.google.client_id and len(self.google.client_id) > 512:
+            raise ValueError("human approval Google client id is invalid")
+        google_jwks = urlsplit(self.google.jwks_url)
+        if (
+            google_jwks.scheme != "https"
+            or not google_jwks.hostname
+            or google_jwks.username is not None
+            or google_jwks.password is not None
+        ):
+            raise ValueError("human approval Google JWKS URL is invalid")
+        self.webauthn.validate()
 
 
 @dataclass(frozen=True)
@@ -209,4 +499,11 @@ class DelegatedManagementConfig:
             raise ValueError("Connection Hub protected-service identity is required")
 
 
-__all__ = ["DelegatedManagementConfig", "HumanSecretExportConfig"]
+__all__ = [
+    "CognitoFreshAuthenticationProvider",
+    "DelegatedManagementConfig",
+    "GoogleFreshAuthenticationConfig",
+    "HumanApprovalConfig",
+    "HumanSecretExportConfig",
+    "WebAuthnApprovalConfig",
+]

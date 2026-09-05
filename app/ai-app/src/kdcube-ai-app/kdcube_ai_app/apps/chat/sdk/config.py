@@ -29,6 +29,7 @@ from connection_hub.authority_registry_config import (
     DEFAULT_PLATFORM_PROVIDER_ID,
     authority_registry_config,
     platform_authority_auth_config,
+    resolve_authority_provider_instance,
     resolve_platform_authority_provider,
 )
 from kdcube_ai_app.infra.props import get_props_manager
@@ -807,7 +808,37 @@ class Settings(PLATFORM_CONFIG):
             provider_id=provider_id,
             provider_type=provider_type,
         )
-        return platform_authority_auth_config(resolved)
+        normalized = platform_authority_auth_config(resolved)
+        provider = resolved.get("provider") if isinstance(resolved, dict) else None
+        provider = dict(provider) if isinstance(provider, dict) else {}
+        input_config = provider.get("input")
+        input_config = dict(input_config) if isinstance(input_config, dict) else {}
+        authenticator_ref = input_config.get("authenticator_ref")
+        authenticator_ref = (
+            dict(authenticator_ref) if isinstance(authenticator_ref, dict) else {}
+        )
+        upstream = {}
+        if authenticator_ref:
+            upstream = resolve_authority_provider_instance(
+                registry,
+                authority_id=str(
+                    authenticator_ref.get("authority_id") or ""
+                ).strip(),
+                provider_id=str(
+                    authenticator_ref.get("provider_id")
+                    or authenticator_ref.get("authenticator_id")
+                    or ""
+                ).strip(),
+            )
+            if not upstream.get("ok"):
+                upstream = {}
+        return {
+            **normalized,
+            "authority_id": str(resolved.get("authority_id") or "").strip(),
+            "provider_id": str(resolved.get("provider_id") or "").strip(),
+            "provider_type": str(resolved.get("provider_type") or "").strip(),
+            "upstream_authority_provider": upstream,
+        }
 
     def connection_hub_platform_auth_config(self) -> dict[str, Any]:
         """Return normalized platform auth config from the Connection Hub registry."""

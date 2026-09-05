@@ -13,6 +13,7 @@ see_also:
   - repo:kdcube/app/ai-app/docs/recipes/operations/operate-runtime-README.md
   - repo:kdcube/app/ai-app/docs/service/cicd/cli-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/secrets/secrets-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/secrets/secret-management-cli-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/secrets/host-vault-README.md
   - repo:kdcube/app/ai-app/docs/runtime/harness/README.md
   - repo:kdcube/app/ai-app/docs/sdk/bundle/build/how-to-write-bundle-README.md
@@ -228,6 +229,12 @@ Use `refresh`, not `init`, after the workdir exists. `refresh` preserves the
 staged descriptors. See [Operate A KDCube Runtime](recipes/operations/operate-runtime-README.md)
 for configuration updates, app reloads, logs, and cleanup.
 
+After the runtime is available, `kdcube secrets metadata|get|set|delete`
+manages exact logical keys through its selected provider, and
+`kdcube secrets export` performs an owner-confirmed one-use descriptor export.
+See [Manage KDCube Secrets](service/secrets/secret-management-cli-README.md)
+for local and remote commands, delegated authority, and safe input/output.
+
 ### Optional: Move Local Secrets To The Host Vault
 
 The first local run deliberately uses the file-backed secret provider so the
@@ -266,12 +273,12 @@ platform:
 Then prepare the shadow broker, verify the copy, and activate through the CLI:
 
 ```bash
-kdcube secrets host-vault prepare --tenant acme --project local --dry-run
-kdcube secrets host-vault prepare --tenant acme --project local
-kdcube secrets host-vault stage --tenant acme --project local --dry-run
-kdcube secrets host-vault stage --tenant acme --project local
-kdcube secrets host-vault activate --tenant acme --project local --dry-run
-kdcube secrets host-vault activate --tenant acme --project local --yes
+kdcube secrets backend host-vault prepare --tenant acme --project local --dry-run
+kdcube secrets backend host-vault prepare --tenant acme --project local
+kdcube secrets backend host-vault stage --tenant acme --project local --dry-run
+kdcube secrets backend host-vault stage --tenant acme --project local
+kdcube secrets backend host-vault activate --tenant acme --project local --dry-run
+kdcube secrets backend host-vault activate --tenant acme --project local --yes
 ```
 
 `prepare` projects only the descriptor-owned Host Vault fields into the
@@ -279,14 +286,15 @@ generated Compose environment and recreates only `kdcube-secrets`; file-backed
 consumers remain active. Activation changes `secrets.provider` to
 `secrets-service`, recreates the
 affected consumers, verifies real reads, and rolls back ordinary failures.
-Do not manually flip only the provider. The host service provisioning,
-certificate enrollment, field meanings, recovery command, security boundary,
-and current release gates are owned by
+The activation command is the supported provider-switch boundary because it
+includes parity, ordering, verification, and rollback. The host service
+provisioning, certificate enrollment, field meanings, recovery command,
+security boundary, and current release gates are owned by
 [Host Vault for Provider Secrets](service/secrets/host-vault-README.md). The
 [CLI reference](service/cicd/cli-README.md#host-vault-lifecycle) owns the
-command contract. Until a released `kdcube-cli` contains the `secrets
-host-vault` command group, use this optional flow only from a source-installed
-CLI that matches the staged platform source.
+command contract. Until a released `kdcube-cli` contains the
+`secrets backend host-vault` command group, use this optional flow from a
+source-installed CLI that matches the staged platform source.
 
 ## Build Or Connect An App
 

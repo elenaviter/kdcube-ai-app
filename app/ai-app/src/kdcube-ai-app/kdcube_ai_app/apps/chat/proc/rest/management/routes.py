@@ -31,6 +31,9 @@ from kdcube_ai_app.apps.chat.proc.rest.management.effect_ledger import (
     RedisEffectLedger,
 )
 from kdcube_ai_app.apps.chat.proc.rest.management.http_input import read_json_object
+from kdcube_ai_app.apps.chat.proc.rest.management.human_approval_routes import (
+    router as human_approval_router,
+)
 from kdcube_ai_app.apps.chat.proc.rest.management.runtime import (
     KDCubeManagementRuntime,
 )
@@ -60,6 +63,7 @@ from kdcube_ai_app.apps.chat.proc.rest.management.service import (
 from kdcube_ai_app.apps.chat.sdk.config import get_secret, get_settings
 
 router = APIRouter(prefix="/management/v1")
+router.include_router(human_approval_router)
 router.include_router(secret_export_router)
 
 

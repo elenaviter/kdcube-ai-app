@@ -200,8 +200,14 @@ def test_metadata_publishes_resource_authorization_server_and_operations(
     }
 
 
-def test_secret_export_routes_are_mounted_once() -> None:
+def test_human_approval_and_secret_export_routes_are_mounted_once() -> None:
     expected = {
+        ("GET", "/human-approval/oidc/callback"),
+        ("POST", "/human-approval/oidc/callback"),
+        ("GET", "/human-approval/webauthn"),
+        ("POST", "/human-approval/webauthn/complete"),
+        ("GET", "/human-approval/passkeys/register"),
+        ("POST", "/human-approval/passkeys/register/complete"),
         ("POST", "/secrets/export/start"),
         ("GET", "/secrets/export/authorize"),
         ("POST", "/secrets/export/authorize"),

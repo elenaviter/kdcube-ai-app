@@ -67,3 +67,18 @@ def test_shipped_local_descriptor_enables_bounded_human_export() -> None:
         "max_targets": 64,
         "max_total_value_bytes": 1048576,
     }
+
+    human = assembly["management"]["human_approval"]
+    assert human["fresh_authentication_provider"] == "auto"
+    assert human["cognito"]["managed_login"] is False
+    assert human["google"]["client_id"] == ""
+    assert human["webauthn"] == {
+        "enabled": True,
+        "rp_id": "",
+        "rp_name": "KDCube",
+        "allowed_origins": [],
+        "credential_policy": "verified_passkey",
+        "trusted_attestation_root_files": {},
+        "timeout_milliseconds": 60000,
+        "max_credentials_per_user": 8,
+    }

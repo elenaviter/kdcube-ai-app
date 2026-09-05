@@ -11,6 +11,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/bundle-runtime-configuration-and-secrets-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/runtime-configuration-and-secrets-store-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/delegated-management-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/secrets/secret-management-cli-README.md
 ---
 # Platform Secrets Descriptor
 
@@ -106,8 +107,8 @@ Otherwise:
 - it is installer input used to populate the active runtime secrets provider
 
 An administrator can reconstruct an explicit set of platform and bundle keys
-through the browser-approved CLI ceremony documented in
-[Delegated KDCube Management Service](../service/cicd/delegated-management-service-README.md#human-secret-export).
+through the browser-approved `kdcube secrets export` ceremony documented in
+[Manage KDCube Secrets](../service/secrets/secret-management-cli-README.md#owner-only-export).
 
 Secret inventory is provider-derived. `.__keys` is a virtual compatibility
 selector used by the runtime and must not be authored, staged, or mutated in a
@@ -117,19 +118,20 @@ returned.
 
 For an opt-in local host vault, set `secrets.service.backend: host-vault`. Keep
 `secrets.provider: secrets-file` while the CLI shadow-stages and verifies the
-existing values. `kdcube secrets host-vault activate` performs the explicit
-local-Compose cutover to `secrets-service`, verifies reads in ingress and proc,
-and restores file authority on an ordinary activation failure. A durable,
-non-secret pending marker blocks ordinary startup after an interrupted switch;
-`kdcube secrets host-vault recover --yes` recreates and verifies the retained
-file-backed path before clearing it.
+existing values. `kdcube secrets backend host-vault activate` performs the
+explicit local-Compose cutover to `secrets-service`, verifies reads in ingress
+and proc, and restores file authority on an ordinary activation failure. A
+durable, non-secret pending marker blocks ordinary startup after an interrupted
+switch; `kdcube secrets backend host-vault recover --yes` recreates and verifies
+the retained file-backed path before clearing it.
 The descriptor also declares the vault address, TLS server name, and an
 absolute deployment-identity directory outside the workdir. Set
 `platform.services.proc.exec.py_code_exec_network_mode: auto` so a trusted
 Docker-in-Docker supervisor shares the processor's private service networks;
 the split generated-code executor remains networkless. The values remain
 server-side; the descriptor contains paths and topology only. See
-[Host Vault for Provider Secrets](../service/secrets/host-vault-README.md).
+[Host Vault for Provider Secrets](../service/secrets/host-vault-README.md). The
+older `kdcube secrets host-vault ...` spelling remains a compatibility alias.
 
 ### Direct local service run
 

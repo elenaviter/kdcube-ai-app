@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import secrets
 import time
@@ -53,7 +55,9 @@ class HumanApprovalEvidence:
         if (
             not subject
             or len(subject) > 512
-            or any(ord(character) < 32 or ord(character) == 127 for character in subject)
+            or any(
+                ord(character) < 32 or ord(character) == 127 for character in subject
+            )
         ):
             raise ValueError("human approval subject is required")
         if self.assurance not in _ASSURANCE_RANK:
@@ -73,6 +77,36 @@ class HumanApprovalEvidence:
         object.__setattr__(self, "subject", subject)
         object.__setattr__(self, "method", method)
         object.__setattr__(self, "request_digest", request_digest)
+
+
+@dataclass(frozen=True)
+class BrowserAdminSession:
+    """Verified human browser session plus a non-secret browser binding."""
+
+    subject: str
+    session_id: str
+    cookie_binding: str
+    username: str = ""
+    email: str = ""
+    identity_hint: dict[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        subject = str(self.subject or "").strip()
+        session_id = str(self.session_id or "").strip()
+        cookie_binding = str(self.cookie_binding or "").strip()
+        if not subject or len(subject) > 512:
+            raise ValueError("human browser subject is invalid")
+        if not session_id or len(session_id) > 512:
+            raise ValueError("human browser session is invalid")
+        if not _SHA256_RE.fullmatch(cookie_binding):
+            raise ValueError("human browser binding is invalid")
+        hint = dict(self.identity_hint or {})
+        object.__setattr__(self, "subject", subject)
+        object.__setattr__(self, "session_id", session_id)
+        object.__setattr__(self, "cookie_binding", cookie_binding)
+        object.__setattr__(self, "username", str(self.username or "").strip()[:512])
+        object.__setattr__(self, "email", str(self.email or "").strip()[:512])
+        object.__setattr__(self, "identity_hint", hint)
 
 
 @dataclass(frozen=True)
@@ -101,7 +135,9 @@ class HumanApprovalContext:
             if (
                 not value
                 or len(value) > 256
-                or any(ord(character) < 32 or ord(character) == 127 for character in value)
+                or any(
+                    ord(character) < 32 or ord(character) == 127 for character in value
+                )
             ):
                 raise ValueError(f"human approval {name} is invalid")
         if not _TOKEN_RE.fullmatch(transaction_id):
@@ -219,6 +255,11 @@ def _cookie_auth_only(request: Request) -> bool:
 
 
 def _subject(session: Any) -> str:
+    authority = getattr(session, "identity_authority", None)
+    if isinstance(authority, dict):
+        candidate = str(authority.get("platform_user_id") or "").strip()
+        if candidate:
+            return candidate
     for value in (
         getattr(session, "user_id", None),
         getattr(session, "username", None),
@@ -227,6 +268,115 @@ def _subject(session: Any) -> str:
         if candidate:
             return candidate
     return ""
+
+
+def _browser_cookie_binding(request: Request) -> str:
+    auth = get_settings().AUTH
+    rows: list[tuple[str, str]] = []
+    for name in (
+        auth.AUTH_TOKEN_COOKIE_NAME,
+        auth.ID_TOKEN_COOKIE_NAME,
+    ):
+        if not name:
+            continue
+        value = str(request.cookies.get(name) or "")
+        if value:
+            rows.append((name, hashlib.sha256(value.encode("utf-8")).hexdigest()))
+    if not rows:
+        return ""
+    canonical = json.dumps(rows, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode("ascii")).hexdigest()
+
+
+def _identity_hint(request: Request) -> dict[str, Any]:
+    """Read routing hints from browser JWTs without trusting their contents."""
+
+    auth = get_settings().AUTH
+    retained = {
+        "iss",
+        "aud",
+        "client_id",
+        "sub",
+        "provider",
+        "provider_subject",
+        "token_use",
+    }
+    for name in (auth.ID_TOKEN_COOKIE_NAME, auth.AUTH_TOKEN_COOKIE_NAME):
+        token = str(request.cookies.get(name) or "").strip()
+        if not token:
+            continue
+        try:
+            import jwt
+
+            claims = jwt.decode(
+                token,
+                options={
+                    "verify_signature": False,
+                    "verify_exp": False,
+                    "verify_aud": False,
+                },
+            )
+        except Exception:
+            continue
+        if isinstance(claims, dict):
+            return {key: claims[key] for key in retained if key in claims}
+    return {}
+
+
+async def resolve_browser_admin_session(request: Request) -> BrowserAdminSession:
+    """Resolve a cookie-authenticated super-admin and bind the exact browser."""
+
+    if not _cookie_auth_only(request):
+        raise HumanApprovalError(
+            "human_browser_session_required",
+            status_code=401,
+        )
+
+    # Imported lazily because resolver initialization belongs to the running
+    # processor, not module import or offline contract tests.
+    from kdcube_ai_app.apps.chat.ingress.resolvers import get_fastapi_adapter
+
+    try:
+        session = await get_fastapi_adapter().process_request(
+            request,
+            requirements=[
+                RequireUser(),
+                RequireRoles("kdcube:role:super-admin"),
+            ],
+            bypass_throttling=True,
+            bypass_gate=True,
+            bypass_backpressure=True,
+            header_only_auth=False,
+            connection_hub=False,
+        )
+    except HTTPException as exc:
+        status = 401 if int(exc.status_code) == 401 else 403
+        raise HumanApprovalError(
+            "human_browser_session_required"
+            if status == 401
+            else "human_admin_authority_required",
+            status_code=status,
+        ) from None
+
+    subject = _subject(session)
+    binding = _browser_cookie_binding(request)
+    session_id = str(getattr(session, "session_id", None) or "").strip()
+    if subject and binding and not session_id:
+        session_id = hashlib.sha256(f"{subject}\n{binding}".encode("utf-8")).hexdigest()
+    try:
+        return BrowserAdminSession(
+            subject=subject,
+            session_id=session_id,
+            cookie_binding=binding,
+            username=str(getattr(session, "username", None) or ""),
+            email=str(getattr(session, "email", None) or ""),
+            identity_hint=_identity_hint(request),
+        )
+    except ValueError:
+        raise HumanApprovalError(
+            "human_browser_session_invalid",
+            status_code=503,
+        ) from None
 
 
 class BrowserSessionHumanApprovalVerifier:
@@ -250,41 +400,11 @@ class BrowserSessionHumanApprovalVerifier:
                 "human_approval_phase_invalid",
                 status_code=503,
             )
-        if not _cookie_auth_only(request):
-            raise HumanApprovalError(
-                "human_browser_session_required",
-                status_code=401,
-            )
-
-        # Imported lazily because resolver initialization belongs to the
-        # running processor, not module import or offline contract tests.
-        from kdcube_ai_app.apps.chat.ingress.resolvers import get_fastapi_adapter
-
-        try:
-            session = await get_fastapi_adapter().process_request(
-                request,
-                requirements=[
-                    RequireUser(),
-                    RequireRoles("kdcube:role:super-admin"),
-                ],
-                bypass_throttling=True,
-                bypass_gate=True,
-                bypass_backpressure=True,
-                header_only_auth=False,
-                connection_hub=False,
-            )
-        except HTTPException as exc:
-            status = 401 if int(exc.status_code) == 401 else 403
-            raise HumanApprovalError(
-                "human_browser_session_required"
-                if status == 401
-                else "human_admin_authority_required",
-                status_code=status,
-            ) from None
+        admin = await resolve_browser_admin_session(request)
 
         try:
             evidence = HumanApprovalEvidence(
-                subject=_subject(session),
+                subject=admin.subject,
                 assurance=SESSION_CONFIRMATION,
                 method="kdcube_platform_browser_session",
                 request_digest=context.request_digest,
@@ -322,7 +442,17 @@ async def evaluate_human_approval(
         )
     verifier = getattr(request.app.state, "human_approval_verifier", None)
     if verifier is None:
-        verifier = BrowserSessionHumanApprovalVerifier()
+        if context.required_assurance == SESSION_CONFIRMATION:
+            verifier = BrowserSessionHumanApprovalVerifier()
+        else:
+            from kdcube_ai_app.apps.chat.proc.rest.management.human_approval_adapters import (
+                descriptor_human_approval_verifier,
+            )
+
+            verifier = descriptor_human_approval_verifier(
+                request,
+                required_assurance=context.required_assurance,
+            )
     outcome = await verifier.evaluate(
         request,
         context=context,
@@ -354,11 +484,14 @@ async def evaluate_human_approval(
             status_code=409,
         )
     return outcome
+
+
 __all__ = [
     "FRESH_AUTHENTICATION",
     "SESSION_CONFIRMATION",
     "USER_VERIFICATION",
     "BrowserSessionHumanApprovalVerifier",
+    "BrowserAdminSession",
     "HumanApprovalChallenge",
     "HumanApprovalContext",
     "HumanApprovalError",
@@ -368,4 +501,5 @@ __all__ = [
     "HumanApprovalVerifier",
     "assurance_satisfies",
     "evaluate_human_approval",
+    "resolve_browser_admin_session",
 ]

@@ -10,6 +10,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/cross-runtime-context-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/delegated-management-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/secrets/secret-management-cli-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/secrets-descriptor-README.md
 ---
 # Host Vault for Provider Secrets
@@ -84,15 +85,15 @@ shadow state
   provider: secrets-file       files remain the runtime source of truth
   backend:  host-vault         broker can receive staged copies
           |
-          | kdcube secrets host-vault stage
-          | kdcube secrets host-vault activate --yes
+          | kdcube secrets backend host-vault stage
+          | kdcube secrets backend host-vault activate --yes
           v
 active durable local state
   provider: secrets-service    consumers call kdcube-secrets
   backend:  host-vault         broker calls the durable vault over mTLS
 ```
 
-Use `kdcube secrets host-vault activate` for the final switch. It coordinates
+Use `kdcube secrets backend host-vault activate` for the final switch. It coordinates
 configuration, consumer quiescing, service recreation, real-read verification,
 and rollback. Hand-editing `provider` skips those guarantees. The broader
 provider matrix is in
@@ -245,6 +246,59 @@ deployment certificate cannot be used as a Connection Hub Card or user
 session. If the Card grants `secret.value.read`, returning that one plaintext
 value is the intended operation; omitting that grant keeps reads closed while
 still allowing metadata, write, or delete independently.
+
+### 2.4 What an owner can inspect
+
+Host Vault has four distinct inspection surfaces:
+
+| Question | Command or surface | Result |
+| --- | --- | --- |
+| Which KDCube deployments may use this vault? | `hostvaultctl.py list` on the vault host | The deployment trust registry: identities, namespaces, certificate fingerprints, status, and ACLs. |
+| Which storage is configured for this local runtime? | `kdcube secrets backend status --json` | Descriptor-selected provider, authoritative-store kind, retained descriptor-file presence, migration state, and evidence source. |
+| Does one exact secret exist and which provider serves it? | `kdcube secrets metadata KEY --scope platform` or the same command with `--scope bundle --bundle-id APP_ID` | Non-secret metadata only. The live Card must grant metadata read for that exact secret resource. |
+| What is one exact stored value? | `kdcube secrets get KEY --scope ... --output PRIVATE_FILE` | One admitted plaintext value written atomically to the named file. The CLI does not print it. The live Card must grant value read for that exact resource. |
+| How can the owner reconstruct selected descriptor files? | `kdcube secrets export` with repeated exact `--platform-key` and `--bundle-key APP_ID=KEY` arguments | A new owner-controlled directory containing only the approved keys, after a fresh one-use browser ceremony. |
+
+For example:
+
+```bash
+# Presence and provider capability, without disclosing the value.
+kdcube secrets metadata services.brave.api_key \
+  --scope platform
+
+# Deliberately disclose one exact value to a mode-0600 local file.
+umask 077
+kdcube secrets get services.brave.api_key \
+  --scope platform \
+  --output ./brave-api-key.txt
+
+# Reconstruct only the explicitly named descriptor entries.
+kdcube secrets export \
+  --platform-key services.brave.api_key \
+  --bundle-key connection-hub@1-0=connections.oauth_state_secret \
+  --output-directory ./kdcube-secret-export-20260905
+```
+
+The exact-key management commands are also available to an agent or operator
+when the owner grants their Card the corresponding operation and resource.
+Descriptor export is owner-performed: its one-use approval is bound to the
+manifest and remains outside reusable Card authority. Host Vault's internal
+`secret.list` protocol supports trusted provider inventory and migration; the
+owner-facing management boundary uses exact-key requests and exact-manifest
+export, so each approval discloses only its named values.
+
+The KDCube CLI prompts for a delegated bearer or reads it from the first stdin
+line. The Connection Hub CLI remains a convenience client around the same
+KDCube management library and can supply its native-store OAuth session. The
+complete command and input contract is in
+[Manage KDCube Secrets](secret-management-cli-README.md).
+
+User-owned Connection Hub connector credentials use the same selected
+`ISecretsManager` through the user-secret scope. Their owner surface is the
+Connections interface: it reports whether a credential is present and allows
+the owner to replace or remove it. The platform/bundle management commands and
+descriptor export cannot cross into that user scope, and the Connections
+interface does not reveal the stored plaintext value.
 
 ## 3. Trust model in one pass
 
@@ -565,7 +619,7 @@ host-vault-client.key
 host-vault-ca.crt
 ```
 
-`kdcube secrets host-vault prepare` projects this non-secret topology into
+`kdcube secrets backend host-vault prepare` projects this non-secret topology into
 Compose for an already running file-backed deployment and recreates only the
 `kdcube-secrets` broker. Its dry-run validates the descriptor, enrolled
 identity, running broker, and generated configuration without changing a file
@@ -601,11 +655,11 @@ With the host vault enrolled and the file-backed runtime running, project the
 shadow configuration and recreate only the broker:
 
 ```bash
-kdcube secrets host-vault prepare \
+kdcube secrets backend host-vault prepare \
   --tenant demo-tenant --project demo-project \
   --dry-run --json
 
-kdcube secrets host-vault prepare \
+kdcube secrets backend host-vault prepare \
   --tenant demo-tenant --project demo-project \
   --json
 ```
@@ -615,7 +669,7 @@ restarts `chat-ingress` or `chat-proc`. With the shadow broker healthy and
 `secrets-file` still selected, inspect the destination without writing:
 
 ```bash
-kdcube secrets host-vault stage \
+kdcube secrets backend host-vault stage \
   --tenant demo-tenant --project demo-project \
   --dry-run --json
 ```
@@ -623,7 +677,7 @@ kdcube secrets host-vault stage \
 Then stage and verify all configured non-placeholder values:
 
 ```bash
-kdcube secrets host-vault stage \
+kdcube secrets backend host-vault stage \
   --tenant demo-tenant --project demo-project \
   --json
 ```
@@ -656,7 +710,7 @@ later, separately confirmed operator action.
 Check parity and runtime readiness without changing a file or container:
 
 ```bash
-kdcube secrets host-vault activate \
+kdcube secrets backend host-vault activate \
   --tenant demo-tenant --project demo-project \
   --dry-run --json
 ```
@@ -664,7 +718,7 @@ kdcube secrets host-vault activate \
 Then perform the explicit provider switch:
 
 ```bash
-kdcube secrets host-vault activate \
+kdcube secrets backend host-vault activate \
   --tenant demo-tenant --project demo-project \
   --yes --json
 ```
@@ -703,7 +757,7 @@ removed, ordinary `kdcube start` refuses the unresolved transaction. Recover
 to a known file-backed state before retrying activation:
 
 ```bash
-kdcube secrets host-vault recover \
+kdcube secrets backend host-vault recover \
   --tenant demo-tenant --project demo-project \
   --yes --json
 ```
@@ -724,8 +778,8 @@ The provider contract remains uniform after cutover:
 | --- | --- | --- |
 | Resolve a secret for Brave, Slack, an external MCP connector, or another trusted provider adapter | Runtime `get_secret()` through `SecretsServiceSecretsManager` | Read the exact host-vault record; no descriptor mutation. |
 | Add or replace a bundle/user secret from an existing authenticated settings surface | Existing KDCube secret mutation API | Commit the value through the broker and refresh provider-derived inventory. |
-| Let an approved agent or operator inspect, set, retrieve, or delete one exact secret | Delegated KDCube management API, normally through `connection-hub host secret ...` | Enforce the live Card operation and invocation policy, then use the same broker. |
-| Reconstruct selected descriptor files for the owner | `connection-hub host secret export` plus browser approval | Create a new owner-controlled output directory once; active vault records remain unchanged. |
+| Let an approved agent or operator inspect, set, retrieve, or delete one exact secret | Delegated KDCube management API through `kdcube secrets ...`; Connection Hub may supply its stored OAuth session | Enforce the live Card operation and invocation policy, then use the same broker. |
+| Reconstruct selected descriptor files for the owner | `kdcube secrets export` plus browser approval | Create a new owner-controlled output directory once; active vault records remain unchanged. |
 | Revoke the deployment's vault access | `hostvaultctl revoke` as the vault operator | Reject the broker certificate on its next connection. |
 | Rotate deployment identity or the root key | `hostvaultctl rotate-identity` or `rotate-root-key` | Replace identity with bounded overlap, or rewrap data keys without changing secret values. |
 

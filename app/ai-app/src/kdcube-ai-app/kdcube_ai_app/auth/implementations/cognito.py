@@ -252,6 +252,11 @@ class CognitoAuthManager(OAuthManager):
             raise AuthenticationError("Expected Cognito ID token")
         return payload
 
+    async def verify_id_token(self, id_token: str) -> Dict[str, Any]:
+        """Verify a Cognito ID token for a non-session OIDC ceremony."""
+
+        return await self._verify_id_token(id_token)
+
     async def _verify_access_token(self, token: str) -> Dict[str, Any]:
         """Verify Cognito access token and enforce app-client binding."""
         payload = await super()._verify_access_token(token)

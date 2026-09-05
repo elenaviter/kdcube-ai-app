@@ -1,7 +1,7 @@
 ---
 id: repo:kdcube/app/ai-app/docs/service/cicd/cli-README.md
 title: "Current KDCube CLI"
-summary: "Current implemented CLI surface for local environment bootstrapping, workdir preparation, Docker Compose startup, descriptor validation, bundle config and secret patching, host-vault activation, maintainer package-source builds, and local deployment selection."
+summary: "Current implemented CLI surface for local environment bootstrapping, workdir preparation, Docker Compose startup, descriptor validation, exact delegated secret management, host-vault activation, maintainer package-source builds, and deployment selection."
 tags: ["service", "cicd", "cli", "env", "deployment", "bundle"]
 keywords: ["kdcube cli", "local environment bootstrap", "workdir setup", "docker compose control", "descriptor validation", "current cli contract", "local deployment tooling", "multiple local runtime snapshots", "single active local deployment", "tenant project workdir namespace", "bundle config patch", "bundle secret patch", "host vault stage", "host vault activate", "host vault recover", "kdcube bundle command", "bundle reload internals", "reload-authority", "maintainer local Python package", "unpublished package candidate"]
 updated_at: 2026-09-05
@@ -16,6 +16,7 @@ see_also:
   - repo:kdcube/app/ai-app/docs/configuration/service-runtime-configuration-mapping-README.md
   - repo:kdcube/app/ai-app/docs/configuration/gateway-descriptor-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/secrets/secrets-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/secrets/secret-management-cli-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/secrets/host-vault-README.md
   - repo:kdcube/app/ai-app/docs/service/environment/setup-dev-env-README.md
   - repo:kdcube/app/ai-app/docs/service/environment/setup-for-dockercompose-README.md
@@ -1091,7 +1092,34 @@ Runtime resolves those files from the staged workspace descriptor directory via
 
 See: [docs/configuration/secrets-descriptor-README.md](../../configuration/secrets-descriptor-README.md)
 
-### 2.5a Host-vault lifecycle<a id="host-vault-lifecycle"></a>
+### 2.5a Exact secret management
+
+`kdcube secrets metadata|get|set|delete` addresses one logical platform or
+bundle key through the running deployment. KDCube performs live Card admission
+and routes the admitted operation through its configured `ISecretsManager`, so
+the command is identical for file, Host Vault, and AWS Secrets Manager
+deployments. Local workdirs and remote HTTPS KDCube endpoints are supported.
+
+`get` writes a private output file and prints a receipt. `set` reads the value
+from a hidden prompt or stdin. Delegated bearers are accepted through a
+hidden prompt or the first stdin line. Arguments and KDCube environment
+variables remain non-secret configuration surfaces. `kdcube secrets export`
+is the separate owner-only, browser-approved one-use path for reconstructing
+explicitly selected descriptor entries.
+
+Inspect local storage configuration with:
+
+```bash
+kdcube secrets backend status \
+  --tenant <tenant> --project <project> --json
+```
+
+The report labels its source as staged-descriptor evidence. Use `metadata` for
+a live exact-key provider result. The full authority, input-framing, local and
+remote targeting, consent-recovery, output, and export contract is in
+[Manage KDCube Secrets](../secrets/secret-management-cli-README.md).
+
+### 2.5b Host-vault lifecycle<a id="host-vault-lifecycle"></a>
 
 The current CLI can copy an existing local file-backed inventory into an
 enrolled host vault and switch the running consumers only after parity is
@@ -1125,10 +1153,10 @@ in [Host Vault for Provider Secrets](../secrets/host-vault-README.md).
 #### Prepare the shadow broker
 
 ```bash
-kdcube secrets host-vault prepare \
+kdcube secrets backend host-vault prepare \
   --tenant <tenant> --project <project> --dry-run
 
-kdcube secrets host-vault prepare \
+kdcube secrets backend host-vault prepare \
   --tenant <tenant> --project <project>
 ```
 
@@ -1143,10 +1171,10 @@ through 600 seconds.
 #### Stage without changing the provider
 
 ```bash
-kdcube secrets host-vault stage \
+kdcube secrets backend host-vault stage \
   --tenant <tenant> --project <project> --dry-run
 
-kdcube secrets host-vault stage \
+kdcube secrets backend host-vault stage \
   --tenant <tenant> --project <project>
 ```
 
@@ -1163,10 +1191,10 @@ resolve them.
 #### Activate transactionally
 
 ```bash
-kdcube secrets host-vault activate \
+kdcube secrets backend host-vault activate \
   --tenant <tenant> --project <project> --dry-run
 
-kdcube secrets host-vault activate \
+kdcube secrets backend host-vault activate \
   --tenant <tenant> --project <project> --yes
 ```
 
@@ -1189,7 +1217,7 @@ If the CLI or host is interrupted after the recovery marker is written,
 `kdcube start` refuses to guess which source is authoritative. Recover first:
 
 ```bash
-kdcube secrets host-vault recover \
+kdcube secrets backend host-vault recover \
   --tenant <tenant> --project <project> --yes
 ```
 

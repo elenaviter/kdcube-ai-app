@@ -52,6 +52,9 @@ from kdcube_cli.local_python_packages import (
     parse_local_python_package_sources,
     stage_local_python_package_sources,
 )
+from kdcube_cli.management.errors import ManagementCliError
+from kdcube_cli.secrets_backend import backend_status
+from kdcube_cli.secrets_commands import run_management_secret_command
 from kdcube_cli.secrets_activation import (
     ComposeHostVaultActivationRuntime,
     HostVaultActivationError,
@@ -72,6 +75,12 @@ from kdcube_cli.secrets_prepare import (
     HostVaultPrepareError,
     HostVaultPrepareResult,
     prepare_host_vault_shadow,
+)
+from kdcube_cli.secrets_parser import (
+    configure_secrets_parser,
+    is_backend_status_command,
+    is_host_vault_lifecycle_command,
+    is_management_secret_command,
 )
 from kdcube_cli.tty_keys import (
     KEY_DOWN,
@@ -4295,132 +4304,12 @@ def main() -> None:
 
     _sp = subparsers.add_parser(
         "secrets",
-        help="Inspect and stage deployment secret backends",
+        help="Manage exact secrets and inspect or migrate their storage backend",
     )
-    _secrets_backends = _sp.add_subparsers(dest="secrets_backend", required=True)
-    _hv = _secrets_backends.add_parser(
-        "host-vault",
-        help="Operate the local host-vault backend",
-    )
-    _hv_actions = _hv.add_subparsers(dest="secrets_action", required=True)
-    _prepare = _hv_actions.add_parser(
-        "prepare",
-        help="Project shadow configuration and recreate only the secrets broker",
-    )
-    _add_quiet_arg(_prepare)
-    _prepare.add_argument("--tenant", default="", help="Tenant of the local runtime")
-    _prepare.add_argument("--project", default="", help="Project of the local runtime")
-    _prepare.add_argument(
-        "--workdir",
-        default=None,
-        help="(Advanced) Fully-qualified namespaced runtime workdir",
-    )
-    _prepare.add_argument("--path", default=str(DEFAULT_DIR), help="Platform repo path")
-    _prepare.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Validate and report whether generated broker configuration would change",
-    )
-    _prepare.add_argument(
-        "--wait-seconds",
-        type=float,
-        default=120.0,
-        help="Maximum wait for broker readiness (default: 120)",
-    )
-    _prepare.add_argument(
-        "--json",
-        action="store_true",
-        dest="json_output",
-        help="Print machine-readable, secret-free results",
-    )
-    _stage = _hv_actions.add_parser(
-        "stage",
-        help="Copy and verify file-backed values without changing providers",
-    )
-    _add_quiet_arg(_stage)
-    _stage.add_argument("--tenant", default="", help="Tenant of the local runtime")
-    _stage.add_argument("--project", default="", help="Project of the local runtime")
-    _stage.add_argument(
-        "--workdir",
-        default=None,
-        help="(Advanced) Fully-qualified namespaced runtime workdir",
-    )
-    _stage.add_argument("--path", default=str(DEFAULT_DIR), help="Platform repo path")
-    _stage.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Verify the destination and report how many values would be created",
-    )
-    _stage.add_argument(
-        "--json",
-        action="store_true",
-        dest="json_output",
-        help="Print machine-readable, secret-free results",
-    )
-    _activate = _hv_actions.add_parser(
-        "activate",
-        help="Switch verified local consumers from secrets-file to host-vault",
-    )
-    _add_quiet_arg(_activate)
-    _activate.add_argument("--tenant", default="", help="Tenant of the local runtime")
-    _activate.add_argument("--project", default="", help="Project of the local runtime")
-    _activate.add_argument(
-        "--workdir",
-        default=None,
-        help="(Advanced) Fully-qualified namespaced runtime workdir",
-    )
-    _activate.add_argument("--path", default=str(DEFAULT_DIR), help="Platform repo path")
-    _activate.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Verify source/destination parity and runtime readiness without changing providers",
-    )
-    _activate.add_argument(
-        "--yes",
-        action="store_true",
-        help="Confirm the provider switch without an interactive prompt",
-    )
-    _activate.add_argument(
-        "--wait-seconds",
-        type=float,
-        default=120.0,
-        help="Maximum wait for each broker or consumer readiness check (default: 120)",
-    )
-    _activate.add_argument(
-        "--json",
-        action="store_true",
-        dest="json_output",
-        help="Print machine-readable, secret-free results",
-    )
-    _recover = _hv_actions.add_parser(
-        "recover",
-        help="Recover an interrupted activation to verified file-backed operation",
-    )
-    _add_quiet_arg(_recover)
-    _recover.add_argument("--tenant", default="", help="Tenant of the local runtime")
-    _recover.add_argument("--project", default="", help="Project of the local runtime")
-    _recover.add_argument(
-        "--workdir",
-        default=None,
-        help="(Advanced) Fully-qualified namespaced runtime workdir",
-    )
-    _recover.add_argument("--path", default=str(DEFAULT_DIR), help="Platform repo path")
-    _recover.add_argument(
-        "--yes",
-        action="store_true",
-        help="Confirm recovery without an interactive prompt",
-    )
-    _recover.add_argument(
-        "--wait-seconds",
-        type=float,
-        default=120.0,
-        help="Maximum wait for each broker or consumer readiness check (default: 120)",
-    )
-    _recover.add_argument(
-        "--json",
-        action="store_true",
-        dest="json_output",
-        help="Print machine-readable, secret-free results",
+    configure_secrets_parser(
+        _sp,
+        add_quiet=_add_quiet_arg,
+        default_path=DEFAULT_DIR,
     )
 
     _sp = subparsers.add_parser("export", help="Export live bundle descriptors")
@@ -4715,7 +4604,64 @@ def main() -> None:
     )
     try:
         if args.command == "secrets":
-            if args.secrets_backend != "host-vault" or args.secrets_action not in {
+            _explicit_secret_workdir = bool(
+                str(getattr(args, "workdir", "") or "").strip()
+            )
+            _effective_tenant = str(
+                getattr(args, "tenant", "")
+                or (
+                    ""
+                    if _explicit_secret_workdir
+                    else cli_defaults.get("default_tenant", "")
+                )
+                or ""
+            ).strip()
+            _effective_project = str(
+                getattr(args, "project", "")
+                or (
+                    ""
+                    if _explicit_secret_workdir
+                    else cli_defaults.get("default_project", "")
+                )
+                or ""
+            ).strip()
+            try:
+                if is_management_secret_command(args):
+                    _management_workdir = None
+                    if not str(getattr(args, "endpoint", "") or "").strip():
+                        _management_workdir = _resolve_subcommand_workdir(
+                            args.workdir,
+                            cli_defaults,
+                            tenant_arg=_effective_tenant,
+                            project_arg=_effective_project,
+                        )
+                    _exit_code = run_management_secret_command(
+                        args,
+                        local_workdir=_management_workdir,
+                        tenant=_effective_tenant,
+                        project=_effective_project,
+                    )
+                    if _exit_code:
+                        raise SystemExit(_exit_code)
+                    return
+                if is_backend_status_command(args):
+                    _status_workdir = _resolve_subcommand_workdir(
+                        args.workdir,
+                        cli_defaults,
+                        tenant_arg=_effective_tenant,
+                        project_arg=_effective_project,
+                    )
+                    _print_json(
+                        backend_status(
+                            workdir=_status_workdir,
+                            tenant=_effective_tenant,
+                            project=_effective_project,
+                        )
+                    )
+                    return
+            except ManagementCliError as exc:
+                raise SystemExit(f"error[{exc.code}]: {exc.message}") from exc
+            if not is_host_vault_lifecycle_command(args) or args.secrets_action not in {
                 "prepare",
                 "stage",
                 "activate",

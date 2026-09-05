@@ -11,6 +11,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/cross-runtime-context-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/delegated-management-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/secrets/secret-management-cli-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/environment/setup-dev-env-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/environment/setup-for-ecs-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/secrets/host-vault-README.md
@@ -92,7 +93,7 @@ authoritative while their values are copied and verified in the host vault.
 
 The checked-in `assembly.yaml` ships with `secrets-file` and `ephemeral`.
 For a host-vault migration, configure `secrets-file` plus `host-vault`, run the
-shadow stage, and then use `kdcube secrets host-vault activate`. Activation
+shadow stage, and then use `kdcube secrets backend host-vault activate`. Activation
 transactionally changes the provider to `secrets-service`, recreates the
 affected services, and verifies real reads. It leaves the backend set to
 `host-vault`.
@@ -310,11 +311,11 @@ Local Compose provides two descriptor-selected service implementations:
 The host-vault broker keeps the same internal HTTP contract, so trusted
 KDCube callers do not change. Its deployment certificate is mounted only into
 the broker. The broker can run in shadow mode while `secrets-file` remains the
-active provider, allowing `kdcube secrets host-vault stage` to copy and compare
-values before cutover. `kdcube secrets host-vault activate` then quiesces the
+active provider, allowing `kdcube secrets backend host-vault stage` to copy and compare
+values before cutover. `kdcube secrets backend host-vault activate` then quiesces the
 two secret-consuming services, switches them together, verifies real reads,
 and restores file authority on an ordinary failure. An interrupted activation
-blocks ordinary startup until `kdcube secrets host-vault recover --yes`
+blocks ordinary startup until `kdcube secrets backend host-vault recover --yes`
 recreates and verifies the retained file-backed path. See
 [Host Vault for Provider Secrets](host-vault-README.md) for the descriptor,
 workload identity, enrollment, staging, activation, and durability contracts.
@@ -515,15 +516,19 @@ The deployment management API is a distinct, operator-oriented surface. It
 supports exact metadata read, value read, value write, and delete operations.
 Each request requires a live Connection Hub Card grant for its concrete secret
 resource and operation; `Once` and `Always` policies are enforced at call
-time. Plaintext read responses use `Cache-Control: no-store`.
+time. Plaintext read responses use `Cache-Control: no-store`. The canonical
+operator surface is `kdcube secrets metadata|get|set|delete`; Connection Hub's
+host CLI supplies its stored OAuth session around the same KDCube library.
 
 ### Human descriptor export
 
 An administrator can reconstruct selected `secrets.yaml` and
-`bundles.secrets.yaml` files through the Connection Hub CLI. The browser
+`bundles.secrets.yaml` files through `kdcube secrets export`. The browser
 ceremony displays the exact manifest and produces one PKCE-bound exchange.
 It is independent of delegated Card authority. This is the deliberate path
-from a non-file provider back to owner-controlled descriptor files.
+from a non-file provider back to owner-controlled descriptor files. See
+[Manage KDCube Secrets](secret-management-cli-README.md) for the complete
+command and authority contract.
 
 ## 8. RMS bundle behavior
 

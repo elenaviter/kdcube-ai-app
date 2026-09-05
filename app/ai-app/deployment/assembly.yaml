@@ -70,11 +70,36 @@ management:
       service_secret_ref: "connections.delegated_credentials.admission.services.kdcube-management.signing_secret"
       admission_url: ""  # empty uses this processor's descriptor-owned local port
       timeout_seconds: 10
+  human_approval:
+    # "auto" follows the configured platform authority: Cognito Managed Login
+    # or the Google authenticator behind a bundle-session authority.
+    fresh_authentication_provider: "auto"  # auto | cognito | google
+    challenge_ttl_seconds: 180
+    http_timeout_seconds: 10
+    cognito:
+      # Set true only when hosted_ui_domain serves Cognito Managed Login;
+      # classic Hosted UI does not enforce prompt=login.
+      managed_login: false
+      hosted_ui_domain: ""  # empty inherits the selected Cognito authority
+    google:
+      client_id: ""  # empty inherits the selected upstream Google authenticator
+      jwks_url: "https://www.googleapis.com/oauth2/v3/certs"
+    webauthn:
+      enabled: true
+      rp_id: ""  # empty derives the exact public request host
+      rp_name: "KDCube"
+      allowed_origins: []  # empty binds registration to the current public origin
+      # verified_passkey | single_device | attested_hardware
+      credential_policy: "verified_passkey"
+      # attested_hardware requires absolute PEM paths grouped by WebAuthn format.
+      trusted_attestation_root_files: {}
+      timeout_milliseconds: 60000
+      max_credentials_per_user: 8
   secret_export:
     enabled: true
-    # The built-in verifier proves the current KDCube admin browser session
-    # plus an explicit click. Stronger policies fail closed until the
-    # deployment installs a fresh-authentication or user-verification verifier.
+    # Choose current admin-session confirmation, provider-backed fresh
+    # authentication, or WebAuthn user verification. Stronger levels fail
+    # closed when their descriptor, callback, or authenticator is unavailable.
     required_assurance: "session_confirmation"
     max_evidence_age_seconds: 300
     transaction_ttl_seconds: 180
