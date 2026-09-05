@@ -56,6 +56,43 @@ async def test_host_files_rejects_non_image_bytes_declared_as_png(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_host_files_preserves_internal_visibility(tmp_path):
+    from kdcube_ai_app.apps.chat.sdk.solutions.react.solution_workspace import ApplicationHostingService
+
+    class _FakeStore:
+        async def put_artifact_file(self, **_kwargs):
+            return "file:///stored/brief.html", "stored/brief.html", "rn:brief"
+
+    source = tmp_path / "workdir" / "turn_1" / "files" / "brief.html"
+    source.parent.mkdir(parents=True)
+    source.write_text("<h1>renderer input</h1>", encoding="utf-8")
+    hosting = ApplicationHostingService(store=_FakeStore())
+
+    hosted = await hosting.host_files_to_conversation(
+        rid="rid_1",
+        files=[
+            {
+                "type": "file",
+                "output": {
+                    "path": "turn_1/files/brief.html",
+                    "mime": "text/html",
+                    "visibility": "internal",
+                },
+            }
+        ],
+        outdir=tmp_path,
+        tenant="tenant",
+        project="project",
+        user="user",
+        conversation_id="conv_1",
+        user_type="user",
+        turn_id="turn_1",
+    )
+
+    assert hosted[0]["visibility"] == "internal"
+
+
+@pytest.mark.asyncio
 async def test_emit_solver_artifacts_preserves_transport_fields():
     from kdcube_ai_app.apps.chat.sdk.solutions.react.solution_workspace import ApplicationHostingService
 

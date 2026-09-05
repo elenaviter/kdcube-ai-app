@@ -1,0 +1,318 @@
+"""Isolated code execution and document rendering for direct agent hosts."""
+
+from __future__ import annotations
+
+import json
+import mimetypes
+import uuid
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any, Iterator, Mapping, Sequence
+
+from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.workspace import (
+    DirectTurnWorkspace,
+)
+from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace.layout import (
+    resolve_artifact_path,
+)
+from kdcube_ai_app.apps.chat.sdk.runtime.run_ctx import OUTDIR_CV, WORKDIR_CV
+from kdcube_ai_app.apps.chat.sdk.runtime.tool_subsystem import ToolSubsystem
+from kdcube_ai_app.apps.chat.sdk.tools.exec_tools import (
+    build_exec_output_contract,
+    normalize_exec_contract_for_turn,
+    rewrite_exec_code_paths,
+    run_exec_tool,
+)
+from kdcube_ai_app.infra.plugin.bundle_registry import BundleSpec
+from kdcube_ai_app.infra.service_hub.inventory import AgentLogger
+
+
+EXEC_TOOL_ID = "execute_python"
+RENDER_TOOL_IDS = ("write_pdf", "write_docx", "write_pptx")
+
+
+def _error(code: str, message: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error": {
+            "code": code,
+            "message": message,
+            "where": "direct_hosting.tool_runtime",
+            "managed": True,
+        },
+    }
+
+
+@contextmanager
+def _workspace_scope(workspace: DirectTurnWorkspace) -> Iterator[None]:
+    out_token = OUTDIR_CV.set(str(workspace.runtime_outdir))
+    work_token = WORKDIR_CV.set(str(workspace.workdir))
+    try:
+        yield
+    finally:
+        WORKDIR_CV.reset(work_token)
+        OUTDIR_CV.reset(out_token)
+
+
+class DirectToolRuntime:
+    """Framework-neutral tool bridge bound to one direct Agent Harness turn.
+
+    The caller supplies model-authored Python. KDCube executes it in the
+    configured isolated runtime and keeps the generated source in the turn's
+    execution workspace. Document renderers run in the trusted host process
+    against files under the same current-turn artifact root.
+    """
+
+    def __init__(
+        self,
+        *,
+        service: Any,
+        comm: Any,
+        workspace: DirectTurnWorkspace,
+        exec_runtime: Mapping[str, Any],
+        bundle_id: str,
+        bundle_root: Path,
+        bundle_module: str,
+        context_rag_client: Any = None,
+        timeout_s: int = 600,
+        logger: Any = None,
+    ) -> None:
+        self.service = service
+        self.comm = comm
+        self.workspace = workspace
+        self.exec_runtime = dict(exec_runtime or {})
+        self.timeout_s = max(1, int(timeout_s or 600))
+        self.logger = logger or AgentLogger("direct_hosting.tools")
+        self.tool_subsystem = ToolSubsystem(
+            service=service,
+            comm=comm,
+            logger=self.logger,
+            bundle_spec=BundleSpec(
+                id=bundle_id,
+                path=str(Path(bundle_root).resolve()),
+                module=bundle_module,
+            ),
+            context_rag_client=context_rag_client,
+            # Generated code receives no nested tool inventory. Research and
+            # orchestration happen before execution; only declared files cross
+            # back from the isolated program.
+            tools_specs=[],
+            tool_runtime={},
+        )
+
+    async def prepare(self) -> None:
+        await self.tool_subsystem.prebind_for_in_memory(
+            workdir=self.workspace.workdir,
+            outdir=self.workspace.runtime_outdir,
+            logger=self.logger,
+        )
+
+    async def execute_python(
+        self,
+        *,
+        code: str,
+        artifacts: Sequence[Mapping[str, Any]] | str,
+        program_name: str = "Agent-generated Python",
+        timeout_s: int | None = None,
+    ) -> dict[str, Any]:
+        """Execute Python supplied by the agent under the configured contract."""
+        source = str(code or "")
+        if not source.strip():
+            return _error("missing_code", "code is required")
+        normalized, contract_rewrites, contract_error = normalize_exec_contract_for_turn(
+            artifacts,
+            turn_id=self.workspace.turn_id,
+        )
+        if contract_error or not normalized:
+            return _error(
+                str((contract_error or {}).get("code") or "invalid_contract"),
+                str((contract_error or {}).get("message") or "artifact contract is invalid"),
+            )
+        output_contract, contract, output_error = build_exec_output_contract(normalized)
+        if output_error or output_contract is None or contract is None:
+            return _error(
+                str((output_error or {}).get("code") or "invalid_contract"),
+                str((output_error or {}).get("message") or "artifact contract is invalid"),
+            )
+        rewritten_code, code_rewrites = rewrite_exec_code_paths(
+            source,
+            turn_id=self.workspace.turn_id,
+        )
+        exec_id = f"direct_{uuid.uuid4().hex[:12]}"
+        await self.prepare()
+        with _workspace_scope(self.workspace):
+            result = await run_exec_tool(
+                tool_manager=self.tool_subsystem,
+                output_contract=output_contract,
+                code=rewritten_code,
+                contract=contract,
+                timeout_s=max(1, int(timeout_s or self.timeout_s)),
+                workdir=self.workspace.workdir,
+                outdir=self.workspace.runtime_outdir,
+                logger=self.logger,
+                exec_id=exec_id,
+                exec_runtime=self.exec_runtime,
+            )
+        result["execution_id"] = exec_id
+        result["program_name"] = str(program_name or "Agent-generated Python")
+        result["generated_source"] = {
+            "path": str(self.workspace.workdir / "user_code.py"),
+            "archive_path": "pkg/user_code.py",
+        }
+        result["path_rewrites"] = {
+            "contract": contract_rewrites,
+            "code": code_rewrites,
+        }
+        return result
+
+    def _current_artifact(self, path: str, *, extension: str) -> tuple[str, Path]:
+        normalized, _rewrites, error = normalize_exec_contract_for_turn(
+            [
+                {
+                    "filepath": path,
+                    "description": "Document rendering artifact",
+                    "visibility": "external",
+                }
+            ],
+            turn_id=self.workspace.turn_id,
+        )
+        if error or not normalized:
+            raise ValueError(str((error or {}).get("message") or "invalid artifact path"))
+        relative = str(normalized[0]["filepath"])
+        if Path(relative).suffix.lower() != extension:
+            raise ValueError(f"artifact path must end with {extension}")
+        return relative, resolve_artifact_path(self.workspace.runtime_outdir, relative)
+
+    async def _render(
+        self,
+        *,
+        operation: str,
+        source_path: str,
+        output_path: str,
+        title: str | None = None,
+    ) -> dict[str, Any]:
+        from kdcube_ai_app.apps.chat.sdk.tools import rendering_tools
+
+        operation = str(operation or "").strip()
+        extension = {
+            "write_pdf": ".pdf",
+            "write_docx": ".docx",
+            "write_pptx": ".pptx",
+        }.get(operation)
+        source_extensions = {
+            "write_pdf": {".html", ".htm"},
+            "write_docx": {".md", ".markdown"},
+            "write_pptx": {".html", ".htm"},
+        }.get(operation, set())
+        if extension is None:
+            return _error("unsupported_renderer", f"unsupported renderer: {operation}")
+        try:
+            source_suffix = Path(source_path).suffix.lower()
+            if source_suffix not in source_extensions:
+                allowed = ", ".join(sorted(source_extensions))
+                raise ValueError(f"{operation} source must end with one of: {allowed}")
+            source_rel, source = self._current_artifact(
+                source_path,
+                extension=source_suffix,
+            )
+            output_rel, output = self._current_artifact(output_path, extension=extension)
+            source.resolve().relative_to(self.workspace.artifact_root.resolve())
+        except Exception as exc:
+            return _error("invalid_render_path", str(exc))
+        if not source.is_file():
+            return _error("render_source_missing", f"render source does not exist: {source_rel}")
+        if source.stat().st_size > 4_000_000:
+            return _error("render_source_too_large", "render source exceeds 4 MB")
+        content = source.read_text(encoding="utf-8")
+        renderer = getattr(rendering_tools.tools, operation)
+        kwargs: dict[str, Any] = {
+            "path": output_rel,
+            "content": content,
+            "title": title,
+        }
+        if operation == "write_pdf":
+            kwargs["format"] = "html"
+            kwargs["include_sources_section"] = False
+        elif operation == "write_pptx":
+            kwargs["format"] = "html"
+        with _workspace_scope(self.workspace):
+            rendered = await renderer(**kwargs)
+        if not isinstance(rendered, dict) or not rendered.get("ok"):
+            return dict(rendered or _error("render_failed", f"{operation} failed"))
+        if not output.is_file() or output.stat().st_size <= 0:
+            return _error("render_output_missing", f"renderer did not create {output_rel}")
+        mime = mimetypes.guess_type(output.name)[0] or "application/octet-stream"
+        return {
+            "ok": True,
+            "operation": operation,
+            "source_path": source_rel,
+            "output_path": output_rel,
+            "items": [
+                {
+                    "artifact_id": output.stem,
+                    "artifact_kind": "file",
+                    "summary": f"Created by rendering_tools.{operation}",
+                    "visibility": "external",
+                    "output": {
+                        "type": "file",
+                        "path": output_rel,
+                        "filename": output.name,
+                        "mime": mime,
+                        "description": f"Rendered {extension[1:].upper()} document",
+                        "visibility": "external",
+                        "size_bytes": output.stat().st_size,
+                    },
+                }
+            ],
+        }
+
+    async def write_pdf(self, *, source_path: str, output_path: str, title: str = "") -> dict[str, Any]:
+        """Render current-turn HTML to PDF with ``rendering_tools.write_pdf``."""
+        return await self._render(
+            operation="write_pdf",
+            source_path=source_path,
+            output_path=output_path,
+            title=title or None,
+        )
+
+    async def write_docx(self, *, source_path: str, output_path: str, title: str = "") -> dict[str, Any]:
+        """Render current-turn Markdown to DOCX with ``rendering_tools.write_docx``."""
+        return await self._render(
+            operation="write_docx",
+            source_path=source_path,
+            output_path=output_path,
+            title=title or None,
+        )
+
+    async def write_pptx(self, *, source_path: str, output_path: str, title: str = "") -> dict[str, Any]:
+        """Render current-turn slide HTML to PPTX with ``rendering_tools.write_pptx``."""
+        return await self._render(
+            operation="write_pptx",
+            source_path=source_path,
+            output_path=output_path,
+            title=title or None,
+        )
+
+    @staticmethod
+    def tool_report(result: Mapping[str, Any]) -> str:
+        """Compact JSON returned to foreign agent frameworks."""
+        payload = {
+            "ok": bool(result.get("ok")),
+            "report": result.get("report_text") or result.get("error"),
+            "execution_id": result.get("execution_id"),
+            "generated_source": result.get("generated_source"),
+            "files": [
+                {
+                    "path": (item.get("output") or {}).get("path"),
+                    "mime": (item.get("output") or {}).get("mime"),
+                    "visibility": item.get("visibility")
+                    or (item.get("output") or {}).get("visibility"),
+                }
+                for item in (result.get("items") or [])
+                if isinstance(item, Mapping) and isinstance(item.get("output"), Mapping)
+            ],
+        }
+        return json.dumps(payload, ensure_ascii=False, default=str)
+
+
+__all__ = ["DirectToolRuntime", "EXEC_TOOL_ID", "RENDER_TOOL_IDS"]

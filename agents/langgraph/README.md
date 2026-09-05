@@ -15,7 +15,8 @@ see_also:
 
 This directory runs LangChain `create_agent` through KDCube's
 `KDCubeChatModel`. Model streaming is accounted by the harness, while Postgres
-stores both the conversation and LangGraph checkpoints.
+stores both the conversation index and LangGraph checkpoints. No KDCube server
+is required.
 
 ## Run it
 
@@ -23,9 +24,13 @@ stores both the conversation and LangGraph checkpoints.
 cd agents/langgraph
 python3.11 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m playwright install chromium
 .venv/bin/python setup_local.py --provider anthropic
 cp config.template.yaml config.local.yaml
 docker compose --env-file .env -f compose.yaml up -d --wait
+cd ../..
+docker build -t py-code-exec:latest -f app/ai-app/deployment/docker/all_in_one_kdcube/Dockerfile_Exec app/ai-app
+cd agents/langgraph
 .venv/bin/python agent.py --check
 .venv/bin/python agent.py --infra-check
 .venv/bin/python agent.py
@@ -36,10 +41,20 @@ ignored by Git.
 
 ## What the demo shows
 
-Turn one searches through KDCube Web Search. Turn two resumes the same graph
-thread and creates a PDF and XLSX. A successful run proves live events,
-accounted model calls, durable harness turns, and Postgres graph checkpoints;
-it ends with `demonstration: PASS`.
+Turn one hosts a research-request attachment and searches through KDCube Web
+Search. Turn two resumes the same Postgres-backed graph thread. The model
+authors Python using `openpyxl`; `execute_python` runs it in the configured
+Docker image to create an XLSX and HTML. `write_pdf` then renders the HTML into
+a polished PDF.
+
+The same YAML enables `write_docx` for Markdown and `write_pptx` for
+section-based HTML. A successful run proves live events, accounted model calls,
+durable KDCube turns, Postgres graph checkpoints, isolated code execution, and
+document rendering; it ends with `demonstration: PASS`.
+
+Inspect `output/runs/<conversation>/evidence.json`; it points to durable
+records in `output/kdcube-storage`, including the execution ZIP containing
+`pkg/user_code.py`.
 
 ## Change the demo
 
@@ -49,4 +64,5 @@ the `web_search` tool row's `settings`. Edit
 `descriptors.local/assembly.yaml` for model and infrastructure; edit
 `descriptors.local/secrets.yaml` for credentials. The shipped model is
 `claude-haiku-4-5-20251001`. Add LangChain tools in `tools.py` and select their
-IDs in YAML.
+IDs in YAML. The built-in execution and renderer wrappers are turn-bound, so
+new file-producing tools should preserve the same current-turn path contract.

@@ -28,6 +28,7 @@ if str(SDK_ROOT) not in sys.path:
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.infrastructure import (  # noqa: E402
     activate_platform_descriptors,
     direct_harness_config,
+    platform_exec_profile,
     postgres_label,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.configuration import (  # noqa: E402
@@ -37,9 +38,19 @@ from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.configuration import (  
     configured_tools,
     configured_web_search,
     require_supported_tools,
+    verify_docker_image,
+    verify_playwright_chromium,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.evidence import (  # noqa: E402
     ConsoleEmitter,
+    print_evidence_summary,
+    write_evidence_index,
+)
+from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.tool_runtime import (  # noqa: E402
+    DirectToolRuntime,
+)
+from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.workspace import (  # noqa: E402
+    DirectTurnWorkspace,
 )
 from agents.langgraph.tools import build_tools  # noqa: E402
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.model_service import (  # noqa: E402
@@ -57,6 +68,8 @@ from kdcube_ai_app.apps.chat.sdk.skills.skills_registry import (  # noqa: E402
 
 ROLE = "standalone.langgraph.answer"
 WEB_SEARCH_TOOL_ID = "web_search"
+EXEC_TOOL_ID = "execute_python"
+RENDER_TOOL_IDS = ("write_pdf", "write_docx", "write_pptx")
 
 
 def _content_text(value: Any) -> str:
@@ -155,6 +168,98 @@ async def stream_turn(graph: Any, prompt: str, run_config: dict[str, Any], comm:
     return answer
 
 
+async def host_demo_outputs(
+    *,
+    turn: Any,
+    workspace: DirectTurnWorkspace,
+) -> None:
+    expected = (
+        (
+            "research/research-data.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "external",
+            EXEC_TOOL_ID,
+        ),
+        ("research/research-brief.html", "text/html", "internal", EXEC_TOOL_ID),
+        ("research/research-brief.pdf", "application/pdf", "external", "write_pdf"),
+    )
+    files: list[dict[str, Any]] = []
+    for relpath, mime, visibility, tool_id in expected:
+        path = workspace.current_file(relpath)
+        if not path.is_file():
+            continue
+        files.append(
+            {
+                "type": "file",
+                "output": {
+                    "type": "file",
+                    "path": f"{workspace.turn_id}/files/{relpath}",
+                    "filename": path.name,
+                    "mime": mime,
+                    "visibility": visibility,
+                },
+                "mime": mime,
+                "visibility": visibility,
+                "description": f"LangGraph demo output: {path.name}",
+                "resource_id": path.stem,
+                "tool_id": tool_id,
+            }
+        )
+    if files:
+        await turn.host_files(files=files, outdir=workspace.runtime_outdir)
+
+
+async def run_one_turn(
+    *,
+    prompt: str,
+    number: int,
+    conversation_id: str,
+    run_root: Path,
+    run_config: dict[str, Any],
+    model: KDCubeChatModel,
+    checkpointer: Any,
+    instructions: str,
+    enabled_tools: set[str],
+    exec_runtime: dict[str, Any],
+    service: Any,
+    harness: DirectAgentHarness,
+    attachment_source: Path | None = None,
+) -> tuple[str, str, Any]:
+    turn_id = f"turn_{number:02d}_{uuid.uuid4().hex[:8]}"
+    workspace = DirectTurnWorkspace(run_root=run_root, turn_id=turn_id)
+    async with harness.turn(conversation_id=conversation_id, turn_id=turn_id) as turn:
+        if attachment_source is not None:
+            await turn.add_user_attachment(
+                attachment_source,
+                materialize_to=workspace.current_attachment(attachment_source.name),
+            )
+        runtime = DirectToolRuntime(
+            service=service,
+            comm=turn.comm,
+            workspace=workspace,
+            exec_runtime=exec_runtime,
+            bundle_id=harness.config.bundle_id,
+            bundle_root=HERE,
+            bundle_module="agent",
+        )
+        graph = build_graph(
+            model,
+            checkpointer,
+            build_tools(runtime, enabled_ids=enabled_tools),
+            instructions=instructions,
+        )
+        answer = await stream_turn(graph, prompt, run_config, turn.comm)
+        await host_demo_outputs(turn=turn, workspace=workspace)
+        await turn.persist_workspace(
+            outdir=workspace.runtime_outdir,
+            workdir=workspace.workdir,
+            execution_id=f"{turn_id}_workspace",
+        )
+        await turn.complete(prompt=prompt, final_answer=answer)
+    print(f"[accounting] Redis turn cache contains {len(turn.accounting_events)} event(s)")
+    return answer, turn_id, turn
+
+
 async def main_async(args: argparse.Namespace) -> None:
     config_path = Path(args.config).expanduser().resolve()
     descriptors_dir = Path(args.descriptors).expanduser().resolve()
@@ -176,18 +281,28 @@ async def main_async(args: argparse.Namespace) -> None:
     tool_config = configured_tools(config)
     require_supported_tools(
         tool_config,
-        supported={"web_search", "create_briefing"},
+        supported={WEB_SEARCH_TOOL_ID, EXEC_TOOL_ID, *RENDER_TOOL_IDS},
         adapter="LangGraph direct example",
     )
     unsupported_runtimes = sorted(
-        tool.id for tool in tool_config if tool.enabled and tool.runtime != "local"
+        tool.id
+        for tool in tool_config
+        if tool.enabled
+        and tool.runtime != ("docker" if tool.id == EXEC_TOOL_ID else "local")
     )
     if unsupported_runtimes:
         raise ValueError(
-            "the direct LangGraph example runs its LangChain tools locally; unsupported runtime on: "
+            "LangGraph tool runtime does not match the sample contract: "
             + ", ".join(unsupported_runtimes)
         )
     enabled_tools = {tool.id for tool in tool_config if tool.enabled}
+    if WEB_SEARCH_TOOL_ID not in enabled_tools:
+        raise RuntimeError(f"the demonstration requires {WEB_SEARCH_TOOL_ID}")
+    if EXEC_TOOL_ID not in enabled_tools:
+        raise RuntimeError(f"the demonstration requires {EXEC_TOOL_ID}")
+    if "write_pdf" not in enabled_tools:
+        raise RuntimeError("the demonstration requires write_pdf")
+    exec_runtime = platform_exec_profile(settings)
     _skills_subsystem, skill_config = activate_configured_skills(
         config,
         config_path=config_path,
@@ -198,7 +313,8 @@ async def main_async(args: argparse.Namespace) -> None:
         config,
         fallback=(
             "You are a research agent. Use web_search for current facts and preserve source URLs. "
-            "Use create_briefing when asked for PDF and spreadsheet deliverables."
+            "Author Python for structured artifacts, execute it with execute_python, and use the "
+            "document-rendering tools for polished PDF, DOCX, and PPTX deliverables."
         ),
     )
     if skill_block:
@@ -213,6 +329,11 @@ async def main_async(args: argparse.Namespace) -> None:
     print(f"skills: {', '.join(skill_config.enabled) or '(none)'}")
     print(f"run directory: {output_dir}")
     print(f"conversation storage: {harness_config.storage_uri}")
+    if not args.check:
+        image = verify_docker_image(exec_runtime)
+        print(f"isolated execution image: {image}")
+        browser = await verify_playwright_chromium()
+        print(f"document renderer: Playwright {browser} ready")
     if args.infra_check:
         output_dir.mkdir(parents=True, exist_ok=True)
         harness = DirectAgentHarness(
@@ -236,63 +357,103 @@ async def main_async(args: argparse.Namespace) -> None:
         max_tokens=int(agent_cfg.get("max_tokens") or 12000),
     )
     if args.check:
-        tools = build_tools(output_dir, enabled_ids=enabled_tools)
+        tools = build_tools(None, enabled_ids=enabled_tools)
         graph = build_graph(model, MemorySaver(), tools, instructions=instructions)
         if graph is None:
             raise RuntimeError("LangGraph construction failed")
         print("check: PASS")
         return
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    emitter = ConsoleEmitter(output_dir / "communicator.jsonl")
+    conversation_id = f"langgraph-{uuid.uuid4().hex[:10]}"
+    run_root = output_dir / "runs" / conversation_id
+    run_root.mkdir(parents=True, exist_ok=True)
+    emitter = ConsoleEmitter(run_root / "communicator.jsonl")
     harness = DirectAgentHarness(
         config=harness_config,
         model_service=service,
         emitter=emitter,
     )
-    conversation_id = f"langgraph-{uuid.uuid4().hex[:10]}"
-    run_output_dir = output_dir / "runs" / conversation_id
-    run_output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"run output: {run_output_dir}")
-    tools = build_tools(run_output_dir, enabled_ids=enabled_tools)
+    print(f"run output: {run_root}")
     run_config = {
         "configurable": {"thread_id": conversation_id},
         "recursion_limit": int(agent_cfg.get("recursion_limit") or 24),
     }
     topic = str(agent_cfg.get("topic") or "accountable agent runtimes")
+    request_path = run_root / "inputs" / "research-request.md"
+    request_path.parent.mkdir(parents=True, exist_ok=True)
+    request_path.write_text(
+        f"# Research request\n\nResearch topic: {topic}\n\n"
+        "Produce sourced findings, an XLSX evidence table, and a polished PDF brief.\n",
+        encoding="utf-8",
+    )
     prompts = [
         (
-            f"Search the web for recent, concrete information about {topic}. "
+            f"The attached research request asks about {topic}. Search the web for recent, "
+            "concrete information about it. "
             "Return five sourced findings and retain them for the next turn."
         ),
         (
-            "Use the findings from the previous turn. Call create_briefing to create "
-            "research-brief.pdf and research-data.xlsx, then report the exact filenames."
+            "Use the findings from the previous turn. Author complete Python and call "
+            "execute_python. The Python must use openpyxl to create "
+            "files/research/research-data.xlsx and create polished, print-ready HTML at "
+            "files/research/research-brief.html. Declare the XLSX external and the HTML "
+            "internal in the artifact contract. After execution succeeds, call write_pdf "
+            "with source_path files/research/research-brief.html and output_path "
+            "files/research/research-brief.pdf. Do not construct PDF bytes in Python. "
+            "Verify and report the exact paths."
         ),
     ]
     turn_ids: list[str] = []
+    completed_turns: list[Any] = []
     async with harness:
         async with open_postgres_checkpointer(settings, harness_config.postgres_url) as checkpointer:
             print("infrastructure: Redis, Postgres conversation/checkpoint tables, and storage ready")
-            graph = build_graph(model, checkpointer, tools, instructions=instructions)
             for number, prompt in enumerate(prompts, start=1):
-                turn_id = f"turn-{number:02d}-{uuid.uuid4().hex[:8]}"
-                async with harness.turn(conversation_id=conversation_id, turn_id=turn_id) as turn:
-                    answer = await stream_turn(graph, prompt, run_config, turn.comm)
-                    await turn.complete(prompt=prompt, final_answer=answer)
+                answer, turn_id, turn = await run_one_turn(
+                    prompt=prompt,
+                    number=number,
+                    conversation_id=conversation_id,
+                    run_root=run_root,
+                    run_config=run_config,
+                    model=model,
+                    checkpointer=checkpointer,
+                    instructions=instructions,
+                    enabled_tools=enabled_tools,
+                    exec_runtime=exec_runtime,
+                    service=service,
+                    harness=harness,
+                    attachment_source=request_path if number == 1 else None,
+                )
                 turn_ids.append(turn_id)
-                print(f"[accounting] Redis turn cache contains {len(turn.accounting_events)} event(s)")
+                completed_turns.append(turn)
                 print(f"\n[turn {number} answer]\n{answer}\n")
         records = await harness.verify_conversation(
             conversation_id=conversation_id,
             expected_turn_ids=turn_ids,
         )
         print(f"[conversation] materialized {len(records)} durable turn record(s)")
+        evidence_path = run_root / "evidence.json"
+        evidence = write_evidence_index(
+            evidence_path,
+            config=harness_config,
+            conversation_id=conversation_id,
+            turns=completed_turns,
+            conversation_records=records,
+            adapter_evidence={
+                "checkpoint": "Postgres LangGraph thread",
+                "generated_source_archive_path": f"{turn_ids[-1]}/executions/*/pkg/user_code.py",
+            },
+        )
+        print_evidence_summary(evidence_path, evidence)
 
+    deliverable_workspace = DirectTurnWorkspace(
+        run_root=run_root,
+        turn_id=turn_ids[-1],
+    )
     missing = [
         name
         for name in ("research-brief.pdf", "research-data.xlsx")
-        if not (run_output_dir / name).is_file()
+        if not deliverable_workspace.current_file(f"research/{name}").is_file()
     ]
     if missing:
         raise RuntimeError(f"agent completed without required artifacts: {', '.join(missing)}")

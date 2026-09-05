@@ -38,7 +38,11 @@ def activate_platform_descriptors(descriptors_dir: Path):
     _load_plain_yaml_cached.cache_clear()
     get_settings.cache_clear()
     reset_secrets_manager_cache()
-    return get_settings()
+    settings = get_settings()
+    raw_storage = str(getattr(settings, "STORAGE_PATH", "") or "").strip()
+    if raw_storage and not urlparse(raw_storage).scheme:
+        settings.STORAGE_PATH = str((root / raw_storage).expanduser().resolve())
+    return settings
 
 
 def redis_url(settings, *, check_only: bool = False) -> str:

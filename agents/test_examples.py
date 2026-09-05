@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 import yaml
@@ -38,6 +38,24 @@ WEB_SEARCH_TOOL_IDS = {
     "native": "demo.web_search",
     "langgraph": "web_search",
     "claude": "mcp__kdcube_web_search__web_search",
+}
+EXEC_TOOL_IDS = {
+    "native": "exec_tools.execute_code_python",
+    "langgraph": "execute_python",
+    "claude": "mcp__kdcube_harness__execute_python",
+}
+RENDER_TOOL_IDS = {
+    "native": {
+        "rendering_tools.write_pdf",
+        "rendering_tools.write_docx",
+        "rendering_tools.write_pptx",
+    },
+    "langgraph": {"write_pdf", "write_docx", "write_pptx"},
+    "claude": {
+        "mcp__kdcube_harness__write_pdf",
+        "mcp__kdcube_harness__write_docx",
+        "mcp__kdcube_harness__write_pptx",
+    },
 }
 README_SECTIONS = (
     "## What it is",
@@ -114,6 +132,13 @@ def test_each_example_owns_its_runnable_contract(adapter: str) -> None:
     assert isinstance(agent.get("tools"), list)
     assert agent["tools"]
     assert all(str(item.get("id") or "").strip() for item in agent["tools"])
+    configured_by_id = {item["id"]: item for item in agent["tools"]}
+    assert configured_by_id[EXEC_TOOL_IDS[adapter]]["runtime"] == "docker"
+    assert RENDER_TOOL_IDS[adapter].issubset(configured_by_id)
+    assert all(
+        configured_by_id[tool_id]["runtime"] == "local"
+        for tool_id in RENDER_TOOL_IDS[adapter]
+    )
     assert agent.get("skills", {}).get("enabled") == [
         "demo.research-brief"
     ]
@@ -133,6 +158,9 @@ def test_each_example_owns_its_runnable_contract(adapter: str) -> None:
     requirements = (root / "requirements.txt").read_text(encoding="utf-8")
     assert "../../app/ai-app/src/kdcube-ai-app" in requirements
     assert "sdk/tools/mcp/web_search/requirements.txt" in requirements
+    assert "playwright" in requirements
+    assert "python-docx" in requirements
+    assert "python-pptx" in requirements
 
 
 def test_every_adapter_uses_kdcube_web_search() -> None:
@@ -156,11 +184,12 @@ def test_every_adapter_uses_kdcube_web_search() -> None:
     }
     assert "WebSearch" not in claude_tools
     assert "WebFetch" not in claude_tools
+    assert "Bash" not in claude_tools
     assert "mcp__kdcube_web_search__web_search" in claude_tools
     assert "mcp__kdcube_web_search__web_fetch" not in claude_tools
     assert "mcp__kdcube_web_search__allowlist_status" not in claude_tools
     assert "kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search.web_search_server" in claude_source
-    assert 'denied_tools=("WebSearch", "WebFetch")' in claude_source
+    assert 'denied_tools=("WebSearch", "WebFetch", "Bash")' in claude_source
 
 
 @pytest.mark.asyncio
@@ -191,7 +220,6 @@ async def test_native_web_search_adapter_calls_kdcube_tool(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_langgraph_web_search_adapter_calls_kdcube_tool(
-    tmp_path: Path,
     monkeypatch,
 ) -> None:
     from agents.langgraph import tools as langgraph_tools
@@ -202,7 +230,7 @@ async def test_langgraph_web_search_adapter_calls_kdcube_tool(
         ]
     )
     monkeypatch.setattr(langgraph_tools.web_search_server, "web_search", search)
-    tools = langgraph_tools.build_tools(tmp_path, enabled_ids={"web_search"})
+    tools = langgraph_tools.build_tools(None, enabled_ids={"web_search"})
 
     result = json.loads(
         await tools[0].ainvoke({"query": "current Python release", "max_results": 2})
@@ -261,6 +289,52 @@ async def test_claude_web_search_mcp_starts_with_operator_policy() -> None:
     assert status["enforced"] is True
 
 
+@pytest.mark.asyncio
+async def test_claude_harness_mcp_exposes_execution_and_rendering_tools(
+    tmp_path: Path,
+) -> None:
+    from kdcube_ai_app.apps.chat.sdk.runtime.mcp.client import open_mcp_client
+
+    module = "kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.tool_server"
+    descriptors = (AGENTS_ROOT / "claude" / "descriptors.template").resolve()
+    async with open_mcp_client(
+        transport="stdio",
+        command=sys.executable,
+        args=[
+            "-m",
+            module,
+            "--descriptors",
+            str(descriptors),
+            "--run-root",
+            str(tmp_path / "run"),
+            "--events",
+            str(tmp_path / "mcp-events.jsonl"),
+            "--conversation-id",
+            "conversation-demo",
+            "--turn-id",
+            "turn_demo",
+            "--bundle-id",
+            "standalone-claude-demo@1-0",
+            "--agent-id",
+            "claude",
+            "--bundle-root",
+            str(AGENTS_ROOT / "claude"),
+            "--bundle-module",
+            "agent",
+        ],
+        env=os.environ.copy(),
+        read_timeout_seconds=20,
+    ) as client:
+        listed = await client.list_tools()
+
+    assert {tool.name for tool in listed.tools} == {
+        "execute_python",
+        "write_pdf",
+        "write_docx",
+        "write_pptx",
+    }
+
+
 @pytest.mark.parametrize("adapter", ADAPTERS)
 def test_each_example_owns_a_standard_app_agnostic_descriptor_set(adapter: str) -> None:
     descriptors = AGENTS_ROOT / adapter / "descriptors.template"
@@ -275,7 +349,7 @@ def test_each_example_owns_a_standard_app_agnostic_descriptor_set(adapter: str) 
     economics = yaml.safe_load((descriptors / "economics.yaml").read_text(encoding="utf-8"))
     assert isinstance(assembly.get("infra", {}).get("redis"), dict)
     assert isinstance(assembly.get("infra", {}).get("postgres"), dict)
-    assert str(assembly.get("storage", {}).get("kdcube") or "")
+    assert assembly.get("storage", {}).get("kdcube") == "../output/kdcube-storage"
     assert assembly["models"]["default_llm_model_id"] == "claude-haiku-4-5-20251001"
     assert (
         assembly["platform"]["services"]["proc"]["exec"]["py_code_exec_image"]
@@ -416,7 +490,7 @@ def test_each_example_owns_its_selected_research_skill() -> None:
 
 
 def test_native_yaml_can_select_the_isolated_exec_tool() -> None:
-    from agents.native.agent import EXEC_TOOL_ID, TOOL_SOURCES
+    from agents.native.agent import EXEC_TOOL_ID, RENDER_TOOL_IDS, TOOL_SOURCES
     from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.native_tool_bindings import (
         resolve_native_tool_bindings,
     )
@@ -424,25 +498,23 @@ def test_native_yaml_can_select_the_isolated_exec_tool() -> None:
     config = yaml.safe_load(
         (AGENTS_ROOT / "native" / "config.template.yaml").read_text(encoding="utf-8")
     )
-    config = copy.deepcopy(config)
-    for tool in config["agent"]["tools"]:
-        if tool["id"] == "demo.create_briefing":
-            tool["enabled"] = False
-        elif tool["id"] == EXEC_TOOL_ID:
-            tool["enabled"] = True
-
     bindings = resolve_native_tool_bindings(
         config,
         sources=TOOL_SOURCES,
         adapter_name="native direct example",
     )
 
-    assert bindings.enabled_ids == ("demo.web_search", EXEC_TOOL_ID)
+    assert bindings.enabled_ids == ("demo.web_search", EXEC_TOOL_ID, *RENDER_TOOL_IDS)
     assert bindings.tool_runtime[EXEC_TOOL_ID] == "docker"
     assert bindings.allowed_tool_names_by_alias["exec_tools"] == [
         "execute_code_python"
     ]
     assert any(spec.get("alias") == "exec_tools" for spec in bindings.tool_specs)
+    assert bindings.allowed_tool_names_by_alias["rendering_tools"] == [
+        "write_pdf",
+        "write_docx",
+        "write_pptx",
+    ]
 
 
 def test_native_tool_binding_rejects_ids_outside_the_host_registry() -> None:
@@ -607,6 +679,44 @@ def test_infrastructure_projects_standard_descriptor_settings(tmp_path: Path) ->
     ).resolve().as_uri()
 
 
+def test_descriptor_activation_normalizes_storage_for_sdk_consumers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting import infrastructure
+
+    for name in infrastructure.DESCRIPTOR_FILENAMES:
+        (tmp_path / name).write_text("{}\n", encoding="utf-8")
+    for env_name in (
+        "PLATFORM_DESCRIPTORS_DIR",
+        "ASSEMBLY_YAML_DESCRIPTOR_PATH",
+        "GLOBAL_SECRETS_YAML",
+        "ECONOMICS_YAML_DESCRIPTOR_PATH",
+        "GATEWAY_YAML_PATH",
+    ):
+        monkeypatch.setenv(env_name, "")
+    settings = SimpleNamespace(STORAGE_PATH="../output/kdcube-storage")
+    monkeypatch.setattr(
+        "kdcube_ai_app.apps.chat.sdk.config.get_settings",
+        Mock(return_value=settings),
+    )
+    monkeypatch.setattr(
+        "kdcube_ai_app.apps.chat.sdk.config_cache.clear_config_cache",
+        Mock(),
+    )
+    monkeypatch.setattr(
+        "kdcube_ai_app.infra.secrets.reset_secrets_manager_cache",
+        Mock(),
+    )
+
+    activated = infrastructure.activate_platform_descriptors(tmp_path)
+
+    assert activated is settings
+    assert settings.STORAGE_PATH == str(
+        (tmp_path / "../output/kdcube-storage").resolve()
+    )
+
+
 @pytest.mark.asyncio
 async def test_langgraph_postgres_checkpointer_runs_idempotent_setup(
     monkeypatch: pytest.MonkeyPatch,
@@ -637,51 +747,74 @@ async def test_langgraph_postgres_checkpointer_runs_idempotent_setup(
     setup.assert_awaited_once_with()
 
 
-def test_native_file_tool_creates_real_pdf_and_xlsx(tmp_path: Path) -> None:
-    sys.path.insert(0, str(AGENTS_ROOT / "native"))
-    from tools import create_briefing
+def test_examples_require_model_authored_code_and_kdcube_rendering() -> None:
+    for adapter in ADAPTERS:
+        source = (AGENTS_ROOT / adapter / "agent.py").read_text(encoding="utf-8")
+        assert "openpyxl" in source
+        assert "execute_python" in source or "execute_code_python" in source
+        assert "write_pdf" in source
+        assert "construct pdf bytes" in source.lower()
+        assert "in python" in source.lower()
 
-    from kdcube_ai_app.apps.chat.sdk.runtime.run_ctx import OUTDIR_CV
-
-    token = OUTDIR_CV.set(str(tmp_path))
-    try:
-        result = create_briefing(
-            "Harness <evidence>",
-            "A local artifact-generation check with A & B.",
-            [
-                {
-                    "title": "Source <one>",
-                    "body": "Finding A & B",
-                    "url": "https://example.com?a=1&b=2",
-                }
-            ],
-        )
-    finally:
-        OUTDIR_CV.reset(token)
-
-    artifact_root = tmp_path / "workdir"
-    pdf = artifact_root / "research-brief.pdf"
-    xlsx = artifact_root / "research-data.xlsx"
-    assert result["ok"] is True
-    assert pdf.read_bytes().startswith(b"%PDF-")
-    assert xlsx.read_bytes().startswith(b"PK")
+    helper_sources = (
+        (AGENTS_ROOT / "native" / "tools.py").read_text(encoding="utf-8"),
+        (AGENTS_ROOT / "langgraph" / "tools.py").read_text(encoding="utf-8"),
+    )
+    for source in helper_sources:
+        assert "create_briefing" not in source
+        assert "from openpyxl" not in source
+        assert "from reportlab" not in source
 
 
-def test_langgraph_file_tool_creates_real_pdf_and_xlsx(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_langgraph_file_tools_delegate_to_the_turn_runtime() -> None:
     from agents.langgraph.tools import build_tools
 
-    tools = {item.name: item for item in build_tools(tmp_path)}
-    result = tools["create_briefing"].invoke(
-        {
-            "title": "Harness <evidence>",
-            "summary": "A local artifact-generation check with A & B.",
-            "findings_json": (
-                '[{"title":"Source <one>","body":"Finding A & B",'
-                '"url":"https://example.com?a=1&b=2"}]'
-            ),
-        }
+    execute = AsyncMock(return_value={"ok": True, "items": []})
+    render = AsyncMock(return_value={"ok": True, "items": []})
+    runtime = SimpleNamespace(
+        execute_python=execute,
+        write_pdf=render,
+        write_docx=AsyncMock(return_value={"ok": True, "items": []}),
+        write_pptx=AsyncMock(return_value={"ok": True, "items": []}),
+        tool_report=lambda result: json.dumps(result),
+    )
+    tools = {
+        item.name: item
+        for item in build_tools(runtime, enabled_ids={"execute_python", "write_pdf"})
+    }
+
+    execute_result = json.loads(
+        await tools["execute_python"].ainvoke(
+            {
+                "code": "print('agent authored')",
+                "artifacts": [
+                    {
+                        "filepath": "files/research/data.xlsx",
+                        "description": "Evidence workbook",
+                        "visibility": "external",
+                    }
+                ],
+                "program_name": "Research workbook",
+                "timeout_s": 300,
+            }
+        )
+    )
+    render_result = json.loads(
+        await tools["write_pdf"].ainvoke(
+            {
+                "source_path": "files/research/brief.html",
+                "output_path": "files/research/brief.pdf",
+                "title": "Brief",
+            }
+        )
     )
 
-    assert '"ok": true' in result
-    assert (tmp_path / "research-brief.pdf").read_bytes().startswith(b"%PDF-")
-    assert (tmp_path / "research-data.xlsx").read_bytes().startswith(b"PK")
+    assert execute_result["ok"] is True
+    assert render_result["ok"] is True
+    execute.assert_awaited_once()
+    render.assert_awaited_once_with(
+        source_path="files/research/brief.html",
+        output_path="files/research/brief.pdf",
+        title="Brief",
+    )

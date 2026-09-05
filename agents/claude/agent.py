@@ -27,6 +27,7 @@ if str(SDK_ROOT) not in sys.path:
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.infrastructure import (  # noqa: E402
     activate_platform_descriptors,
     direct_harness_config,
+    platform_exec_profile,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.configuration import (  # noqa: E402
     activate_configured_skills,
@@ -34,9 +35,17 @@ from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.configuration import (  
     configured_run_directory,
     configured_tools,
     configured_web_search,
+    require_supported_tools,
+    verify_docker_image,
+    verify_playwright_chromium,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.evidence import (  # noqa: E402
     ConsoleEmitter,
+    print_evidence_summary,
+    write_evidence_index,
+)
+from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.workspace import (  # noqa: E402
+    DirectTurnWorkspace,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_harness import (  # noqa: E402
     DirectAgentHarness,
@@ -56,6 +65,13 @@ from kdcube_ai_app.apps.chat.sdk.solutions.claude_code import (  # noqa: E402
 
 
 WEB_SEARCH_TOOL_ID = "mcp__kdcube_web_search__web_search"
+EXEC_TOOL_ID = "mcp__kdcube_harness__execute_python"
+RENDER_TOOL_IDS = (
+    "mcp__kdcube_harness__write_pdf",
+    "mcp__kdcube_harness__write_docx",
+    "mcp__kdcube_harness__write_pptx",
+)
+BUILTIN_TOOL_IDS = ("Read", "Write", "Edit", "Grep", "Glob")
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -70,6 +86,13 @@ async def agent_config(
     *,
     workspace: Path,
     config_path: Path,
+    descriptors_dir: Path,
+    run_root: Path,
+    tool_events_path: Path,
+    conversation_id: str,
+    turn_id: str,
+    bundle_id: str,
+    agent_id: str,
     check_only: bool,
     skill_ids: tuple[str, ...],
 ) -> ClaudeCodeAgentConfig:
@@ -93,16 +116,25 @@ async def agent_config(
     if api_key:
         env["CLAUDE_CODE_KEY"] = api_key
     tool_config = configured_tools(config)
+    require_supported_tools(
+        tool_config,
+        supported={*BUILTIN_TOOL_IDS, WEB_SEARCH_TOOL_ID, EXEC_TOOL_ID, *RENDER_TOOL_IDS},
+        adapter="Claude Code direct example",
+    )
     unsupported_runtimes = sorted(
-        tool.id for tool in tool_config if tool.enabled and tool.runtime != "local"
+        tool.id
+        for tool in tool_config
+        if tool.enabled
+        and tool.runtime != ("docker" if tool.id == EXEC_TOOL_ID else "local")
     )
     if unsupported_runtimes:
         raise ValueError(
-            "the direct Claude Code example runs CLI tools locally; unsupported runtime on: "
+            "Claude Code tool runtime does not match the sample contract: "
             + ", ".join(unsupported_runtimes)
         )
     allowed_tools = tuple(tool.id for tool in tool_config if tool.enabled)
     web_search_server_id = "kdcube_web_search"
+    harness_server_id = "kdcube_harness"
     instructions = agent_instructions(
         config,
         fallback=(
@@ -135,12 +167,39 @@ async def agent_config(
                         WEB_SEARCH_TOOL_ID,
                     ],
                     "env": {"PYTHONPATH": str(SDK_ROOT)},
-                }
+                },
+                harness_server_id: {
+                    "type": "stdio",
+                    "command": sys.executable,
+                    "args": [
+                        "-m",
+                        "kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.tool_server",
+                        "--descriptors",
+                        str(descriptors_dir),
+                        "--run-root",
+                        str(run_root),
+                        "--events",
+                        str(tool_events_path),
+                        "--conversation-id",
+                        conversation_id,
+                        "--turn-id",
+                        turn_id,
+                        "--bundle-id",
+                        bundle_id,
+                        "--agent-id",
+                        agent_id,
+                        "--bundle-root",
+                        str(HERE),
+                        "--bundle-module",
+                        "agent",
+                    ],
+                    "env": {"PYTHONPATH": str(SDK_ROOT)},
+                },
             },
-            enabled_mcp_servers=(web_search_server_id,),
+            enabled_mcp_servers=(web_search_server_id, harness_server_id),
             instructions_markdown=instructions,
             allowed_tools=allowed_tools,
-            denied_tools=("WebSearch", "WebFetch"),
+            denied_tools=("WebSearch", "WebFetch", "Bash"),
             skill_ids=skill_ids,
             overwrite=True,
         ),
@@ -183,16 +242,44 @@ async def run_one_turn(
     prompt: str,
     number: int,
     resume: bool,
-    config: ClaudeCodeAgentConfig,
+    raw_config: dict[str, Any],
+    config_path: Path,
+    descriptors_dir: Path,
+    run_root: Path,
+    workspace: Path,
+    skill_ids: tuple[str, ...],
     binding: ClaudeCodeBinding,
     harness: DirectAgentHarness,
     session_store: ClaudeCodeSessionStoreConfig,
-) -> tuple[str, str]:
-    turn_id = f"turn-{number:02d}-{uuid.uuid4().hex[:8]}"
+    attachment_source: Path | None = None,
+) -> tuple[str, str, Any]:
+    turn_id = f"turn_{number:02d}_{uuid.uuid4().hex[:8]}"
+    turn_workspace = DirectTurnWorkspace(run_root=run_root, turn_id=turn_id)
     async with harness.turn(
         conversation_id=binding.conversation_id,
         turn_id=turn_id,
     ) as turn:
+        if attachment_source is not None:
+            await turn.add_user_attachment(
+                attachment_source,
+                materialize_to=turn_workspace.current_attachment(
+                    attachment_source.name
+                ),
+            )
+        config = await agent_config(
+            raw_config,
+            workspace=workspace,
+            config_path=config_path,
+            descriptors_dir=descriptors_dir,
+            run_root=run_root,
+            tool_events_path=turn_workspace.turn_root / "mcp-events.jsonl",
+            conversation_id=binding.conversation_id,
+            turn_id=turn_id,
+            bundle_id=harness.config.bundle_id,
+            agent_id=harness.config.agent_id,
+            check_only=False,
+            skill_ids=skill_ids,
+        )
         agent = ClaudeCodeAgent(config=config, binding=binding, comm=turn.comm)
         await turn.comm.start(message=prompt)
         result = await run_claude_code_turn(
@@ -203,9 +290,58 @@ async def run_one_turn(
         )
         if result.status != "completed":
             raise RuntimeError(result.error_message or f"Claude exited with {result.exit_code}")
+        expected = (
+            (
+                "research/research-data.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "external",
+                EXEC_TOOL_ID,
+            ),
+            (
+                "research/research-brief.html",
+                "text/html",
+                "internal",
+                EXEC_TOOL_ID,
+            ),
+            (
+                "research/research-brief.pdf",
+                "application/pdf",
+                "external",
+                "mcp__kdcube_harness__write_pdf",
+            ),
+        )
+        files: list[dict[str, Any]] = []
+        for relpath, mime, visibility, tool_id in expected:
+            path = turn_workspace.current_file(relpath)
+            if not path.is_file():
+                continue
+            files.append(
+                {
+                    "type": "file",
+                    "output": {
+                        "type": "file",
+                        "path": f"{turn_id}/files/{relpath}",
+                        "filename": path.name,
+                        "mime": mime,
+                        "visibility": visibility,
+                    },
+                    "mime": mime,
+                    "visibility": visibility,
+                    "description": f"Claude demo output: {path.name}",
+                    "resource_id": path.stem,
+                    "tool_id": tool_id,
+                }
+            )
+        if files:
+            await turn.host_files(files=files, outdir=turn_workspace.runtime_outdir)
+        await turn.persist_workspace(
+            outdir=turn_workspace.runtime_outdir,
+            workdir=turn_workspace.workdir,
+            execution_id=f"{turn_id}_workspace",
+        )
         await turn.complete(prompt=prompt, final_answer=result.final_text)
     print(f"[accounting] Redis turn cache contains {len(turn.accounting_events)} event(s)")
-    return result.final_text, turn_id
+    return result.final_text, turn_id, turn
 
 
 async def main_async(args: argparse.Namespace) -> None:
@@ -223,8 +359,8 @@ async def main_async(args: argparse.Namespace) -> None:
         conversation_id = str(
             (config.get("agent") or {}).get("conversation_id") or "claude-demo"
         ).strip()
-    run_output = output / "runs" / conversation_id
-    workspace = run_output / "workspace"
+    run_root = output / "runs" / conversation_id
+    workspace = run_root / "workspace"
     _skills_subsystem, skill_config = activate_configured_skills(
         config,
         config_path=config_path,
@@ -234,6 +370,13 @@ async def main_async(args: argparse.Namespace) -> None:
         config,
         workspace=workspace,
         config_path=config_path,
+        descriptors_dir=descriptors_dir,
+        run_root=run_root,
+        tool_events_path=run_root / "turn_check" / "mcp-events.jsonl",
+        conversation_id=conversation_id,
+        turn_id="turn_check",
+        bundle_id="standalone-claude-demo@1-0",
+        agent_id="claude",
         check_only=args.check or args.infra_check,
         skill_ids=skill_config.enabled,
     )
@@ -250,6 +393,14 @@ async def main_async(args: argparse.Namespace) -> None:
         workspace=workspace,
         conversation_id=conversation_id,
     )
+    required_demo_tools = {WEB_SEARCH_TOOL_ID, EXEC_TOOL_ID, RENDER_TOOL_IDS[0]}
+    missing_demo_tools = sorted(required_demo_tools.difference(cfg.allowed_tools))
+    if missing_demo_tools:
+        raise RuntimeError(
+            "the built-in demonstration requires tools: "
+            + ", ".join(missing_demo_tools)
+        )
+    exec_runtime = platform_exec_profile(settings)
     print("mode: standalone SDK process")
     print("adapter: ClaudeCodeAgent -> local Claude Code subprocess")
     print(f"model: anthropic/{cfg.model}")
@@ -267,6 +418,11 @@ async def main_async(args: argparse.Namespace) -> None:
     )
     if session_store.implementation == "git":
         print(f"Claude transcript branch: {claude_code_session_branch_ref(session_store)}")
+    if not args.check:
+        image = verify_docker_image(exec_runtime)
+        print(f"isolated execution image: {image}")
+        browser = await verify_playwright_chromium()
+        print(f"document renderer: Playwright {browser} ready")
     if args.check:
         binding = ClaudeCodeBinding(
             user_id="demo-user",
@@ -285,7 +441,7 @@ async def main_async(args: argparse.Namespace) -> None:
             binding=binding,
             comm=harness.communicator(
                 conversation_id=binding.conversation_id,
-                turn_id="turn-check",
+                turn_id="turn_check",
             ),
         )
         if not isinstance(agent, ClaudeCodeAgent):
@@ -294,7 +450,7 @@ async def main_async(args: argparse.Namespace) -> None:
         return
 
     workspace.mkdir(parents=True, exist_ok=True)
-    emitter = ConsoleEmitter(run_output / "communicator.jsonl")
+    emitter = ConsoleEmitter(run_root / "communicator.jsonl")
     harness = DirectAgentHarness(
         config=harness_config,
         model_service=None,
@@ -307,19 +463,33 @@ async def main_async(args: argparse.Namespace) -> None:
         claude_session_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"kdcube/demo/{conversation_id}")),
     )
     topic = str((config.get("agent") or {}).get("topic") or "accountable agent runtimes")
+    request_path = workspace / "research-request.md"
+    request_path.write_text(
+        f"# Research request\n\nResearch topic: {topic}\n\n"
+        "Produce sourced findings, an XLSX evidence table, and a polished PDF brief.\n",
+        encoding="utf-8",
+    )
     prompts = [
         (
-            "Use the kdcube_web_search web_search MCP tool with use_llm=false and "
-            f"fetch_content=false to research recent, concrete information about {topic}. "
-            "Save five sourced findings to research.json so the next turn can use them."
+            "Read the attached research-request.md, then use the kdcube_web_search "
+            "web_search MCP tool with use_llm=false and fetch_content=false to research "
+            f"recent, concrete information about {topic}. Return five sourced findings and "
+            "retain them for the next turn."
         ),
         (
-            "Continue this same session. Read research.json, then create "
-            "deliverables/research-brief.pdf and deliverables/research-data.xlsx. "
-            "Verify both files and report their exact paths."
+            "Continue this same session and use the retained findings. Author complete Python "
+            "and call the kdcube_harness execute_python MCP tool. The Python must use openpyxl "
+            "to create files/research/research-data.xlsx and create polished, print-ready HTML "
+            "at files/research/research-brief.html. Declare the XLSX external and the HTML "
+            "internal in the artifact contract. After execution succeeds, call the "
+            "kdcube_harness write_pdf MCP tool with source_path "
+            "files/research/research-brief.html and output_path "
+            "files/research/research-brief.pdf. Do not use Bash and do not construct PDF bytes "
+            "in Python. Verify and report the exact paths."
         ),
     ]
     turn_ids: list[str] = []
+    completed_turns: list[Any] = []
     async with harness:
         if args.infra_check:
             await bootstrap_claude_code_session_store(config=session_store)
@@ -331,32 +501,58 @@ async def main_async(args: argparse.Namespace) -> None:
             print("infrastructure check: PASS")
             return
         print("infrastructure: Redis, Postgres conversation tables, and storage ready")
-        expected_files = [
-            workspace / "research.json",
-            workspace / "deliverables" / "research-brief.pdf",
-            workspace / "deliverables" / "research-data.xlsx",
-        ]
-        for path in expected_files:
-            path.unlink(missing_ok=True)
         for number, prompt in enumerate(prompts, start=1):
-            answer, turn_id = await run_one_turn(
+            answer, turn_id, turn = await run_one_turn(
                 prompt=prompt,
                 number=number,
                 resume=number > 1,
-                config=cfg,
+                raw_config=config,
+                config_path=config_path,
+                descriptors_dir=descriptors_dir,
+                run_root=run_root,
+                workspace=workspace,
+                skill_ids=skill_config.enabled,
                 binding=binding,
                 harness=harness,
                 session_store=session_store,
+                attachment_source=request_path if number == 1 else None,
             )
             turn_ids.append(turn_id)
+            completed_turns.append(turn)
             print(f"\n[turn {number} answer]\n{answer}\n")
         records = await harness.verify_conversation(
             conversation_id=conversation_id,
             expected_turn_ids=turn_ids,
         )
         print(f"[conversation] materialized {len(records)} durable turn record(s)")
+        evidence_path = run_root / "evidence.json"
+        evidence = write_evidence_index(
+            evidence_path,
+            config=harness_config,
+            conversation_id=conversation_id,
+            turns=completed_turns,
+            conversation_records=records,
+            adapter_evidence={
+                "transcript_store": session_store.implementation,
+                "transcript_branch": (
+                    claude_code_session_branch_ref(session_store)
+                    if session_store.implementation == "git"
+                    else None
+                ),
+                "generated_source_archive_path": f"{turn_ids[-1]}/executions/*/pkg/user_code.py",
+            },
+        )
+        print_evidence_summary(evidence_path, evidence)
 
-    missing = [str(path.relative_to(workspace)) for path in expected_files if not path.is_file()]
+    deliverable_workspace = DirectTurnWorkspace(
+        run_root=run_root,
+        turn_id=turn_ids[-1],
+    )
+    expected_files = (
+        deliverable_workspace.current_file("research/research-brief.pdf"),
+        deliverable_workspace.current_file("research/research-data.xlsx"),
+    )
+    missing = [path.name for path in expected_files if not path.is_file()]
     if missing:
         raise RuntimeError(f"agent completed without required artifacts: {', '.join(missing)}")
     print("demonstration: PASS")

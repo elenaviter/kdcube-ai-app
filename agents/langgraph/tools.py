@@ -1,19 +1,15 @@
-"""KDCube Web Search and briefing adapters for the direct LangGraph example."""
+"""KDCube Web Search, isolated execution, and rendering tools for LangGraph."""
 
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
-from xml.sax.saxutils import escape
 
 from langchain_core.tools import BaseTool, tool
-from openpyxl import Workbook
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib.units import mm
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 
+from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.tool_runtime import (
+    DirectToolRuntime,
+)
 from kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search import web_search_server
 
 
@@ -32,14 +28,30 @@ def _normalise_results(value: Any) -> list[dict[str, str]]:
         rows.append(
             {
                 "title": str(item.get("title") or "Untitled"),
-                "body": str(item.get("body") or item.get("snippet") or item.get("text") or ""),
+                "body": str(
+                    item.get("body")
+                    or item.get("snippet")
+                    or item.get("text")
+                    or ""
+                ),
                 "url": str(item.get("href") or item.get("url") or ""),
             }
         )
     return rows
 
 
-def build_tools(output_dir: Path, *, enabled_ids: set[str] | None = None) -> list[BaseTool]:
+def build_tools(
+    runtime: DirectToolRuntime | None,
+    *,
+    enabled_ids: set[str] | None = None,
+) -> list[BaseTool]:
+    """Build tools for one turn; ``runtime`` binds filesystem state to that turn."""
+
+    def require_runtime() -> DirectToolRuntime:
+        if runtime is None:
+            raise RuntimeError("this tool requires an active direct-agent turn")
+        return runtime
+
     @tool
     async def web_search(query: str, max_results: int = 5) -> str:
         """Search with KDCube Web Search. Returns title, excerpt, and URL rows."""
@@ -56,57 +68,70 @@ def build_tools(output_dir: Path, *, enabled_ids: set[str] | None = None) -> lis
                     use_llm=False,
                 )
             )
-            return json.dumps({"ok": True, "query": query, "results": rows}, ensure_ascii=False)
+            return json.dumps(
+                {"ok": True, "query": query, "results": rows},
+                ensure_ascii=False,
+            )
         except Exception as exc:
-            return json.dumps({"ok": False, "query": query, "error": str(exc), "results": []})
+            return json.dumps(
+                {"ok": False, "query": query, "error": str(exc), "results": []}
+            )
 
     @tool
-    def create_briefing(title: str, summary: str, findings_json: str) -> str:
-        """Create research-brief.pdf and research-data.xlsx from findings supplied as JSON."""
-        output_dir.mkdir(parents=True, exist_ok=True)
-        rows = _normalise_results(findings_json)
-        if not rows:
-            rows = [{"title": "Summary", "body": summary, "url": ""}]
-
-        pdf_path = output_dir / "research-brief.pdf"
-        styles = getSampleStyleSheet()
-        story = [
-            Paragraph(escape(title), styles["Title"]),
-            Spacer(1, 5 * mm),
-            Paragraph(escape(summary), styles["BodyText"]),
-        ]
-        for row in rows:
-            story.extend(
-                [
-                    Spacer(1, 4 * mm),
-                    Paragraph(escape(row["title"]), styles["Heading2"]),
-                    Paragraph(
-                        escape(row["body"] or "No excerpt supplied."),
-                        styles["BodyText"],
-                    ),
-                ]
+    async def execute_python(
+        code: str,
+        artifacts: list[dict[str, Any]],
+        program_name: str = "Agent-generated Python",
+        timeout_s: int = 600,
+    ) -> str:
+        """Execute your Python in KDCube's isolated runtime and keep contracted files."""
+        active = require_runtime()
+        return active.tool_report(
+            await active.execute_python(
+                code=code,
+                artifacts=artifacts,
+                program_name=program_name,
+                timeout_s=timeout_s,
             )
-            if row["url"]:
-                story.append(Paragraph(escape(row["url"]), styles["Code"]))
-        SimpleDocTemplate(str(pdf_path), pagesize=A4).build(story)
-
-        workbook = Workbook()
-        sheet = workbook.active
-        sheet.title = "Research"
-        sheet.append(["Title", "Finding", "Source"])
-        for row in rows:
-            sheet.append([row["title"], row["body"], row["url"]])
-        sheet.freeze_panes = "A2"
-        sheet.column_dimensions["A"].width = 34
-        sheet.column_dimensions["B"].width = 80
-        sheet.column_dimensions["C"].width = 55
-        xlsx_path = output_dir / "research-data.xlsx"
-        workbook.save(xlsx_path)
-        return json.dumps(
-            {"ok": True, "files": [pdf_path.name, xlsx_path.name], "rows": len(rows)}
         )
 
-    available = [web_search, create_briefing]
+    @tool
+    async def write_pdf(source_path: str, output_path: str, title: str = "") -> str:
+        """Render a current-turn HTML file to PDF with KDCube rendering tools."""
+        active = require_runtime()
+        return active.tool_report(
+            await active.write_pdf(
+                source_path=source_path,
+                output_path=output_path,
+                title=title,
+            )
+        )
+
+    @tool
+    async def write_docx(source_path: str, output_path: str, title: str = "") -> str:
+        """Render a current-turn Markdown file to DOCX with KDCube rendering tools."""
+        active = require_runtime()
+        return active.tool_report(
+            await active.write_docx(
+                source_path=source_path,
+                output_path=output_path,
+                title=title,
+            )
+        )
+
+    @tool
+    async def write_pptx(source_path: str, output_path: str, title: str = "") -> str:
+        """Render current-turn section-based HTML to PPTX with KDCube rendering tools."""
+        active = require_runtime()
+        return active.tool_report(
+            await active.write_pptx(
+                source_path=source_path,
+                output_path=output_path,
+                title=title,
+            )
+        )
+
+    available = [web_search, execute_python, write_pdf, write_docx, write_pptx]
     if enabled_ids is None:
         return available
     return [item for item in available if item.name in enabled_ids]

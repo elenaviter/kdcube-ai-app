@@ -13,6 +13,9 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+import hashlib
+import mimetypes
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, AsyncIterator, Sequence
 
@@ -28,10 +31,14 @@ from kdcube_ai_app.apps.chat.sdk.solutions.conversation.read import (
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.conversation.record import (
     TURN_LOG_RECORDING_RICH,
+    build_minimal_turn_log_payload,
     record_minimal_turn_log_if_absent,
     reset_turn_log_recorded,
 )
 from kdcube_ai_app.apps.chat.sdk.storage.conversation_store import ConversationStore
+from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace.hosting import (
+    ApplicationHostingService,
+)
 from kdcube_ai_app.apps.chat.sdk.util import token_count
 from kdcube_ai_app.infra.accounting import get_turn_events, with_accounting
 from kdcube_ai_app.infra.accounting.envelope import (
@@ -93,11 +100,111 @@ class DirectAgentTurn:
         self.turn_id = turn_id
         self.comm = communicator
         self.accounting_events: list[Any] = []
+        self.user_attachments: list[dict[str, Any]] = []
+        self.assistant_files: list[dict[str, Any]] = []
+        self.execution_snapshots: list[dict[str, Any]] = []
+        self.hosting_service = _TrackingHostingService(
+            store=harness.storage,
+            comm=communicator,
+            assistant_files=self.assistant_files,
+            execution_snapshots=self.execution_snapshots,
+        )
         self.finished = False
 
     @property
     def conversation_client(self) -> Any:
         return self.harness.conversation_client
+
+    async def add_user_attachment(
+        self,
+        source: str | Path,
+        *,
+        filename: str | None = None,
+        mime: str | None = None,
+        materialize_to: str | Path | None = None,
+    ) -> dict[str, Any]:
+        """Store one user input and optionally materialize it in the turn workspace."""
+        path = Path(source).expanduser().resolve()
+        data = path.read_bytes()
+        name = Path(filename or path.name).name
+        media_type = mime or mimetypes.guess_type(name)[0] or "application/octet-stream"
+        uri, key, rn = await self.harness.storage.put_attachment(
+            tenant=self.harness.config.tenant,
+            project=self.harness.config.project,
+            user=self.harness.config.user_id,
+            fingerprint=None,
+            conversation_id=self.conversation_id,
+            turn_id=self.turn_id,
+            role="user",
+            filename=name,
+            data=data,
+            mime=media_type,
+            user_type=self.harness.config.user_type,
+            origin="user",
+        )
+        local_path = ""
+        if materialize_to is not None:
+            target = Path(materialize_to).expanduser().resolve()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+            local_path = str(target)
+        row = {
+            "filename": name,
+            "mime": media_type,
+            "size": len(data),
+            "content_sha256": hashlib.sha256(data).hexdigest(),
+            "hosted_uri": uri,
+            "key": key,
+            "rn": rn,
+            "physical_path": local_path or name,
+            "visibility": "external",
+        }
+        self.user_attachments.append(row)
+        return row
+
+    async def host_files(
+        self,
+        *,
+        files: Sequence[dict[str, Any]],
+        outdir: str | Path,
+        emit: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Host current-turn output files and emit only externally visible rows."""
+        hosted = await self.hosting_service.host_files_to_conversation(
+            rid=f"req-{self.turn_id}",
+            files=list(files),
+            outdir=str(outdir),
+            tenant=self.harness.config.tenant,
+            project=self.harness.config.project,
+            user=self.harness.config.user_id,
+            conversation_id=self.conversation_id,
+            user_type=self.harness.config.user_type,
+            turn_id=self.turn_id,
+        )
+        visible = [row for row in hosted if row.get("visibility") != "internal"]
+        if emit and visible:
+            await self.hosting_service.emit_solver_artifacts(files=visible, citations=[])
+        return hosted
+
+    async def persist_workspace(
+        self,
+        *,
+        outdir: str | Path,
+        workdir: str | Path,
+        execution_id: str,
+    ) -> dict[str, Any] | None:
+        """Archive the turn's runtime output and generated-code workspace."""
+        return await self.hosting_service.persist_workspace(
+            outdir=str(outdir),
+            workdir=str(workdir),
+            tenant=self.harness.config.tenant,
+            project=self.harness.config.project,
+            user=self.harness.config.user_id,
+            conversation_id=self.conversation_id,
+            user_type=self.harness.config.user_type,
+            turn_id=self.turn_id,
+            codegen_run_id=execution_id,
+        )
 
     async def complete(
         self,
@@ -133,9 +240,31 @@ class DirectAgentTurn:
                 final_answer=answer,
                 conversation_title=conversation_title or None,
                 user_prompt_text=str(prompt or ""),
+                user_attachments=self.user_attachments,
+                assistant_files=self.assistant_files,
             )
         else:
             blocks = [dict(block) for block in rich_blocks if isinstance(block, dict)]
+            supplemental = build_minimal_turn_log_payload(
+                final_answer=answer,
+                turn_id=self.turn_id,
+                conversation_id=self.conversation_id,
+                user_attachments=self.user_attachments,
+                assistant_files=self.assistant_files,
+            ).get("blocks") or []
+            existing_paths = {
+                str(block.get("path") or "")
+                for block in blocks
+                if isinstance(block, dict)
+            }
+            for block in supplemental:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") not in {"user.attachment.meta", "react.tool.result"}:
+                    continue
+                if str(block.get("path") or "") in existing_paths:
+                    continue
+                blocks.append(dict(block))
             payload = TurnLog(
                 turn_id=self.turn_id,
                 ts=str(started_at or ""),
@@ -252,6 +381,9 @@ class DirectAgentHarness:
                 "tenant": cfg.tenant,
                 "project": cfg.project,
                 "user": cfg.user_id,
+                "user_type": cfg.user_type,
+                "conversation_id": conversation_id,
+                "turn_id": turn_id,
             },
             conversation={
                 "session_id": cfg.session_id,
@@ -350,6 +482,39 @@ class DirectAgentHarness:
                     f"turn {item.get('turn_id')!r} has a Postgres row without a materialized storage payload"
                 )
         return items
+
+
+class _TrackingHostingService(ApplicationHostingService):
+    """Application hosting plus direct-run evidence collection."""
+
+    def __init__(
+        self,
+        *,
+        assistant_files: list[dict[str, Any]],
+        execution_snapshots: list[dict[str, Any]],
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._assistant_files = assistant_files
+        self._execution_snapshots = execution_snapshots
+
+    async def host_files_to_conversation(self, **kwargs: Any) -> list[dict[str, Any]]:
+        rows = await super().host_files_to_conversation(**kwargs)
+        known = {str(row.get("key") or "") for row in self._assistant_files}
+        for row in rows:
+            key = str(row.get("key") or "")
+            if key and key in known:
+                continue
+            self._assistant_files.append(dict(row))
+            if key:
+                known.add(key)
+        return rows
+
+    async def persist_workspace(self, **kwargs: Any) -> dict[str, Any] | None:
+        snapshot = await super().persist_workspace(**kwargs)
+        if isinstance(snapshot, dict):
+            self._execution_snapshots.append(dict(snapshot))
+        return snapshot
 
 
 __all__ = [

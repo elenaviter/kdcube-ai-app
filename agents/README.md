@@ -12,7 +12,7 @@ see_also:
 ---
 # Run an Agent with the KDCube Harness
 
-Choose one runnable agent:
+Pick the agent core you already use:
 
 | Agent | Start here |
 | --- | --- |
@@ -20,34 +20,43 @@ Choose one runnable agent:
 | LangGraph | [langgraph](langgraph/README.md) |
 | Claude Code | [claude](claude/README.md) |
 
-Each directory is complete: agent code, YAML configuration, standard KDCube
-descriptors, requirements, a skill, and Redis/Postgres Compose services.
+Each directory runs directly from this repository in a shell or IDE. No
+KDCube server is required. Redis and Postgres run as independent support
+services.
 
-These examples run directly from Python without a KDCube server. They show web
-research, multiple turns, harness events and accounting, durable conversation
-state, and PDF/XLSX output.
+The built-in two-turn demonstration does this:
 
-All three use the repository's KDCube Web Search implementation. Native ReAct
-and LangGraph call it through small framework adapters; Claude Code receives
-it as an on-demand local stdio MCP server. Claude's ambient `WebSearch` and
-`WebFetch` tools are denied in this example, so a successful search proves the
-configured KDCube tool was used. Its row in each agent's `agent.tools` list
-owns the domain allowlist, blocklist, and SSRF policy under `settings`.
+```text
+research request
+      |
+      v
+KDCube Web Search -> retained conversation context
+      |
+      v
+agent authors Python -> isolated executor -> XLSX + HTML
+                                             |
+                                             v
+                                rendering_tools.write_pdf
+                                             |
+                                             v
+                                      polished PDF
+```
 
-There are two configuration owners. `config.local.yaml` selects agent behavior,
-the run directory, tools, skills, and settings attached to each tool row.
-`descriptors.local/` selects shared platform services: model, Redis/Postgres,
-storage, secrets, economics, and the optional isolated executor.
-`setup_local.py` is the one-time command that prepares the ignored local
-descriptors and matching Compose credentials. Every example defaults to
-`claude-haiku-4-5-20251001`.
+The YAML-selected renderer family also exposes HTML-to-PPTX and
+Markdown-to-DOCX. Each run records communicator events, accounted model calls,
+attachments, output files, conversation turns, and the execution ZIP that
+contains the model-authored `pkg/user_code.py`.
 
-The same tool can be run independently for another MCP client. See the
-[Web Search MCP quick start](../mcp/web-search/README.md).
+The division of work is deliberate: the agent authors research, code, data,
+HTML, and Markdown; the isolated executor runs its program; KDCube's document
+tools own repeatable PDF, DOCX, and PPTX conversion. An existing agent therefore
+gains deep-research and file-production capability without regenerating a new
+PDF or Office implementation for every request.
 
-For the full copy-and-run procedure, including optional isolated code
-execution, use
+Start with the complete command sequence in
 [Run the Agent Harness from Python](../app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md).
+The standalone [Web Search MCP example](../mcp/web-search/README.md) is also
+available.
 
 For a ready runtime with chat UI, authentication, managed tools,
 tool-execution enforcement, isolated workspaces, and app hosting, use

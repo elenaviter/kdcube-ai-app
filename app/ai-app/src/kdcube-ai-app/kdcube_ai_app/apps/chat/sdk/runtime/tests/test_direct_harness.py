@@ -55,9 +55,19 @@ async def test_turn_records_once_and_requires_accounting(monkeypatch: pytest.Mon
     harness._conversation_client = object()
 
     async with harness.turn(conversation_id="conversation", turn_id="turn") as turn:
+        turn.user_attachments.append({"filename": "request.md"})
+        turn.assistant_files.append(
+            {"filename": "brief.html", "visibility": "internal"}
+        )
         await turn.complete(prompt="question", final_answer="answer")
 
     record.assert_awaited_once()
+    assert record.await_args.kwargs["user_attachments"] == [
+        {"filename": "request.md"}
+    ]
+    assert record.await_args.kwargs["assistant_files"] == [
+        {"filename": "brief.html", "visibility": "internal"}
+    ]
     assert turn.accounting_events == [{"usage": 1}]
     assert turn.finished is True
 

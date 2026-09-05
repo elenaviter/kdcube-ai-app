@@ -15,7 +15,7 @@ infra:
     topology: standalone
 
 storage:
-  kdcube: ../output/conversation-store
+  kdcube: ../output/kdcube-storage
   workspace:
     type: local
     repo: ""

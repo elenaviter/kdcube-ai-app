@@ -16,5 +16,7 @@ Keep the evidence reusable:
 
 1. Preserve the title, finding, and source URL for every selected result.
 2. Distinguish observed source facts from your synthesis.
-3. Put the concise narrative in the PDF and the structured evidence rows in the XLSX file.
-4. Verify both output files exist and are non-empty before reporting completion.
+3. Author Python for structured computation and XLSX creation, then execute it through the isolated Python tool.
+4. Author renderer-ready source separately: HTML for PDF/PPTX, or Markdown for DOCX.
+5. Use the matching KDCube rendering tool instead of generating document-format bytes in Python.
+6. Verify every promised output exists and is non-empty before reporting completion.

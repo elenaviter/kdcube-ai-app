@@ -1,10 +1,10 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md
 title: "Recipe: Run the Agent Harness from Python"
-summary: "Executable steps for running a YAML-configured native ReAct, LangGraph, or Claude Code agent from KDCube SDK source."
+summary: "Run native ReAct, LangGraph, or Claude Code from SDK source with web research, isolated code execution, document rendering, durable conversations, and accounting."
 status: current
-tags: ["recipe", "quickstart", "agent-harness", "python", "native-react", "langgraph", "claude-code", "self-hosted", "web-search"]
-keywords: ["run agent harness", "direct SDK agent", "KDCube Web Search", "standard descriptors", "Redis", "Postgres", "Git transcript", "isolated code execution"]
+tags: ["recipe", "quickstart", "agent-harness", "python", "native-react", "langgraph", "claude-code", "self-hosted", "web-search", "rendering"]
+keywords: ["run agent harness", "direct SDK agent", "KDCube Web Search", "standard descriptors", "Redis", "Postgres", "Git transcript", "isolated code execution", "write_pdf", "write_docx", "write_pptx"]
 updated_at: 2026-09-05
 see_also:
   - repo:kdcube-ai-app/agents/README.md
@@ -17,11 +17,11 @@ see_also:
 ---
 # Recipe: Run the Agent Harness from Python
 
-Run one agent directly from a shell or IDE. The process imports the KDCube SDK
-from source; it does not require a running KDCube server. Redis and Postgres are
-independent support services.
+Run an agent from a shell or IDE and give it KDCube Harness capabilities. The
+sample process imports KDCube SDK source directly; it does not require a
+running KDCube server. Redis and Postgres are independent support services.
 
-Choose one self-contained directory:
+Choose one complete example:
 
 ```text
 agents/
@@ -30,63 +30,55 @@ agents/
   claude/       Claude Code through ClaudeCodeAgent
 ```
 
-Each directory contains its agent, requirements, behavior YAML, standard
-platform descriptors, skill, Compose services, and setup command. A tool's
-settings stay on that tool's row in the behavior YAML.
+Each directory owns its agent, requirements, YAML behavior, platform
+descriptors, skill, Compose services, and setup command.
 
-## The first-run journey
+## The user journey
 
 ```text
-Developer opens agents/
-          |
-          v
-Choose one agent core
-   |          |          |
-   v          v          v
- native    langgraph    claude
-   |          |          |
-   +----------+----------+
+Open agents/
+     |
+     +---- native
+     +---- langgraph
+     +---- claude
               |
               v
-Enter that agent's self-contained directory
+       create .venv
+       install requirements + Chromium
               |
               v
-Create a Python environment and install requirements
+       create local descriptors
+       start Redis + Postgres
+       build isolated executor image
               |
               v
-Create local YAML configuration and descriptors
+       --check -> --infra-check -> run
               |
               v
-Start the directory's Redis and Postgres services
+       research request is stored as an attachment
               |
               v
-Run --check, then --infra-check
+       web research -> next-turn continuity
               |
               v
-Run the multi-turn demonstration
+       agent-authored Python -> isolated Docker execution
+              |                         |
+              |                         +-> XLSX
+              |                         +-> renderer-ready HTML
+              |                         +-> archived pkg/user_code.py
+              v
+       rendering_tools.write_pdf -> polished PDF
               |
               v
-Web research -> retained context -> PDF + XLSX
-              |
-              v
-Inspect output files, communicator events, and accounting
-              |
-              v
-Change instructions, model, tools, skills, or limits in YAML
-              |
-              +-----------------------------+
-              |                             |
-              v                             v
-Keep running the direct SDK agent    Adopt the full KDCube runtime
-                                     for UI, authentication, governed
-                                     tools, isolated workspaces, and
-                                     application hosting
+       inspect conversation, files, execution, and spend evidence
 ```
 
-The direct path imports KDCube SDK source but does not require a running
-KDCube server. The selected directory is the complete first-use boundary;
-reusable hosting code remains in the SDK rather than appearing as another
-choice beside the three agents.
+The model writes the research and Python. KDCube supplies the reusable
+execution, rendering, persistence, accounting, and communicator boundaries.
+This is the important document boundary: the model authors the content and
+visual structure, while stable tools own PDF, DOCX, and PPTX conversion. The
+agent can produce polished files without inventing a document-generation
+program from scratch on every turn.
 
 ## 0. Prerequisites
 
@@ -94,8 +86,8 @@ Install Git, Python 3.11, and Docker Engine or Docker Desktop with Compose.
 
 You also need one model interface:
 
-- native or LangGraph: a provider API key;
-- Claude: an authenticated Claude Code CLI or Anthropic key.
+- Native or LangGraph uses a provider API key.
+- Claude uses an authenticated Claude Code CLI or an Anthropic key.
 
 ## 1. Get the source
 
@@ -105,32 +97,36 @@ cd kdcube
 export KDCUBE_SOURCE="$PWD"
 ```
 
-## 2. Choose an agent
+`KDCUBE_SOURCE` is only a shell path used by this recipe. Runtime behavior is
+descriptor-owned.
 
-Set one value:
+## 2. Choose one agent
 
 ```bash
-export AGENT=native       # or langgraph / claude
+export AGENT=native
 cd "$KDCUBE_SOURCE/agents/$AGENT"
 ```
 
-The rest of the basic procedure stays in this directory.
+Set `AGENT` to `native`, `langgraph`, or `claude`. All remaining commands run
+inside that selected directory unless a step says otherwise.
 
-## 3. Install it
+## 3. Install the Python process and renderer
 
 ```bash
 python3.11 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m playwright install chromium
 cp config.template.yaml config.local.yaml
 ```
 
-The requirements install the SDK from
-`app/ai-app/src/kdcube-ai-app` in editable mode.
+The requirements install this repository's SDK in editable mode. Chromium is
+required by the default PDF demonstration and other browser-backed render
+paths. DOCX consumes Markdown; PPTX consumes section-based HTML.
 
 ## 4. Create local descriptors
 
-For native or LangGraph:
+For Native or LangGraph:
 
 ```bash
 .venv/bin/python setup_local.py --provider anthropic
@@ -143,49 +139,59 @@ its CLI:
 .venv/bin/python setup_local.py --provider none
 ```
 
-The command creates ignored local files in this agent directory:
+The setup command creates ignored local files:
 
 ```text
 descriptors.local/
-  assembly.yaml       infrastructure, storage, model, optional Git/executor
+  assembly.yaml       model, Redis, Postgres, storage, executor, optional Git
   secrets.yaml        provider, Redis, Postgres, optional Git credentials
   economics.yaml      model prices and economics policy
   gateway.yaml        empty for this direct process
-.env                   matching Compose service credentials
+.env                   matching credentials for the two Compose services
 ```
 
-The tracked `config.template.yaml` also contains KDCube Web Search's allowlist,
-blocklist, and SSRF policy under the selected Web Search tool row's `settings`.
-Copying the template therefore creates one local agent configuration file, not
-one file per tool.
+Claude setup also initializes `output/claude-session-store.git`. These are
+ordinary app-agnostic platform descriptors; this direct process does not need
+`bundles.yaml`.
 
-The Claude setup also initializes
-`output/claude-session-store.git`; native and LangGraph do not carry that
-Claude-specific surface.
+## 5. Build the isolated Python executor
 
-These are ordinary app-agnostic KDCube descriptors. This direct process does
-not use `bundles.yaml`. `.env` only supplies the same generated Redis/Postgres
-credentials to Compose; agent configuration remains descriptor-owned.
+The demonstration asks the model to author Python using `openpyxl`. That code
+runs inside the executor image, not in the sample process.
 
-## 5. Start Redis and Postgres
+```bash
+cd "$KDCUBE_SOURCE"
+docker build \
+  -t py-code-exec:latest \
+  -f app/ai-app/deployment/docker/all_in_one_kdcube/Dockerfile_Exec \
+  app/ai-app
+docker image inspect py-code-exec:latest >/dev/null
+cd "$KDCUBE_SOURCE/agents/$AGENT"
+```
+
+The shipped descriptor sets `network_mode: none`. Research happens through
+the governed Web Search tool; the agent passes selected findings into its
+generated program.
+
+## 6. Start Redis and Postgres
 
 ```bash
 docker compose --env-file .env -f compose.yaml up -d --wait
 docker compose --env-file .env -f compose.yaml ps
 ```
 
-Both services must report healthy. The agent creates its required tables.
+Both services must report healthy. The harness creates its conversation
+tables. LangGraph also creates its checkpoint tables.
 
-## 6. Inspect what YAML controls
+## 7. Inspect the agent YAML
 
-`config.local.yaml` controls the agent itself:
+`config.local.yaml` selects behavior, tools, skills, and the local output root.
+This is the Native shape; LangGraph and Claude use framework-specific tool IDs
+for the same capabilities:
 
 ```yaml
 agent:
   topic: "the current stable Python release and its release date"
-  instructions: |
-    You are a research agent. Use the configured tools for public-web research
-    and deliverable creation. Preserve source URLs and follow enabled skills.
   run_directory: ./output
   tools:
     - id: demo.web_search
@@ -197,9 +203,16 @@ agent:
             - python.org
           blocklist: []
           ssrf_guard: true
-        server:
-          log_level: WARNING
-    - id: demo.create_briefing
+    - id: exec_tools.execute_code_python
+      enabled: true
+      runtime: docker
+    - id: rendering_tools.write_pdf
+      enabled: true
+      runtime: local
+    - id: rendering_tools.write_docx
+      enabled: true
+      runtime: local
+    - id: rendering_tools.write_pptx
       enabled: true
       runtime: local
   skills:
@@ -208,59 +221,43 @@ agent:
       - demo.research-brief
 ```
 
-The runner turns enabled rows into an exact tool allow-list and loads the named
-skill from this directory. Unknown tool or skill IDs fail during construction.
+The corresponding IDs are:
 
-Every example uses KDCube Web Search. Native and LangGraph adapt its Python
-implementation to their native tool interfaces; Claude starts the same module
-as a local stdio MCP server and denies Claude's ambient `WebSearch` and
-`WebFetch`. The adapter-facing IDs differ, but the search implementation and
-operator policy do not:
+| Capability | Native | LangGraph | Claude Code |
+| --- | --- | --- | --- |
+| Web Search | `demo.web_search` | `web_search` | `mcp__kdcube_web_search__web_search` |
+| Isolated Python | `exec_tools.execute_code_python` | `execute_python` | `mcp__kdcube_harness__execute_python` |
+| PDF | `rendering_tools.write_pdf` | `write_pdf` | `mcp__kdcube_harness__write_pdf` |
+| DOCX | `rendering_tools.write_docx` | `write_docx` | `mcp__kdcube_harness__write_docx` |
+| PPTX | `rendering_tools.write_pptx` | `write_pptx` | `mcp__kdcube_harness__write_pptx` |
 
-| Agent | Enabled search operation |
-| --- | --- |
-| Native ReAct | `demo.web_search` |
-| LangGraph | `web_search` |
-| Claude Code | `mcp__kdcube_web_search__web_search` |
+Unknown tool or skill IDs fail during `--check`. Tool settings stay on their
+tool row. The Web Search row owns its domain allowlist, blocklist, and SSRF
+policy. Change the allowlist when changing the sample topic.
 
-Each ID selects installed code; `settings` configures only that row. For
-example, `agent.tools[id=demo.web_search].settings.filter` is Native's Web
-Search policy. The shipped topic concerns Python, so the initial allowlist
-admits `python.org` and its subdomains. Change the list when you change the
-topic. A tool call can narrow this policy with `sites`; it cannot widen it. The
-full standalone tool contract is in the
-[Web Search MCP quick start](../../../../../mcp/web-search/README.md).
-
-`agent.run_directory` receives generated deliverables, communicator evidence,
-and local per-run files. It is more than a single response-output file.
-
-`descriptors.local/assembly.yaml` controls the host:
+`descriptors.local/assembly.yaml` selects independent services and durable
+storage:
 
 ```yaml
-infra:
-  postgres:
-    host: 127.0.0.1
-    port: 55432
-  redis:
-    host: 127.0.0.1
-    port: 56379
-
 storage:
-  kdcube: ../output/conversation-store
+  kdcube: ../output/kdcube-storage
 
 models:
   default_llm_model_id: claude-haiku-4-5-20251001
+
+platform:
+  services:
+    proc:
+      exec:
+        py_code_exec_image: py-code-exec:latest
+        py_code_exec_network_mode: none
 ```
 
-The exact default ports differ between the three directories so their Compose
-projects can run independently. Credentials live in
-`descriptors.local/secrets.yaml`; accounting prices and policy live in
-`descriptors.local/economics.yaml`. Native and LangGraph select their model
-from this descriptor. Claude's local CLI adapter also declares
-`agent.adapter.model: claude-haiku-4-5-20251001`; all three shipped examples
-therefore run Haiku by default.
+Credentials live in `descriptors.local/secrets.yaml`. Model prices and
+economics policy live in `descriptors.local/economics.yaml`. The three samples
+use separate default ports, so their Compose projects can run independently.
 
-## 7. Check and run
+## 8. Check and run
 
 ```bash
 .venv/bin/python agent.py --check
@@ -268,111 +265,122 @@ therefore run Haiku by default.
 .venv/bin/python agent.py
 ```
 
-`--check` constructs the adapter, exact tools, and skills without contacting a
-provider. `--infra-check` verifies Redis, storage, and Postgres tables without
-model spend. The full demonstration searches the web over multiple turns and
-creates a real PDF and XLSX. Its final line is:
+`--check` constructs the adapter, exact tool inventory, and skills without
+contacting a provider or support service. `--infra-check` verifies Redis,
+Postgres tables, KDCube storage, the executor image, and Playwright Chromium
+without model spend. Claude also verifies its Git transcript store.
+
+The full two-turn scenario:
+
+1. Stores `research-request.md` as a user attachment and performs Web Search.
+2. Continues the conversation, authors Python, and invokes isolated execution.
+3. The program creates an XLSX evidence table and print-ready HTML.
+4. The agent invokes `write_pdf`; KDCube renders and hosts the final PDF.
+
+A successful run ends with:
 
 ```text
 demonstration: PASS
 ```
 
-Inspect the result:
+## 9. Inspect durable evidence
+
+Find the run index and deliverables:
 
 ```bash
-find output -type f \
-  \( -name 'research-brief.pdf' -o -name 'research-data.xlsx' -o -name 'communicator.jsonl' \) \
+find output/runs -type f \
+  \( -name evidence.json -o -name research-brief.pdf -o -name research-data.xlsx \) \
   -print
 ```
 
-Postgres holds the durable conversation index and turn metadata. Configured
-storage holds turn payloads. Redis holds the per-turn accounted-event mirror.
+Each `output/runs/<conversation>/evidence.json` is a navigation index. It points
+to authoritative records under the configured `storage.kdcube` root:
 
-## 8. Enable isolated Python execution
+```text
+output/kdcube-storage/
+  accounting/<tenant>/<project>/...                    durable usage events
+  cb/tenants/<tenant>/projects/<project>/conversation/ turn-log payloads
+  cb/tenants/<tenant>/projects/<project>/attachments/  inputs and produced files
+  cb/tenants/<tenant>/projects/<project>/executions/   compressed turn workspaces
+```
 
-The native agent can replace its trusted local deliverable tool with the SDK's
-isolated Python executor. Build the image first:
+Inspect the generated program retained with the execution:
 
 ```bash
-cd "$KDCUBE_SOURCE"
-docker build \
-  -t py-code-exec:latest \
-  -f app/ai-app/deployment/docker/all_in_one_kdcube/Dockerfile_Exec \
-  app/ai-app
-docker image inspect py-code-exec:latest >/dev/null
-cd agents/native
+ARCHIVE="$(find output/kdcube-storage -path '*/executions/*' -name '*.zip' | sort | tail -1)"
+unzip -l "$ARCHIVE"
+unzip -p "$ARCHIVE" pkg/user_code.py | sed -n '1,220p'
 ```
 
-Change the tool rows in `config.local.yaml`:
+The execution ZIP also contains the turn's `out/` tree. Postgres holds the
+conversation index and turn metadata; LangGraph stores its graph checkpoints
+there as well. Redis holds a live per-turn accounting mirror with a TTL. The
+durable accounting JSON files remain in KDCube storage after that mirror
+expires.
 
-```yaml
-  tools:
-    - id: demo.web_search
-      enabled: true
-      runtime: local
-    - id: demo.create_briefing
-      enabled: false
-      runtime: local
-    - id: exec_tools.execute_code_python
-      enabled: true
-      runtime: docker
-```
+The local `communicator.jsonl` shows what the adapter streamed into the harness.
+It is diagnostic evidence, not the durable conversation authority.
 
-Executor image, timeout, network, strategy, and workspace limits remain under
-`platform.services.proc.exec` in `descriptors.local/assembly.yaml`. Run the
-three commands from step 7 again. A missing image fails before model spend.
+## 10. Try the other document operations
 
-## 9. Agent-specific continuity
+The default run demonstrates HTML-to-PDF because it gives an immediate visual
+result. The same `rendering_tools` module is already selected in YAML:
 
-Native adds a third turn in another conversation and requires
-`react.memsearch` to recover the first conversation for the same user.
+- `write_pdf` renders HTML to PDF through Playwright and Chromium.
+- `write_docx` renders structured Markdown to DOCX.
+- `write_pptx` renders one HTML `<section>` per slide to PPTX.
 
-LangGraph stores graph checkpoints in Postgres in addition to the common
-KDCube conversation records. `KDCubeChatModel` routes its streamed model events
-through harness accounting.
+To demonstrate DOCX or PPTX, alter the second prompt in `agent.py` so the
+generated Python also contracts an internal `.md` or section-based `.html`
+source, then call the matching renderer with an external output path. The
+model authors content and structure; the reusable renderer owns the document
+format instead of forcing every model to rebuild formatting code.
 
-Claude stores its resumable CLI transcript on a per-conversation Git branch.
-Its infrastructure check proves that branch is writable. Inspect it with:
+## 11. Understand continuity by adapter
+
+Native adds a third turn in a different conversation and requires
+`react.memsearch` to recover the earlier research for the same user.
+
+LangGraph rebuilds its graph with turn-bound tools on every invocation while
+reusing the same Postgres checkpoint thread. The fresh tool binding prevents a
+later turn from writing into an earlier turn's artifact root.
+
+Claude resumes its CLI transcript from a per-conversation Git branch. Inspect
+the local branch with:
 
 ```bash
 git --git-dir output/claude-session-store.git for-each-ref \
   --format='%(refname)' refs/heads/kdcube/claude/
 ```
 
-To use a private Git remote, edit
-`descriptors.local/assembly.yaml` at
-`storage.claude_code_session.repo`. Put an HTTPS token at
-`services.git.http_token` in `descriptors.local/secrets.yaml`, or use the
-standard SSH fields under `services.git` in `assembly.yaml`.
+To use a private remote, set `storage.claude_code_session.repo` in
+`descriptors.local/assembly.yaml` and the matching
+`services.git.http_token` credential in `descriptors.local/secrets.yaml`.
 
-## 10. Change the agent
+## 12. Change the agent
 
-Use `config.local.yaml` to change instructions, topic, run directory, tools,
-skills, and settings attached to each tool row. Use the standard descriptors
-to change model, infrastructure, storage, economics, executor, or credentials.
-Claude's CLI model and timeout are adapter settings under `agent.adapter`.
-Add other local tool implementations in `tools.py`, then register their trusted
-source in code and select their IDs in YAML. For Native, add the exposed
-function name to `agent.py`'s `TOOL_SOURCES`; the SDK turns that registry into
-the bindings consumed by `ToolSubsystem`. Rerun `--check` after either change.
+Use `config.local.yaml` to change instructions, topic, tool selection, skills,
+limits, and settings attached to each tool row. Use the standard descriptors
+to change model, infrastructure, storage, economics, executor, and secrets.
 
-YAML selects installed code. Every enabled tool and skill therefore has a real
-implementation that construction validates.
+Native trusted tool sources live in `agent.py`'s `TOOL_SOURCES`. LangGraph
+adapters live in `tools.py`. Claude's runner writes the selected stdio MCP
+servers and exact allowed tool IDs into its workspace for each turn. Rerun
+`--check` after any tool or skill change.
 
-## 11. Understand the boundary
+## 13. Know the boundary
 
-This direct-host recipe gives one Python process harness persistence,
-accounting, communicator events, skills, and an agent adapter. The process
-owner controls its tools and configuration.
+This direct-host path gives one Python process model accounting, durable
+conversation records, communicator events, skills, attachments, output
+hosting, isolated Python, and document rendering. The process owner controls
+the selected tools.
 
-For a multi-user runtime with chat UI, authentication, delegated consent,
-governed tool and side-effect enforcement, isolated workspaces, rate/spend
-policy, and app hosting, follow
+For a multi-user runtime with chat UI, authentication, managed tools,
+tool-execution enforcement, delegated consent, isolated workspaces,
+rate/spend policy, and app hosting, follow
 [Quick Start: Run KDCube Locally](../../quick-start-README.md).
 
-## 12. Stop services
-
-From the selected agent directory:
+## 14. Stop services
 
 ```bash
 docker compose --env-file .env -f compose.yaml down

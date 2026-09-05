@@ -25,9 +25,6 @@ agent:
     - id: Glob
       enabled: true
       runtime: local
-    - id: Bash
-      enabled: true
-      runtime: local
     - id: mcp__kdcube_web_search__web_search
       enabled: true
       runtime: local
@@ -39,6 +36,18 @@ agent:
           ssrf_guard: true
         server:
           log_level: WARNING
+    - id: mcp__kdcube_harness__execute_python
+      enabled: true
+      runtime: docker
+    - id: mcp__kdcube_harness__write_pdf
+      enabled: true
+      runtime: local
+    - id: mcp__kdcube_harness__write_docx
+      enabled: true
+      runtime: local
+    - id: mcp__kdcube_harness__write_pptx
+      enabled: true
+      runtime: local
   skills:
     root: ./skills
     enabled:

@@ -18,7 +18,16 @@ agent:
           ssrf_guard: true
         server:
           log_level: WARNING
-    - id: create_briefing
+    - id: execute_python
+      enabled: true
+      runtime: docker
+    - id: write_pdf
+      enabled: true
+      runtime: local
+    - id: write_docx
+      enabled: true
+      runtime: local
+    - id: write_pptx
       enabled: true
       runtime: local
   skills:

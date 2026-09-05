@@ -180,10 +180,16 @@ def extract_error_lines(text: str) -> str:
     for idx, ln in enumerate(lines):
         if idx in benign:
             continue
+        diagnostic_line = re.sub(
+            r"\berror\s*=\s*(?:none|null)\b",
+            "",
+            ln,
+            flags=re.IGNORECASE,
+        )
         if (
-            re.search(r"\bERROR\b", ln, flags=re.IGNORECASE)
-            or re.search(r"\b\w+Error\b", ln)
-            or "Exception" in ln
+            re.search(r"\bERROR\b", diagnostic_line, flags=re.IGNORECASE)
+            or re.search(r"\b\w+Error\b", diagnostic_line)
+            or "Exception" in diagnostic_line
         ):
             hits.append(ln)
     if not hits:

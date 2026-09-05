@@ -250,6 +250,27 @@ def test_minimal_turn_log_records_user_prompt_attachments_and_files():
     assert payload["blocks"][-1]["type"] == ASSISTANT_COMPLETION_BLOCK_TYPE
 
 
+def test_minimal_turn_log_preserves_internal_assistant_file_visibility():
+    payload = build_minimal_turn_log_payload(
+        final_answer="Done.",
+        turn_id="turn-9",
+        assistant_files=[
+            {
+                "filename": "brief.html",
+                "mime": "text/html",
+                "visibility": "internal",
+                "logical_path": "conv:fi:conv-1.turn-9.files/research/brief.html",
+                "hosted_uri": "file:///store/brief.html",
+            }
+        ],
+    )
+
+    file_block = next(
+        block for block in payload["blocks"] if block["type"] == "react.tool.result"
+    )
+    assert json.loads(file_block["text"])["visibility"] == "internal"
+
+
 def test_minimal_turn_log_preserves_followup_text_attachments_and_events():
     """A non-ReAct follow-up can carry typed text, files, and context objects in
     one accepted event batch. Reload must keep that whole batch together and must

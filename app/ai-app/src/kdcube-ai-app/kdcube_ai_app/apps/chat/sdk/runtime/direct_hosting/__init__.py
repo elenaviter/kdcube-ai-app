@@ -13,10 +13,13 @@ from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.configuration import (
     enabled_tool_ids,
     require_supported_tools,
     verify_docker_image,
+    verify_playwright_chromium,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.evidence import (
     ConsoleEmitter,
+    print_evidence_summary,
     utc_now,
+    write_evidence_index,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.infrastructure import (
     activate_platform_descriptors,
@@ -38,11 +41,19 @@ from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.native_tool_bindings imp
     NativeToolSource,
     resolve_native_tool_bindings,
 )
+from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.tool_runtime import (
+    DirectToolRuntime,
+)
+from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.workspace import (
+    DirectTurnWorkspace,
+)
 
 __all__ = [
     "ConfiguredSkills",
     "ConfiguredTool",
     "ConsoleEmitter",
+    "DirectToolRuntime",
+    "DirectTurnWorkspace",
     "NativeToolBindings",
     "NativeToolSource",
     "activate_configured_skills",
@@ -58,6 +69,7 @@ __all__ = [
     "direct_harness_config",
     "enabled_tool_ids",
     "platform_exec_profile",
+    "print_evidence_summary",
     "postgres_label",
     "postgres_url",
     "redis_url",
@@ -66,4 +78,6 @@ __all__ = [
     "storage_uri",
     "utc_now",
     "verify_docker_image",
+    "verify_playwright_chromium",
+    "write_evidence_index",
 ]

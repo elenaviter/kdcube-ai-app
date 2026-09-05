@@ -437,7 +437,7 @@ def _user_attachment_meta_block(
         "physical_path": physical_path,
         "mime": mime,
         "kind": "file",
-        "visibility": "external",
+        "visibility": str(att.get("visibility") or "external"),
         "ts": ts,
     }
     meta: Dict[str, Any] = {
@@ -489,7 +489,7 @@ def _assistant_file_block(row: Dict[str, Any], *, turn_id: str, ts: str, index: 
         "physical_path": physical_path or str(row.get("filename") or ""),
         "mime": str(row.get("mime") or "application/octet-stream"),
         "kind": "file",
-        "visibility": "external",
+        "visibility": str(row.get("visibility") or "external"),
         "tool_call_id": call_id,
         "filename": str(row.get("filename") or ""),
         "ts": ts,

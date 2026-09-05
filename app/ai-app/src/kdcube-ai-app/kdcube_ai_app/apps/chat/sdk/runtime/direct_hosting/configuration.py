@@ -210,6 +210,23 @@ def verify_docker_image(profile: Mapping[str, Any]) -> str:
     return image
 
 
+async def verify_playwright_chromium() -> str:
+    """Prove that the host-side renderer can launch its Chromium runtime."""
+    from kdcube_ai_app.infra.rendering.shared_browser import SharedBrowserService
+
+    browser = SharedBrowserService(headless=True, auto_install_browser=False)
+    try:
+        await browser.start()
+    except Exception as exc:
+        raise RuntimeError(
+            "the document-rendering tools require Playwright Chromium; run "
+            "'.venv/bin/python -m playwright install chromium' in this example"
+        ) from exc
+    finally:
+        await browser.close()
+    return "chromium"
+
+
 __all__ = [
     "ConfiguredSkills",
     "ConfiguredTool",
@@ -223,4 +240,5 @@ __all__ = [
     "enabled_tool_ids",
     "require_supported_tools",
     "verify_docker_image",
+    "verify_playwright_chromium",
 ]

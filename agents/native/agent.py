@@ -35,10 +35,16 @@ from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.configuration import (  
     configured_run_directory,
     configured_web_search,
     verify_docker_image,
+    verify_playwright_chromium,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.evidence import (  # noqa: E402
     ConsoleEmitter,
+    print_evidence_summary,
     utc_now,
+    write_evidence_index,
+)
+from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.workspace import (  # noqa: E402
+    DirectTurnWorkspace,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.model_service import (  # noqa: E402
     build_model_service,
@@ -78,14 +84,24 @@ from kdcube_ai_app.infra.service_hub.inventory import AgentLogger, ModelServiceB
 ROLE = "solver.react.v2.decision.v2.strong"
 WEB_SEARCH_TOOL_ID = "demo.web_search"
 EXEC_TOOL_ID = "exec_tools.execute_code_python"
+RENDER_TOOL_IDS = (
+    "rendering_tools.write_pdf",
+    "rendering_tools.write_docx",
+    "rendering_tools.write_pptx",
+)
 TOOL_SOURCES = {
     "demo": NativeToolSource(
         path=HERE / "tools.py",
-        tool_names=("web_search", "create_briefing"),
+        tool_names=("web_search",),
     ),
     "exec_tools": NativeToolSource(
         module="kdcube_ai_app.apps.chat.sdk.tools.exec_tools",
         tool_names=("execute_code_python",),
+        discovery="semantic_kernel",
+    ),
+    "rendering_tools": NativeToolSource(
+        module="kdcube_ai_app.apps.chat.sdk.tools.rendering_tools",
+        tool_names=("write_pdf", "write_docx", "write_pptx"),
         discovery="semantic_kernel",
     ),
 }
@@ -170,16 +186,23 @@ def event_source_ids(blocks: list[dict[str, Any]]) -> set[str]:
     return sources
 
 
-def comm_context(*, conversation_id: str, turn_id: str) -> ExternalEventPayload:
+def comm_context(
+    *,
+    conversation_id: str,
+    turn_id: str,
+    tenant: str,
+    project: str,
+    bundle_id: str,
+) -> ExternalEventPayload:
     return ExternalEventPayload(
         request=ExternalEventRequest(request_id=f"req-{turn_id}", payload={}),
         routing=ExternalEventRouting(
             session_id="local-session",
             conversation_id=conversation_id,
             turn_id=turn_id,
-            bundle_id="standalone-native-demo@1-0",
+            bundle_id=bundle_id,
         ),
-        actor=ExternalEventActor(tenant_id="standalone", project_id="native-agent-demo"),
+        actor=ExternalEventActor(tenant_id=tenant, project_id=project),
         user=ExternalEventUser(user_type="regular", user_id="demo-user", timezone="UTC"),
     )
 
@@ -200,21 +223,22 @@ async def build_turn(
     skills_subsystem: Any,
     skills_enabled: bool,
     instructions: str,
+    harness_config: Any,
+    hosting_service: Any = None,
+    user_attachments: list[dict[str, Any]] | None = None,
 ) -> tuple[ReactSolverV2, ContextBrowser, ChatCommunicator, RuntimeCtx, ToolSubsystem]:
-    turn_root = root / turn_id
-    outdir = turn_root / "output"
-    workdir = turn_root / "workspace"
-    outdir.mkdir(parents=True, exist_ok=True)
-    workdir.mkdir(parents=True, exist_ok=True)
+    workspace = DirectTurnWorkspace(run_root=root, turn_id=turn_id)
+    outdir = workspace.runtime_outdir
+    workdir = workspace.workdir
     runtime = RuntimeCtx(
-        tenant="standalone",
-        project="native-agent-demo",
+        tenant=harness_config.tenant,
+        project=harness_config.project,
         user_id="demo-user",
         user_type="regular",
         conversation_id=conversation_id,
         turn_id=turn_id,
-        bundle_id="standalone-native-demo@1-0",
-        agent_id="native",
+        bundle_id=harness_config.bundle_id,
+        agent_id=harness_config.agent_id,
         started_at=utc_now(),
         outdir=str(outdir),
         workdir=str(workdir),
@@ -229,7 +253,7 @@ async def build_turn(
         blocks=build_user_input_blocks(
             runtime=runtime,
             user_text=prompt,
-            user_attachments=[],
+            user_attachments=list(user_attachments or []),
             block_factory=browser.timeline.block,
             event_type="message",
         )
@@ -239,15 +263,22 @@ async def build_turn(
         comm=comm,
         logger=logger,
         bundle_spec=BundleSpec(
-            id="standalone-native-demo@1-0",
+            id=harness_config.bundle_id,
             path=str(HERE),
             module="agent",
         ),
         context_rag_client=context_client,
         tools_specs=list(tool_bindings.tool_specs),
         tool_runtime=tool_bindings.tool_runtime,
+        hosting_service=hosting_service,
     )
-    scratchpad = TurnScratchpad("demo-user", conversation_id, turn_id, prompt, attachments=[])
+    scratchpad = TurnScratchpad(
+        "demo-user",
+        conversation_id,
+        turn_id,
+        prompt,
+        attachments=list(user_attachments or []),
+    )
     solver = ReactSolverV2(
         service=service,
         logger=logger,
@@ -255,8 +286,15 @@ async def build_turn(
         skills_subsystem=skills_subsystem,
         scratchpad=scratchpad,
         comm=comm,
-        comm_context=comm_context(conversation_id=conversation_id, turn_id=turn_id),
+        comm_context=comm_context(
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            tenant=harness_config.tenant,
+            project=harness_config.project,
+            bundle_id=harness_config.bundle_id,
+        ),
         ctx_browser=browser,
+        hosting_service=hosting_service,
         instruction_body=instructions,
         include_tool_catalog=True,
         include_skill_gallery=skills_enabled,
@@ -279,10 +317,20 @@ async def run_turn(
     skills_subsystem: Any,
     skills_enabled: bool,
     instructions: str,
-) -> tuple[str, str, set[str]]:
-    turn_id = f"turn-{turn_number:02d}-{uuid.uuid4().hex[:8]}"
+    attachment_source: Path | None = None,
+) -> tuple[str, str, set[str], Any]:
+    turn_id = f"turn_{turn_number:02d}_{uuid.uuid4().hex[:8]}"
     agent_config = dict(config.get("agent") or {})
     async with harness.turn(conversation_id=conversation_id, turn_id=turn_id) as turn:
+        workspace = DirectTurnWorkspace(run_root=root, turn_id=turn_id)
+        attachments: list[dict[str, Any]] = []
+        if attachment_source is not None:
+            attachments.append(
+                await turn.add_user_attachment(
+                    attachment_source,
+                    materialize_to=workspace.current_attachment(attachment_source.name),
+                )
+            )
         solver, browser, comm, runtime, _tools = await build_turn(
             prompt=prompt,
             turn_id=turn_id,
@@ -298,6 +346,9 @@ async def run_turn(
             skills_subsystem=skills_subsystem,
             skills_enabled=skills_enabled,
             instructions=instructions,
+            harness_config=harness.config,
+            hosting_service=turn.hosting_service,
+            user_attachments=attachments,
         )
         await comm.start(message=prompt)
         result = await solver.run(
@@ -316,6 +367,41 @@ async def run_turn(
         )
         turn_blocks = browser.current_turn_blocks()
         event_sources = event_source_ids(turn_blocks)
+        required = (
+            ("research/research-data.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "external", EXEC_TOOL_ID),
+            ("research/research-brief.html", "text/html", "internal", EXEC_TOOL_ID),
+            ("research/research-brief.pdf", "application/pdf", "external", "rendering_tools.write_pdf"),
+        )
+        known = {str(row.get("filename") or "") for row in turn.assistant_files}
+        pending: list[dict[str, Any]] = []
+        for relpath, mime, visibility, tool_id in required:
+            path = workspace.current_file(relpath)
+            if not path.is_file() or path.name in known:
+                continue
+            pending.append(
+                {
+                    "type": "file",
+                    "output": {
+                        "type": "file",
+                        "path": f"{turn_id}/files/{relpath}",
+                        "filename": path.name,
+                        "mime": mime,
+                        "visibility": visibility,
+                    },
+                    "mime": mime,
+                    "visibility": visibility,
+                    "description": f"Native demo output: {path.name}",
+                    "resource_id": path.stem,
+                    "tool_id": tool_id,
+                }
+            )
+        if pending:
+            await turn.host_files(files=pending, outdir=workspace.runtime_outdir)
+        await turn.persist_workspace(
+            outdir=workspace.runtime_outdir,
+            workdir=workspace.workdir,
+            execution_id=f"{turn_id}_workspace",
+        )
         await browser.persist_timeline()
         await turn.complete(
             prompt=prompt,
@@ -325,7 +411,7 @@ async def run_turn(
             ended_at=ended_at,
         )
     print(f"[accounting] Redis turn cache contains {len(turn.accounting_events)} event(s)")
-    return answer, turn_id, event_sources
+    return answer, turn_id, event_sources, turn
 
 
 async def main_async(args: argparse.Namespace) -> None:
@@ -383,8 +469,12 @@ async def main_async(args: argparse.Namespace) -> None:
     )
     print(f"skills: {', '.join(skill_config.enabled) or '(none)'}")
     if exec_runtime:
-        image = verify_docker_image(exec_runtime)
-        print(f"isolated execution image: {image}")
+        if not args.check:
+            image = verify_docker_image(exec_runtime)
+            print(f"isolated execution image: {image}")
+    if "rendering_tools.write_pdf" in tool_bindings.enabled_ids and not args.check:
+        browser = await verify_playwright_chromium()
+        print(f"document renderer: Playwright {browser} ready")
     print(f"run directory: {root}")
     print(f"conversation storage: {harness_config.storage_uri}")
     if args.check:
@@ -399,7 +489,7 @@ async def main_async(args: argparse.Namespace) -> None:
             )
             solver, _browser, _comm, _runtime, tools = await build_turn(
                 prompt="Offline construction check.",
-                turn_id="turn-check",
+                turn_id="turn_check",
                 conversation_id="native-check",
                 root=check_root,
                 max_iterations=int(agent_config.get("max_iterations") or 8),
@@ -408,13 +498,14 @@ async def main_async(args: argparse.Namespace) -> None:
                 context_client=_ConstructionContextClient(check_root / "context"),
                 comm=check_harness.communicator(
                     conversation_id="native-check",
-                    turn_id="turn-check",
+                    turn_id="turn_check",
                 ),
                 tool_bindings=tool_bindings,
                 exec_runtime=exec_runtime,
                 skills_subsystem=skills_subsystem,
                 skills_enabled=bool(skill_config.enabled),
                 instructions=instructions,
+                harness_config=harness_config,
             )
             tool_ids = {str(item.get("id") or "") for item in tools.tools_info}
             expected = set(tool_bindings.enabled_ids)
@@ -422,48 +513,58 @@ async def main_async(args: argparse.Namespace) -> None:
                 raise RuntimeError(f"native adapter construction incomplete: tools={sorted(tool_ids)}")
         print("check: PASS")
         return
-    root.mkdir(parents=True, exist_ok=True)
-    emitter = ConsoleEmitter(root / "communicator.jsonl")
+    conversation_id = f"native-{uuid.uuid4().hex[:10]}"
+    run_root = root / "runs" / conversation_id
+    run_root.mkdir(parents=True, exist_ok=True)
+    emitter = ConsoleEmitter(run_root / "communicator.jsonl")
     harness = DirectAgentHarness(
         config=harness_config,
         model_service=service,
         emitter=emitter,
     )
-    conversation_id = f"native-{uuid.uuid4().hex[:10]}"
     topic = str((config.get("agent") or {}).get("topic") or "accountable agent runtimes")
     if WEB_SEARCH_TOOL_ID not in tool_bindings.enabled_ids:
         raise RuntimeError(
             f"the built-in demonstration requires agent.tools id {WEB_SEARCH_TOOL_ID}"
         )
-    if EXEC_TOOL_ID in tool_bindings.enabled_ids:
-        deliverable_prompt = (
-            "Use the findings from the previous turn. Call exec_tools.execute_code_python to "
-            "create research-brief.pdf and research-data.xlsx in contracted output paths, then "
-            "report the exact filenames."
-        )
-    elif "demo.create_briefing" in tool_bindings.enabled_ids:
-        deliverable_prompt = (
-            "Use the findings from the previous turn. Call demo.create_briefing to create "
-            "research-brief.pdf and research-data.xlsx, then report the exact filenames."
-        )
-    else:
+    if EXEC_TOOL_ID not in tool_bindings.enabled_ids:
         raise RuntimeError(
-            "the built-in demonstration requires demo.create_briefing or " + EXEC_TOOL_ID
+            "the built-in demonstration requires " + EXEC_TOOL_ID
         )
+    if "rendering_tools.write_pdf" not in tool_bindings.enabled_ids:
+        raise RuntimeError("the built-in demonstration requires rendering_tools.write_pdf")
+    deliverable_prompt = (
+        "Use the findings from the previous turn. You must author and execute Python with "
+        "exec_tools.execute_code_python. The Python must use openpyxl to create "
+        "files/research/research-data.xlsx and must create a polished, print-ready HTML brief "
+        "at files/research/research-brief.html. Contract the XLSX as external and HTML as "
+        "internal. After execution succeeds, call rendering_tools.write_pdf in a later round "
+        "with the HTML artifact as its ref: content and write "
+        "files/research/research-brief.pdf. Do not construct PDF bytes in Python. Verify and "
+        "report the exact output paths."
+    )
+    request_path = run_root / "inputs" / "research-request.md"
+    request_path.parent.mkdir(parents=True, exist_ok=True)
+    request_path.write_text(
+        f"# Research request\n\nResearch topic: {topic}\n\nProduce sourced findings, an XLSX evidence table, and a polished PDF brief.\n",
+        encoding="utf-8",
+    )
+    completed_turns: list[Any] = []
     async with harness:
         print("infrastructure: Redis, Postgres conversation tables, and storage ready")
         if args.infra_check:
             print("infrastructure check: PASS")
             return
         assert service is not None
-        first, first_turn_id, _first_sources = await run_turn(
+        first, first_turn_id, _first_sources, first_turn = await run_turn(
             prompt=(
-                f"Search the web for recent, concrete information about {topic}. "
+                f"The attached research-request.md asks about {topic}. "
+                "Search the web for recent, concrete information about it. "
                 "Return five sourced findings and retain them for the next turn."
             ),
             turn_number=1,
             conversation_id=conversation_id,
-            root=root,
+            root=run_root,
             config=config,
             service=service,
             harness=harness,
@@ -472,13 +573,15 @@ async def main_async(args: argparse.Namespace) -> None:
             skills_subsystem=skills_subsystem,
             skills_enabled=bool(skill_config.enabled),
             instructions=instructions,
+            attachment_source=request_path,
         )
+        completed_turns.append(first_turn)
         print(f"\n[first answer]\n{first}\n")
-        second, second_turn_id, _second_sources = await run_turn(
+        second, second_turn_id, _second_sources, second_turn = await run_turn(
             prompt=deliverable_prompt,
             turn_number=2,
             conversation_id=conversation_id,
-            root=root,
+            root=run_root,
             config=config,
             service=service,
             harness=harness,
@@ -488,6 +591,7 @@ async def main_async(args: argparse.Namespace) -> None:
             skills_enabled=bool(skill_config.enabled),
             instructions=instructions,
         )
+        completed_turns.append(second_turn)
         print(f"\n[second answer]\n{second}\n")
         records = await harness.verify_conversation(
             conversation_id=conversation_id,
@@ -496,7 +600,7 @@ async def main_async(args: argparse.Namespace) -> None:
         print(f"[conversation] materialized {len(records)} durable turn record(s)")
         if bool((config.get("agent") or {}).get("cross_conversation_search", True)):
             recall_conversation_id = f"native-recall-{uuid.uuid4().hex[:10]}"
-            recall, recall_turn_id, recall_sources = await run_turn(
+            recall, recall_turn_id, recall_sources, recall_turn = await run_turn(
                 prompt=(
                     f"Call react.memsearch with scope='user' to find the research about {topic!r} "
                     "from my other conversation. Report one recovered source URL and say that it "
@@ -504,7 +608,7 @@ async def main_async(args: argparse.Namespace) -> None:
                 ),
                 turn_number=3,
                 conversation_id=recall_conversation_id,
-                root=root,
+                root=run_root,
                 config=config,
                 service=service,
                 harness=harness,
@@ -514,6 +618,7 @@ async def main_async(args: argparse.Namespace) -> None:
                 skills_enabled=bool(skill_config.enabled),
                 instructions=instructions,
             )
+            completed_turns.append(recall_turn)
             if "react.memsearch" not in recall_sources:
                 raise RuntimeError("the recall turn completed without calling react.memsearch")
             await harness.verify_conversation(
@@ -522,7 +627,20 @@ async def main_async(args: argparse.Namespace) -> None:
             )
             print(f"\n[cross-conversation answer]\n{recall}\n")
             print("[conversation] react.memsearch recovered a different conversation for this user")
-    second_turn_root = root / second_turn_id
+        evidence_path = run_root / "evidence.json"
+        evidence = write_evidence_index(
+            evidence_path,
+            config=harness_config,
+            conversation_id=conversation_id,
+            turns=completed_turns[:2],
+            conversation_records=records,
+            adapter_evidence={
+                "generated_source_archive_path": f"{second_turn_id}/executions/*/pkg/user_code.py",
+                "cross_conversation_turn": completed_turns[2].turn_id if len(completed_turns) > 2 else None,
+            },
+        )
+        print_evidence_summary(evidence_path, evidence)
+    second_turn_root = run_root / second_turn_id
     missing = [
         name
         for name in ("research-brief.pdf", "research-data.xlsx")

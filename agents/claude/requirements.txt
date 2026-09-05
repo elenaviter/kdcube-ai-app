@@ -1,6 +1,15 @@
 # Python dependencies for this runner. Redis and Postgres run independently.
 -e ../../app/ai-app/src/kdcube-ai-app
 -r ../../app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/tools/mcp/web_search/requirements.txt
+app-foundation[mcp]>=2026.09.03.1835,<2027
 asyncpg==0.31.0
-reportlab==5.0.1
-openpyxl==3.1.5
+semantic-kernel
+playwright
+markdown-it-py
+mdit-py-plugins
+linkify-it-py
+pygments
+jinja2
+python-docx
+python-pptx
+lxml

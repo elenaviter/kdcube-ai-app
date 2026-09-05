@@ -68,6 +68,7 @@ class ApplicationHostingService:
             return {
                 "path": path,
                 "mime": a.get("mime") or (output.get("mime") if isinstance(output, dict) else None),
+                "visibility": a.get("visibility") or (output.get("visibility") if isinstance(output, dict) else None),
                 "tool_id": a.get("tool_id") or "",
                 "description": a.get("description") or "",
                 "slot": a.get("resource_id") or a.get("slot") or a.get("artifact_id") or "",
@@ -79,6 +80,7 @@ class ApplicationHostingService:
             return {
                 "path": val.get("path") or "",
                 "mime": val.get("mime"),
+                "visibility": a.get("visibility") or val.get("visibility"),
                 "tool_id": a.get("tool_id") or "",
                 "description": a.get("description") or "",
                 "slot": a.get("resource_id") or a.get("slot") or a.get("artifact_id") or "",
@@ -202,6 +204,7 @@ class ApplicationHostingService:
                 "key": key,
                 "filename": name,
                 "mime": info.get("mime") or "application/octet-stream",
+                "visibility": info.get("visibility") or "external",
                 "size": len(data),
                 "content_sha256": content_sha256,
                 "tool_id": info.get("tool_id") or "",

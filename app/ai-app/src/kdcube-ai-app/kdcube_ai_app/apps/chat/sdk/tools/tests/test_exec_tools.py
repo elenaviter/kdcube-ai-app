@@ -243,6 +243,15 @@ def test_extract_error_lines_ignores_benign_asyncio_subprocess_shutdown_noise():
     assert extract_error_lines(text) == ""
 
 
+def test_extract_error_lines_ignores_successful_error_none_field():
+    text = (
+        "2026-09-05 15:26:44,614 - agent.py_code_exec_entry - INFO - "
+        "[entry.executor] run_py_code() finished: ok=True returncode=0 error=None\n"
+    )
+
+    assert extract_error_lines(text) == ""
+
+
 def test_build_exec_error_payload_uses_timeout_summary_from_backend_result():
     error = _build_exec_error_payload(
         missing=["turn_1/files/test_report.txt"],
