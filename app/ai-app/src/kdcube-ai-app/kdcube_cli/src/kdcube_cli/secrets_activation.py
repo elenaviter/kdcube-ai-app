@@ -184,7 +184,7 @@ def _create_activation_marker(config_dir: Path) -> None:
     except FileExistsError as exc:
         raise HostVaultActivationError(
             "A host-vault activation recovery is already pending; run "
-            "`kdcube secrets host-vault recover --yes`.",
+            "`kdcube secrets backend host-vault recover --yes`.",
             code="activation_recovery_required",
         ) from exc
     except OSError as exc:
@@ -378,7 +378,7 @@ def _require_destination_parity(
     if result.would_create:
         raise HostVaultActivationError(
             "Host-vault activation requires a complete shadow stage; run "
-            "`kdcube secrets host-vault stage` first.",
+            "`kdcube secrets backend host-vault stage` first.",
             code="destination_incomplete",
         )
 

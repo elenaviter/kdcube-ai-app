@@ -289,8 +289,8 @@ routines:
 #   provider: "secrets-service"
 #   service.backend: "host-vault"
 # Verified shadow staging keeps provider="secrets-file" while setting
-# service.backend="host-vault". Run `kdcube secrets host-vault prepare`, then
-# `stage`, then `activate` for the transactional provider cutover; do not
+# service.backend="host-vault". Run `kdcube secrets backend host-vault prepare`,
+# then `stage`, then `activate` for the transactional provider cutover; do not
 # hand-edit the active runtime into that state.
 # ---------------------------------------------------------------------------
 secrets:

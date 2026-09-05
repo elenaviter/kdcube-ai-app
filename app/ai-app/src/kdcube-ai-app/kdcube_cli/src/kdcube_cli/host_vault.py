@@ -229,7 +229,8 @@ def validate_assembly_for_start(
     if marker.exists() or marker.is_symlink():
         raise HostVaultConfigurationError(
             "an interrupted host-vault activation is pending; run "
-            "`kdcube secrets host-vault recover --yes` before starting the runtime"
+            "`kdcube secrets backend host-vault recover --yes` before starting "
+            "the runtime"
         )
     config = config_from_assembly(assembly)
     validate_configuration(config, check_identity=True, workdir=workdir)
