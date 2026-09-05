@@ -48,6 +48,9 @@ from kdcube_ai_app.apps.chat.sdk.tools.backends.web.allowlist import (
     BLOCKLIST_FILE_ENV,
     BLOCKLIST_YAML_ENV,
     EgressFilter,
+    FILTER_YAML_SECTION_ENV,
+    FILTER_YAML_TOOL_ID_ENV,
+    select_yaml_mapping,
 )
 from kdcube_ai_app.apps.chat.sdk.tools.backends.web.rows import clean_rows
 from kdcube_ai_app.apps.chat.sdk.tools.mcp.mcp_app_transport import run_http, run_sse, run_stdio
@@ -87,10 +90,17 @@ SERVICES_SECRETS_ENV_MAP = {
 }
 
 
-def apply_yaml_config(path: str | pathlib.Path) -> List[str]:
-    """Apply a config.yaml onto the process environment.
+def apply_yaml_config(
+    path: str | pathlib.Path,
+    *,
+    section: Optional[str] = None,
+    tool_id: Optional[str] = None,
+) -> List[str]:
+    """Apply a Web Search config mapping onto the process environment.
 
-    Every setting lives in a named section (see config.example.yaml):
+    ``section`` selects a nested mapping in a larger owner document.
+    ``tool_id`` instead selects the ``settings`` mapping of one exact item in
+    ``agent.tools``. Every Web Search setting then uses the normal shape:
     ``filter`` (allowlist inline - the config file itself becomes the
     live, re-read allowlist source - or allowlist_file),
     ``services.secrets`` (per-provider api_key blocks, the secrets.yaml
@@ -105,9 +115,13 @@ def apply_yaml_config(path: str | pathlib.Path) -> List[str]:
     import yaml
 
     with open(path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
-    if not isinstance(data, dict):
-        raise ValueError(f"config file {path} must hold a mapping")
+        document = yaml.safe_load(f) or {}
+    data = select_yaml_mapping(
+        document,
+        path=str(path),
+        section=section,
+        tool_id=tool_id,
+    )
 
     applied: List[str] = []
 
@@ -133,15 +147,30 @@ def apply_yaml_config(path: str | pathlib.Path) -> List[str]:
         _set(BLOCKLIST_FILE_ENV, filter_cfg.get("blocklist_file"))
     else:
         _set(BLOCKLIST_YAML_ENV, str(path))
+    previous_section = os.environ.get(FILTER_YAML_SECTION_ENV)
+    previous_tool_id = os.environ.get(FILTER_YAML_TOOL_ID_ENV)
+    if section:
+        os.environ[FILTER_YAML_SECTION_ENV] = section
+        if previous_section != section:
+            applied.append(FILTER_YAML_SECTION_ENV)
+        os.environ.pop(FILTER_YAML_TOOL_ID_ENV, None)
+    elif tool_id:
+        os.environ[FILTER_YAML_TOOL_ID_ENV] = tool_id
+        if previous_tool_id != tool_id:
+            applied.append(FILTER_YAML_TOOL_ID_ENV)
+        os.environ.pop(FILTER_YAML_SECTION_ENV, None)
+    else:
+        os.environ.pop(FILTER_YAML_SECTION_ENV, None)
+        os.environ.pop(FILTER_YAML_TOOL_ID_ENV, None)
     if "ssrf_guard" in filter_cfg:
         _set("WEB_SSRF_GUARD", filter_cfg.get("ssrf_guard"))
     if "expose_edit_tool" in filter_cfg:
         _set("WEB_FILTER_EDIT_TOOL", filter_cfg.get("expose_edit_tool"))
 
-    for section, value in data.items():
-        if section == "filter":
+    for scope_name, value in data.items():
+        if scope_name == "filter":
             continue
-        if section == "services" and isinstance(value, dict):
+        if scope_name == "services" and isinstance(value, dict):
             secrets = value.get("secrets")
             if isinstance(secrets, dict):
                 for provider, block in secrets.items():
@@ -169,20 +198,20 @@ def apply_yaml_config(path: str | pathlib.Path) -> List[str]:
                     )
             continue
         if not isinstance(value, dict):
-            _logger.warning("config %s: unknown key '%s' skipped", path, section)
+            _logger.warning("config %s: unknown key '%s' skipped", path, scope_name)
             continue
         for key, item in value.items():
-            env_name = SCOPED_ENV_MAP.get((section, key))
+            env_name = SCOPED_ENV_MAP.get((scope_name, key))
             if env_name:
                 _set(env_name, item)
             else:
                 _logger.warning(
-                    "config %s: unknown key '%s.%s' skipped", path, section, key
+                    "config %s: unknown key '%s.%s' skipped", path, scope_name, key
                 )
     return applied
 
 
-def _discover_config(cli_path: Optional[str]) -> Optional[pathlib.Path]:
+def _discover_config(cli_path: Optional[str | pathlib.Path]) -> Optional[pathlib.Path]:
     """--config, then WEB_SEARCH_CONFIG, then config.yaml in the working
     directory (the operator's install dir - the intended home for the
     config, beside the clone rather than inside it), then config.yaml
@@ -198,20 +227,34 @@ def _discover_config(cli_path: Optional[str]) -> Optional[pathlib.Path]:
     return None
 
 
-def load_config(path: Optional[str] = None) -> Optional[pathlib.Path]:
+def load_config(
+    path: Optional[str | pathlib.Path] = None,
+    *,
+    section: Optional[str] = None,
+    tool_id: Optional[str] = None,
+) -> Optional[pathlib.Path]:
     """Discover and apply the YAML config; the entry point for direct calls.
 
-    ``main()`` runs this automatically. Code that imports this module and
-    calls the tool functions directly MUST call it first (or set the env
-    vars itself): without it the allowlist is unconfigured, and
-    unconfigured means every host is allowed. Returns the applied config
-    path, or None when no config was found.
+    ``main()`` runs this automatically. ``section`` selects a nested mapping;
+    ``tool_id`` selects one exact ``agent.tools[].settings`` mapping. Code
+    that imports this module and calls the tool functions directly MUST call
+    this first (or set the environment itself): without it the allowlist is
+    unconfigured, and unconfigured means every host is allowed. Returns the
+    applied config path, or None when no config was found.
     """
     config_path = _discover_config(path)
     if config_path is not None:
-        applied = apply_yaml_config(config_path)
+        applied = apply_yaml_config(config_path, section=section, tool_id=tool_id)
+        selector = (
+            f"#agent.tools[id={tool_id}].settings"
+            if tool_id
+            else f"#{section}" if section else ""
+        )
         _logger.info(
-            "config %s applied: %s", config_path, ", ".join(applied) or "nothing (env wins)"
+            "config %s%s applied: %s",
+            config_path,
+            selector,
+            ", ".join(applied) or "nothing (env wins)",
         )
     return config_path
 
@@ -274,6 +317,8 @@ async def site_filter_edit(
         list_name=list_name,
         add=_as_list(add),
         remove=_as_list(remove),
+        config_section=os.environ.get(FILTER_YAML_SECTION_ENV) or None,
+        config_tool_id=os.environ.get(FILTER_YAML_TOOL_ID_ENV) or None,
     )
     if error:
         return {"ok": False, "error": error}
@@ -698,12 +743,28 @@ def main() -> int:
             "variables win over file values."
         ),
     )
+    selector = parser.add_mutually_exclusive_group()
+    selector.add_argument(
+        "--config-section",
+        default=None,
+        help=(
+            "optional dotted mapping path inside --config; for example, "
+            "web_search reads web_search.filter from an agent config"
+        ),
+    )
+    selector.add_argument(
+        "--tool-id",
+        default=None,
+        help=(
+            "exact id in config agent.tools; reads that row's settings mapping"
+        ),
+    )
     args = parser.parse_args()
 
     if args.allowlist:
         os.environ[ALLOWLIST_FILE_ENV] = args.allowlist
 
-    load_config(args.config)
+    load_config(args.config, section=args.config_section, tool_id=args.tool_id)
     _configure_logging()
 
     app = _build_mcp_app()

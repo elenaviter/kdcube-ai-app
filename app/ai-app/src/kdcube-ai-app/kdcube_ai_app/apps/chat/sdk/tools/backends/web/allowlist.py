@@ -17,9 +17,10 @@ hosts pass — a configured but empty list denies everything.
 Sources, in order of precedence:
 
   WEB_ALLOWLIST_YAML  path to a YAML file whose ``allowlist:`` key holds
-                      the entries (the server's config.yaml). Re-read
-                      whenever its mtime changes, so edits apply to the
-                      next call without a restart.
+                      the entries (the server's config.yaml). An embedding
+                      host may select a containing mapping or one exact
+                      ``agent.tools[].settings`` mapping. Re-read whenever its
+                      mtime changes, so edits apply to the next call.
   WEB_ALLOWLIST_FILE  path to a text file, one entry per line,
                       blank lines and ``#`` comments ignored. Also
                       re-read on mtime change.
@@ -29,8 +30,9 @@ Sources, in order of precedence:
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 ALLOWLIST_YAML_ENV = "WEB_ALLOWLIST_YAML"
 ALLOWLIST_FILE_ENV = "WEB_ALLOWLIST_FILE"
@@ -39,6 +41,49 @@ ALLOWLIST_ENV = "WEB_ALLOWLIST"
 BLOCKLIST_YAML_ENV = "WEB_BLOCKLIST_YAML"
 BLOCKLIST_FILE_ENV = "WEB_BLOCKLIST_FILE"
 BLOCKLIST_ENV = "WEB_BLOCKLIST"
+
+FILTER_YAML_SECTION_ENV = "WEB_FILTER_YAML_SECTION"
+FILTER_YAML_TOOL_ID_ENV = "WEB_FILTER_YAML_TOOL_ID"
+
+
+def select_yaml_mapping(
+    document: Any,
+    *,
+    path: str,
+    section: Optional[str] = None,
+    tool_id: Optional[str] = None,
+) -> Mapping[str, Any]:
+    """Select root, dotted-section, or exact agent-tool settings."""
+    if section and tool_id:
+        raise ValueError("config section and tool id are mutually exclusive")
+    if not isinstance(document, Mapping):
+        raise ValueError(f"config file {path} must hold a mapping")
+    selected: Any = document
+    if section:
+        for key in section.split("."):
+            selected = selected.get(key) if isinstance(selected, Mapping) else None
+        if not isinstance(selected, Mapping):
+            raise ValueError(f"config file {path} has no mapping section {section!r}")
+    elif tool_id:
+        agent = document.get("agent")
+        tools = agent.get("tools") if isinstance(agent, Mapping) else None
+        if not isinstance(tools, Sequence) or isinstance(tools, (str, bytes)):
+            raise ValueError(f"config file {path} has no agent.tools list")
+        matches = [
+            item
+            for item in tools
+            if isinstance(item, Mapping) and str(item.get("id") or "").strip() == tool_id
+        ]
+        if not matches:
+            raise ValueError(f"config file {path} has no agent tool {tool_id!r}")
+        if len(matches) > 1:
+            raise ValueError(f"config file {path} has duplicate agent tool {tool_id!r}")
+        selected = matches[0].get("settings")
+        if not isinstance(selected, Mapping):
+            raise ValueError(
+                f"config file {path} agent tool {tool_id!r} has no settings mapping"
+            )
+    return selected
 
 
 def parse_entries(raw_lines: List[str]) -> List[str]:
@@ -67,15 +112,18 @@ def hostname_allowed(entries: List[str], host: Optional[str]) -> bool:
 @dataclass
 class Allowlist:
     """A domain list with its source; file sources are re-read on mtime
-    change. ``yaml_key`` selects which key of the YAML's ``filter:``
-    scope holds the entries, so the same class serves the allowlist and
-    the blocklist."""
+    change. ``yaml_section`` selects an embedding host's containing mapping;
+    ``yaml_tool_id`` selects one exact ``agent.tools[].settings`` mapping;
+    ``yaml_key`` selects the list inside its ``filter:`` scope, so the same
+    class serves the allowlist and the blocklist."""
 
     yaml_path: Optional[str] = None
     file_path: Optional[str] = None
     env_value: Optional[str] = None
     yaml_key: str = "allowlist"
     env_label: str = ALLOWLIST_ENV
+    yaml_section: Optional[str] = None
+    yaml_tool_id: Optional[str] = None
     _entries: List[str] = field(default_factory=list)
     _mtime: Optional[float] = None
     # For the YAML source only: whether the key was present at last read.
@@ -89,6 +137,8 @@ class Allowlist:
             yaml_path=os.environ.get(ALLOWLIST_YAML_ENV) or None,
             file_path=os.environ.get(ALLOWLIST_FILE_ENV) or None,
             env_value=os.environ.get(ALLOWLIST_ENV) or None,
+            yaml_section=os.environ.get(FILTER_YAML_SECTION_ENV) or None,
+            yaml_tool_id=os.environ.get(FILTER_YAML_TOOL_ID_ENV) or None,
         )
         allowlist.refresh()
         return allowlist
@@ -101,6 +151,8 @@ class Allowlist:
             env_value=os.environ.get(BLOCKLIST_ENV) or None,
             yaml_key="blocklist",
             env_label=BLOCKLIST_ENV,
+            yaml_section=os.environ.get(FILTER_YAML_SECTION_ENV) or None,
+            yaml_tool_id=os.environ.get(FILTER_YAML_TOOL_ID_ENV) or None,
         )
         blocklist.refresh()
         return blocklist
@@ -127,10 +179,16 @@ class Allowlist:
 
             with open(path, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
+            data = select_yaml_mapping(
+                data,
+                path=path,
+                section=self.yaml_section,
+                tool_id=self.yaml_tool_id,
+            )
             raw = None
-            if isinstance(data, dict):
+            if isinstance(data, Mapping):
                 scope = data.get("filter")
-                if isinstance(scope, dict):
+                if isinstance(scope, Mapping):
                     raw = scope.get(self.yaml_key)
                 if raw is None:
                     raw = data.get(self.yaml_key)
@@ -170,7 +228,12 @@ class Allowlist:
         """(source description, entries) — the same truth for operator and model."""
         entries = self.entries
         if self.yaml_path:
-            return f"config: {self.yaml_path}", entries
+            selector = ""
+            if self.yaml_tool_id:
+                selector = f"#agent.tools[id={self.yaml_tool_id}].settings"
+            elif self.yaml_section:
+                selector = f"#{self.yaml_section}"
+            return f"config: {self.yaml_path}{selector}", entries
         if self.file_path:
             return f"file: {self.file_path}", entries
         if self.env_value is not None:

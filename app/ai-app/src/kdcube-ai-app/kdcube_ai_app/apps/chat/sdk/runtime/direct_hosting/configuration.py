@@ -5,7 +5,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +15,7 @@ class ConfiguredTool:
     id: str
     enabled: bool = True
     runtime: str = "local"
+    settings: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -50,12 +51,18 @@ def configured_tools(config: Mapping[str, Any]) -> tuple[ConfiguredTool, ...]:
             raise ValueError(f"agent.tools[{index}].id is required")
         if tool_id in seen:
             raise ValueError(f"agent.tools contains duplicate id {tool_id!r}")
+        raw_settings = raw.get("settings")
+        if raw_settings is None:
+            raw_settings = {}
+        elif not isinstance(raw_settings, Mapping):
+            raise ValueError(f"agent.tools[{index}].settings must be a mapping")
         seen.add(tool_id)
         tools.append(
             ConfiguredTool(
                 id=tool_id,
                 enabled=bool(raw.get("enabled", True)),
                 runtime=str(raw.get("runtime") or "local").strip().lower(),
+                settings=dict(raw_settings),
             )
         )
     if not tools:
@@ -63,27 +70,56 @@ def configured_tools(config: Mapping[str, Any]) -> tuple[ConfiguredTool, ...]:
     return tuple(tools)
 
 
-def configured_web_search_path(
+def configured_tool_settings(
+    config: Mapping[str, Any],
+    *,
+    tool_id: str,
+) -> Mapping[str, Any]:
+    """Return settings attached to one exact configured tool ID."""
+    for tool in configured_tools(config):
+        if tool.id == tool_id:
+            return tool.settings
+    raise ValueError(f"agent.tools has no tool with id {tool_id!r}")
+
+
+def configured_web_search(
+    config: Mapping[str, Any],
+    *,
+    tool_id: str,
+) -> Mapping[str, Any]:
+    """Validate Web Search settings attached to one exact tool row."""
+    raw = configured_tool_settings(config, tool_id=tool_id)
+    filter_config = raw.get("filter")
+    if not isinstance(filter_config, Mapping):
+        raise ValueError(f"agent.tools[{tool_id!r}].settings.filter must be a mapping")
+    for key in ("allowlist", "blocklist"):
+        value = filter_config.get(key)
+        if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+            raise ValueError(
+                f"agent.tools[{tool_id!r}].settings.filter.{key} must be a list"
+            )
+    if not isinstance(filter_config.get("ssrf_guard"), bool):
+        raise ValueError(
+            f"agent.tools[{tool_id!r}].settings.filter.ssrf_guard must be true or false"
+        )
+    return raw
+
+
+def configured_run_directory(
     config: Mapping[str, Any],
     *,
     config_path: Path,
 ) -> Path:
-    """Resolve the standalone Web Search tool policy selected by agent YAML."""
-    raw = config.get("web_search")
-    if not isinstance(raw, Mapping):
-        raise ValueError("configuration section 'web_search' must be a mapping")
-    path_raw = str(raw.get("config") or "").strip()
-    if not path_raw:
-        raise ValueError("web_search.config is required")
-    candidate = Path(path_raw).expanduser()
-    path = (
+    """Resolve the directory that receives run files and evidence."""
+    raw = _agent(config).get("run_directory") or "./output"
+    if not isinstance(raw, (str, Path)):
+        raise ValueError("agent.run_directory must be a path string")
+    candidate = Path(raw).expanduser()
+    return (
         candidate.resolve()
         if candidate.is_absolute()
         else (config_path.parent / candidate).resolve()
     )
-    if not path.is_file():
-        raise ValueError(f"web_search.config does not exist: {path}")
-    return path
 
 
 def enabled_tool_ids(config: Mapping[str, Any]) -> tuple[str, ...]:
@@ -180,8 +216,10 @@ __all__ = [
     "activate_configured_skills",
     "agent_instructions",
     "configured_skills",
+    "configured_run_directory",
+    "configured_tool_settings",
     "configured_tools",
-    "configured_web_search_path",
+    "configured_web_search",
     "enabled_tool_ids",
     "require_supported_tools",
     "verify_docker_image",

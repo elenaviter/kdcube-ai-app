@@ -120,6 +120,32 @@ through environment variables instead — the two modes carry the same
 settings, and an environment variable wins over the file (TOOLS.md has
 both forms in full).
 
+An embedding host can keep Web Search settings inside its own YAML instead of
+creating a sidecar. For a generic nested mapping, pass
+`--config-section web_search`. For an agent configuration, keep the settings
+on the exact tool row and pass its ID:
+
+```yaml
+agent:
+  tools:
+    - id: demo.web_search
+      enabled: true
+      runtime: local
+      settings:
+        filter:
+          allowlist: [python.org]
+          blocklist: []
+          ssrf_guard: true
+```
+
+```bash
+python -m kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search.web_search_server \
+  --transport stdio --config ./config.yaml --tool-id demo.web_search
+```
+
+`--config-section` and `--tool-id` are mutually exclusive. Inline allowlist
+and blocklist edits remain live in both forms.
+
 Claude Code (from the install dir):
 
 ```bash

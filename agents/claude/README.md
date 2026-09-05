@@ -26,7 +26,7 @@ cd agents/claude
 claude --version
 python3.11 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
-.venv/bin/python configure.py --provider none
+.venv/bin/python setup_local.py --provider none
 cp config.template.yaml config.local.yaml
 docker compose --env-file .env -f compose.yaml up -d --wait
 .venv/bin/python agent.py --check
@@ -49,10 +49,12 @@ records both turns and their accounting. A successful run ends with
 
 ## Change the demo
 
-Edit `config.local.yaml` to change Claude's model, instructions, tools, skills,
-task, or timeout. Edit `descriptors.local/assembly.yaml` to select a private Git
+Edit `config.local.yaml` to change Claude's adapter model, instructions, run
+directory, tools, skills, task, or timeout. Web Search's egress policy is under
+the `mcp__kdcube_web_search__web_search` tool row's `settings`. Edit
+`descriptors.local/assembly.yaml` to select a private Git
 transcript remote, and put its HTTPS token in
 `descriptors.local/secrets.yaml` at `services.git.http_token`.
-Edit `web-search.yaml` to change the search domain allowlist, blocklist, or
-SSRF policy. The SDK writes the selected stdio server and exact MCP tool
-permissions into Claude's workspace at run time.
+The SDK writes the selected stdio server and exact MCP tool permissions into
+Claude's workspace at run time. Both the adapter and shared descriptor template
+ship with `claude-haiku-4-5-20251001` selected.

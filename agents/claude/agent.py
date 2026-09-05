@@ -31,8 +31,9 @@ from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.infrastructure import ( 
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.configuration import (  # noqa: E402
     activate_configured_skills,
     agent_instructions,
+    configured_run_directory,
     configured_tools,
-    configured_web_search_path,
+    configured_web_search,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.evidence import (  # noqa: E402
     ConsoleEmitter,
@@ -54,6 +55,9 @@ from kdcube_ai_app.apps.chat.sdk.solutions.claude_code import (  # noqa: E402
 )
 
 
+WEB_SEARCH_TOOL_ID = "mcp__kdcube_web_search__web_search"
+
+
 def load_config(path: Path) -> dict[str, Any]:
     value = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not isinstance(value, dict):
@@ -65,12 +69,15 @@ async def agent_config(
     config: dict[str, Any],
     *,
     workspace: Path,
-    web_search_config: Path,
+    config_path: Path,
     check_only: bool,
     skill_ids: tuple[str, ...],
 ) -> ClaudeCodeAgentConfig:
-    claude = dict(config.get("claude") or {})
-    command = str(claude.get("command") or "claude")
+    agent = config.get("agent") or {}
+    adapter = agent.get("adapter") or {}
+    if not isinstance(adapter, dict):
+        raise ValueError("agent.adapter must be a mapping")
+    command = str(adapter.get("command") or "claude")
     if not check_only and shutil.which(command) is None:
         raise RuntimeError(f"Claude Code executable {command!r} is not on PATH")
     api_key = str(
@@ -106,11 +113,11 @@ async def agent_config(
     return ClaudeCodeAgentConfig(
         agent_name="standalone-claude",
         workspace_path=workspace,
-        model=str(claude.get("model") or "sonnet"),
+        model=str(adapter.get("model") or "claude-haiku-4-5-20251001"),
         allowed_tools=allowed_tools,
         command=command,
         env=env,
-        timeout_seconds=float(claude.get("timeout_seconds") or 900),
+        timeout_seconds=float(adapter.get("timeout_seconds") or 900),
         permission_mode="acceptEdits",
         workspace_config=ClaudeCodeWorkspaceConfig(
             mcp_servers={
@@ -123,7 +130,9 @@ async def agent_config(
                         "--transport",
                         "stdio",
                         "--config",
-                        str(web_search_config),
+                        str(config_path),
+                        "--tool-id",
+                        WEB_SEARCH_TOOL_ID,
                     ],
                     "env": {"PYTHONPATH": str(SDK_ROOT)},
                 }
@@ -204,8 +213,8 @@ async def main_async(args: argparse.Namespace) -> None:
     descriptors_dir = Path(args.descriptors).expanduser().resolve()
     settings = activate_platform_descriptors(descriptors_dir)
     config = load_config(config_path)
-    web_search_config = configured_web_search_path(config, config_path=config_path)
-    output = (config_path.parent / str((config.get("output") or {}).get("directory") or "./output")).resolve()
+    configured_web_search(config, tool_id=WEB_SEARCH_TOOL_ID)
+    output = configured_run_directory(config, config_path=config_path)
     if args.check:
         conversation_id = "claude-check"
     elif args.infra_check:
@@ -224,7 +233,7 @@ async def main_async(args: argparse.Namespace) -> None:
     cfg = await agent_config(
         config,
         workspace=workspace,
-        web_search_config=web_search_config,
+        config_path=config_path,
         check_only=args.check or args.infra_check,
         skill_ids=skill_config.enabled,
     )
@@ -245,7 +254,10 @@ async def main_async(args: argparse.Namespace) -> None:
     print("adapter: ClaudeCodeAgent -> local Claude Code subprocess")
     print(f"model: anthropic/{cfg.model}")
     print(f"tools: {', '.join(cfg.allowed_tools) or '(none)'}")
-    print(f"web search: KDCube Web Search MCP ({web_search_config})")
+    print(
+        "web search: KDCube Web Search MCP "
+        f"({config_path}#agent.tools[id={WEB_SEARCH_TOOL_ID}].settings)"
+    )
     print(f"skills: {', '.join(skill_config.enabled) or '(none)'}")
     print(f"workspace: {workspace}")
     print(f"conversation storage: {harness_config.storage_uri}")

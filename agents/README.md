@@ -31,8 +31,16 @@ All three use the repository's KDCube Web Search implementation. Native ReAct
 and LangGraph call it through small framework adapters; Claude Code receives
 it as an on-demand local stdio MCP server. Claude's ambient `WebSearch` and
 `WebFetch` tools are denied in this example, so a successful search proves the
-configured KDCube tool was used. Each directory's `web-search.yaml` owns the
-domain allowlist, blocklist, and SSRF policy.
+configured KDCube tool was used. Its row in each agent's `agent.tools` list
+owns the domain allowlist, blocklist, and SSRF policy under `settings`.
+
+There are two configuration owners. `config.local.yaml` selects agent behavior,
+the run directory, tools, skills, and settings attached to each tool row.
+`descriptors.local/` selects shared platform services: model, Redis/Postgres,
+storage, secrets, economics, and the optional isolated executor.
+`setup_local.py` is the one-time command that prepares the ignored local
+descriptors and matching Compose credentials. Every example defaults to
+`claude-haiku-4-5-20251001`.
 
 The same tool can be run independently for another MCP client. See the
 [Web Search MCP quick start](../mcp/web-search/README.md).

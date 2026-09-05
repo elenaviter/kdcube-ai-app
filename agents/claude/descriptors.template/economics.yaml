@@ -4,16 +4,10 @@ reservation:
   chat: 0
 price_tables:
   llm:
-    - model: gpt-4o-mini
-      provider: openai
-      input_tokens_1M: 0.15
-      output_tokens_1M: 0.6
-      cache_write_tokens_1M: 0.0
-      cache_read_tokens_1M: 0.075
-    - model: claude-sonnet-4-6
+    - model: claude-haiku-4-5-20251001
       provider: anthropic
-      aliases: [sonnet, claude-sonnet, sonnet-4.6, sonnet-4-6]
-      input_tokens_1M: 3.0
-      output_tokens_1M: 15.0
-      cache_write_tokens_1M: 3.75
-      cache_read_tokens_1M: 0.3
+      aliases: [haiku, claude-haiku, haiku-4.5, haiku-4-5]
+      input_tokens_1M: 1.0
+      output_tokens_1M: 5.0
+      cache_write_tokens_1M: 2.0
+      cache_read_tokens_1M: 0.1

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create this Claude Code example's local descriptors and services config."""
+"""Prepare this Claude Code example's ignored local runtime files."""
 
 import sys
 from pathlib import Path

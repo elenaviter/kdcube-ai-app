@@ -99,3 +99,136 @@ def test_no_filter_block_appends_one(tmp_path):
     entries, err = edit_lists(p, list_name="allowlist", add=["example.org"])
     assert err is None and entries == ["example.org"]
     assert "filter:" in p.read_text()
+
+
+def test_nested_config_section_is_edited_without_touching_agent_config(tmp_path):
+    p = _write(
+        tmp_path,
+        "agent:\n"
+        "  topic: keep-this\n"
+        "web_search:\n"
+        "  filter:\n"
+        "    allowlist:\n"
+        "      - python.org\n"
+        "output:\n"
+        "  directory: ./output\n",
+    )
+
+    entries, err = edit_lists(
+        p,
+        list_name="allowlist",
+        add=["docs.python.org"],
+        config_section="web_search",
+    )
+
+    assert err is None
+    assert entries == ["python.org", "docs.python.org"]
+    text = p.read_text()
+    assert "  topic: keep-this" in text
+    assert "      - docs.python.org" in text
+    assert "  directory: ./output" in text
+
+
+def test_exact_agent_tool_settings_are_edited_without_touching_other_tools(tmp_path):
+    p = _write(
+        tmp_path,
+        "agent:\n"
+        "  topic: keep-this\n"
+        "  tools:\n"
+        "    - id: other.search\n"
+        "      settings:\n"
+        "        filter:\n"
+        "          allowlist:\n"
+        "            - wrong.example\n"
+        "    - id: demo.web_search\n"
+        "      enabled: true\n"
+        "      settings:\n"
+        "        filter:\n"
+        "          allowlist:\n"
+        "            - python.org\n"
+        "          ssrf_guard: true\n"
+        "  run_directory: ./output\n",
+    )
+
+    entries, err = edit_lists(
+        p,
+        list_name="allowlist",
+        add=["docs.python.org"],
+        config_tool_id="demo.web_search",
+    )
+
+    assert err is None
+    assert entries == ["python.org", "docs.python.org"]
+    text = p.read_text()
+    assert text.count("- wrong.example") == 1
+    assert text.count("- docs.python.org") == 1
+    assert "  topic: keep-this" in text
+    assert "  run_directory: ./output" in text
+
+
+def test_exact_agent_tool_editor_can_create_settings_and_filter(tmp_path):
+    p = _write(
+        tmp_path,
+        "agent:\n"
+        "  tools:\n"
+        "    - id: demo.web_search\n"
+        "      enabled: true\n"
+        "    - id: other.tool\n"
+        "      enabled: true\n",
+    )
+
+    entries, err = edit_lists(
+        p,
+        list_name="allowlist",
+        add=["python.org"],
+        config_tool_id="demo.web_search",
+    )
+
+    assert err is None
+    assert entries == ["python.org"]
+    assert (
+        "    - id: demo.web_search\n"
+        "      enabled: true\n"
+        "      settings:\n"
+        "        filter:\n"
+        "          allowlist:\n"
+        "            - python.org\n"
+        "    - id: other.tool\n"
+    ) in p.read_text()
+
+
+def test_exact_agent_tool_editor_rejects_missing_duplicate_and_mixed_selector(tmp_path):
+    p = _write(
+        tmp_path,
+        "agent:\n"
+        "  tools:\n"
+        "    - id: duplicate.search\n"
+        "      settings: {}\n"
+        "    - id: duplicate.search\n"
+        "      settings: {}\n",
+    )
+
+    entries, err = edit_lists(
+        p,
+        list_name="allowlist",
+        add=["python.org"],
+        config_tool_id="missing.search",
+    )
+    assert entries is None and "no block-style agent tool" in err
+
+    entries, err = edit_lists(
+        p,
+        list_name="allowlist",
+        add=["python.org"],
+        config_tool_id="duplicate.search",
+    )
+    assert entries is None and "duplicate agent tool" in err
+
+    entries, err = edit_lists(
+        p,
+        list_name="allowlist",
+        add=["python.org"],
+        config_section="agent",
+        config_tool_id="duplicate.search",
+    )
+    assert entries is None and "mutually exclusive" in err

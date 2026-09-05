@@ -15,6 +15,7 @@ from kdcube_ai_app.infra.service_hub import cache as cache_mod
 _FILTER_ENV_VARS = (
     "WEB_ALLOWLIST_YAML", "WEB_ALLOWLIST_FILE", "WEB_ALLOWLIST",
     "WEB_BLOCKLIST_YAML", "WEB_BLOCKLIST_FILE", "WEB_BLOCKLIST",
+    "WEB_FILTER_YAML_SECTION", "WEB_FILTER_YAML_TOOL_ID",
 )
 
 
@@ -339,6 +340,95 @@ def test_yaml_config_applies_to_env(tmp_path, monkeypatch):
         monkeypatch.delenv(var, raising=False)
 
 
+def test_yaml_config_can_load_named_embedding_section(tmp_path, monkeypatch):
+    cfg = tmp_path / "agent.yaml"
+    cfg.write_text(
+        "agent:\n  tools: []\n"
+        "web_search:\n"
+        "  filter:\n"
+        "    allowlist:\n      - python.org\n"
+        "    blocklist: []\n"
+        "    ssrf_guard: true\n"
+        "  server:\n    log_level: WARNING\n"
+    )
+
+    applied = srv.apply_yaml_config(cfg, section="web_search")
+
+    assert os.environ["WEB_ALLOWLIST_YAML"] == str(cfg)
+    assert os.environ["WEB_FILTER_YAML_SECTION"] == "web_search"
+    assert "WEB_FILTER_YAML_SECTION" in applied
+    srv._FILTER = None
+    status = asyncio.run(srv.allowlist_status())
+    assert status["allowlist_entries"] == ["python.org"]
+    assert status["blocklist_entries"] == []
+    assert status["ssrf_guard"] is True
+
+    cfg.write_text(cfg.read_text().replace("      - python.org\n", "      - python.org\n      - docs.python.org\n"))
+    os.utime(cfg, (os.path.getmtime(cfg) + 10, os.path.getmtime(cfg) + 10))
+    status = asyncio.run(srv.allowlist_status())
+    assert status["allowlist_entries"] == ["python.org", "docs.python.org"]
+
+
+def test_yaml_config_rejects_missing_embedding_section(tmp_path):
+    cfg = tmp_path / "agent.yaml"
+    cfg.write_text("agent:\n  tools: []\n")
+
+    with pytest.raises(ValueError, match="no mapping section 'web_search'"):
+        srv.apply_yaml_config(cfg, section="web_search")
+
+
+def test_yaml_config_can_load_exact_agent_tool_settings(tmp_path):
+    cfg = tmp_path / "agent.yaml"
+    cfg.write_text(
+        "agent:\n"
+        "  tools:\n"
+        "    - id: other.search\n"
+        "      settings:\n"
+        "        filter:\n"
+        "          allowlist: [wrong.example]\n"
+        "    - id: demo.web_search\n"
+        "      settings:\n"
+        "        filter:\n"
+        "          allowlist:\n"
+        "            - python.org\n"
+        "          blocklist: []\n"
+        "          ssrf_guard: true\n"
+        "        server:\n"
+        "          log_level: WARNING\n"
+    )
+
+    applied = srv.apply_yaml_config(cfg, tool_id="demo.web_search")
+
+    assert os.environ["WEB_ALLOWLIST_YAML"] == str(cfg)
+    assert os.environ["WEB_FILTER_YAML_TOOL_ID"] == "demo.web_search"
+    assert "WEB_FILTER_YAML_TOOL_ID" in applied
+    assert "WEB_FILTER_YAML_SECTION" not in os.environ
+    srv._FILTER = None
+    status = asyncio.run(srv.allowlist_status())
+    assert status["allowlist_entries"] == ["python.org"]
+    assert status["blocklist_entries"] == []
+    assert status["ssrf_guard"] is True
+
+
+def test_yaml_config_tool_selector_rejects_missing_duplicate_and_mixed_selector(tmp_path):
+    cfg = tmp_path / "agent.yaml"
+    cfg.write_text(
+        "agent:\n"
+        "  tools:\n"
+        "    - id: demo.web_search\n"
+        "      settings: {}\n"
+        "    - id: demo.web_search\n"
+        "      settings: {}\n"
+    )
+
+    with pytest.raises(ValueError, match="duplicate agent tool 'demo.web_search'"):
+        srv.apply_yaml_config(cfg, tool_id="demo.web_search")
+    with pytest.raises(ValueError, match="no agent tool 'missing.search'"):
+        srv.apply_yaml_config(cfg, tool_id="missing.search")
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        srv.apply_yaml_config(cfg, section="agent", tool_id="demo.web_search")
+
+
 def test_first_list_add_and_full_removal_are_live(tmp_path, monkeypatch):
     """Regression for the e2e finding: a blocklist added to a config that
     started without one must apply live, and removing the allowlist key
@@ -471,3 +561,43 @@ def test_site_filter_edit_applies_live(tmp_path, monkeypatch):
 
     monkeypatch.delenv("WEB_SEARCH_CONFIG", raising=False)
     monkeypatch.delenv("WEB_FILTER_EDIT_TOOL", raising=False)
+
+
+def test_site_filter_edit_applies_live_in_embedding_section(tmp_path):
+    cfg = tmp_path / "agent.yaml"
+    cfg.write_text(
+        "agent:\n  topic: keep-this\n"
+        "web_search:\n"
+        "  filter:\n"
+        "    expose_edit_tool: true\n"
+        "    allowlist:\n      - python.org\n"
+    )
+    srv.load_config(cfg, section="web_search")
+
+    out = asyncio.run(srv.site_filter_edit("allowlist", add="docs.python.org"))
+
+    assert out["ok"] is True
+    assert out["status"]["allowlist_entries"] == ["python.org", "docs.python.org"]
+    assert "  topic: keep-this" in cfg.read_text()
+
+
+def test_site_filter_edit_applies_live_in_exact_agent_tool_settings(tmp_path):
+    cfg = tmp_path / "agent.yaml"
+    cfg.write_text(
+        "agent:\n"
+        "  topic: keep-this\n"
+        "  tools:\n"
+        "    - id: demo.web_search\n"
+        "      settings:\n"
+        "        filter:\n"
+        "          expose_edit_tool: true\n"
+        "          allowlist:\n"
+        "            - python.org\n"
+    )
+    srv.load_config(cfg, tool_id="demo.web_search")
+
+    out = asyncio.run(srv.site_filter_edit("allowlist", add="docs.python.org"))
+
+    assert out["ok"] is True
+    assert out["status"]["allowlist_entries"] == ["python.org", "docs.python.org"]
+    assert "  topic: keep-this" in cfg.read_text()

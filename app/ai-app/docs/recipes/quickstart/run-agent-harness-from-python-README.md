@@ -30,9 +30,9 @@ agents/
   claude/       Claude Code through ClaudeCodeAgent
 ```
 
-Each directory contains its agent, requirements, behavior YAML, KDCube Web
-Search policy, standard platform descriptors, skill, Compose services, and
-setup command.
+Each directory contains its agent, requirements, behavior YAML, standard
+platform descriptors, skill, Compose services, and setup command. A tool's
+settings stay on that tool's row in the behavior YAML.
 
 ## The first-run journey
 
@@ -133,14 +133,14 @@ The requirements install the SDK from
 For native or LangGraph:
 
 ```bash
-.venv/bin/python configure.py --provider openai
+.venv/bin/python setup_local.py --provider anthropic
 ```
 
 Enter the provider key at the hidden prompt. For Claude authenticated through
 its CLI:
 
 ```bash
-.venv/bin/python configure.py --provider none
+.venv/bin/python setup_local.py --provider none
 ```
 
 The command creates ignored local files in this agent directory:
@@ -154,9 +154,10 @@ descriptors.local/
 .env                   matching Compose service credentials
 ```
 
-The tracked `web-search.yaml` beside `config.template.yaml` owns the KDCube
-Web Search allowlist, blocklist, and SSRF policy. It is part of the example,
-not generated local state.
+The tracked `config.template.yaml` also contains KDCube Web Search's allowlist,
+blocklist, and SSRF policy under the selected Web Search tool row's `settings`.
+Copying the template therefore creates one local agent configuration file, not
+one file per tool.
 
 The Claude setup also initializes
 `output/claude-session-store.git`; native and LangGraph do not carry that
@@ -185,10 +186,19 @@ agent:
   instructions: |
     You are a research agent. Use the configured tools for public-web research
     and deliverable creation. Preserve source URLs and follow enabled skills.
+  run_directory: ./output
   tools:
     - id: demo.web_search
       enabled: true
       runtime: local
+      settings:
+        filter:
+          allowlist:
+            - python.org
+          blocklist: []
+          ssrf_guard: true
+        server:
+          log_level: WARNING
     - id: demo.create_briefing
       enabled: true
       runtime: local
@@ -196,9 +206,6 @@ agent:
     root: ./skills
     enabled:
       - demo.research-brief
-
-web_search:
-  config: ./web-search.yaml
 ```
 
 The runner turns enabled rows into an exact tool allow-list and loads the named
@@ -216,21 +223,16 @@ operator policy do not:
 | LangGraph | `web_search` |
 | Claude Code | `mcp__kdcube_web_search__web_search` |
 
-`web-search.yaml` is the Web Search tool's own policy:
-
-```yaml
-filter:
-  allowlist:
-    - python.org
-  blocklist: []
-  ssrf_guard: true
-```
-
-The shipped topic concerns Python, so the initial allowlist admits
-`python.org` and its subdomains. Change the list when you change the topic. A
-tool call can narrow this policy with `sites`; it cannot widen it. The full
-standalone tool contract is in the
+Each ID selects installed code; `settings` configures only that row. For
+example, `agent.tools[id=demo.web_search].settings.filter` is Native's Web
+Search policy. The shipped topic concerns Python, so the initial allowlist
+admits `python.org` and its subdomains. Change the list when you change the
+topic. A tool call can narrow this policy with `sites`; it cannot widen it. The
+full standalone tool contract is in the
 [Web Search MCP quick start](../../../../../mcp/web-search/README.md).
+
+`agent.run_directory` receives generated deliverables, communicator evidence,
+and local per-run files. It is more than a single response-output file.
 
 `descriptors.local/assembly.yaml` controls the host:
 
@@ -247,13 +249,16 @@ storage:
   kdcube: ../output/conversation-store
 
 models:
-  default_llm_model_id: gpt-4o-mini
+  default_llm_model_id: claude-haiku-4-5-20251001
 ```
 
 The exact default ports differ between the three directories so their Compose
 projects can run independently. Credentials live in
 `descriptors.local/secrets.yaml`; accounting prices and policy live in
-`descriptors.local/economics.yaml`.
+`descriptors.local/economics.yaml`. Native and LangGraph select their model
+from this descriptor. Claude's local CLI adapter also declares
+`agent.adapter.model: claude-haiku-4-5-20251001`; all three shipped examples
+therefore run Haiku by default.
 
 ## 7. Check and run
 
@@ -342,11 +347,14 @@ standard SSH fields under `services.git` in `assembly.yaml`.
 
 ## 10. Change the agent
 
-Use `config.local.yaml` to change instructions, topic, tools, skills, and
-limits. Use the standard descriptors to change model, infrastructure, storage,
-economics, executor, or credentials. Use `web-search.yaml` for Web Search
-egress policy. Add other local tool implementations in `tools.py`, then select
-their IDs in YAML and rerun `--check`.
+Use `config.local.yaml` to change instructions, topic, run directory, tools,
+skills, and settings attached to each tool row. Use the standard descriptors
+to change model, infrastructure, storage, economics, executor, or credentials.
+Claude's CLI model and timeout are adapter settings under `agent.adapter`.
+Add other local tool implementations in `tools.py`, then register their trusted
+source in code and select their IDs in YAML. For Native, add the exposed
+function name to `agent.py`'s `TOOL_SOURCES`; the SDK turns that registry into
+the bindings consumed by `ToolSubsystem`. Rerun `--check` after either change.
 
 YAML selects installed code. Every enabled tool and skill therefore has a real
 implementation that construction validates.

@@ -23,7 +23,7 @@ stores both the conversation and LangGraph checkpoints.
 cd agents/langgraph
 python3.11 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
-.venv/bin/python configure.py --provider openai
+.venv/bin/python setup_local.py --provider anthropic
 cp config.template.yaml config.local.yaml
 docker compose --env-file .env -f compose.yaml up -d --wait
 .venv/bin/python agent.py --check
@@ -43,8 +43,10 @@ it ends with `demonstration: PASS`.
 
 ## Change the demo
 
-Edit `config.local.yaml` to change instructions, tools, skills, topic, or
-limits. Edit `descriptors.local/assembly.yaml` for model and infrastructure;
-edit `descriptors.local/secrets.yaml` for credentials. Add LangChain tools in
-`tools.py` and select their IDs in YAML. Edit `web-search.yaml` to change the
-search domain allowlist, blocklist, or SSRF policy.
+Edit `config.local.yaml` to change instructions, run directory, tools, skills,
+topic, or limits. Web Search's allowlist, blocklist, and SSRF policy are under
+the `web_search` tool row's `settings`. Edit
+`descriptors.local/assembly.yaml` for model and infrastructure; edit
+`descriptors.local/secrets.yaml` for credentials. The shipped model is
+`claude-haiku-4-5-20251001`. Add LangChain tools in `tools.py` and select their
+IDs in YAML.

@@ -32,7 +32,8 @@ from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.infrastructure import ( 
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.configuration import (  # noqa: E402
     activate_configured_skills,
     agent_instructions,
-    configured_web_search_path,
+    configured_run_directory,
+    configured_web_search,
     verify_docker_image,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.evidence import (  # noqa: E402
@@ -42,10 +43,10 @@ from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.evidence import (  # noq
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.model_service import (  # noqa: E402
     build_model_service,
 )
-from agents.native.configuration import (  # noqa: E402
-    EXEC_TOOL_ID,
-    NativeToolPlan,
-    build_native_tool_plan,
+from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.native_tool_bindings import (  # noqa: E402
+    NativeToolBindings,
+    NativeToolSource,
+    resolve_native_tool_bindings,
 )
 from kdcube_ai_app.apps.chat.emitters import ChatCommunicator  # noqa: E402
 from kdcube_ai_app.apps.chat.sdk.protocol import (  # noqa: E402
@@ -75,6 +76,19 @@ from kdcube_ai_app.infra.service_hub.inventory import AgentLogger, ModelServiceB
 
 
 ROLE = "solver.react.v2.decision.v2.strong"
+WEB_SEARCH_TOOL_ID = "demo.web_search"
+EXEC_TOOL_ID = "exec_tools.execute_code_python"
+TOOL_SOURCES = {
+    "demo": NativeToolSource(
+        path=HERE / "tools.py",
+        tool_names=("web_search", "create_briefing"),
+    ),
+    "exec_tools": NativeToolSource(
+        module="kdcube_ai_app.apps.chat.sdk.tools.exec_tools",
+        tool_names=("execute_code_python",),
+        discovery="semantic_kernel",
+    ),
+}
 
 
 class _ConstructionContextClient:
@@ -181,7 +195,8 @@ async def build_turn(
     service: ModelServiceBase,
     context_client: Any,
     comm: ChatCommunicator,
-    tool_plan: NativeToolPlan,
+    tool_bindings: NativeToolBindings,
+    exec_runtime: dict[str, Any] | None,
     skills_subsystem: Any,
     skills_enabled: bool,
     instructions: str,
@@ -205,7 +220,7 @@ async def build_turn(
         workdir=str(workdir),
         max_iterations=max_iterations,
         max_tokens=max_tokens,
-        exec_runtime=tool_plan.exec_runtime or {"mode": "local"},
+        exec_runtime=exec_runtime or {"mode": "local"},
     )
     logger = AgentLogger("standalone.native")
     browser = ContextBrowser(ctx_client=context_client, logger=logger, model_service=service, runtime_ctx=runtime)
@@ -229,8 +244,8 @@ async def build_turn(
             module="agent",
         ),
         context_rag_client=context_client,
-        tools_specs=list(tool_plan.tools_specs),
-        tool_runtime=tool_plan.tool_runtime,
+        tools_specs=list(tool_bindings.tool_specs),
+        tool_runtime=tool_bindings.tool_runtime,
     )
     scratchpad = TurnScratchpad("demo-user", conversation_id, turn_id, prompt, attachments=[])
     solver = ReactSolverV2(
@@ -259,7 +274,8 @@ async def run_turn(
     config: dict[str, Any],
     service: ModelServiceBase,
     harness: DirectAgentHarness,
-    tool_plan: NativeToolPlan,
+    tool_bindings: NativeToolBindings,
+    exec_runtime: dict[str, Any] | None,
     skills_subsystem: Any,
     skills_enabled: bool,
     instructions: str,
@@ -277,15 +293,16 @@ async def run_turn(
             service=service,
             context_client=turn.conversation_client,
             comm=turn.comm,
-            tool_plan=tool_plan,
+            tool_bindings=tool_bindings,
+            exec_runtime=exec_runtime,
             skills_subsystem=skills_subsystem,
             skills_enabled=skills_enabled,
             instructions=instructions,
         )
         await comm.start(message=prompt)
         result = await solver.run(
-            allowed_plugins=tool_plan.allowed_plugins,
-            allowed_tool_names_by_alias=tool_plan.allowed_tool_names_by_alias,
+            allowed_plugins=tool_bindings.allowed_plugins,
+            allowed_tool_names_by_alias=tool_bindings.allowed_tool_names_by_alias,
         )
         answer = str(result.final_answer or "")
         ended_at = utc_now()
@@ -316,15 +333,15 @@ async def main_async(args: argparse.Namespace) -> None:
     descriptors_dir = Path(args.descriptors).expanduser().resolve()
     settings = activate_platform_descriptors(descriptors_dir)
     config = load_config(config_path)
-    web_search_config = configured_web_search_path(config, config_path=config_path)
+    configured_web_search(config, tool_id=WEB_SEARCH_TOOL_ID)
     from kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search import web_search_server
 
-    web_search_server.load_config(web_search_config)
+    web_search_server.load_config(config_path, tool_id=WEB_SEARCH_TOOL_ID)
     service = None if args.infra_check else await build_model_service(
         role=ROLE,
         check_only=args.check,
     )
-    root = (config_path.parent / str((config.get("output") or {}).get("directory") or "./output")).resolve()
+    root = configured_run_directory(config, config_path=config_path)
     harness_config = direct_harness_config(
         settings=settings,
         descriptors_dir=descriptors_dir,
@@ -332,11 +349,16 @@ async def main_async(args: argparse.Namespace) -> None:
         agent_id="native",
         check_only=args.check,
     )
-    tool_plan = build_native_tool_plan(
+    tool_bindings = resolve_native_tool_bindings(
         config,
-        tools_file=HERE / "tools.py",
-        platform_exec_runtime=platform_exec_profile(settings),
+        sources=TOOL_SOURCES,
+        adapter_name="native direct example",
     )
+    exec_runtime = None
+    if EXEC_TOOL_ID in tool_bindings.enabled_ids:
+        if tool_bindings.tool_runtime[EXEC_TOOL_ID] != "docker":
+            raise ValueError(f"{EXEC_TOOL_ID} must use runtime: docker in this example")
+        exec_runtime = platform_exec_profile(settings)
     skills_subsystem, skill_config = activate_configured_skills(
         config,
         config_path=config_path,
@@ -354,13 +376,16 @@ async def main_async(args: argparse.Namespace) -> None:
     if service is not None:
         selected_model = service.config.ensure_role(ROLE)
         print(f"model: {selected_model['provider']}/{selected_model['model']}")
-    print(f"tools: {', '.join(tool_plan.enabled_ids) or '(none)'}")
-    print(f"web search: KDCube Web Search ({web_search_config})")
+    print(f"tools: {', '.join(tool_bindings.enabled_ids) or '(none)'}")
+    print(
+        "web search: KDCube Web Search "
+        f"({config_path}#agent.tools[id={WEB_SEARCH_TOOL_ID}].settings)"
+    )
     print(f"skills: {', '.join(skill_config.enabled) or '(none)'}")
-    if tool_plan.exec_runtime:
-        image = verify_docker_image(tool_plan.exec_runtime)
+    if exec_runtime:
+        image = verify_docker_image(exec_runtime)
         print(f"isolated execution image: {image}")
-    print(f"output: {root}")
+    print(f"run directory: {root}")
     print(f"conversation storage: {harness_config.storage_uri}")
     if args.check:
         assert service is not None
@@ -385,13 +410,14 @@ async def main_async(args: argparse.Namespace) -> None:
                     conversation_id="native-check",
                     turn_id="turn-check",
                 ),
-                tool_plan=tool_plan,
+                tool_bindings=tool_bindings,
+                exec_runtime=exec_runtime,
                 skills_subsystem=skills_subsystem,
                 skills_enabled=bool(skill_config.enabled),
                 instructions=instructions,
             )
             tool_ids = {str(item.get("id") or "") for item in tools.tools_info}
-            expected = set(tool_plan.enabled_ids)
+            expected = set(tool_bindings.enabled_ids)
             if not isinstance(solver, ReactSolverV2) or not expected.issubset(tool_ids):
                 raise RuntimeError(f"native adapter construction incomplete: tools={sorted(tool_ids)}")
         print("check: PASS")
@@ -405,15 +431,17 @@ async def main_async(args: argparse.Namespace) -> None:
     )
     conversation_id = f"native-{uuid.uuid4().hex[:10]}"
     topic = str((config.get("agent") or {}).get("topic") or "accountable agent runtimes")
-    if "demo.web_search" not in tool_plan.enabled_ids:
-        raise RuntimeError("the built-in demonstration requires agent.tools id demo.web_search")
-    if EXEC_TOOL_ID in tool_plan.enabled_ids:
+    if WEB_SEARCH_TOOL_ID not in tool_bindings.enabled_ids:
+        raise RuntimeError(
+            f"the built-in demonstration requires agent.tools id {WEB_SEARCH_TOOL_ID}"
+        )
+    if EXEC_TOOL_ID in tool_bindings.enabled_ids:
         deliverable_prompt = (
             "Use the findings from the previous turn. Call exec_tools.execute_code_python to "
             "create research-brief.pdf and research-data.xlsx in contracted output paths, then "
             "report the exact filenames."
         )
-    elif "demo.create_briefing" in tool_plan.enabled_ids:
+    elif "demo.create_briefing" in tool_bindings.enabled_ids:
         deliverable_prompt = (
             "Use the findings from the previous turn. Call demo.create_briefing to create "
             "research-brief.pdf and research-data.xlsx, then report the exact filenames."
@@ -439,7 +467,8 @@ async def main_async(args: argparse.Namespace) -> None:
             config=config,
             service=service,
             harness=harness,
-            tool_plan=tool_plan,
+            tool_bindings=tool_bindings,
+            exec_runtime=exec_runtime,
             skills_subsystem=skills_subsystem,
             skills_enabled=bool(skill_config.enabled),
             instructions=instructions,
@@ -453,7 +482,8 @@ async def main_async(args: argparse.Namespace) -> None:
             config=config,
             service=service,
             harness=harness,
-            tool_plan=tool_plan,
+            tool_bindings=tool_bindings,
+            exec_runtime=exec_runtime,
             skills_subsystem=skills_subsystem,
             skills_enabled=bool(skill_config.enabled),
             instructions=instructions,
@@ -478,7 +508,8 @@ async def main_async(args: argparse.Namespace) -> None:
                 config=config,
                 service=service,
                 harness=harness,
-                tool_plan=tool_plan,
+                tool_bindings=tool_bindings,
+                exec_runtime=exec_runtime,
                 skills_subsystem=skills_subsystem,
                 skills_enabled=bool(skill_config.enabled),
                 instructions=instructions,

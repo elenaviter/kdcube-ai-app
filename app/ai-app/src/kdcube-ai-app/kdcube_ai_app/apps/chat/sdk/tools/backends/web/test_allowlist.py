@@ -14,7 +14,13 @@ from kdcube_ai_app.apps.chat.sdk.tools.backends.web.allowlist import (
 
 @pytest.fixture(autouse=True)
 def _clean_allowlist_env(monkeypatch):
-    for var in ("WEB_ALLOWLIST_YAML", "WEB_ALLOWLIST_FILE", "WEB_ALLOWLIST"):
+    for var in (
+        "WEB_ALLOWLIST_YAML",
+        "WEB_ALLOWLIST_FILE",
+        "WEB_ALLOWLIST",
+        "WEB_FILTER_YAML_SECTION",
+        "WEB_FILTER_YAML_TOOL_ID",
+    ):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -70,6 +76,77 @@ def test_yaml_source_reads_filter_scope_and_reloads(tmp_path, monkeypatch):
     path.write_text("filter:\n  allowlist:\n    - example.org\n    - usgs.gov\n")
     os.utime(path, (os.path.getmtime(path) + 10, os.path.getmtime(path) + 10))
     assert allowlist.check("usgs.gov")
+
+
+def test_yaml_source_reads_selected_embedding_section(tmp_path, monkeypatch):
+    path = tmp_path / "agent.yaml"
+    path.write_text(
+        "filter:\n  allowlist:\n    - wrong.example\n"
+        "web_search:\n  filter:\n    allowlist:\n      - python.org\n"
+    )
+    monkeypatch.setenv("WEB_ALLOWLIST_YAML", str(path))
+    monkeypatch.setenv("WEB_FILTER_YAML_SECTION", "web_search")
+
+    allowlist = Allowlist.from_env()
+
+    assert allowlist.check("python.org")
+    assert not allowlist.check("wrong.example")
+    source, _entries = allowlist.describe()
+    assert source.endswith("#web_search")
+
+
+def test_yaml_source_reads_exact_agent_tool_settings_and_reloads(tmp_path, monkeypatch):
+    path = tmp_path / "agent.yaml"
+    path.write_text(
+        "agent:\n"
+        "  tools:\n"
+        "    - id: other.search\n"
+        "      settings:\n"
+        "        filter:\n"
+        "          allowlist:\n"
+        "            - wrong.example\n"
+        "    - id: demo.web_search\n"
+        "      settings:\n"
+        "        filter:\n"
+        "          allowlist:\n"
+        "            - python.org\n"
+    )
+    monkeypatch.setenv("WEB_ALLOWLIST_YAML", str(path))
+    monkeypatch.setenv("WEB_FILTER_YAML_TOOL_ID", "demo.web_search")
+
+    allowlist = Allowlist.from_env()
+
+    assert allowlist.check("python.org")
+    assert not allowlist.check("wrong.example")
+    source, _entries = allowlist.describe()
+    assert source.endswith("#agent.tools[id=demo.web_search].settings")
+
+    path.write_text(path.read_text().replace("            - python.org\n", "            - python.org\n            - docs.python.org\n"))
+    os.utime(path, (os.path.getmtime(path) + 10, os.path.getmtime(path) + 10))
+    assert allowlist.check("docs.python.org")
+
+
+def test_yaml_tool_selector_disappearing_fails_closed(tmp_path, monkeypatch):
+    path = tmp_path / "agent.yaml"
+    path.write_text(
+        "agent:\n"
+        "  tools:\n"
+        "    - id: demo.web_search\n"
+        "      settings:\n"
+        "        filter:\n"
+        "          allowlist:\n"
+        "            - python.org\n"
+    )
+    monkeypatch.setenv("WEB_ALLOWLIST_YAML", str(path))
+    monkeypatch.setenv("WEB_FILTER_YAML_TOOL_ID", "demo.web_search")
+    allowlist = Allowlist.from_env()
+    assert allowlist.check("python.org")
+
+    path.write_text("agent:\n  tools: []\n")
+    os.utime(path, (os.path.getmtime(path) + 10, os.path.getmtime(path) + 10))
+
+    with pytest.raises(ValueError, match="no agent tool 'demo.web_search'"):
+        allowlist.check("anything.example")
 
 
 def test_file_source_reloads_on_mtime_change(tmp_path, monkeypatch):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create this native agent example's local descriptors and services config."""
+"""Prepare this native agent example's ignored local runtime files."""
 
 import sys
 from pathlib import Path
@@ -14,4 +14,4 @@ from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.local_setup import main
 
 
 if __name__ == "__main__":
-    main(root=HERE, default_provider="openai")
+    main(root=HERE, default_provider="anthropic")

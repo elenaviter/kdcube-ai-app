@@ -34,6 +34,11 @@ DIRECT_RECIPE = (
     / "run-agent-harness-from-python-README.md"
 )
 ADAPTERS = ("native", "langgraph", "claude")
+WEB_SEARCH_TOOL_IDS = {
+    "native": "demo.web_search",
+    "langgraph": "web_search",
+    "claude": "mcp__kdcube_web_search__web_search",
+}
 README_SECTIONS = (
     "## What it is",
     "## Run it",
@@ -87,31 +92,43 @@ def test_each_example_owns_its_runnable_contract(adapter: str) -> None:
         "agent.py",
         "compose.yaml",
         "config.template.yaml",
-        "configure.py",
+        "setup_local.py",
         "descriptors.template",
         "requirements.txt",
         "skills",
-        "web-search.yaml",
     }
     assert expected.issubset({path.name for path in root.iterdir()})
+    assert not (root / "web-search.yaml").exists()
+    if adapter == "native":
+        assert not (root / "tool_plan.py").exists()
+        assert not (root / "configuration.py").exists()
 
     config = yaml.safe_load((root / "config.template.yaml").read_text(encoding="utf-8"))
     assert isinstance(config, dict)
-    assert isinstance(config.get("output"), dict)
+    assert "output" not in config
+    assert "web_search" not in config
     assert "infra" not in config
-    assert str(config.get("agent", {}).get("instructions") or "").strip()
-    assert isinstance(config.get("agent", {}).get("tools"), list)
-    assert config["agent"]["tools"]
-    assert all(str(item.get("id") or "").strip() for item in config["agent"]["tools"])
-    assert config.get("agent", {}).get("skills", {}).get("enabled") == [
+    agent = config["agent"]
+    assert str(agent.get("instructions") or "").strip()
+    assert agent["run_directory"] == "./output"
+    assert isinstance(agent.get("tools"), list)
+    assert agent["tools"]
+    assert all(str(item.get("id") or "").strip() for item in agent["tools"])
+    assert agent.get("skills", {}).get("enabled") == [
         "demo.research-brief"
     ]
-    assert config.get("web_search", {}).get("config") == "./web-search.yaml"
-    web_policy = yaml.safe_load((root / "web-search.yaml").read_text(encoding="utf-8"))
+    web_rows = [
+        item for item in agent["tools"] if item["id"] == WEB_SEARCH_TOOL_IDS[adapter]
+    ]
+    assert len(web_rows) == 1
+    web_policy = web_rows[0]["settings"]
     assert web_policy["filter"]["allowlist"] == ["python.org"]
+    assert web_policy["filter"]["blocklist"] == []
     assert web_policy["filter"]["ssrf_guard"] is True
-    if adapter != "claude":
-        assert "model" not in config
+    if adapter == "claude":
+        assert agent["adapter"]["model"] == "claude-haiku-4-5-20251001"
+    else:
+        assert "adapter" not in agent
 
     requirements = (root / "requirements.txt").read_text(encoding="utf-8")
     assert "../../app/ai-app/src/kdcube-ai-app" in requirements
@@ -212,11 +229,20 @@ async def test_claude_web_search_mcp_starts_with_operator_policy() -> None:
     )
 
     module = "kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search.web_search_server"
-    config = (AGENTS_ROOT / "claude" / "web-search.yaml").resolve()
+    config = (AGENTS_ROOT / "claude" / "config.template.yaml").resolve()
     async with open_mcp_client(
         transport="stdio",
         command=sys.executable,
-        args=["-m", module, "--transport", "stdio", "--config", str(config)],
+        args=[
+            "-m",
+            module,
+            "--transport",
+            "stdio",
+            "--config",
+            str(config),
+            "--tool-id",
+            "mcp__kdcube_web_search__web_search",
+        ],
         env=os.environ.copy(),
         read_timeout_seconds=20,
     ) as client:
@@ -250,7 +276,7 @@ def test_each_example_owns_a_standard_app_agnostic_descriptor_set(adapter: str) 
     assert isinstance(assembly.get("infra", {}).get("redis"), dict)
     assert isinstance(assembly.get("infra", {}).get("postgres"), dict)
     assert str(assembly.get("storage", {}).get("kdcube") or "")
-    assert assembly["models"]["default_llm_model_id"] == "gpt-4o-mini"
+    assert assembly["models"]["default_llm_model_id"] == "claude-haiku-4-5-20251001"
     assert (
         assembly["platform"]["services"]["proc"]["exec"]["py_code_exec_image"]
         == "py-code-exec:latest"
@@ -265,7 +291,10 @@ def test_each_example_owns_a_standard_app_agnostic_descriptor_set(adapter: str) 
     else:
         assert "claude_code_session" not in assembly["storage"]
         assert "git" not in secrets["services"]
-    assert economics.get("price_tables", {}).get("llm")
+    prices = economics.get("price_tables", {}).get("llm")
+    assert prices
+    assert prices[0]["model"] == "claude-haiku-4-5-20251001"
+    assert prices[0]["provider"] == "anthropic"
     assert yaml.safe_load((descriptors / "gateway.yaml").read_text(encoding="utf-8")) == {}
 
 
@@ -335,7 +364,7 @@ def test_offline_adapter_construction(adapter: str) -> None:
     assert "mode: standalone SDK process" in completed.stdout
     assert "tools:" in completed.stdout
     assert "skills: demo.research-brief" in completed.stdout
-    assert "model:" in completed.stdout
+    assert "model: anthropic/claude-haiku-4-5-20251001" in completed.stdout
     assert "check: PASS" in completed.stdout
 
 
@@ -387,7 +416,10 @@ def test_each_example_owns_its_selected_research_skill() -> None:
 
 
 def test_native_yaml_can_select_the_isolated_exec_tool() -> None:
-    from agents.native.configuration import EXEC_TOOL_ID, build_native_tool_plan
+    from agents.native.agent import EXEC_TOOL_ID, TOOL_SOURCES
+    from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.native_tool_bindings import (
+        resolve_native_tool_bindings,
+    )
 
     config = yaml.safe_load(
         (AGENTS_ROOT / "native" / "config.template.yaml").read_text(encoding="utf-8")
@@ -399,23 +431,40 @@ def test_native_yaml_can_select_the_isolated_exec_tool() -> None:
         elif tool["id"] == EXEC_TOOL_ID:
             tool["enabled"] = True
 
-    exec_profile = {
-        "mode": "docker",
-        "image": "py-code-exec:latest",
-        "container_strategy": "split",
-        "network_mode": "none",
-    }
-    plan = build_native_tool_plan(
+    bindings = resolve_native_tool_bindings(
         config,
-        tools_file=AGENTS_ROOT / "native" / "tools.py",
-        platform_exec_runtime=exec_profile,
+        sources=TOOL_SOURCES,
+        adapter_name="native direct example",
     )
 
-    assert plan.enabled_ids == ("demo.web_search", EXEC_TOOL_ID)
-    assert plan.tool_runtime[EXEC_TOOL_ID] == "docker"
-    assert plan.allowed_tool_names_by_alias["exec_tools"] == ["execute_code_python"]
-    assert plan.exec_runtime == exec_profile
-    assert any(spec.get("alias") == "exec_tools" for spec in plan.tools_specs)
+    assert bindings.enabled_ids == ("demo.web_search", EXEC_TOOL_ID)
+    assert bindings.tool_runtime[EXEC_TOOL_ID] == "docker"
+    assert bindings.allowed_tool_names_by_alias["exec_tools"] == [
+        "execute_code_python"
+    ]
+    assert any(spec.get("alias") == "exec_tools" for spec in bindings.tool_specs)
+
+
+def test_native_tool_binding_rejects_ids_outside_the_host_registry() -> None:
+    from agents.native.agent import TOOL_SOURCES
+    from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.native_tool_bindings import (
+        resolve_native_tool_bindings,
+    )
+
+    config = yaml.safe_load(
+        (AGENTS_ROOT / "native" / "config.template.yaml").read_text(encoding="utf-8")
+    )
+    config = copy.deepcopy(config)
+    config["agent"]["tools"].append(
+        {"id": "unregistered.read_everything", "enabled": True, "runtime": "local"}
+    )
+
+    with pytest.raises(ValueError, match="does not expose configured tools"):
+        resolve_native_tool_bindings(
+            config,
+            sources=TOOL_SOURCES,
+            adapter_name="native direct example",
+        )
 
 
 def test_native_event_evidence_resolves_json_tool_calls_and_results() -> None:
@@ -458,18 +507,20 @@ def test_missing_isolated_exec_image_fails_before_agent_construction(
 def test_direct_recipe_is_an_executable_configuration_contract() -> None:
     source = DIRECT_RECIPE.read_text(encoding="utf-8")
     required = (
-        ".venv/bin/python configure.py --provider openai",
+        ".venv/bin/python setup_local.py --provider anthropic",
         "docker compose --env-file .env -f compose.yaml up -d --wait",
         "descriptors.local/",
         "storage:\n  kdcube:",
         "storage.claude_code_session.repo",
         "services.git.http_token",
-        "models:\n  default_llm_model_id: gpt-4o-mini",
+        "models:\n  default_llm_model_id: claude-haiku-4-5-20251001",
         ".venv/bin/python agent.py --check",
         "agent:\n  topic:",
         "id: demo.web_search",
         "id: exec_tools.execute_code_python",
         "skills:\n    root: ./skills",
+        "settings:\n        filter:",
+        "agent.py`'s `TOOL_SOURCES",
         "Dockerfile_Exec",
         "docker image inspect py-code-exec:latest",
         "demonstration: PASS",

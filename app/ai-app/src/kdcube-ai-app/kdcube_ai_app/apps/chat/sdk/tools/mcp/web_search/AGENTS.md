@@ -17,8 +17,8 @@ steps. Contracts and config: [TOOLS.md](TOOLS.md). Setup:
 web_search_server.py      the MCP wrapper: tool registration, egress
                           filter wiring, sites clamping, LLM on/off,
                           per-URL fetch denials, and the YAML config
-                          loader (apply_yaml_config: scoped sections ->
-                          env, env wins on conflict)
+                          loader (apply_yaml_config: root, scoped section,
+                          or exact agent tool settings -> env; env wins)
 list_edit.py              textual editor behind the operator-enabled
                           site_filter_edit tool: entry lines only,
                           comments and everything else byte-identical
@@ -28,6 +28,9 @@ config.example.yaml       the YAML config template (the recommended
                           is passed with --config (discovery also finds
                           it in the working directory; one beside the
                           server file is the in-repo dev case only).
+                          Embedding hosts may pass --config-section for a
+                          mapping or --tool-id for one exact
+                          agent.tools[].settings mapping.
                           Its inline filter.allowlist / filter.blocklist
                           are the live list sources
 .env.example              the same settings as raw environment variables

@@ -59,6 +59,12 @@ MODEL_CONFIGS = {
         "has_classifier": True,
         "description": "Claude Sonnet 4 Sonnet - Latest Anthropic Model"
     },
+    "claude-haiku-4-5-20251001": {
+        "model_name": "claude-haiku-4-5-20251001",
+        "provider": "anthropic",
+        "has_classifier": True,
+        "description": "Claude Haiku 4.5"
+    },
     "claude-3-5-haiku-latest": {
         "model_name": "claude-3-5-haiku-20241022",
         "provider": "anthropic",

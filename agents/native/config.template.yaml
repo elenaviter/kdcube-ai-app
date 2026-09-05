@@ -6,10 +6,19 @@ agent:
   instructions: |
     You are a research agent. Use the configured tools for public-web research
     and deliverable creation. Preserve source URLs and follow enabled skills.
+  run_directory: ./output
   tools:
     - id: demo.web_search
       enabled: true
       runtime: local
+      settings:
+        filter:
+          allowlist:
+            - python.org
+          blocklist: []
+          ssrf_guard: true
+        server:
+          log_level: WARNING
     - id: demo.create_briefing
       enabled: true
       runtime: local
@@ -20,9 +29,3 @@ agent:
     root: ./skills
     enabled:
       - demo.research-brief
-
-output:
-  directory: ./output
-
-web_search:
-  config: ./web-search.yaml

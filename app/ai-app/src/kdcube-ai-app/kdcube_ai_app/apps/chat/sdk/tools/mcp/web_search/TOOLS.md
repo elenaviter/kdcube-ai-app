@@ -190,7 +190,10 @@ Desktop's `env` block) and CI. The two modes compose: YAML values are
 applied onto the process environment, and a variable already set in the
 environment wins over the file.
 
-CLI flags: `--config`, `--allowlist`, `--transport`/`--host`/`--port`.
+CLI flags: `--config`; either optional `--config-section` for a nested mapping
+or `--tool-id` for one exact `agent.tools[].settings` mapping; `--allowlist`;
+and `--transport`/`--host`/`--port`. The two selector flags are mutually
+exclusive.
 
 | Variable | Purpose |
 | --- | --- |
@@ -198,6 +201,7 @@ CLI flags: `--config`, `--allowlist`, `--transport`/`--host`/`--port`.
 | `WEB_ALLOWLIST_FILE` | Path to a plain allowlist file: one domain per line, blank lines and `#` comments ignored. Also re-read on change. |
 | `WEB_ALLOWLIST` | Inline comma-separated entries; fixed for the process. The file sources take precedence. |
 | `WEB_BLOCKLIST_YAML`, `WEB_BLOCKLIST_FILE`, `WEB_BLOCKLIST` | The blocklist's three sources, same mechanics and same entry format. A blocklisted host is refused even when the allowlist admits it; unset = no host blocked. |
+| `WEB_FILTER_YAML_SECTION`, `WEB_FILTER_YAML_TOOL_ID` | Internal selectors set by `--config-section` or `--tool-id` so live list reload and the optional editor return to the same mapping. Use one selector only. |
 | `WEB_SSRF_GUARD` | The address-level SSRF guard (`filter.ssrf_guard` in YAML). Default on; `off` disables it for deployments that must fetch internal hosts. |
 | `WEB_FILTER_EDIT_TOOL` | Exposes the `site_filter_edit` tool (`filter.expose_edit_tool` in YAML). Default off; set only on the user's explicit, trade-stated yes. |
 | `BRAVE_API_KEY` | Search provider key (Brave is the default backend). |
