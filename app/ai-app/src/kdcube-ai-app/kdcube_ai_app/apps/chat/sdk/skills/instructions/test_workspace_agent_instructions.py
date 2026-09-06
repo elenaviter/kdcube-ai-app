@@ -17,6 +17,13 @@ def test_exec_capability_guide_binds_tool_names():
     assert "stdout is a truncated progress log" in block
 
 
+def test_exec_capability_guide_supports_a_direct_host_without_pull_tool():
+    block = exec_capability_guide(exec_tool="execute_python", pull_tool="")
+    assert "[CODE IS YOUR HANDS — execute_python]" in block
+    assert "already materialized in the current-turn workspace" in block
+    assert "pull_files" not in block
+
+
 def test_prose_only_guide_states_the_medium_plainly():
     block = prose_only_output_guide()
     assert "[YOUR OUTPUT MEDIUM]" in block

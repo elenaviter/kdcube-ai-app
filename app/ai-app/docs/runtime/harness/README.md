@@ -3,7 +3,7 @@ id: repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/README.md
 title: "Agent Harness Runtime"
 summary: "Framework-neutral event, timeline, and workspace contracts shared by KDCube agent adapters."
 tags: ["runtime", "harness", "agents", "events", "timeline", "workspace"]
-updated_at: 2026-09-04
+updated_at: 2026-09-06
 keywords:
   [
     "agent harness",
@@ -21,6 +21,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/events/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/timeline/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/workspace/README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/direct-agent-instruction-profiles-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/structure-README.md
   - repo:kdcube-ai-app/agents/README.md
 ---
@@ -149,6 +150,9 @@ real `ChatCommunicator` events in the terminal.
 The copy-and-run contract, including YAML-selected tools and skills and the
 optional isolated-execution image, is
 [Run The Agent Harness From Python](../../recipes/quickstart/run-agent-harness-from-python-README.md).
+The model-facing profile, enabled-capability teaching, skill delivery, and
+administrator customization order are owned by
+[Direct Agent Instruction Profiles](direct-agent-instruction-profiles-README.md).
 
 ## Remaining Source Extraction
 

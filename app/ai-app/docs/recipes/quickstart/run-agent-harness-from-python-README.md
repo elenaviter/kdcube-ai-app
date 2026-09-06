@@ -5,10 +5,11 @@ summary: "Run native ReAct, LangGraph, or Claude Code from SDK source with web r
 status: current
 tags: ["recipe", "quickstart", "agent-harness", "python", "native-react", "langgraph", "claude-code", "self-hosted", "web-search", "rendering"]
 keywords: ["run agent harness", "direct SDK agent", "KDCube Web Search", "standard descriptors", "Redis", "Postgres", "Git transcript", "isolated code execution", "write_pdf", "write_docx", "write_pptx"]
-updated_at: 2026-09-05
+updated_at: 2026-09-06
 see_also:
   - repo:kdcube-ai-app/agents/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/direct-agent-instruction-profiles-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/assembly-descriptor-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/secrets-descriptor-README.md
@@ -192,9 +193,13 @@ for the same capabilities:
 ```yaml
 agent:
   topic: "the current stable Python release and its release date"
+  instructions:
+    profile: lite:core
+  additional_instructions: |
+    You are a research agent. Preserve public source URLs and follow enabled skills.
   run_directory: ./output
   tools:
-    - id: demo.web_search
+    - id: web_tools.web_search
       enabled: true
       runtime: local
       settings:
@@ -225,7 +230,7 @@ The corresponding IDs are:
 
 | Capability | Native | LangGraph | Claude Code |
 | --- | --- | --- | --- |
-| Web Search | `demo.web_search` | `web_search` | `mcp__kdcube_web_search__web_search` |
+| Web Search | `web_tools.web_search` | `web_search` | `mcp__kdcube_web_search__web_search` |
 | Isolated Python | `exec_tools.execute_code_python` | `execute_python` | `mcp__kdcube_harness__execute_python` |
 | PDF | `rendering_tools.write_pdf` | `write_pdf` | `mcp__kdcube_harness__write_pdf` |
 | DOCX | `rendering_tools.write_docx` | `write_docx` | `mcp__kdcube_harness__write_docx` |
@@ -234,6 +239,28 @@ The corresponding IDs are:
 Unknown tool or skill IDs fail during `--check`. Tool settings stay on their
 tool row. The Web Search row owns its domain allowlist, blocklist, and SSRF
 policy. Change the allowlist when changing the sample topic.
+
+The Native profile is `lite:core`; the SDK adds the existing ReAct exec,
+rendering, and web blocks only when their tool families are enabled. LangGraph
+and Claude use `workspace-files`, a framework-neutral profile that teaches the
+direct current-turn artifact workspace without ReAct channel syntax. In all
+three examples, `additional_instructions` is product-specific administrator
+text appended after the standard profile, enabled-capability guidance, and
+skills. It does not replace them.
+
+```text
+profile -> workspace/conduct -> enabled tool guidance -> skills
+                                                        |
+                                                        v
+                                      additional_instructions (last)
+```
+
+Claude writes the composed profile to `CLAUDE.md` and materializes selected
+skills under `.claude/skills`. LangGraph includes selected skill text in its
+system prompt. Native keeps the normal ReAct skill gallery and strict protocol.
+See
+[Direct Agent Instruction Profiles](../../runtime/harness/direct-agent-instruction-profiles-README.md)
+for supported Native profile IDs and the exact composition contract.
 
 `descriptors.local/assembly.yaml` selects independent services and durable
 storage:
@@ -359,8 +386,9 @@ To use a private remote, set `storage.claude_code_session.repo` in
 
 ## 12. Change the agent
 
-Use `config.local.yaml` to change instructions, topic, tool selection, skills,
-limits, and settings attached to each tool row. Use the standard descriptors
+Use `config.local.yaml` to change the instruction profile,
+`additional_instructions`, topic, tool selection, skills, limits, and settings
+attached to each tool row. Use the standard descriptors
 to change model, infrastructure, storage, economics, executor, and secrets.
 
 Native trusted tool sources live in `agent.py`'s `TOOL_SOURCES`. LangGraph

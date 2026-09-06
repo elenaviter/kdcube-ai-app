@@ -60,9 +60,12 @@ records in `output/kdcube-storage`, including the execution ZIP containing
 
 ## Change the demo
 
-Edit `config.local.yaml` to change instructions, run directory, tools, skills,
-topic, or limits. Web Search's allowlist, blocklist, and SSRF policy are under
-the `demo.web_search` tool row's `settings`. Edit
+Edit `config.local.yaml` to change the `lite:core` instruction profile,
+`additional_instructions`, run directory, tools, skills, topic, or limits.
+The SDK preserves the ReAct protocol and automatically adds standard blocks for
+the enabled exec, rendering, and web tool families. Web Search's allowlist,
+blocklist, and SSRF policy are under the `web_tools.web_search` tool row's
+`settings`. Edit
 `descriptors.local/assembly.yaml` for the model, storage, and isolated executor;
 edit `descriptors.local/secrets.yaml` for credentials. The shipped model is
 `claude-haiku-4-5-20251001`.
@@ -76,3 +79,5 @@ Executor image, timeout, network, and workspace limits live under
 `platform.services.proc.exec` in `descriptors.local/assembly.yaml`. The full
 storage and inspection procedure is in
 [the executable recipe](../../app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md).
+Profile choices and composition order are in
+[Direct Agent Instruction Profiles](../../app/ai-app/docs/runtime/harness/direct-agent-instruction-profiles-README.md).

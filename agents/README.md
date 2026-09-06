@@ -53,6 +53,13 @@ tools own repeatable PDF, DOCX, and PPTX conversion. An existing agent therefore
 gains deep-research and file-production capability without regenerating a new
 PDF or Office implementation for every request.
 
+Each YAML also selects an SDK-owned instruction profile. Native uses the
+standard ReAct `lite:core` body plus blocks for its enabled tools. LangGraph and
+Claude use the framework-neutral `workspace-files` body. Product behavior goes
+in `additional_instructions`, after the workspace, capability, and skill
+teaching. See
+[Direct Agent Instruction Profiles](../app/ai-app/docs/runtime/harness/direct-agent-instruction-profiles-README.md).
+
 Start with the complete command sequence in
 [Run the Agent Harness from Python](../app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md).
 The standalone [Web Search MCP example](../mcp/web-search/README.md) is also

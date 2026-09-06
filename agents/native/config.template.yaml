@@ -3,12 +3,14 @@ agent:
   max_tokens: 12000
   topic: "the current stable Python release and its release date"
   cross_conversation_search: true
-  instructions: |
+  instructions:
+    profile: lite:core
+  additional_instructions: |
     You are a research agent. Use the configured tools for public-web research
     and deliverable creation. Preserve source URLs and follow enabled skills.
   run_directory: ./output
   tools:
-    - id: demo.web_search
+    - id: web_tools.web_search
       enabled: true
       runtime: local
       settings:

@@ -31,13 +31,18 @@ from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.infrastructure import ( 
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.configuration import (  # noqa: E402
     activate_configured_skills,
-    agent_instructions,
     configured_run_directory,
     configured_tools,
     configured_web_search,
     require_supported_tools,
     verify_docker_image,
     verify_playwright_chromium,
+)
+from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.instructions import (  # noqa: E402
+    DirectInstructionSelection,
+    PROVIDER_NATIVE_WORKSPACE_FILES_PROFILE,
+    compose_provider_native_instructions,
+    configured_instruction_selection,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.evidence import (  # noqa: E402
     ConsoleEmitter,
@@ -95,6 +100,7 @@ async def agent_config(
     agent_id: str,
     check_only: bool,
     skill_ids: tuple[str, ...],
+    instruction_selection: DirectInstructionSelection,
 ) -> ClaudeCodeAgentConfig:
     agent = config.get("agent") or {}
     adapter = agent.get("adapter") or {}
@@ -135,12 +141,16 @@ async def agent_config(
     allowed_tools = tuple(tool.id for tool in tool_config if tool.enabled)
     web_search_server_id = "kdcube_web_search"
     harness_server_id = "kdcube_harness"
-    instructions = agent_instructions(
-        config,
-        fallback=(
-            "You are a research agent. Work only inside this workspace, preserve public-web source "
-            "URLs, create the requested deliverables, and report tool failures truthfully."
+    instructions = compose_provider_native_instructions(
+        instruction_selection,
+        exec_tool=EXEC_TOOL_ID if EXEC_TOOL_ID in allowed_tools else None,
+        rendering_tools=tuple(
+            tool_id for tool_id in RENDER_TOOL_IDS if tool_id in allowed_tools
         ),
+        web_search_tool=(
+            WEB_SEARCH_TOOL_ID if WEB_SEARCH_TOOL_ID in allowed_tools else None
+        ),
+        native_skill_ids=skill_ids,
     )
     return ClaudeCodeAgentConfig(
         agent_name="standalone-claude",
@@ -251,6 +261,7 @@ async def run_one_turn(
     binding: ClaudeCodeBinding,
     harness: DirectAgentHarness,
     session_store: ClaudeCodeSessionStoreConfig,
+    instruction_selection: DirectInstructionSelection,
     attachment_source: Path | None = None,
 ) -> tuple[str, str, Any]:
     turn_id = f"turn_{number:02d}_{uuid.uuid4().hex[:8]}"
@@ -279,6 +290,7 @@ async def run_one_turn(
             agent_id=harness.config.agent_id,
             check_only=False,
             skill_ids=skill_ids,
+            instruction_selection=instruction_selection,
         )
         agent = ClaudeCodeAgent(config=config, binding=binding, comm=turn.comm)
         await turn.comm.start(message=prompt)
@@ -366,6 +378,14 @@ async def main_async(args: argparse.Namespace) -> None:
         config_path=config_path,
         consumers=("claude",),
     )
+    instruction_selection = configured_instruction_selection(
+        config,
+        default_profile=PROVIDER_NATIVE_WORKSPACE_FILES_PROFILE,
+        fallback_additional_instructions=(
+            "You are a research agent. Work only inside this workspace, preserve public-web "
+            "source URLs, create the requested deliverables, and report tool failures truthfully."
+        ),
+    )
     cfg = await agent_config(
         config,
         workspace=workspace,
@@ -379,6 +399,7 @@ async def main_async(args: argparse.Namespace) -> None:
         agent_id="claude",
         check_only=args.check or args.infra_check,
         skill_ids=skill_config.enabled,
+        instruction_selection=instruction_selection,
     )
     harness_config = direct_harness_config(
         settings=settings,
@@ -405,6 +426,11 @@ async def main_async(args: argparse.Namespace) -> None:
     print("adapter: ClaudeCodeAgent -> local Claude Code subprocess")
     print(f"model: anthropic/{cfg.model}")
     print(f"tools: {', '.join(cfg.allowed_tools) or '(none)'}")
+    print(f"instruction profile: {instruction_selection.profile}")
+    print(
+        "custom instructions: "
+        + ("configured" if instruction_selection.additional_instructions else "(none)")
+    )
     print(
         "web search: KDCube Web Search MCP "
         f"({config_path}#agent.tools[id={WEB_SEARCH_TOOL_ID}].settings)"
@@ -515,6 +541,7 @@ async def main_async(args: argparse.Namespace) -> None:
                 binding=binding,
                 harness=harness,
                 session_store=session_store,
+                instruction_selection=instruction_selection,
                 attachment_source=request_path if number == 1 else None,
             )
             turn_ids.append(turn_id)

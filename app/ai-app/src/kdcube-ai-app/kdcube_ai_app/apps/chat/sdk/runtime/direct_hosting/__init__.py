@@ -30,6 +30,13 @@ from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.infrastructure import (
     redis_url,
     storage_uri,
 )
+from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.instructions import (
+    DirectInstructionSelection,
+    PROVIDER_NATIVE_WORKSPACE_FILES_PROFILE,
+    compose_provider_native_instructions,
+    configured_instruction_selection,
+    native_react_instruction_blocks,
+)
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.local_setup import (
     configure,
 )
@@ -54,6 +61,7 @@ __all__ = [
     "ConsoleEmitter",
     "DirectToolRuntime",
     "DirectTurnWorkspace",
+    "DirectInstructionSelection",
     "NativeToolBindings",
     "NativeToolSource",
     "activate_configured_skills",
@@ -66,14 +74,18 @@ __all__ = [
     "configured_tool_settings",
     "configured_tools",
     "configured_web_search",
+    "configured_instruction_selection",
+    "compose_provider_native_instructions",
     "direct_harness_config",
     "enabled_tool_ids",
     "platform_exec_profile",
     "print_evidence_summary",
     "postgres_label",
     "postgres_url",
+    "PROVIDER_NATIVE_WORKSPACE_FILES_PROFILE",
     "redis_url",
     "resolve_native_tool_bindings",
+    "native_react_instruction_blocks",
     "require_supported_tools",
     "storage_uri",
     "utc_now",

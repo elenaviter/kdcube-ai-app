@@ -35,7 +35,7 @@ DIRECT_RECIPE = (
 )
 ADAPTERS = ("native", "langgraph", "claude")
 WEB_SEARCH_TOOL_IDS = {
-    "native": "demo.web_search",
+    "native": "web_tools.web_search",
     "langgraph": "web_search",
     "claude": "mcp__kdcube_web_search__web_search",
 }
@@ -127,7 +127,10 @@ def test_each_example_owns_its_runnable_contract(adapter: str) -> None:
     assert "web_search" not in config
     assert "infra" not in config
     agent = config["agent"]
-    assert str(agent.get("instructions") or "").strip()
+    assert agent["instructions"]["profile"] == (
+        "lite:core" if adapter == "native" else "workspace-files"
+    )
+    assert str(agent.get("additional_instructions") or "").strip()
     assert agent["run_directory"] == "./output"
     assert isinstance(agent.get("tools"), list)
     assert agent["tools"]
@@ -438,8 +441,45 @@ def test_offline_adapter_construction(adapter: str) -> None:
     assert "mode: standalone SDK process" in completed.stdout
     assert "tools:" in completed.stdout
     assert "skills: demo.research-brief" in completed.stdout
+    assert "instruction profile:" in completed.stdout
+    assert "custom instructions: configured" in completed.stdout
     assert "model: anthropic/claude-haiku-4-5-20251001" in completed.stdout
     assert "check: PASS" in completed.stdout
+
+
+@pytest.mark.parametrize("adapter", ADAPTERS)
+def test_offline_adapter_construction_rejects_unknown_instruction_profile(
+    adapter: str,
+    tmp_path: Path,
+) -> None:
+    root = AGENTS_ROOT / adapter
+    config = yaml.safe_load((root / "config.template.yaml").read_text(encoding="utf-8"))
+    config["agent"]["instructions"]["profile"] = "unknown-profile"
+    config["agent"]["run_directory"] = str(tmp_path / "output")
+    config["agent"]["skills"]["root"] = str(root / "skills")
+    config_path = tmp_path / f"{adapter}.yaml"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "agent.py",
+            "--config",
+            str(config_path),
+            "--descriptors",
+            "descriptors.template",
+            "--check",
+        ],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "unknown" in completed.stderr.lower()
+    assert "instruction profile" in completed.stderr.lower()
 
 
 def test_native_model_selection_comes_from_assembly_descriptor(tmp_path: Path) -> None:
@@ -504,7 +544,11 @@ def test_native_yaml_can_select_the_isolated_exec_tool() -> None:
         adapter_name="native direct example",
     )
 
-    assert bindings.enabled_ids == ("demo.web_search", EXEC_TOOL_ID, *RENDER_TOOL_IDS)
+    assert bindings.enabled_ids == (
+        "web_tools.web_search",
+        EXEC_TOOL_ID,
+        *RENDER_TOOL_IDS,
+    )
     assert bindings.tool_runtime[EXEC_TOOL_ID] == "docker"
     assert bindings.allowed_tool_names_by_alias["exec_tools"] == [
         "execute_code_python"
@@ -588,7 +632,9 @@ def test_direct_recipe_is_an_executable_configuration_contract() -> None:
         "models:\n  default_llm_model_id: claude-haiku-4-5-20251001",
         ".venv/bin/python agent.py --check",
         "agent:\n  topic:",
-        "id: demo.web_search",
+        "instructions:\n    profile: lite:core",
+        "additional_instructions: |",
+        "id: web_tools.web_search",
         "id: exec_tools.execute_code_python",
         "skills:\n    root: ./skills",
         "settings:\n        filter:",

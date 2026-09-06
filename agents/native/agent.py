@@ -31,11 +31,14 @@ from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.infrastructure import ( 
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.configuration import (  # noqa: E402
     activate_configured_skills,
-    agent_instructions,
     configured_run_directory,
     configured_web_search,
     verify_docker_image,
     verify_playwright_chromium,
+)
+from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.instructions import (  # noqa: E402
+    configured_instruction_selection,
+    native_react_instruction_blocks,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.evidence import (  # noqa: E402
     ConsoleEmitter,
@@ -82,7 +85,7 @@ from kdcube_ai_app.infra.service_hub.inventory import AgentLogger, ModelServiceB
 
 
 ROLE = "solver.react.v2.decision.v2.strong"
-WEB_SEARCH_TOOL_ID = "demo.web_search"
+WEB_SEARCH_TOOL_ID = "web_tools.web_search"
 EXEC_TOOL_ID = "exec_tools.execute_code_python"
 RENDER_TOOL_IDS = (
     "rendering_tools.write_pdf",
@@ -90,7 +93,7 @@ RENDER_TOOL_IDS = (
     "rendering_tools.write_pptx",
 )
 TOOL_SOURCES = {
-    "demo": NativeToolSource(
+    "web_tools": NativeToolSource(
         path=HERE / "tools.py",
         tool_names=("web_search",),
     ),
@@ -222,7 +225,8 @@ async def build_turn(
     exec_runtime: dict[str, Any] | None,
     skills_subsystem: Any,
     skills_enabled: bool,
-    instructions: str,
+    instruction_blocks: tuple[str, ...],
+    additional_instructions: str,
     harness_config: Any,
     hosting_service: Any = None,
     user_attachments: list[dict[str, Any]] | None = None,
@@ -295,7 +299,8 @@ async def build_turn(
         ),
         ctx_browser=browser,
         hosting_service=hosting_service,
-        instruction_body=instructions,
+        instruction_blocks=list(instruction_blocks),
+        additional_instructions=additional_instructions,
         include_tool_catalog=True,
         include_skill_gallery=skills_enabled,
         tool_catalog_detail="compact",
@@ -316,7 +321,8 @@ async def run_turn(
     exec_runtime: dict[str, Any] | None,
     skills_subsystem: Any,
     skills_enabled: bool,
-    instructions: str,
+    instruction_blocks: tuple[str, ...],
+    additional_instructions: str,
     attachment_source: Path | None = None,
 ) -> tuple[str, str, set[str], Any]:
     turn_id = f"turn_{turn_number:02d}_{uuid.uuid4().hex[:8]}"
@@ -345,7 +351,8 @@ async def run_turn(
             exec_runtime=exec_runtime,
             skills_subsystem=skills_subsystem,
             skills_enabled=skills_enabled,
-            instructions=instructions,
+            instruction_blocks=instruction_blocks,
+            additional_instructions=additional_instructions,
             harness_config=harness.config,
             hosting_service=turn.hosting_service,
             user_attachments=attachments,
@@ -450,12 +457,17 @@ async def main_async(args: argparse.Namespace) -> None:
         config_path=config_path,
         consumers=(ROLE, "native"),
     )
-    instructions = agent_instructions(
+    instruction_selection = configured_instruction_selection(
         config,
-        fallback=(
+        default_profile="lite:core",
+        fallback_additional_instructions=(
             "You are a research agent. Use configured tools for public-web research and "
             "deliverable creation. Preserve source URLs and follow enabled skills."
         ),
+    )
+    instruction_blocks = native_react_instruction_blocks(
+        instruction_selection,
+        enabled_tool_ids=tool_bindings.enabled_ids,
     )
     print("mode: standalone SDK process")
     print(f"adapter: ReactSolverV2 ({ROLE})")
@@ -463,6 +475,11 @@ async def main_async(args: argparse.Namespace) -> None:
         selected_model = service.config.ensure_role(ROLE)
         print(f"model: {selected_model['provider']}/{selected_model['model']}")
     print(f"tools: {', '.join(tool_bindings.enabled_ids) or '(none)'}")
+    print(f"instruction profile: {instruction_selection.profile}")
+    print(
+        "custom instructions: "
+        + ("configured" if instruction_selection.additional_instructions else "(none)")
+    )
     print(
         "web search: KDCube Web Search "
         f"({config_path}#agent.tools[id={WEB_SEARCH_TOOL_ID}].settings)"
@@ -504,7 +521,8 @@ async def main_async(args: argparse.Namespace) -> None:
                 exec_runtime=exec_runtime,
                 skills_subsystem=skills_subsystem,
                 skills_enabled=bool(skill_config.enabled),
-                instructions=instructions,
+                instruction_blocks=instruction_blocks,
+                additional_instructions=instruction_selection.additional_instructions,
                 harness_config=harness_config,
             )
             tool_ids = {str(item.get("id") or "") for item in tools.tools_info}
@@ -572,7 +590,8 @@ async def main_async(args: argparse.Namespace) -> None:
             exec_runtime=exec_runtime,
             skills_subsystem=skills_subsystem,
             skills_enabled=bool(skill_config.enabled),
-            instructions=instructions,
+            instruction_blocks=instruction_blocks,
+            additional_instructions=instruction_selection.additional_instructions,
             attachment_source=request_path,
         )
         completed_turns.append(first_turn)
@@ -589,7 +608,8 @@ async def main_async(args: argparse.Namespace) -> None:
             exec_runtime=exec_runtime,
             skills_subsystem=skills_subsystem,
             skills_enabled=bool(skill_config.enabled),
-            instructions=instructions,
+            instruction_blocks=instruction_blocks,
+            additional_instructions=instruction_selection.additional_instructions,
         )
         completed_turns.append(second_turn)
         print(f"\n[second answer]\n{second}\n")
@@ -616,7 +636,8 @@ async def main_async(args: argparse.Namespace) -> None:
                 exec_runtime=exec_runtime,
                 skills_subsystem=skills_subsystem,
                 skills_enabled=bool(skill_config.enabled),
-                instructions=instructions,
+                instruction_blocks=instruction_blocks,
+                additional_instructions=instruction_selection.additional_instructions,
             )
             completed_turns.append(recall_turn)
             if "react.memsearch" not in recall_sources:

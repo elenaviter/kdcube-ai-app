@@ -47,7 +47,7 @@ _EXEC_CAPABILITY_TEMPLATE = """
 - A request for a file, spreadsheet, chart, document, export, or dataset means: produce it with `{exec_tool}`. Writing its content as chat prose does not create a file.
 - Trust the run report, not intention: a file exists when the report lists its reference; a failed run produced nothing — read the error, fix the program, run again. Never present a file as delivered without its reference in a run report.
 - Authoritative results belong in files; stdout is a truncated progress log.
-- Feed code from real inputs: materialize needed files first (`{pull_tool}`), read them from the working directory, and compute from the data itself — a re-typed copy of data you saw in chat is not an input.
+{input_guide}
 """.strip()
 
 
@@ -85,9 +85,19 @@ def exec_capability_guide(
     pull_tool: str = "pull_files",
 ) -> str:
     """The exec-as-capability block: include when a code-exec tool is bound."""
+    pull = str(pull_tool or "").strip()
+    input_guide = (
+        "- Feed code from real inputs: materialize needed files first "
+        f"(`{pull}`), read them from the working directory, and compute from the "
+        "data itself — a re-typed copy of data you saw in chat is not an input."
+        if pull
+        else "- Feed code from real inputs already materialized in the current-turn "
+        "workspace and compute from the data itself — a re-typed copy of data you "
+        "saw in chat is not an input."
+    )
     return _EXEC_CAPABILITY_TEMPLATE.format(
         exec_tool=str(exec_tool or "run_python").strip(),
-        pull_tool=str(pull_tool or "pull_files").strip(),
+        input_guide=input_guide,
     )
 
 

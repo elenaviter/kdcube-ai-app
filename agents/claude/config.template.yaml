@@ -5,7 +5,9 @@ agent:
     timeout_seconds: 900
   conversation_id: claude-demo
   topic: "the current stable Python release and its release date"
-  instructions: |
+  instructions:
+    profile: workspace-files
+  additional_instructions: |
     You are a research agent. Work only inside this workspace, preserve source
     URLs, create the requested deliverables, and follow enabled skills.
   run_directory: ./output

@@ -2,7 +2,9 @@ agent:
   max_tokens: 12000
   recursion_limit: 24
   topic: "the current stable Python release and its release date"
-  instructions: |
+  instructions:
+    profile: workspace-files
+  additional_instructions: |
     You are a research agent. Use the configured tools for public-web research
     and deliverable creation. Preserve source URLs and follow enabled skills.
   run_directory: ./output

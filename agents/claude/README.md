@@ -62,8 +62,11 @@ the Claude transcript branch. A successful run ends with `demonstration: PASS`.
 
 ## Change the demo
 
-Edit `config.local.yaml` to change Claude's adapter model, instructions, run
-directory, tools, skills, task, or timeout. Web Search's egress policy is under
+Edit `config.local.yaml` to change Claude's adapter model, the
+`workspace-files` instruction profile, `additional_instructions`, run directory,
+tools, skills, task, or timeout. The profile becomes generated `CLAUDE.md`;
+selected KDCube skills become native `.claude/skills` entries. Web Search's
+egress policy is under
 the `mcp__kdcube_web_search__web_search` tool row's `settings`. Edit
 `descriptors.local/assembly.yaml` to select a private Git
 transcript remote, and put its HTTPS token in
@@ -73,3 +76,6 @@ Claude's workspace at run time. Both the adapter and shared descriptor template
 ship with `claude-haiku-4-5-20251001` selected. Tool and skill selection stays
 in `config.local.yaml`; executor, storage, and Git settings stay in the
 standard descriptors.
+The exact composition and process-workspace/artifact-workspace distinction are
+documented in
+[Direct Agent Instruction Profiles](../../app/ai-app/docs/runtime/harness/direct-agent-instruction-profiles-README.md).

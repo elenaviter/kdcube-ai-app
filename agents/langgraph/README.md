@@ -58,11 +58,16 @@ records in `output/kdcube-storage`, including the execution ZIP containing
 
 ## Change the demo
 
-Edit `config.local.yaml` to change instructions, run directory, tools, skills,
-topic, or limits. Web Search's allowlist, blocklist, and SSRF policy are under
-the `web_search` tool row's `settings`. Edit
+Edit `config.local.yaml` to change the `workspace-files` instruction profile,
+`additional_instructions`, run directory, tools, skills, topic, or limits. The
+profile teaches the current-turn artifact workspace; selected skill text and
+enabled capability guidance are composed before the administrator override.
+Web Search's allowlist, blocklist, and SSRF policy are under the `web_search`
+tool row's `settings`. Edit
 `descriptors.local/assembly.yaml` for model and infrastructure; edit
 `descriptors.local/secrets.yaml` for credentials. The shipped model is
 `claude-haiku-4-5-20251001`. Add LangChain tools in `tools.py` and select their
 IDs in YAML. The built-in execution and renderer wrappers are turn-bound, so
 new file-producing tools should preserve the same current-turn path contract.
+The exact composition is documented in
+[Direct Agent Instruction Profiles](../../app/ai-app/docs/runtime/harness/direct-agent-instruction-profiles-README.md).

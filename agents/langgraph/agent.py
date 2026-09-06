@@ -33,13 +33,17 @@ from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.infrastructure import ( 
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.configuration import (  # noqa: E402
     activate_configured_skills,
-    agent_instructions,
     configured_run_directory,
     configured_tools,
     configured_web_search,
     require_supported_tools,
     verify_docker_image,
     verify_playwright_chromium,
+)
+from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.instructions import (  # noqa: E402
+    PROVIDER_NATIVE_WORKSPACE_FILES_PROFILE,
+    compose_provider_native_instructions,
+    configured_instruction_selection,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.evidence import (  # noqa: E402
     ConsoleEmitter,
@@ -309,19 +313,34 @@ async def main_async(args: argparse.Namespace) -> None:
         consumers=("langgraph",),
     )
     skill_block = build_skills_instruction_block(skill_config.enabled)
-    instructions = agent_instructions(
+    instruction_selection = configured_instruction_selection(
         config,
-        fallback=(
+        default_profile=PROVIDER_NATIVE_WORKSPACE_FILES_PROFILE,
+        fallback_additional_instructions=(
             "You are a research agent. Use web_search for current facts and preserve source URLs. "
             "Author Python for structured artifacts, execute it with execute_python, and use the "
             "document-rendering tools for polished PDF, DOCX, and PPTX deliverables."
         ),
     )
-    if skill_block:
-        instructions = f"{instructions}\n\n{skill_block}"
+    instructions = compose_provider_native_instructions(
+        instruction_selection,
+        exec_tool=EXEC_TOOL_ID if EXEC_TOOL_ID in enabled_tools else None,
+        rendering_tools=tuple(
+            tool_id for tool_id in RENDER_TOOL_IDS if tool_id in enabled_tools
+        ),
+        web_search_tool=(
+            WEB_SEARCH_TOOL_ID if WEB_SEARCH_TOOL_ID in enabled_tools else None
+        ),
+        skill_instructions=skill_block,
+    )
     print("mode: standalone SDK process")
     print(f"adapter: LangGraph create_agent -> KDCubeChatModel ({ROLE})")
     print(f"tools: {', '.join(sorted(enabled_tools)) or '(none)'}")
+    print(f"instruction profile: {instruction_selection.profile}")
+    print(
+        "custom instructions: "
+        + ("configured" if instruction_selection.additional_instructions else "(none)")
+    )
     print(
         "web search: KDCube Web Search "
         f"({config_path}#agent.tools[id={WEB_SEARCH_TOOL_ID}].settings)"
