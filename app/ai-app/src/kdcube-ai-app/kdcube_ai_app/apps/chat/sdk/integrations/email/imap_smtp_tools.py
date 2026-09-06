@@ -38,6 +38,7 @@ from kdcube_ai_app.apps.chat.sdk.integrations.email.delivery import build_email_
 from kdcube_ai_app.apps.chat.sdk.integrations.email.icloud import (
     _connect_imap,
     _imap_credentials,
+    fetch_icloud_attachment,
     fetch_icloud_message,
     fetch_icloud_messages,
     send_icloud_message,
@@ -267,6 +268,47 @@ class ImapSmtpMailTools:
                     "attachments": list(message.get("attachments") or []),
                     "attachment_count": len(message.get("attachments") or []),
                 },
+                "account_id": credential.account_id,
+                "provider": self.provider_id,
+            }
+        )
+
+    async def read_attachment(
+        self, *, message_id: str, attachment_id: str = "", part_id: str = "",
+        max_bytes: int = 10 * 1024 * 1024, account_id: str = "",
+    ) -> dict[str, Any]:
+        """One attachment's bytes, base64 in the envelope (same shape as the
+        Gmail transport's inline read). IMAP part ids are stable per message,
+        so ``part_id`` and ``attachment_id`` (``part:<n>``) name the same part."""
+        where = f"{self.provider_id}.read_attachment"
+        selector = _clean(part_id) or _clean(attachment_id)
+        if not selector:
+            return _error(code="attachment_selector_required", message="part_id or attachment_id is required.", where=where)
+        credential = await self._credential(claim=EMAIL_READ_CLAIM, account_id=account_id, tool_name=where)
+        if not credential.ok:
+            return credential.error_envelope(where=where)
+        store, account = self._adapter_inputs(credential)
+        result = await fetch_icloud_attachment(
+            store=store, account=account, message_id=message_id,
+            attachment_id=selector, max_bytes=max_bytes,
+        )
+        if not result.get("ok"):
+            error = dict(result.get("error") or {})
+            return _error(
+                code=_clean(error.get("code")) or "imap_attachment_read_failed",
+                message=_clean(error.get("message")) or f"{self.label} attachment read failed.",
+                where=where,
+                ret={"provider": self.provider_id, **{k: error[k] for k in ("size_bytes", "max_bytes") if k in error}},
+            )
+        meta = dict(result.get("attachment") or {})
+        return _ok(
+            {
+                "message_id": _clean(result.get("message_id")) or message_id,
+                "part_id": _clean(meta.get("part_id")),
+                "filename": _clean(result.get("filename")),
+                "mime_type": _clean(result.get("mime_type")) or "application/octet-stream",
+                "size_bytes": int(result.get("size_bytes") or 0),
+                "content_base64": str(result.get("base64") or ""),
                 "account_id": credential.account_id,
                 "provider": self.provider_id,
             }

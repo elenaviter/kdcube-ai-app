@@ -100,6 +100,7 @@ MAIL_TOOLS = {
     "productivity_mail_accounts",
     "productivity_mail_search",
     "productivity_mail_get",
+    "productivity_mail_attachment",
     "productivity_mail_draft",
 }
 ALL_TOOLS = {

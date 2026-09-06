@@ -1998,6 +1998,11 @@ bundles:
                   description: Read one message from connected mail accounts.
                   grants:
                   - mail:read
+                productivity_mail_attachment:
+                  label: Read mail attachment
+                  description: Read one attachment of a message from connected mail accounts.
+                  grants:
+                  - mail:read
                 productivity_mail_draft:
                   label: Draft mail message
                   description: Create a draft in connected mail accounts without sending it.

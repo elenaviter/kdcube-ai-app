@@ -140,6 +140,10 @@ PRODUCTIVITY_TOOLS: dict[str, dict[str, Any]] = {
         "label": "Read mail message",
         "description": "Read one message from one of the user's connected mail accounts.",
     },
+    "productivity_mail_attachment": {
+        "label": "Read mail attachment",
+        "description": "Read one attachment of a message from one of the user's connected mail accounts.",
+    },
     "productivity_mail_draft": {
         "label": "Draft mail message",
         "description": (
@@ -478,6 +482,59 @@ def build_productivity_mcp_app(
             )
         return await transport.read_message(
             message_id=message_id, include_html=include_html, account_id=account.account_id
+        )
+
+    @mcp.tool(
+        name="productivity_mail_attachment",
+        title="Read mail attachment",
+        description=(
+            "Read one attachment of a message in the approving user's connected "
+            "mail account and return its bytes as base64 (inline reads are "
+            "capped at 10MB). Use productivity_mail_get first: its attachments "
+            "list carries the stable part_id. Returns {ok, error, ret} with "
+            "ret.filename, ret.mime_type, ret.size_bytes, ret.content_base64."
+        ),
+        annotations=read_only_annotations(ToolAnnotations, title="Read mail attachment"),
+        structured_output=False,
+    )
+    async def _productivity_mail_attachment(
+        message_id: Annotated[
+            str,
+            Field(description="Mail message id returned by productivity_mail_search."),
+        ],
+        part_id: Annotated[
+            str,
+            Field(description="Stable attachment part id from productivity_mail_get (preferred selector)."),
+        ] = "",
+        attachment_id: Annotated[
+            str,
+            Field(description="Provider attachment id from the same productivity_mail_get call, when part_id is unknown."),
+        ] = "",
+        account_id: Annotated[
+            str,
+            Field(
+                description=(
+                    "Optional connected account id when the user has several "
+                    "mail accounts."
+                )
+            ),
+        ] = "",
+    ) -> dict[str, Any]:
+        account, denial = await _route_mail(
+            "productivity_mail_attachment", "attachment", "read", account_id
+        )
+        if denial is not None:
+            return denial
+        assert account is not None
+        transport = _mail_transport(account.provider)
+        if transport is gmail:
+            return await gmail.read_gmail_attachment(
+                message_id=message_id, part_id=part_id, attachment_id=attachment_id,
+                account_id=account.account_id,
+            )
+        return await transport.read_attachment(
+            message_id=message_id, part_id=part_id, attachment_id=attachment_id,
+            account_id=account.account_id,
         )
 
     @mcp.tool(

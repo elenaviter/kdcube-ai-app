@@ -601,7 +601,15 @@ layer-2 resource entry whose per-tool grants ARE the claims each tool needs
       grants: [mail:read]
     productivity_mail_get:
       grants: [mail:read]
+    productivity_mail_attachment:
+      grants: [mail:read]
 ```
+
+`productivity_mail_attachment` returns one attachment's bytes as base64
+inside the response (10 MB cap), selected by the stable `part_id` that
+`productivity_mail_get` lists. The door runs outside a chat turn and has no
+artifact workspace, which is why it hands bytes back instead of
+materializing files the way the in-chat `download_gmail_attachments` does.
 
 ### Testing the productivity door
 
@@ -615,8 +623,8 @@ Three verifications prove enforcement on the door after a `refresh`:
    it: the same call returns the account-level consent
    (`agent_grant_required`) deep-linking the caller's grant card.
 3. Bind the account claim to the caller and retry: the call returns real
-   Slack search results. The mail pair (`productivity_mail_search`,
-   `productivity_mail_get`) verifies identically against the `google`
+   Slack search results. The mail tools (`productivity_mail_search`,
+   `productivity_mail_get`, `productivity_mail_attachment`) verify identically against the `google`
    provider row.
 
 ## Connecting an account: least privilege at the provider

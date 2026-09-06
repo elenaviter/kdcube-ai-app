@@ -219,3 +219,93 @@ def test_create_gmail_draft_is_registered_with_compose_claim():
     assert callable(tool)
     description = getattr(tool, "__kernel_function_description__", "")
     assert "without sending" in description or "DRAFT" in description
+
+
+def _receipt_message(size: int = 5) -> dict:
+    return {
+        "id": "m1",
+        "threadId": "t1",
+        "payload": {
+            "headers": [{"name": "Subject", "value": "Receipt"}],
+            "parts": [
+                {"mimeType": "text/plain", "body": {"data": _gmail_b64("plain body")}},
+                {
+                    "partId": "2",
+                    "mimeType": "application/pdf",
+                    "filename": "Receipt-2226-8271.pdf",
+                    "body": {"attachmentId": "att-rotating-1", "size": size},
+                    "headers": [{"name": "Content-Disposition", "value": "attachment; filename=Receipt-2226-8271.pdf"}],
+                },
+            ],
+        },
+    }
+
+
+def _inline_read_harness(monkeypatch, *, message: dict, attachment_bytes: bytes):
+    """Route the tool's httpx calls to a fake Gmail API and its credential
+    lookup to a fixed connected account; return the tool and the call log."""
+    calls: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path.endswith("/attachments/att-rotating-1"):
+            data = base64.urlsafe_b64encode(attachment_bytes).decode("ascii")
+            return httpx.Response(200, json={"data": data, "size": len(attachment_bytes)})
+        if request.url.path.endswith("/messages/m1"):
+            return httpx.Response(200, json=message)
+        return httpx.Response(404, json={"error": {"message": "not found"}})
+
+    real_client = httpx.AsyncClient
+
+    def fake_client(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handle)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(gmail_tools.httpx, "AsyncClient", fake_client)
+    tools = gmail_tools.GmailTools.__new__(gmail_tools.GmailTools)
+
+    async def credential(*, claim, tool_name, account_id=""):
+        assert claim == "gmail:read"
+        return ConnectedAccountCredential(
+            ok=True, account_id="acct-1", provider_id="google", connector_app_id="gmail",
+            claim=claim, tool_name=tool_name, tenant="demo-tenant", project="demo-project",
+            access_token="tok",
+        )
+
+    tools._credential = credential  # type: ignore[method-assign]
+    return tools, calls
+
+
+def test_read_gmail_attachment_returns_inline_base64_by_stable_part_id(monkeypatch):
+    import asyncio
+
+    payload = b"%PDF-1.4 receipt bytes"
+    tools, calls = _inline_read_harness(monkeypatch, message=_receipt_message(len(payload)), attachment_bytes=payload)
+
+    out = asyncio.run(tools.read_gmail_attachment(message_id="m1", part_id="2", account_id="acct-1"))
+
+    assert out["ok"] is True, out
+    ret = out["ret"]
+    assert ret["filename"] == "Receipt-2226-8271.pdf"
+    assert ret["mime_type"] == "application/pdf"
+    assert ret["part_id"] == "2"
+    assert ret["size_bytes"] == len(payload)
+    assert base64.b64decode(ret["content_base64"]) == payload
+    assert ret["account_id"] == "acct-1"
+    assert calls[-1].endswith("/attachments/att-rotating-1"), "the rotating attachment id is resolved from the fresh message read"
+
+
+def test_read_gmail_attachment_fails_closed_on_size_and_unknown_part(monkeypatch):
+    import asyncio
+
+    tools, _ = _inline_read_harness(monkeypatch, message=_receipt_message(gmail_tools.INLINE_ATTACHMENT_MAX_BYTES + 1), attachment_bytes=b"x")
+    too_large = asyncio.run(tools.read_gmail_attachment(message_id="m1", part_id="2"))
+    assert too_large["ok"] is False and too_large["error"]["code"] == "gmail_attachment_too_large"
+    assert "content_base64" not in (too_large.get("ret") or {})
+
+    tools, _ = _inline_read_harness(monkeypatch, message=_receipt_message(), attachment_bytes=b"x")
+    missing = asyncio.run(tools.read_gmail_attachment(message_id="m1", part_id="9"))
+    assert missing["ok"] is False and missing["error"]["code"] == "gmail_attachment_not_found"
+
+    no_selector = asyncio.run(tools.read_gmail_attachment(message_id="m1"))
+    assert no_selector["error"]["code"] == "attachment_selector_required"

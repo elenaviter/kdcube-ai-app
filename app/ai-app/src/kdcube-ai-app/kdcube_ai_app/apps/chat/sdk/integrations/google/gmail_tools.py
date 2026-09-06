@@ -58,6 +58,8 @@ GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me"
 MAX_BODY_CHARS = 24000
 MAX_DOWNLOAD_ATTACHMENTS = 20
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+# Inline (base64-in-envelope) reads stay small: they travel inside one MCP response.
+INLINE_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024
 
 _SERVICE = None
 _INTEGRATIONS: dict[str, Any] = {}
@@ -895,6 +897,77 @@ class GmailTools:
             ret["body_html"] = body_html[:limit]
             ret["body_html_truncated"] = len(body_html) > limit
         return _ok_ret_result(ret)
+
+    async def read_gmail_attachment(
+        self,
+        *,
+        message_id: str,
+        attachment_id: str = "",
+        part_id: str = "",
+        max_bytes: int = INLINE_ATTACHMENT_MAX_BYTES,
+        account_id: str = "",
+    ) -> dict[str, Any]:
+        """One attachment's bytes, base64 in the envelope. For surfaces that run
+        outside a ReAct turn (the productivity MCP door) and therefore have no
+        artifact workspace to materialize into. Bounded by ``max_bytes`` so a
+        JSON-RPC response stays small; ``part_id`` is the stable selector
+        (Gmail attachment ids rotate per fetch)."""
+        where = "gmail.read_gmail_attachment"
+        msg_id = str(message_id or "").strip()
+        if not msg_id:
+            return _error_result(code="message_id_required", message="message_id is required.", where=where)
+        want_part = str(part_id or "").strip()
+        want_id = str(attachment_id or "").strip()
+        if not want_part and not want_id:
+            return _error_result(code="attachment_selector_required", message="part_id or attachment_id is required.", where=where)
+        limit = max(1, min(int(max_bytes or INLINE_ATTACHMENT_MAX_BYTES), INLINE_ATTACHMENT_MAX_BYTES))
+        credential = await self._credential(claim=GMAIL_READ_CLAIM, account_id=account_id, tool_name=where)
+        if not credential.ok:
+            return credential.error_envelope(where=where)
+        if not credential.access_token:
+            return _error_result(code="credential_missing_access_token", message="Connected Gmail credential has no access token.", where=where)
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            message, err, provider_failure = await _get_gmail_message(client, credential.access_token, msg_id)
+            if err or message is None:
+                if provider_failure and provider_failure.credential_failure:
+                    return connected_account_auth_failure(credential, _auth_failure_message(provider_failure))
+                if provider_failure:
+                    return provider_failure.error_result(where=where)
+                return _error_result(code="gmail_provider_protocol_error", message=err or "Gmail message fetch failed.", where=where)
+            parsed = _extract_message_content(message)
+            rows = [*(parsed.get("attachments") or []), *(parsed.get("inline_attachments") or [])]
+            row = next((r for r in rows if want_part and str(r.get("part_id") or "") == want_part), None) \
+                or next((r for r in rows if want_id and str(r.get("attachment_id") or "") == want_id), None)
+            if row is None:
+                return _error_result(code="gmail_attachment_not_found", message="Attachment was not found on this message.", where=where)
+            declared = int(row.get("size_bytes") or 0)
+            if declared > limit:
+                return _error_result(
+                    code="gmail_attachment_too_large",
+                    message=f"Attachment is {declared} bytes, above the {limit} byte inline read limit.",
+                    where=where,
+                    ret={"size_bytes": declared, "max_bytes": limit},
+                )
+            data, err, provider_failure = await _fetch_gmail_attachment(
+                client, credential.access_token, message_id=msg_id,
+                attachment_id=str(row.get("attachment_id") or ""), max_bytes=limit,
+            )
+        if provider_failure and provider_failure.credential_failure:
+            return connected_account_auth_failure(credential, _auth_failure_message(provider_failure))
+        if err or data is None:
+            if provider_failure:
+                return provider_failure.error_result(where=where)
+            return _error_result(code="gmail_attachment_fetch_failed", message=err or "Attachment fetch failed.", where=where)
+        filename = _safe_filename(str(row.get("filename") or "attachment.bin"))
+        return _ok_ret_result({
+            "message_id": msg_id,
+            "part_id": str(row.get("part_id") or ""),
+            "filename": filename,
+            "mime_type": str(row.get("mime_type") or mimetypes.guess_type(filename)[0] or "application/octet-stream"),
+            "size_bytes": len(data),
+            "content_base64": base64.b64encode(data).decode("ascii"),
+            "account_id": credential.account_id,
+        })
 
     @kernel_function(
         name="download_gmail_attachments",
