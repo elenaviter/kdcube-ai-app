@@ -161,6 +161,9 @@ from kdcube_ai_app.apps.chat.proc.rest.integrations.operation_csrf import (
     mint_request_operation_csrf_token,
     request_uses_cookie_auth,
 )
+from kdcube_ai_app.apps.chat.proc.rest.integrations.widget_navigation_auth import (
+    enforce_protected_widget_user,
+)
 from kdcube_ai_app.infra.secrets import (
     SecretsManagerError,
     SecretsManagerWriteError,
@@ -4555,8 +4558,12 @@ async def fetch_bundle_widget(
         bundle_id: str,
         widget_alias: str,
         request: Request,
-        session: UserSession = Depends(require_auth(RequireUser())),
+        session: UserSession = Depends(get_user_session_dependency()),
 ):
+    sign_in_response = enforce_protected_widget_user(request, session)
+    if sign_in_response is not None:
+        return sign_in_response
+
     if _request_prefers_widget_html(request):
         static_response = await _serve_static_widget_app(
             tenant=tenant,
@@ -4594,8 +4601,12 @@ async def serve_bundle_widget_path(
         widget_alias: str,
         widget_path: str,
         request: Request,
-        session: UserSession = Depends(require_auth(RequireUser())),
+        session: UserSession = Depends(get_user_session_dependency()),
 ):
+    sign_in_response = enforce_protected_widget_user(request, session)
+    if sign_in_response is not None:
+        return sign_in_response
+
     static_response = await _serve_static_widget_app(
         tenant=tenant,
         project=project,

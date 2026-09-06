@@ -4,7 +4,7 @@ title: "Auth"
 summary: "Authentication providers and token transport across REST/SSE/Socket.IO."
 tags: ["service", "auth", "security", "tokens"]
 keywords: ["delegated auth", "cookie auth", "JWT", "SSE auth", "Socket.IO"]
-updated_at: 2026-08-26
+updated_at: 2026-09-07
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/auth/auth-selector-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md
@@ -53,6 +53,37 @@ User type is derived from roles:
 If a request includes `User-Session-ID` (header) or `user_session_id` (query param),
 the gateway verifies that this session belongs to the authenticated user. Unknown or
 mismatched sessions are rejected (401/403).
+
+## Protected App Browser Navigation
+
+An app can expose a widget through either the protected
+`/api/integrations/bundles/<tenant>/<project>/<app>/widgets/...` route family
+or the explicitly public `.../public/widgets/...` route family. The app
+declaration and descriptor visibility rules continue to decide which family is
+available.
+
+When an anonymous user opens a protected widget as a top-level HTML document,
+the processor returns:
+
+```http
+HTTP/1.1 302 Found
+Location: /signin/?next=%2Fapi%2Fintegrations%2Fbundles%2F...%3F...
+Cache-Control: no-store
+```
+
+The relative login address keeps the complete flow on the deployment's current
+origin. After authentication, the browser returns to the original protected
+path and query string, where normal app, widget, role, and visibility checks
+run before content is served. This works through the local web proxy and the
+ECS CloudFront/ALB path because both route `/signin/` and `/api/*` on the same
+public origin and forward the authentication cookies and query string.
+
+The processor does not turn an app surface public during this flow. Anonymous
+JSON/API requests, iframe loads, scripts, styles, images, and other
+subresources retain the protected route's normal authorization response.
+Authenticated users who fail an app role or visibility check receive that
+denial directly rather than a login redirect. Public widget routes and all
+REST, MCP, operation, and static-file exposure contracts are unchanged.
 
 ## Boundary With Connections
 
