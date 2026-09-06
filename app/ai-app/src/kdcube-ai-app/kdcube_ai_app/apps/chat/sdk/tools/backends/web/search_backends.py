@@ -506,7 +506,7 @@ async def get_search_backend(name: Optional[str] = None) -> SearchBackend:
     if n == "brave":
         api_key = (
             await get_secret("b:services.brave.api_key")
-            or await get_secret("services.brave.api_key")
+            or await get_secret("platform.services.brave.api_key")
             or ""
         )
         return BraveSearchBackend(api_key=api_key)

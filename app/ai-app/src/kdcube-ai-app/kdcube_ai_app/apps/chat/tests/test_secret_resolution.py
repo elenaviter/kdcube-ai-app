@@ -6,8 +6,11 @@ from kdcube_ai_app.apps.chat.sdk import config as sdk_config
 
 
 async def _service_secret(key: str, default: str | None = None) -> str | None:
-    canonical = f"services.{key.lstrip('.')}"
-    return await sdk_config.get_secret(f"b:{canonical}") or await sdk_config.get_secret(canonical, default=default)
+    tail = f"services.{key.lstrip('.')}"
+    return await sdk_config.get_secret(f"b:{tail}") or await sdk_config.get_secret(
+        f"platform.{tail}",
+        default=default,
+    )
 
 
 def _fake_get_secret(bundle_secrets: dict, global_secrets: dict):
@@ -26,7 +29,7 @@ async def test_service_secret_pattern_prefers_bundle_override(monkeypatch):
         "get_secret",
         _fake_get_secret(
             {"services.openai.api_key": "sk-bundle"},
-            {"services.openai.api_key": "sk-global"},
+            {"platform.services.openai.api_key": "sk-global"},
         ),
     )
 
@@ -38,7 +41,7 @@ async def test_service_secret_pattern_falls_back_to_global(monkeypatch):
     monkeypatch.setattr(
         sdk_config,
         "get_secret",
-        _fake_get_secret({}, {"services.openai.api_key": "sk-global"}),
+        _fake_get_secret({}, {"platform.services.openai.api_key": "sk-global"}),
     )
 
     assert await _service_secret("openai.api_key") == "sk-global"
@@ -63,4 +66,7 @@ async def test_service_secret_pattern_probes_bundle_then_global(monkeypatch):
 
     await _service_secret("stripe.secret_key")
 
-    assert probed == ["b:services.stripe.secret_key", "services.stripe.secret_key"]
+    assert probed == [
+        "b:services.stripe.secret_key",
+        "platform.services.stripe.secret_key",
+    ]

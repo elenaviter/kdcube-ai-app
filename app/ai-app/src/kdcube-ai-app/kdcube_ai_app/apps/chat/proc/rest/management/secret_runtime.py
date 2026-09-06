@@ -13,9 +13,9 @@ from kdcube_ai_app.apps.chat.proc.rest.management.secret_contracts import (
     BUNDLE_SCOPE,
     MAX_SECRET_VALUE_BYTES,
     SecretTarget,
+    USER_SCOPE,
 )
 from kdcube_ai_app.apps.chat.sdk.config import get_settings
-from kdcube_ai_app.infra.plugin.bundle_store import load_registry
 from kdcube_ai_app.infra.secrets.manager import (
     ISecretsManager,
     SecretsManagerError,
@@ -55,13 +55,6 @@ class KDCubeSecretRuntime:
         self._project = project
         self._manager_override = manager
 
-    @property
-    def _redis(self) -> Any:
-        redis = getattr(self._request.app.state, "redis_async", None)
-        if redis is None:
-            raise ManagementSecretsProviderUnavailable("Redis is unavailable")
-        return redis
-
     def _manager(self) -> ISecretsManager:
         if self._manager_override is not None:
             return self._manager_override
@@ -71,22 +64,6 @@ class KDCubeSecretRuntime:
             raise ManagementSecretsProviderUnavailable(
                 "The configured secrets provider is unavailable"
             ) from exc
-
-    async def _require_declared_bundle(self, target: SecretTarget) -> None:
-        if target.scope != BUNDLE_SCOPE:
-            return
-        try:
-            registry = await load_registry(
-                self._redis,
-                self._tenant,
-                self._project,
-            )
-        except Exception as exc:
-            raise ManagementSecretsProviderUnavailable(
-                "Application registry is unavailable"
-            ) from exc
-        if target.bundle_id not in registry.bundles:
-            raise ManagementSecretNotFound(target.bundle_id)
 
     @staticmethod
     async def _value(
@@ -101,7 +78,6 @@ class KDCubeSecretRuntime:
             ) from exc
 
     async def metadata(self, target: SecretTarget) -> Mapping[str, Any]:
-        await self._require_declared_bundle(target)
         manager = self._manager()
         value = await self._value(manager, target)
         return {
@@ -111,8 +87,24 @@ class KDCubeSecretRuntime:
             "writable": manager.can_write(),
         }
 
+    async def inventory(self) -> tuple[SecretTarget, ...]:
+        """List every canonical key from the selected provider without values."""
+
+        manager = self._manager()
+        try:
+            keys = await manager.list_all_secret_keys()
+            targets = tuple(SecretTarget.from_provider_key(key) for key in keys)
+        except (SecretsManagerError, ValueError) as exc:
+            raise ManagementSecretsProviderUnavailable(
+                "The configured secrets provider could not list its inventory"
+            ) from exc
+        if len({target.provider_key for target in targets}) != len(targets):
+            raise ManagementSecretsProviderUnavailable(
+                "The configured secrets provider returned duplicate identities"
+            )
+        return tuple(sorted(targets, key=lambda target: target.provider_key))
+
     async def read(self, target: SecretTarget) -> Mapping[str, Any]:
-        await self._require_declared_bundle(target)
         manager = self._manager()
         value = await self._value(manager, target)
         if value is None:
@@ -132,14 +124,15 @@ class KDCubeSecretRuntime:
         value: str,
         caller_profile: str,
     ) -> Mapping[str, Any]:
-        await self._require_declared_bundle(target)
         manager = self._manager()
         if not manager.can_write():
             raise ManagementSecretsProviderReadOnly(manager.provider_type)
         previous = await self._value(manager, target)
         try:
             await manager.set_secret(target.provider_key, value)
-            if target.scope == BUNDLE_SCOPE:
+            if target.scope == BUNDLE_SCOPE or (
+                target.scope == USER_SCOPE and target.bundle_id
+            ):
                 await self._record_bundle_update(
                     target=target,
                     mode="set",
@@ -162,14 +155,15 @@ class KDCubeSecretRuntime:
         *,
         caller_profile: str,
     ) -> Mapping[str, Any]:
-        await self._require_declared_bundle(target)
         manager = self._manager()
         if not manager.can_write():
             raise ManagementSecretsProviderReadOnly(manager.provider_type)
         previous = await self._value(manager, target)
         try:
             await manager.delete_secret(target.provider_key)
-            if target.scope == BUNDLE_SCOPE:
+            if target.scope == BUNDLE_SCOPE or (
+                target.scope == USER_SCOPE and target.bundle_id
+            ):
                 await self._record_bundle_update(
                     target=target,
                     mode="clear",
@@ -199,16 +193,18 @@ class KDCubeSecretRuntime:
             tenant=self._tenant,
             project=self._project,
             bundle_id=target.bundle_id,
+            user_id=target.user_id or None,
         )
         await publish_bundle_secret_update(
             redis,
             tenant=self._tenant,
             project=self._project,
             bundle_id=target.bundle_id,
-            scope="bundle",
+            scope=target.scope,
             mode=mode,
             keys={target.provider_key},
             actor=caller_profile,
+            user_id=target.user_id or None,
         )
 
 

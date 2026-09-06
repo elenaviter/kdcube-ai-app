@@ -353,10 +353,10 @@ or replace in this runtime:
   --tenant "$TENANT" --project "$PROJECT" \
   --cors-origin "https://$NGROK_DOMAIN" \
   --build \
-  --set-secret services.openai.api_key "$OPENAI_API_KEY" \
-  --set-secret services.anthropic.api_key "$ANTHROPIC_API_KEY" \
-  --set-secret services.brave.api_key "$BRAVE_API_KEY" \
-  --set-secret services.git.http_token "$GIT_HTTP_TOKEN" \
+  --set-secret platform.services.openai.api_key "$OPENAI_API_KEY" \
+  --set-secret platform.services.anthropic.api_key "$ANTHROPIC_API_KEY" \
+  --set-secret platform.services.brave.api_key "$BRAVE_API_KEY" \
+  --set-secret platform.services.git.http_token "$GIT_HTTP_TOKEN" \
   --set-secret git.http_token "$GIT_HTTP_TOKEN"
 ```
 

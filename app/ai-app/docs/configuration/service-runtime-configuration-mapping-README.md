@@ -107,7 +107,7 @@ Notes:
   `auth.oidcConfig.end_session_endpoint`; it has no separate process-setting
   knob.
 - `auth.idp: session` selects application-hosted platform login and session.
-  It requires the platform secret `services.session_token.secret`; the
+  It requires the platform secret `platform.services.session_token.secret`; the
   technical provider type is `bundle_session_login`.
 
 ### Secrets provider and secrets-file inputs
@@ -122,8 +122,8 @@ Common platform service secrets:
 
 | Secret path | Purpose |
 |---|---|
-| `services.federated_token.secret` | Short-lived bundle-federated Data Bus token signing. |
-| `services.session_token.secret` | KDCube `kst1` platform-session cookie signing. |
+| `platform.services.federated_token.secret` | Short-lived bundle-federated Data Bus token signing. |
+| `platform.services.session_token.secret` | KDCube `kst1` platform-session cookie signing. |
 
 ### Gateway config source
 
@@ -236,12 +236,12 @@ Git repo transport for workspace/session stores:
 
 - `storage.workspace.repo` and `storage.claude_code_session.repo` may use either HTTPS or SSH
   remote forms
-- if HTTPS token auth is configured through `services.git.http_token`, the shared git helper
+- if HTTPS token auth is configured through `platform.services.git.http_token`, the shared git helper
   prefers that path and may normalize SSH-style remotes to HTTPS before invoking git
 - if SSH transport is intended, configure the matching SSH settings:
-  - `services.git.git_ssh_key_path`
-  - `services.git.git_ssh_known_hosts`
-  - `services.git.git_ssh_strict_host_key_checking`
+  - `platform.services.git.git_ssh_key_path`
+  - `platform.services.git.git_ssh_known_hosts`
+  - `platform.services.git.git_ssh_strict_host_key_checking`
 
 Operational guidance:
 
@@ -405,7 +405,7 @@ For the one-page read/write contract across helpers, see:
 | raw `assembly.yaml` value | `read_plain("...")` |
 | raw `bundles.yaml` value | `read_plain("b:...")` |
 | effective current bundle config | `self.bundle_prop("...")` |
-| platform/global secret | `await get_secret("canonical.key")` |
+| platform/global secret | `await get_secret("platform.canonical.key")` |
 | bundle-scoped secret | `await get_secret("b:group.key")` |
 | user-scoped bundle secret | `await get_secret("u:group.key")`, `await set_user_secret(...)`, `await delete_user_secret(...)` |
 

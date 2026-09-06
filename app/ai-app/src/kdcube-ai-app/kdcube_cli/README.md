@@ -60,10 +60,10 @@ platform or bundle key through the running KDCube management service, which
 uses the `ISecretsManager` selected by that deployment:
 
 ```bash
-kdcube secrets metadata services.brave.api_key --scope platform
-kdcube secrets set services.brave.api_key --scope platform
-kdcube secrets get services.brave.api_key --scope platform --output ./secret.txt
-kdcube secrets delete services.brave.api_key --scope platform
+kdcube secrets metadata platform.services.brave.api_key --scope platform
+kdcube secrets set platform.services.brave.api_key --scope platform
+kdcube secrets get platform.services.brave.api_key --scope platform --output ./secret.txt
+kdcube secrets delete platform.services.brave.api_key --scope platform
 ```
 
 Delegated operations require an exact live Card grant and accept the bearer
@@ -262,8 +262,8 @@ To stage known secret values without prompts, use dotted descriptor keys:
 
 ```bash
 kdcube init --tenant acme --project staging \
-  --set-secret services.openai.api_key "sk-..." \
-  --set-secret services.anthropic.api_key "sk-ant-..."
+  --set-secret platform.services.openai.api_key "sk-..." \
+  --set-secret platform.services.anthropic.api_key "sk-ant-..."
 ```
 
 ### Descriptor-driven init (reproducible / automated)

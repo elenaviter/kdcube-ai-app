@@ -341,6 +341,7 @@ def _export_live_bundle_descriptors_from_files(
     bundles_path: Path,
     bundles_secrets_path: Path | None,
     out_dir: Path,
+    include_secrets: bool,
 ) -> None:
     if not bundles_path.exists():
         raise SystemExit(f"Local bundles descriptor not found: {bundles_path}")
@@ -357,21 +358,24 @@ def _export_live_bundle_descriptors_from_files(
     )
 
     out_bundles_secrets_path = out_dir / "bundles.secrets.yaml"
-    if bundles_secrets_path is not None and bundles_secrets_path.exists():
-        write_descriptor_text(out_bundles_secrets_path, bundles_secrets_path.read_text())
-    else:
-        write_descriptor_text(
-            out_bundles_secrets_path,
-            yaml.safe_dump(_empty_bundles_secrets_payload(), sort_keys=False, allow_unicode=True)
-        )
+    if include_secrets:
+        if bundles_secrets_path is not None and bundles_secrets_path.exists():
+            write_descriptor_text(out_bundles_secrets_path, bundles_secrets_path.read_text())
+        else:
+            write_descriptor_text(
+                out_bundles_secrets_path,
+                yaml.safe_dump(_empty_bundles_secrets_payload(), sort_keys=False, allow_unicode=True)
+            )
 
     console.print("[green]Exported effective live bundle descriptors.[/green]")
     console.print(f"[dim]Authority:[/dim] mounted local descriptors")
     console.print(f"[dim]source bundles.yaml:[/dim] {bundles_path}")
-    if bundles_secrets_path is not None and bundles_secrets_path.exists():
+    if include_secrets and bundles_secrets_path is not None and bundles_secrets_path.exists():
         console.print(f"[dim]source bundles.secrets.yaml:[/dim] {bundles_secrets_path}")
-    else:
+    elif include_secrets:
         console.print("[dim]source bundles.secrets.yaml:[/dim] <not configured>")
+    else:
+        console.print("[dim]source bundles.secrets.yaml:[/dim] selected provider export")
     if translations:
         console.print("[dim]path normalization:[/dim]")
         for item in translations:
@@ -394,10 +398,11 @@ def _export_live_bundle_descriptors_from_files(
         f"[green]created bundles.yaml:[/green] {out_bundles_path} "
         f"({_format_bytes(out_bundles_path.stat().st_size)})"
     )
-    console.print(
-        f"[green]created bundles.secrets.yaml:[/green] {out_bundles_secrets_path} "
-        f"({_format_bytes(out_bundles_secrets_path.stat().st_size)})"
-    )
+    if include_secrets:
+        console.print(
+            f"[green]created bundles.secrets.yaml:[/green] {out_bundles_secrets_path} "
+            f"({_format_bytes(out_bundles_secrets_path.stat().st_size)})"
+        )
 
 
 def export_live_bundle_descriptors(
@@ -411,6 +416,7 @@ def export_live_bundle_descriptors(
     aws_sm_prefix: str | None,
     bundles_path: Path | None = None,
     bundles_secrets_path: Path | None = None,
+    include_secrets: bool = True,
 ) -> None:
     if bundles_path is not None:
         _export_live_bundle_descriptors_from_files(
@@ -418,6 +424,7 @@ def export_live_bundle_descriptors(
             bundles_path=bundles_path,
             bundles_secrets_path=bundles_secrets_path,
             out_dir=out_dir,
+            include_secrets=include_secrets,
         )
         return
 
@@ -451,18 +458,24 @@ def export_live_bundle_descriptors(
             profile=aws_profile,
             required=True,
         ) or {}
-        secrets = aws_secret_json(
-            secret_id=f"{prefix}/bundles/{bundle_id}/secrets",
-            region=aws_region,
-            profile=aws_profile,
-            required=False,
-        ) or {}
+        secrets = (
+            aws_secret_json(
+                secret_id=f"{prefix}/bundles/{bundle_id}/secrets",
+                region=aws_region,
+                profile=aws_profile,
+                required=False,
+            )
+            or {}
+            if include_secrets
+            else {}
+        )
         descriptor_payload = {"id": bundle_id, **descriptor}
         props = descriptor_payload.pop("props", None)
         if isinstance(props, dict) and props:
             descriptor_payload["config"] = props
         bundles_items.append(descriptor_payload)
-        bundles_secrets_items.append({"id": bundle_id, "secrets": secrets})
+        if include_secrets:
+            bundles_secrets_items.append({"id": bundle_id, "secrets": secrets})
 
     bundles_payload: dict[str, object] = {"bundles": {"version": "1", "items": bundles_items}}
     if default_bundle_id:
@@ -480,10 +493,11 @@ def export_live_bundle_descriptors(
     bundles_path = out_dir / "bundles.yaml"
     bundles_secrets_path = out_dir / "bundles.secrets.yaml"
     bundles_path.write_text(yaml.safe_dump(bundles_payload, sort_keys=False, allow_unicode=True))
-    write_descriptor_text(
-        bundles_secrets_path,
-        yaml.safe_dump(bundles_secrets_payload, sort_keys=False, allow_unicode=True)
-    )
+    if include_secrets:
+        write_descriptor_text(
+            bundles_secrets_path,
+            yaml.safe_dump(bundles_secrets_payload, sort_keys=False, allow_unicode=True)
+        )
 
     console.print("[green]Exported effective live bundle descriptors.[/green]")
     console.print(f"[dim]AWS SM prefix:[/dim] {prefix}")
@@ -498,7 +512,8 @@ def export_live_bundle_descriptors(
         f"[green]created bundles.yaml:[/green] {bundles_path} "
         f"({_format_bytes(bundles_path.stat().st_size)})"
     )
-    console.print(
-        f"[green]created bundles.secrets.yaml:[/green] {bundles_secrets_path} "
-        f"({_format_bytes(bundles_secrets_path.stat().st_size)})"
-    )
+    if include_secrets:
+        console.print(
+            f"[green]created bundles.secrets.yaml:[/green] {bundles_secrets_path} "
+            f"({_format_bytes(bundles_secrets_path.stat().st_size)})"
+        )

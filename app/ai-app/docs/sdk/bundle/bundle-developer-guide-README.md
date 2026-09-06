@@ -356,7 +356,7 @@ The important split is:
 
 - platform/global config and secrets:
   - `get_settings()`
-  - `await get_secret("canonical.key")` in async code
+  - `await get_secret("platform.canonical.key")` in async code
 - non-secret bundle config:
   - `self.bundle_prop(...)`
   - code defaults -> `bundles.yaml` -> runtime/admin overrides

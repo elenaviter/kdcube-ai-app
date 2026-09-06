@@ -200,13 +200,13 @@ def test_runtime_secret_injection_uses_stdin_not_process_arguments(
     installer_module.apply_runtime_secrets(
         _Console(),
         context,
-        {"services.fixture.token": canary},
+        {"platform.services.fixture.token": canary},
         tmp_path / ".env",
     )
 
     assert len(calls) == 1
     command, kwargs = calls[0]
-    assert command[-3:] == ["set", "services.fixture.token", "--stdin"]
+    assert command[-3:] == ["set", "platform.services.fixture.token", "--stdin"]
     assert canary not in command
     assert kwargs["input"] == canary
     assert kwargs["text"] is True

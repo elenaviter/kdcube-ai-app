@@ -4,6 +4,7 @@ title: "Runtime Configuration and Secrets Store"
 summary: "Detailed runtime storage model behind settings, props, and secrets helpers: authoritative stores by mode, Redis cache behavior, PostgreSQL user props, provider-backed secrets, and export boundaries."
 tags: ["service", "configuration", "runtime", "storage", "secrets", "helpers"]
 keywords: ["authoritative configuration stores", "redis bundle props cache", "postgres user bundle properties", "provider backed user secrets", "bundle prop persistence path", "bundle secret persistence path", "grouped aws secrets layout", "descriptor authority by mode", "exportable versus non exportable state", "runtime storage model"]
+updated_at: 2026-09-06
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-properties-and-secrets-lifecycle-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/runtime-read-write-contract-README.md
@@ -40,11 +41,11 @@ If you need the helper API contract, use:
 | Data class | Authority today | Runtime cache | Export behavior |
 |---|---|---|---|
 | platform/global props | promoted runtime config assembled from env plus descriptor files such as `assembly.yaml` and `gateway.yaml` | none as a dedicated separate config store | outside bundle export |
-| platform/global secrets | configured secrets provider; in local `secrets-file` mode this is `secrets.yaml` | none as a separate dedicated cache | outside bundle export |
+| platform/global secrets | configured secrets provider; in local `secrets-file` mode this is the `platform` subtree of `secrets.yaml` | provider inventory metadata only; values are not cached in Redis | included in complete administrator export |
 | deployment-scoped bundle props | configured bundle descriptor authority | Redis bundle-props cache for descriptor/admin props | exported to `bundles.yaml` |
 | deployment-scoped bundle secrets | configured secrets provider; in local `secrets-file` mode this is `bundles.secrets.yaml` | provider-backed lookup; no separate Redis secret store | exported to `bundles.secrets.yaml` only when provider/export flow can reconstruct them |
 | user-scoped bundle props | PostgreSQL `<SCHEMA>.user_bundle_props` | no separate Redis authority | never exported |
-| user-scoped bundle secrets | configured secrets provider | no separate Redis authority | never exported |
+| user-scoped bundle secrets | configured secrets provider | provider inventory metadata only; no Redis value authority | included in explicit complete administrator export; omitted from ordinary bundle export |
 
 ## Mode-specific authority
 
@@ -77,7 +78,7 @@ If you need the helper API contract, use:
 | platform/runtime non-secret config | deployment env plus descriptor-backed runtime snapshots |
 | deployment-scoped bundle props | configured bundle descriptor authority plus Redis cache; recommended ECS mode is mounted writable `bundles.yaml` on EFS with `BUNDLES_DESCRIPTOR_PROVIDER=file` |
 | deployment-scoped bundle secrets | configured secrets provider; for `aws-sm` this is grouped bundle secret state |
-| platform/global secrets | configured secrets provider with current grouped/canonical mixed contract where applicable |
+| platform/global secrets | configured provider under canonical `platform.*` identities |
 | user props | PostgreSQL |
 | user secrets | configured secrets provider under user-scoped keys |
 
@@ -156,7 +157,7 @@ must be awaited through the SDK helper contract:
 
 | Data class | Helper |
 |---|---|
-| platform/global secrets | `await get_secret("canonical.key")` |
+| platform/global secrets | `await get_secret("platform.canonical.key")` |
 | deployment-scoped bundle secrets | `await get_secret("b:group.key")` |
 | user-scoped bundle secrets | `await get_secret("u:group.key")` |
 | deployment-scoped bundle secret write | `await set_bundle_secret("group.key", value)` |
@@ -179,21 +180,18 @@ There is no separate `*_async` provider API.
 
 ## User-scoped state storage
 
-User-scoped bundle state is intentionally outside descriptors.
+User props are operational state. User secrets remain provider-backed runtime
+state and also have a canonical private descriptor representation.
 
 | Data class | Store |
 |---|---|
 | user-scoped bundle props | PostgreSQL `<SCHEMA>.user_bundle_props` |
 | user-scoped bundle secrets | configured secrets provider |
 
-That is why:
-
-- user state is not exported by `kdcube config export`
-- user state is not reconstructed into `bundles.yaml`
-- user state is not reconstructed into `bundles.secrets.yaml`
-
-If a bundle wants import/export for user-scoped state, the bundle must provide
-its own API or operational workflow.
+That is why user props are not reconstructed by `kdcube config export`.
+User secrets are different: a complete administrator export reconstructs them
+under `users` in the ordinary `secrets.yaml`. They never move into
+`bundles.yaml` or `bundles.secrets.yaml`.
 
 ## Current grouped AWS SM layout
 
@@ -201,12 +199,16 @@ For bundle deployment state in `aws-sm`, the grouped documents are:
 
 | Document | Contents |
 |---|---|
-| `<prefix>/bundles-meta` | bundle registry inventory |
+| `<prefix>/inventory` | canonical provider key inventory for platform, bundle, user, and user-bundle values |
+| `<prefix>/platform/secrets` | platform secret document, addressed logically as `platform.*` |
 | `<prefix>/bundles/<bundle_id>/descriptor` | bundle registry entry and non-secret `config` |
 | `<prefix>/bundles/<bundle_id>/secrets` | bundle-level secrets only |
+| `<prefix>/users/<user_id>/secrets` | direct user secrets |
+| `<prefix>/users/<user_id>/bundles/<bundle_id>/secrets` | user-bundle secrets |
 
-Platform/global secret reads may still resolve through grouped documents or
-canonical per-key fallback paths depending on the secret class.
+Logical reads always use canonical keys. The AWS provider maps those keys to
+the grouped documents above and maintains inventory only after successful
+document writes.
 
 So `aws-sm` is not “one single JSON blob for everything”.
 
@@ -226,16 +228,16 @@ platform descriptors:
 - `gateway.yaml`
 - `secrets.yaml`
 
-It never reconstructs:
-
-- user-scoped bundle props
-- user-scoped bundle secrets
+It never reconstructs user-scoped bundle props. A complete administrator
+export does reconstruct all user-scoped secrets under `users` in
+`secrets.yaml`.
 
 The operational interpretation is:
 
 - deployment-scoped bundle state is ejectable back into bundle descriptors
 - platform/global deployment state remains deployment-owned
-- user-scoped state remains operational state
+- user props remain operational state
+- user secrets are included only in explicit complete administrator export
 
 ## Reserved platform-owned bundle props
 

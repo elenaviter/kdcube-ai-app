@@ -297,9 +297,9 @@ descriptor keys:
 
 ```bash
 kdcube init --tenant acme --project prod --non-interactive \
-  --set-secret services.openai.api_key "$OPENAI_API_KEY" \
-  --set-secret services.anthropic.api_key "$ANTHROPIC_API_KEY" \
-  --set-secret services.git.http_token "$GIT_HTTP_TOKEN"
+  --set-secret platform.services.openai.api_key "$OPENAI_API_KEY" \
+  --set-secret platform.services.anthropic.api_key "$ANTHROPIC_API_KEY" \
+  --set-secret platform.services.git.http_token "$GIT_HTTP_TOKEN"
 ```
 
 These values are written to the staged runtime `config/secrets.yaml`; they are
@@ -308,8 +308,8 @@ not written to `.env` files.
 The CLI also generates missing platform signing secrets during init/refresh and
 persists them to `config/secrets.yaml`, including:
 
-- `services.federated_token.secret`
-- `services.session_token.secret`
+- `platform.services.federated_token.secret`
+- `platform.services.session_token.secret`
 
 Without `--descriptors-location`, omitting a source selector means `--latest`.
 On the normal CLI-managed repository path, the CLI checks out the selected
@@ -670,17 +670,31 @@ kdcube config import \
   --include-platform-descriptors \
   --dry-run
 
+# Provider-backed target after reviewing the dry run.
 kdcube config import \
   --tenant <tenant> \
   --project <project> \
   --descriptors-location /tmp/kdcube-export \
-  --include-platform-descriptors
+  --include-platform-descriptors \
+  --yes
 ```
+
+For a `secrets-file` target, run the final import without `--yes`; the private
+pair is staged as file authority. `--yes` is reserved for provider-backed
+governed upserts.
+
+When a human already synchronized the private pair with `connection-hub
+secrets host import`, add `--skip-secret-values` to the dry run and final
+`kdcube config import`. KDCube then applies ordinary descriptors while
+preserving the target's current provider values and backend identity.
 
 With `--include-platform-descriptors`, export writes `assembly.yaml`,
 `secrets.yaml`, `gateway.yaml`, `economics.yaml`, `bundles.yaml`, and
 `bundles.secrets.yaml`. For what `economics.yaml` owns, see
 [economics-descriptor-README.md](../../economics/economics-descriptor-README.md).
+When the selected provider is not `secrets-file`, export performs one browser-
+confirmed whole-inventory transaction and reconstructs all platform, bundle,
+user, and user-bundle values into the ordinary private descriptor pair.
 
 ### 2.3f Reconfigure authentication — `kdcube config apply`<a id="config-apply-auth"></a>
 
@@ -720,6 +734,7 @@ copy of the container runtime files:
 | --- | --- |
 | `bundles.yaml` | Git bundles keep `repo` / `ref` / `subdir`; local path bundles are normalized back to host paths when possible. |
 | `bundles.secrets.yaml` | Exported as the live descriptor secret overlay. |
+| `secrets` backend in `assembly.yaml` | A Host Vault source is exported as portable `secrets-file`/ephemeral bootstrap; machine-specific vault address, certificate name, and identity path are cleared. |
 | `infra.postgres.host`, `infra.redis.host` | Exported as descriptor-facing `localhost` for local runtimes, even when containers use `host.docker.internal`. |
 | `paths.host_bundles_path` | Preserved. This is the host source root for unmanaged local bundles. |
 | Other `paths.host_*` runtime mounts | Exported as `null` so the next `init` derives them from that runtime's workdir. |
@@ -727,11 +742,14 @@ copy of the container runtime files:
 | Platform-managed built-in bundle paths under `/managed-bundles` | Exported without materialized paths; the runtime resolves built-in bundles from their ids. |
 | Service `log_dir: /logs` | Omitted. `/logs` is a generated container mount, so the next `init` derives it again from the workdir logs folder. |
 
-Import treats the reviewed descriptor directory as authoritative for the local
-runtime: platform descriptors are overwritten exactly, bundle descriptors are
-path-normalized, and runtime env/config files are regenerated from the imported
-platform descriptors. Restart the stack after importing platform descriptors so
-running services pick up service-level env changes.
+Import treats the reviewed descriptor directory as authoritative for ordinary
+configuration. A file-backed target stages the private pair directly. A
+provider-backed target preserves its current provider/backend and machine
+identity, upserts every present value through Card-governed management, and
+does not stage plaintext secret files. Omitted secret keys remain unchanged;
+deletion is explicit. Runtime env/config files are regenerated from imported
+platform descriptors. Restart the stack after importing platform descriptors
+so running services pick up service-level config changes.
 
 ### 2.3d Export live effective bundle descriptors
 
@@ -1094,8 +1112,8 @@ See: [docs/configuration/secrets-descriptor-README.md](../../configuration/secre
 
 ### 2.5a Exact secret management
 
-`kdcube secrets metadata|get|set|delete` addresses one logical platform or
-bundle key through the running deployment. KDCube performs live Card admission
+`kdcube secrets metadata|get|set|delete` addresses one logical platform,
+bundle, user, or user-bundle key through the running deployment. KDCube performs live Card admission
 and routes the admitted operation through its configured `ISecretsManager`, so
 the command is identical for file, Host Vault, and AWS Secrets Manager
 deployments. Local workdirs and remote HTTPS KDCube endpoints are supported.
@@ -1103,9 +1121,21 @@ deployments. Local workdirs and remote HTTPS KDCube endpoints are supported.
 `get` writes a private output file and prints a receipt. `set` reads the value
 from a hidden prompt or stdin. Delegated bearers are accepted through a
 hidden prompt or the first stdin line. Arguments and KDCube environment
-variables remain non-secret configuration surfaces. `kdcube secrets export`
-is the separate owner-only, browser-approved one-use path for reconstructing
-explicitly selected descriptor entries.
+variables remain non-secret configuration surfaces. An exact Card target may
+use `Once` or `Always`; namespace and whole-scope selectors require `Always`.
+`kdcube secrets export` is the separate administrator-only, browser-approved
+one-use path for reconstructing selected entries or the complete provider
+inventory.
+
+Existing private descriptor files must use the canonical `platform` and
+`users` roots. Preview and apply migration without rendering values:
+
+```bash
+kdcube secrets namespace migrate \
+  --tenant <tenant> --project <project> --dry-run
+kdcube secrets namespace migrate \
+  --tenant <tenant> --project <project> --yes
+```
 
 Inspect local storage configuration with:
 
@@ -1612,24 +1642,37 @@ kdcube config import \
   --include-platform-descriptors \
   --dry-run
 
+# Provider-backed target after reviewing the dry run.
 kdcube config import \
   --tenant acme \
   --project prod \
   --descriptors-location /tmp/kdcube-export \
-  --include-platform-descriptors
+  --include-platform-descriptors \
+  --yes
 ```
+
+For a `secrets-file` target, omit `--yes` on the final import.
+
+The split human path uses `connection-hub secrets host import` for the private
+pair, then runs these `config import` commands with `--skip-secret-values`.
+This keeps the Connection Hub OAuth bearer in native custody while applying
+the rest of the normal descriptor directory.
 
 With `--include-platform-descriptors`, `config export` includes
 `assembly.yaml`, `secrets.yaml`, and `gateway.yaml` next to the bundle
-descriptors. The exported descriptor set is shaped for review and re-seeding:
+descriptors. A provider-backed export uses one browser-confirmed whole
+transaction; `secrets.yaml` includes all platform and user values and
+`bundles.secrets.yaml` includes all deployment-bundle values. The exported
+descriptor set is shaped for review and re-seeding:
 local Postgres/Redis hosts are written as descriptor-facing `localhost`,
 `paths.host_bundles_path` is preserved, generated runtime mount paths are
 written as `null`, and generated service `log_dir: /logs` entries are omitted.
-`config import` treats the reviewed directory as authoritative:
-platform descriptors are overwritten exactly, bundle descriptors are
-path-normalized, and runtime env/config files are regenerated from the imported
-platform descriptors. Restart the stack after importing platform descriptors so
-running services pick up service-level env changes.
+`config import` treats ordinary descriptors as authoritative. On a provider-
+backed target it preserves the target's secret backend and applies private
+descriptor values as governed upserts; omitted values remain unchanged.
+Bundle paths are normalized and runtime env/config files are regenerated.
+Restart the stack after importing platform descriptors so running services pick
+up service-level config changes.
 
 Export live bundle descriptors:
 

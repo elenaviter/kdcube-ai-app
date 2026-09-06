@@ -18,6 +18,24 @@ import kdcube_ai_app.apps.chat.sdk.infra.economics.stripe as stripe_mod
 # StripeSubscriptionService
 # ---------------------------------------------------------------------------
 
+
+@pytest.mark.asyncio
+async def test_async_resolution_keeps_bundle_key_relative_and_platform_key_qualified(
+    monkeypatch,
+):
+    calls = []
+
+    async def _secret(key):
+        calls.append(key)
+        return "sk-bundle" if key == "b:services.stripe.secret_key" else None
+
+    monkeypatch.setattr(stripe_mod, "get_secret", _secret)
+
+    assert await stripe_mod._resolve_stripe_secret_async("stripe.secret_key") == (
+        "sk-bundle"
+    )
+    assert calls == ["b:services.stripe.secret_key"]
+
 class TestStripeSubscriptionServiceKeyResolution:
     def test_explicit_key_bypasses_service_secret(self, monkeypatch):
         secret_calls = []

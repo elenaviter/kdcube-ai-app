@@ -30,6 +30,35 @@ class _FakeHttpResponse:
         return self._payload
 
 
+@pytest.mark.asyncio
+async def test_provider_keys_require_explicit_scope_and_inventory_is_partitioned():
+    manager = InMemorySecretsManager()
+    with pytest.raises(SecretsManagerError):
+        await manager.set_secret("services.fixture.token", "legacy")
+
+    await manager.set_secret("platform.services.fixture.token", "platform")
+    await manager.set_secret(
+        "bundles.demo@1-0.secrets.fixture.token",
+        "bundle",
+    )
+    await manager.set_secret("users.owner.secrets.fixture.token", "user")
+
+    assert await manager.list_secret_keys("platform.__keys") == [
+        "platform.services.fixture.token"
+    ]
+    assert await manager.list_secret_keys("bundles.__keys") == [
+        "bundles.demo@1-0.secrets.fixture.token"
+    ]
+    assert await manager.list_secret_keys("users.__keys") == [
+        "users.owner.secrets.fixture.token"
+    ]
+    assert await manager.list_all_secret_keys() == [
+        "bundles.demo@1-0.secrets.fixture.token",
+        "platform.services.fixture.token",
+        "users.owner.secrets.fixture.token",
+    ]
+
+
 class _FakeSecretsHttpClient:
     def __init__(self, response: _FakeHttpResponse | None = None, error: Exception | None = None):
         self.response = response
@@ -160,14 +189,14 @@ async def test_secrets_service_accepts_host_vault_generation(monkeypatch):
         lambda: _FakeHttpxModule(client),
     )
 
-    await _secrets_service_manager().set_secret("services.fixture.token", "secret-value")
+    await _secrets_service_manager().set_secret("platform.services.fixture.token", "secret-value")
 
     assert client.requests == [
         (
             "POST",
             "http://kdcube-secrets:7777/set",
             {
-                "json": {"key": "services.fixture.token", "value": "secret-value"},
+                "json": {"key": "platform.services.fixture.token", "value": "secret-value"},
                 "headers": {"X-KDCUBE-ADMIN-TOKEN": "admin-token"},
             },
         )
@@ -232,11 +261,11 @@ async def test_secrets_service_conflict_is_fixed_and_secret_safe(monkeypatch):
     )
 
     with pytest.raises(SecretsManagerWriteError) as captured:
-        await _secrets_service_manager().set_secret("users.private.token", canary)
+        await _secrets_service_manager().set_secret("users.private.secrets.token", canary)
 
     assert str(captured.value) == "secrets-service set conflict"
     assert canary not in str(captured.value)
-    assert "users.private.token" not in str(captured.value)
+    assert "users.private.secrets.token" not in str(captured.value)
 
 
 @pytest.mark.asyncio
@@ -250,7 +279,7 @@ async def test_secrets_service_transport_failure_is_fixed_and_secret_safe(monkey
     )
 
     with pytest.raises(SecretsManagerWriteError) as captured:
-        await _secrets_service_manager().set_secret("services.fixture.token", canary)
+        await _secrets_service_manager().set_secret("platform.services.fixture.token", canary)
 
     assert str(captured.value) == "secrets-service set request failed"
     assert canary not in str(captured.value)
@@ -271,16 +300,16 @@ async def test_secrets_service_unavailable_read_fails_closed_without_key_or_body
         lambda: _FakeHttpxModule(client),
     )
 
-    value = await _secrets_service_manager().get_secret("users.private.token")
+    value = await _secrets_service_manager().get_secret("users.private.secrets.token")
 
     with pytest.raises(SecretsManagerError) as captured:
-        await _secrets_service_manager().get_secret_strict("users.private.token")
+        await _secrets_service_manager().get_secret_strict("users.private.secrets.token")
 
     assert value is None
     assert str(captured.value) == "Secrets service read failed"
     assert canary not in str(captured.value)
     assert canary not in caplog.text
-    assert "users.private.token" not in caplog.text
+    assert "users.private.secrets.token" not in caplog.text
 
 
 def test_aws_sm_secret_path_uses_grouped_documents():
@@ -292,7 +321,7 @@ def test_aws_sm_secret_path_uses_grouped_documents():
         )
     )
 
-    assert manager._secret_id("services.openai.api_key") == "kdcube/demo/demo-march/platform/secrets"
+    assert manager._secret_id("platform.services.openai.api_key") == "kdcube/demo/demo-march/platform/secrets"
     assert (
         manager._secret_id("bundles.react@2026-03-15.secrets.openai.api_key")
         == "kdcube/demo/demo-march/bundles/react@2026-03-15/secrets"
@@ -301,11 +330,7 @@ def test_aws_sm_secret_path_uses_grouped_documents():
         manager._secret_id("users.user-1.bundles.rms@06-04-26-156.secrets.anthropic.api_key")
         == "kdcube/demo/demo-march/users/user-1/bundles/rms@06-04-26-156/secrets"
     )
-    assert manager._legacy_secret_id("services.openai.api_key") == "kdcube/demo/demo-march/services/openai/api_key"
-    assert (
-        manager._legacy_secret_id("bundles.react@2026-03-15.secrets.openai.api_key")
-        == "kdcube/demo/demo-march/bundles/react@2026-03-15/secrets/openai/api_key"
-    )
+    assert manager._inventory_secret_id() == "kdcube/demo/demo-march/inventory"
 
 
 @pytest.mark.asyncio
@@ -315,6 +340,17 @@ async def test_aws_sm_manager_reads_grouped_documents_and_virtual_metadata():
     )
     client = _FakeAwsSecretsClient(
         {
+            "kdcube/demo/demo-march/inventory": json.dumps(
+                {
+                    "schema": "kdcube.aws_secret_inventory.v1",
+                    "keys": [
+                        "platform.services.openai.api_key",
+                        "bundles.user-mgmt@1-0.secrets.user_management.cognito_user_pool_id",
+                        "bundles.user-mgmt@1-0.secrets.user_management.dry_run",
+                        "users.user-1.bundles.user-mgmt@1-0.secrets.google.refresh_token",
+                    ],
+                }
+            ),
             "kdcube/demo/demo-march/platform/secrets": json.dumps(
                 {"services": {"openai": {"api_key": "sk-openai"}}}
             ),
@@ -328,7 +364,7 @@ async def test_aws_sm_manager_reads_grouped_documents_and_virtual_metadata():
     )
     manager._session = _FakeAwsSession(client)
 
-    assert await manager.get_secret("services.openai.api_key") == "sk-openai"
+    assert await manager.get_secret("platform.services.openai.api_key") == "sk-openai"
     assert (
         await manager.get_secret("bundles.user-mgmt@1-0.secrets.user_management.cognito_user_pool_id") == "pool-123"
     )
@@ -342,11 +378,10 @@ async def test_aws_sm_manager_reads_grouped_documents_and_virtual_metadata():
 
 
 @pytest.mark.asyncio
-async def test_aws_inventory_unions_only_live_verified_legacy_records() -> None:
+async def test_aws_inventory_is_complete_and_provider_owned() -> None:
     metadata_key = "bundles.user-mgmt@1-0.secrets.__keys"
     grouped_key = "bundles.user-mgmt@1-0.secrets.provider.grouped"
-    legacy_key = "bundles.user-mgmt@1-0.secrets.provider.legacy"
-    deleted_key = "bundles.user-mgmt@1-0.secrets.provider.deleted"
+    user_key = "users.user-1.secrets.provider.token"
     manager = AwsSecretsManagerSecretsManager(
         SecretsManagerConfig(
             provider="aws-sm",
@@ -356,32 +391,29 @@ async def test_aws_inventory_unions_only_live_verified_legacy_records() -> None:
     )
     client = _FakeAwsSecretsClient(
         {
+            "kdcube/demo/demo-march/inventory": json.dumps(
+                {
+                    "schema": "kdcube.aws_secret_inventory.v1",
+                    "keys": [grouped_key, user_key],
+                }
+            ),
             "kdcube/demo/demo-march/bundles/user-mgmt@1-0/secrets": json.dumps(
                 {"provider": {"grouped": "grouped-value"}}
             ),
-            "kdcube/demo/demo-march/bundles/user-mgmt@1-0/secrets/__keys": json.dumps(
-                [legacy_key, deleted_key]
-            ),
-            "kdcube/demo/demo-march/bundles/user-mgmt@1-0/secrets/provider/legacy": (
-                "legacy-value"
+            "kdcube/demo/demo-march/users/user-1/secrets": json.dumps(
+                {"provider": {"token": "user-value"}}
             ),
         }
     )
     manager._session = _FakeAwsSession(client)
 
-    assert await manager.list_secret_keys(metadata_key) == [
-        grouped_key,
-        legacy_key,
-    ]
-    assert json.loads(await manager.get_secret(metadata_key) or "[]") == [
-        grouped_key,
-        legacy_key,
-    ]
+    assert await manager.list_secret_keys(metadata_key) == [grouped_key]
+    assert json.loads(await manager.get_secret(metadata_key) or "[]") == [grouped_key]
+    assert await manager.list_all_secret_keys() == [grouped_key, user_key]
 
 
 @pytest.mark.asyncio
-async def test_aws_inventory_rejects_cross_scope_legacy_metadata() -> None:
-    metadata_key = "bundles.user-mgmt@1-0.secrets.__keys"
+async def test_aws_inventory_rejects_invalid_or_duplicate_keys() -> None:
     manager = AwsSecretsManagerSecretsManager(
         SecretsManagerConfig(
             provider="aws-sm",
@@ -392,18 +424,27 @@ async def test_aws_inventory_rejects_cross_scope_legacy_metadata() -> None:
     client = _FakeAwsSecretsClient(
         {
             "kdcube/demo/demo-march/bundles/user-mgmt@1-0/secrets/__keys": json.dumps(
-                ["bundles.other@1-0.secrets.provider.token"]
+                {
+                    "schema": "kdcube.aws_secret_inventory.v1",
+                    "keys": [
+                        "bundles.other@1-0.secrets.provider.token",
+                        "bundles.other@1-0.secrets.provider.token",
+                    ],
+                }
             )
         }
     )
     manager._session = _FakeAwsSession(client)
 
+    client.data["kdcube/demo/demo-march/inventory"] = client.data.pop(
+        "kdcube/demo/demo-march/bundles/user-mgmt@1-0/secrets/__keys"
+    )
     with pytest.raises(SecretsManagerError, match="inventory response is invalid"):
-        await manager.list_secret_keys(metadata_key)
+        await manager.list_all_secret_keys()
 
 
 @pytest.mark.asyncio
-async def test_aws_sm_manager_falls_back_to_aggregate_bundle_blob_and_legacy_leafs():
+async def test_aws_sm_manager_does_not_read_legacy_aggregate_or_leafs():
     manager = AwsSecretsManagerSecretsManager(
         SecretsManagerConfig(provider="aws-sm", component="proc", aws_sm_prefix="kdcube/demo/demo-march")
     )
@@ -424,15 +465,13 @@ async def test_aws_sm_manager_falls_back_to_aggregate_bundle_blob_and_legacy_lea
     )
     manager._session = _FakeAwsSession(client)
 
-    assert (
-        await manager.get_secret("bundles.user-mgmt@1-0.secrets.user_management.cognito_user_pool_id")
-        == "pool-from-blob"
-    )
-    assert (
-        await manager.get_secret("bundles.user-mgmt@1-0.secrets.user_management.sheets_key")
-        == "sheet-from-blob"
-    )
-    assert await manager.get_secret("services.openai.api_key") == "sk-legacy-openai"
+    assert await manager.get_secret(
+        "bundles.user-mgmt@1-0.secrets.user_management.cognito_user_pool_id"
+    ) is None
+    assert await manager.get_secret(
+        "bundles.user-mgmt@1-0.secrets.user_management.sheets_key"
+    ) is None
+    assert await manager.get_secret("platform.services.openai.api_key") is None
 
 
 @pytest.mark.asyncio
@@ -454,6 +493,14 @@ async def test_aws_sm_manager_writes_and_deletes_grouped_bundle_documents():
             "sheets_key": "sheet-1",
         }
     }
+    inventory = json.loads(client.data["kdcube/demo/demo-march/inventory"])
+    assert inventory == {
+        "keys": [
+            "bundles.user-mgmt@1-0.secrets.user_management.cognito_user_pool_id",
+            "bundles.user-mgmt@1-0.secrets.user_management.sheets_key",
+        ],
+        "schema": "kdcube.aws_secret_inventory.v1",
+    }
 
     await manager.delete_secret("bundles.user-mgmt@1-0.secrets.user_management.sheets_key")
     stored = json.loads(client.data["kdcube/demo/demo-march/bundles/user-mgmt@1-0/secrets"])
@@ -461,6 +508,34 @@ async def test_aws_sm_manager_writes_and_deletes_grouped_bundle_documents():
 
     await manager.delete_secret("bundles.user-mgmt@1-0.secrets.user_management.cognito_user_pool_id")
     assert "kdcube/demo/demo-march/bundles/user-mgmt@1-0/secrets" not in client.data
+    assert json.loads(client.data["kdcube/demo/demo-march/inventory"])["keys"] == []
+
+
+@pytest.mark.asyncio
+async def test_aws_inventory_absence_and_interrupted_write_fail_closed():
+    manager = AwsSecretsManagerSecretsManager(
+        SecretsManagerConfig(
+            provider="aws-sm",
+            component="proc",
+            aws_sm_prefix="kdcube/demo/demo-march",
+        )
+    )
+    client = _FakeAwsSecretsClient()
+    manager._session = _FakeAwsSession(client)
+
+    with pytest.raises(SecretsManagerError, match="not initialized"):
+        await manager.list_all_secret_keys()
+
+    client.data["kdcube/demo/demo-march/inventory"] = json.dumps(
+        {
+            "schema": "kdcube.aws_secret_inventory.v1",
+            "keys": ["platform.services.fixture.token"],
+        }
+    )
+    assert await manager.list_all_secret_keys() == [
+        "platform.services.fixture.token"
+    ]
+    assert await manager.get_secret_strict("platform.services.fixture.token") is None
 
 
 @pytest.mark.asyncio
@@ -487,11 +562,11 @@ async def test_aws_sm_strict_read_and_write_fail_without_clobbering(caplog):
     )
     manager._session = _FakeAwsSession(client)
 
-    assert await manager.get_secret("services.new.token") is None
+    assert await manager.get_secret("platform.services.new.token") is None
     with pytest.raises(SecretsManagerError) as read_error:
-        await manager.get_secret_strict("services.new.token")
+        await manager.get_secret_strict("platform.services.new.token")
     with pytest.raises(SecretsManagerError) as write_error:
-        await manager.set_secret("services.new.token", marker)
+        await manager.set_secret("platform.services.new.token", marker)
 
     assert json.loads(
         client.data["kdcube/demo/demo-march/platform/secrets"]
@@ -599,11 +674,12 @@ async def test_secrets_file_manager_reads_global_and_bundle_yaml(tmp_path, monke
     global_file = tmp_path / "secrets.yaml"
     bundle_file = tmp_path / "bundles.secrets.yaml"
     global_file.write_text(
-        "services:\n"
-        "  openai:\n"
-        "    api_key: sk-global\n"
-        "  anthropic:\n"
-        "    claude_code_key: sk-claude-code",
+        "platform:\n"
+        "  services:\n"
+        "    openai:\n"
+        "      api_key: sk-global\n"
+        "    anthropic:\n"
+        "      claude_code_key: sk-claude-code",
         encoding="utf-8",
     )
     bundle_file.write_text(
@@ -632,8 +708,8 @@ async def test_secrets_file_manager_reads_global_and_bundle_yaml(tmp_path, monke
         )
     )
 
-    assert await manager.get_secret("services.openai.api_key") == "sk-global"
-    assert await manager.get_secret("services.anthropic.claude_code_key") == "sk-claude-code"
+    assert await manager.get_secret("platform.services.openai.api_key") == "sk-global"
+    assert await manager.get_secret("platform.services.anthropic.claude_code_key") == "sk-claude-code"
     assert (
         await manager.get_secret(
             "bundles.kdcube.copilot@2026-04-03-19-05.secrets.telegram.webhook_secret"
@@ -669,7 +745,7 @@ async def test_secrets_file_manager_writes_global_and_bundle_yaml(tmp_path, monk
 
     assert manager.can_write() is True
 
-    await manager.set_secret("services.openai.api_key", "sk-new")
+    await manager.set_secret("platform.services.openai.api_key", "sk-new")
     await manager.set_many(
         {
             "bundles.kdcube.copilot@2026-04-03-19-05.secrets.telegram.webhook_secret": "tg-secret",
@@ -677,7 +753,7 @@ async def test_secrets_file_manager_writes_global_and_bundle_yaml(tmp_path, monk
         }
     )
 
-    assert await manager.get_secret("services.openai.api_key") == "sk-new"
+    assert await manager.get_secret("platform.services.openai.api_key") == "sk-new"
     assert (
         await manager.get_secret(
             "bundles.kdcube.copilot@2026-04-03-19-05.secrets.telegram.webhook_secret"
@@ -700,7 +776,7 @@ async def test_secrets_file_manager_writes_global_and_bundle_yaml(tmp_path, monk
         assert global_file.stat().st_mode & 0o777 == 0o600
         assert bundle_file.stat().st_mode & 0o777 == 0o600
 
-    await manager.delete_secret("services.openai.api_key")
+    await manager.delete_secret("platform.services.openai.api_key")
     await manager.delete_many(
         [
             "bundles.kdcube.copilot@2026-04-03-19-05.secrets.telegram.webhook_secret",
@@ -708,7 +784,7 @@ async def test_secrets_file_manager_writes_global_and_bundle_yaml(tmp_path, monk
         ]
     )
 
-    assert await manager.get_secret("services.openai.api_key") is None
+    assert await manager.get_secret("platform.services.openai.api_key") is None
     assert (
         await manager.get_secret(
             "bundles.kdcube.copilot@2026-04-03-19-05.secrets.telegram.webhook_secret"
@@ -733,22 +809,22 @@ async def test_secrets_file_manager_preserves_nonempty_exact_strings_and_skips_p
 
     await manager.set_many(
         {
-            "services.fixture.whitespace": "  exact value  ",
-            "services.fixture.empty": "",
+            "platform.services.fixture.whitespace": "  exact value  ",
+            "platform.services.fixture.empty": "",
         }
     )
 
-    assert await manager.get_secret_strict("services.fixture.whitespace") == (
+    assert await manager.get_secret_strict("platform.services.fixture.whitespace") == (
         "  exact value  "
     )
-    assert await manager.get_secret_strict("services.fixture.empty") is None
+    assert await manager.get_secret_strict("platform.services.fixture.empty") is None
 
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(os.name != "posix", reason="POSIX file modes are required")
 async def test_secrets_file_manager_atomic_rewrite_repairs_public_mode(tmp_path, monkeypatch):
     global_file = tmp_path / "secrets.yaml"
-    global_file.write_text("services: {}\n", encoding="utf-8")
+    global_file.write_text("platform:\n  services: {}\n", encoding="utf-8")
     global_file.chmod(0o644)
 
     monkeypatch.setenv("SECRETS_PROVIDER", "secrets-file")
@@ -765,10 +841,10 @@ async def test_secrets_file_manager_atomic_rewrite_repairs_public_mode(tmp_path,
         )
     )
 
-    await manager.set_secret("services.demo.token", "first")
+    await manager.set_secret("platform.services.demo.token", "first")
     assert global_file.stat().st_mode & 0o777 == 0o600
 
-    await manager.set_secret("services.demo.token", "second")
+    await manager.set_secret("platform.services.demo.token", "second")
     assert global_file.stat().st_mode & 0o777 == 0o600
     assert list(tmp_path.glob(".secrets.yaml.tmp-*")) == []
 
@@ -924,7 +1000,10 @@ async def test_secrets_file_manager_cross_replica_reads_current_yaml(tmp_path, m
     from kdcube_ai_app.infra.redis import client as redis_client
 
     global_file = tmp_path / "secrets.yaml"
-    global_file.write_text("services:\n  openai:\n    api_key: sk-old\n", encoding="utf-8")
+    global_file.write_text(
+        "platform:\n  services:\n    openai:\n      api_key: sk-old\n",
+        encoding="utf-8",
+    )
 
     fake_redis = _FakeAsyncRedis()
     monkeypatch.setattr(redis_client, "get_async_redis_client", lambda *args, **kwargs: fake_redis)
@@ -946,10 +1025,10 @@ async def test_secrets_file_manager_cross_replica_reads_current_yaml(tmp_path, m
         project="demo-project",
     )
 
-    assert await manager_a.get_secret("services.openai.api_key") == "sk-old"
-    assert await manager_b.get_secret("services.openai.api_key") == "sk-old"
+    assert await manager_a.get_secret("platform.services.openai.api_key") == "sk-old"
+    assert await manager_b.get_secret("platform.services.openai.api_key") == "sk-old"
 
-    await manager_a.set_secret("services.openai.api_key", "sk-new")
+    await manager_a.set_secret("platform.services.openai.api_key", "sk-new")
 
     assert lock_key not in fake_redis.data
-    assert await manager_b.get_secret("services.openai.api_key") == "sk-new"
+    assert await manager_b.get_secret("platform.services.openai.api_key") == "sk-new"

@@ -90,10 +90,6 @@ bundles:
                 - urn:kdcube:management:secret:*:*:*:*:*
                 request_bound_operations:
                 - kdcube.management.application.reload
-                - kdcube.management.secret.metadata.read
-                - kdcube.management.secret.value.read
-                - kdcube.management.secret.value.write
-                - kdcube.management.secret.delete
                 request_permit_ttl_seconds: 600
           oauth:
             enabled: true
@@ -462,6 +458,7 @@ bundles:
               description: Manage explicitly selected deployment and application secret keys through the configured provider.
               admin_only: true
               resource_selection: true
+              selector_type: kdcube_secret
               operations:
                 kdcube.management.secret.metadata.read:
                   label: Inspect secret metadata
@@ -2792,7 +2789,7 @@ bundles:
                   code_exec:
                     timeout_s: 120
                 # Platform web tools (PAID): web_search meters on the search
-                # provider (key: services.brave.api_key or per-deployment backend);
+                # provider (key: platform.services.brave.api_key or per-deployment backend);
                 # result filtering/segmentation bills as llm through this app's
                 # accounted model service.
                 - name: web

@@ -30,7 +30,7 @@ SECRET_EXPORT_ERROR_SCHEMA = "kdcube.management.secret_export.error.v1"
 # input byte to a six-byte Unicode escape, so retain a finite envelope above
 # that protocol maximum rather than rejecting a valid bounded export.
 MAX_SECRET_EXPORT_RESPONSE_BYTES = 64 * 1024 * 1024
-MAX_SECRET_EXPORT_TARGETS = 256
+MAX_SECRET_EXPORT_TARGETS = 4096
 MAX_EXPORTED_SECRET_BYTES = 64 * 1024
 MAX_EXPORTED_SECRET_TOTAL_BYTES = 8 * 1024 * 1024
 MAX_APPROVAL_CLOCK_SKEW_SECONDS = 30
@@ -111,6 +111,7 @@ class SecretExportRequest:
     state: str
     code_challenge: str
     targets: tuple[ManagementSecretTarget, ...]
+    selection: str = ""
 
     @classmethod
     def create(
@@ -120,7 +121,8 @@ class SecretExportRequest:
         callback_uri: str,
         state: str,
         code_challenge: str,
-        targets: Sequence[ManagementSecretTarget],
+        targets: Sequence[ManagementSecretTarget] = (),
+        selection: str = "",
     ) -> SecretExportRequest:
         callback = validate_web_url(
             callback_uri,
@@ -149,9 +151,16 @@ class SecretExportRequest:
                 "The secret export PKCE parameters are invalid.",
             )
         ordered = tuple(sorted(targets, key=lambda item: item.identity))
-        if (
-            not ordered
-            or len(ordered) > MAX_SECRET_EXPORT_TARGETS
+        exact_selection = str(selection or "").strip()
+        if exact_selection not in {"", "all"} or bool(ordered) == bool(
+            exact_selection
+        ):
+            raise _fixed_error(
+                "secret_export_targets_invalid",
+                "The secret export must select all secrets or name exact targets.",
+            )
+        if ordered and (
+            len(ordered) > MAX_SECRET_EXPORT_TARGETS
             or len({item.identity for item in ordered}) != len(ordered)
         ):
             raise _fixed_error(
@@ -164,30 +173,60 @@ class SecretExportRequest:
             state=exact_state,
             code_challenge=exact_challenge,
             targets=ordered,
+            selection=exact_selection,
         )
 
     @property
     def payload(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "schema": SECRET_EXPORT_REQUEST_SCHEMA,
             "callback_uri": self.callback_uri,
             "state": self.state,
             "code_challenge": self.code_challenge,
             "code_challenge_method": "S256",
-            "targets": [target.to_dict() for target in self.targets],
         }
+        if self.selection:
+            payload["selection"] = self.selection
+        else:
+            payload["targets"] = [target.to_dict() for target in self.targets]
+        return payload
 
-    @property
-    def canonical_payload(self) -> dict[str, Any]:
+    def canonical_payload_for(
+        self,
+        targets: Sequence[ManagementSecretTarget],
+    ) -> dict[str, Any]:
         return {
-            **self.payload,
+            "schema": SECRET_EXPORT_REQUEST_SCHEMA,
             "tenant": self.target.tenant,
             "project": self.target.project,
+            "callback_uri": self.callback_uri,
+            "state": self.state,
+            "code_challenge": self.code_challenge,
+            "code_challenge_method": "S256",
+            "targets": [target.to_dict() for target in targets],
         }
+
+    def request_digest_for(
+        self,
+        targets: Sequence[ManagementSecretTarget],
+    ) -> str:
+        return _digest(self.canonical_payload_for(targets))
 
     @property
     def request_digest(self) -> str:
-        return _digest(self.canonical_payload)
+        """Return the digest for an exact client-selected manifest.
+
+        Whole-deployment export cannot have a client-computed digest because
+        KDCube first freezes the provider inventory. Callers handling an
+        ``all`` selection use the digest returned by ``start``.
+        """
+
+        if self.selection:
+            raise _fixed_error(
+                "secret_export_digest_unavailable",
+                "The whole-export digest is available after KDCube freezes the inventory.",
+            )
+        return self.request_digest_for(self.targets)
 
 
 @dataclass(frozen=True)
@@ -197,6 +236,8 @@ class SecretExportStart:
     authorization_url: str
     required_assurance: str
     expires_at: int
+    targets: tuple[ManagementSecretTarget, ...]
+    target_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -343,6 +384,8 @@ class SecretExportClient:
                 "authorization_url",
                 "required_assurance",
                 "expires_at",
+                "target_count",
+                "targets",
             }
             or payload.get("schema") != SECRET_EXPORT_START_SCHEMA
             or payload.get("ok") is not True
@@ -352,16 +395,58 @@ class SecretExportClient:
         request_digest = str(payload.get("request_digest") or "")
         assurance = str(payload.get("required_assurance") or "")
         expires_at = payload.get("expires_at")
+        target_count = payload.get("target_count")
+        raw_targets = payload.get("targets")
+        try:
+            if not isinstance(raw_targets, list):
+                raise TypeError
+            frozen_targets = tuple(
+                sorted(
+                    (
+                        ManagementSecretTarget.create(
+                            scope=item.get("scope"),
+                            key=item.get("key"),
+                            bundle_id=item.get("bundle_id", ""),
+                            user_id=item.get("user_id", ""),
+                        )
+                        for item in raw_targets
+                        if isinstance(item, Mapping)
+                        and not (
+                            set(item)
+                            - {"scope", "key", "bundle_id", "user_id"}
+                        )
+                    ),
+                    key=lambda item: item.identity,
+                )
+            )
+        except (ManagementCliError, TypeError, ValueError):
+            raise _fixed_error("secret_export_response_invalid") from None
         now = int(time.time())
+        exact_targets_valid = (
+            bool(frozen_targets)
+            and target_count == len(frozen_targets)
+            and request_digest == request.request_digest_for(frozen_targets)
+            and frozen_targets == request.targets
+        )
+        whole_targets_hidden = (
+            request.selection == "all"
+            and not frozen_targets
+            and isinstance(target_count, int)
+            and not isinstance(target_count, bool)
+            and 0 < target_count <= MAX_SECRET_EXPORT_TARGETS
+        )
         if (
             not _TOKEN_RE.fullmatch(transaction_id)
             or not _DIGEST_RE.fullmatch(request_digest)
-            or request_digest != request.request_digest
             or assurance not in _ASSURANCE_RANK
             or isinstance(expires_at, bool)
             or not isinstance(expires_at, int)
             or expires_at <= now
             or expires_at > now + MAX_SECRET_EXPORT_TRANSACTION_SECONDS
+            or isinstance(target_count, bool)
+            or not isinstance(target_count, int)
+            or not (exact_targets_valid or whole_targets_hidden)
+            or len({item.identity for item in frozen_targets}) != len(frozen_targets)
         ):
             raise _fixed_error("secret_export_response_invalid")
         authorization_url = validate_web_url(
@@ -393,6 +478,8 @@ class SecretExportClient:
             authorization_url=authorization_url,
             required_assurance=assurance,
             expires_at=expires_at,
+            target_count=target_count,
+            targets=frozen_targets,
         )
 
     async def exchange(
@@ -429,7 +516,7 @@ class SecretExportClient:
             raise _fixed_error("secret_export_response_invalid")
         if (
             payload.get("transaction_id") != start.transaction_id
-            or payload.get("request_digest") != request.request_digest
+            or payload.get("request_digest") != start.request_digest
         ):
             raise _fixed_error("secret_export_response_invalid")
         response_target = payload.get("target")
@@ -463,7 +550,8 @@ class SecretExportClient:
         ):
             raise _fixed_error("secret_export_response_invalid")
         raw_values = payload.get("values")
-        if not isinstance(raw_values, list) or len(raw_values) != len(request.targets):
+        expected_target_count = start.target_count or len(start.targets)
+        if not isinstance(raw_values, list) or len(raw_values) != expected_target_count:
             raise _fixed_error("secret_export_response_invalid")
         values: list[ExportedSecret] = []
         total_value_bytes = 0
@@ -474,12 +562,17 @@ class SecretExportClient:
                 expected_fields = {"scope", "key", "value"}
                 if raw_value.get("scope") == "bundle":
                     expected_fields.add("bundle_id")
+                elif raw_value.get("scope") == "user":
+                    expected_fields.add("user_id")
+                    if raw_value.get("bundle_id"):
+                        expected_fields.add("bundle_id")
                 if set(raw_value) != expected_fields:
                     raise ValueError
                 secret_target = ManagementSecretTarget.create(
                     scope=raw_value.get("scope"),
                     key=raw_value.get("key"),
                     bundle_id=raw_value.get("bundle_id", ""),
+                    user_id=raw_value.get("user_id", ""),
                 )
                 value = raw_value.get("value")
                 if not isinstance(value, str):
@@ -494,13 +587,25 @@ class SecretExportClient:
                 values.append(ExportedSecret(target=secret_target, value=value))
         except (ManagementCliError, TypeError, UnicodeError, ValueError):
             raise _fixed_error("secret_export_response_invalid") from None
-        if tuple(item.target.identity for item in values) != tuple(
-            item.identity for item in request.targets
+        value_targets = tuple(item.target for item in values)
+        if (
+            len({item.identity for item in value_targets}) != len(value_targets)
+            or value_targets
+            != tuple(sorted(value_targets, key=lambda item: item.identity))
+            or (
+                start.targets
+                and tuple(item.identity for item in value_targets)
+                != tuple(item.identity for item in start.targets)
+            )
+            or (
+                not start.targets
+                and request.request_digest_for(value_targets) != start.request_digest
+            )
         ):
             raise _fixed_error("secret_export_response_invalid")
         return SecretExportResult(
             transaction_id=start.transaction_id,
-            request_digest=request.request_digest,
+            request_digest=start.request_digest,
             assurance=assurance,
             approval_method=method,
             approval_verified_at=verified_at,
@@ -525,6 +630,7 @@ class BrowserSecretExportService:
         *,
         target: ManagementTarget,
         targets: Sequence[ManagementSecretTarget],
+        selection: str = "",
         timeout_seconds: float = 300.0,
         browser_opener: BrowserOpener | None = None,
     ) -> SecretExportResult:
@@ -541,6 +647,7 @@ class BrowserSecretExportService:
                 state=pkce.state,
                 code_challenge=pkce.code_challenge,
                 targets=targets,
+                selection=selection,
             )
             start = await self._client.start(request)
             try:

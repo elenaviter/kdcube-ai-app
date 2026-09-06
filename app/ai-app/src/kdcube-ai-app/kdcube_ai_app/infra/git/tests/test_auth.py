@@ -129,7 +129,11 @@ def test_ensure_git_commit_identity_updates_existing_repo_local_identity(tmp_pat
 @pytest.mark.asyncio
 async def test_build_git_env_token_from_secret_when_no_explicit_token(monkeypatch, tmp_path):
     async def fake_get_secret(key, default=None, **kwargs):
-        return "gh-bundle-token" if key == "services.git.http_token" else default
+        return (
+            "gh-bundle-token"
+            if key == "platform.services.git.http_token"
+            else default
+        )
 
     monkeypatch.setattr(git_auth, "get_secret", fake_get_secret)
     askpass = tmp_path / "askpass.sh"
@@ -143,9 +147,9 @@ async def test_build_git_env_token_from_secret_when_no_explicit_token(monkeypatc
 @pytest.mark.asyncio
 async def test_build_git_env_user_from_secret_when_no_explicit_user(monkeypatch, tmp_path):
     async def fake_get_secret(key, default=None, **kwargs):
-        if key == "services.git.http_token":
+        if key == "platform.services.git.http_token":
             return "gh-token"
-        if key == "services.git.http_user":
+        if key == "platform.services.git.http_user":
             return "custom-user"
         return default
 
@@ -161,7 +165,11 @@ async def test_build_git_env_user_from_secret_when_no_explicit_user(monkeypatch,
 async def test_build_git_env_explicit_token_beats_service_secret(monkeypatch, tmp_path):
     """Explicit git_http_token= parameter has priority over settings value."""
     async def fake_get_secret(key, default=None, **kwargs):
-        return "gh-should-not-use" if key == "services.git.http_token" else default
+        return (
+            "gh-should-not-use"
+            if key == "platform.services.git.http_token"
+            else default
+        )
 
     monkeypatch.setattr(git_auth, "get_secret", fake_get_secret)
     askpass = tmp_path / "askpass.sh"
@@ -196,7 +204,11 @@ async def test_build_git_env_no_token_falls_back_to_base_env(monkeypatch, tmp_pa
 async def test_build_git_env_default_user_when_no_user_secret(monkeypatch, tmp_path):
     """Falls back to DEFAULT_GIT_HTTP_USER when no http_user in settings or base_env."""
     async def fake_get_secret(key, default=None, **kwargs):
-        return "gh-token" if key == "services.git.http_token" else default
+        return (
+            "gh-token"
+            if key == "platform.services.git.http_token"
+            else default
+        )
 
     monkeypatch.setattr(git_auth, "get_secret", fake_get_secret)
     askpass = tmp_path / "askpass.sh"

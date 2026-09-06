@@ -157,7 +157,7 @@ bundle service override:
 await get_secret("openai.api_key")
       |
       +-- first: current bundle secret services.openai.api_key
-      +-- then: platform/global secret services.openai.api_key
+      +-- then: platform/global secret platform.services.openai.api_key
 ```
 
 Descriptor apply/export path:
@@ -369,7 +369,7 @@ api_key = await get_secret("openai.api_key")
 Resolution order for service secrets:
 
 1. current bundle secret `services.<provider>.<key>`
-2. platform/global secret `services.<provider>.<key>`
+2. platform/global secret `platform.services.<provider>.<key>`
 
 Secrets are never read from `bundles.yaml`, and bundle props are never used to
 store secret values.

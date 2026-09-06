@@ -34,7 +34,7 @@ async def test_config_request_secret_resolution_prefers_bundle_secret(monkeypatc
         calls.append((key, kwargs))
         if key == "b:services.openai.api_key" and kwargs.get("bundle_id") == "bundle@1":
             return "sk-bundle-openai"
-        if key == "services.anthropic.api_key":
+        if key == "platform.services.anthropic.api_key":
             return "sk-global-anthropic"
         return default
 

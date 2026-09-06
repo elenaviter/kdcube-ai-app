@@ -286,7 +286,7 @@ Common environment variables:
 - `AUTH_TOKEN_COOKIE_NAME` (default `__Secure-LATC`)
 - `ID_TOKEN_COOKIE_NAME` (default `__Secure-LITC`)
 - `IDP_DB_PATH` (SimpleIDP user token map)
-- `services.session_token.secret` (descriptor secret used to sign `kst1` platform sessions)
+- `platform.services.session_token.secret` (descriptor secret used to sign `kst1` platform sessions)
 
 In descriptor-driven deployments these values come from the selected platform
 authority provider in Connection Hub:

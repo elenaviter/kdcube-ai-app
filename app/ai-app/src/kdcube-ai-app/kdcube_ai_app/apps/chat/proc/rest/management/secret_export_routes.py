@@ -268,8 +268,37 @@ async def start_secret_export(request: Request) -> JSONResponse:
                 "secret_export_request_invalid",
                 status_code=400,
             ) from None
+        normalized_payload = dict(payload)
+        selection = str(normalized_payload.pop("selection", "") or "").strip()
+        if selection:
+            if selection != "all" or normalized_payload.get("targets") not in (
+                None,
+                [],
+            ):
+                raise SecretExportError(
+                    "secret_export_selection_invalid",
+                    status_code=400,
+                )
+            targets = await _runtime(
+                request,
+                tenant=tenant,
+                project=project,
+            ).inventory()
+            if not targets:
+                raise SecretExportError(
+                    "secret_export_inventory_empty",
+                    status_code=404,
+                )
+            if len(targets) > config.max_targets:
+                raise SecretExportError(
+                    "secret_export_inventory_too_large",
+                    status_code=413,
+                )
+            normalized_payload["targets"] = [
+                target.public_dict() for target in targets
+            ]
         export_request = SecretExportRequest.from_mapping(
-            payload,
+            normalized_payload,
             tenant=tenant,
             project=project,
             max_targets=config.max_targets,
@@ -287,6 +316,8 @@ async def start_secret_export(request: Request) -> JSONResponse:
         )
     except SecretExportError as exc:
         return _error(exc.code, status_code=exc.status_code)
+    except ManagementSecretsProviderUnavailable:
+        return _error("secret_export_provider_unavailable", status_code=503)
     except Exception:  # noqa: BLE001
         return _error("secret_export_store_unavailable", status_code=503)
 
@@ -309,6 +340,17 @@ async def start_secret_export(request: Request) -> JSONResponse:
             "authorization_url": authorization_url,
             "required_assurance": transaction.required_assurance,
             "expires_at": transaction.expires_at,
+            "target_count": len(transaction.request.targets),
+            # A whole-provider start route is intentionally unauthenticated so
+            # the CLI can begin the browser ceremony. Do not disclose the
+            # provider inventory until the approved one-use exchange.
+            "targets": (
+                []
+                if selection == "all"
+                else [
+                    target.public_dict() for target in transaction.request.targets
+                ]
+            ),
         },
         headers=SECRET_RESPONSE_HEADERS,
     )
@@ -357,11 +399,14 @@ async def authorize_secret_export(
 
     target_rows = []
     for target in transaction.request.targets:
-        owner = (
-            f"application {target.bundle_id}"
-            if target.bundle_id
-            else "deployment platform"
-        )
+        if target.user_id and target.bundle_id:
+            owner = f"user {target.user_id}, application {target.bundle_id}"
+        elif target.user_id:
+            owner = f"user {target.user_id}"
+        elif target.bundle_id:
+            owner = f"application {target.bundle_id}"
+        else:
+            owner = "deployment platform"
         target_rows.append(
             "<li><strong>"
             f"{html.escape(owner)}</strong><br><code>{html.escape(target.key)}</code>"

@@ -131,7 +131,7 @@ async def run_stripe_reconcile_sweep_once(*, actor: str = "scheduler") -> dict:
             subscription_mgr=subscription_mgr,
             default_tenant=tenant,
             default_project=project,
-            stripe_webhook_secret=await get_secret("services.stripe.webhook_secret"),
+            stripe_webhook_secret=await get_secret("platform.services.stripe.webhook_secret"),
         )
 
         admin_svc = StripeEconomicsAdminService(

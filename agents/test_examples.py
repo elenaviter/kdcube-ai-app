@@ -359,15 +359,15 @@ def test_each_example_owns_a_standard_app_agnostic_descriptor_set(adapter: str) 
         == "py-code-exec:latest"
     )
     assert assembly.get("secrets", {}).get("provider") == "secrets-file"
-    assert secrets["infra"]["redis"]["password"] is None
-    assert secrets["infra"]["postgres"]["password"] is None
+    assert secrets["platform"]["infra"]["redis"]["password"] is None
+    assert secrets["platform"]["infra"]["postgres"]["password"] is None
     if adapter == "claude":
         assert assembly["storage"]["claude_code_session"]["type"] == "git"
         assert str(assembly["storage"]["claude_code_session"]["repo"] or "")
-        assert "http_token" in secrets["services"]["git"]
+        assert "http_token" in secrets["platform"]["services"]["git"]
     else:
         assert "claude_code_session" not in assembly["storage"]
-        assert "git" not in secrets["services"]
+        assert "git" not in secrets["platform"]["services"]
     prices = economics.get("price_tables", {}).get("llm")
     assert prices
     assert prices[0]["model"] == "claude-haiku-4-5-20251001"
@@ -412,7 +412,7 @@ def test_claude_uses_sdk_git_session_store_for_its_transcript() -> None:
     assert "ClaudeCodeSessionStoreConfig(" in source
     assert assembly["storage"]["claude_code_session"]["type"] == "git"
     assert str(assembly["storage"]["claude_code_session"]["repo"] or "")
-    assert "http_token" in secrets["services"]["git"]
+    assert "http_token" in secrets["platform"]["services"]["git"]
 
 
 @pytest.mark.parametrize("adapter", ADAPTERS)
@@ -628,7 +628,7 @@ def test_direct_recipe_is_an_executable_configuration_contract() -> None:
         "descriptors.local/",
         "storage:\n  kdcube:",
         "storage.claude_code_session.repo",
-        "services.git.http_token",
+        "platform.services.git.http_token",
         "models:\n  default_llm_model_id: claude-haiku-4-5-20251001",
         ".venv/bin/python agent.py --check",
         "agent:\n  topic:",

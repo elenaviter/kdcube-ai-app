@@ -5,7 +5,7 @@ summary: "Install the published KDCube CLI, initialize a tenant/project from the
 status: active
 tags: [docs, quickstart, local, docker-compose, cli, authentication]
 keywords: [install kdcube, kdcube init, local runtime, latest release, Google login, tenant project, runtime workdir]
-updated_at: 2026-09-05
+updated_at: 2026-09-06
 see_also:
   - repo:kdcube/app/ai-app/docs/what-you-can-do-with-kdcube-README.md
   - repo:kdcube/app/ai-app/docs/recipes/operations/install-clean-README.md
@@ -203,8 +203,8 @@ The important configuration files are under `config/`:
 | --- | --- |
 | `assembly.yaml` | deployment scope, auth, ports, infrastructure, storage, and platform version |
 | `bundles.yaml` | installed apps (`bundle` is the CLI/config alias), app properties, and provided/consumed surfaces |
-| `secrets.yaml` | platform and provider secret values or references |
-| `bundles.secrets.yaml` | app-owned secret values or references |
+| `secrets.yaml` | canonical `platform` and `users` secret namespaces |
+| `bundles.secrets.yaml` | deployment-app secret values |
 | `economics.yaml` | plans, prices, budgets, and usage policy |
 | `gateway.yaml` | gateway capacity and process limits |
 
@@ -231,9 +231,21 @@ for configuration updates, app reloads, logs, and cleanup.
 
 After the runtime is available, `kdcube secrets metadata|get|set|delete`
 manages exact logical keys through its selected provider, and
-`kdcube secrets export` performs an owner-confirmed one-use descriptor export.
+`kdcube secrets export` performs an administrator-confirmed one-use selected or
+whole descriptor export. `kdcube config export --include-platform-descriptors`
+places the complete private pair beside the ordinary descriptors; `config
+import` bootstraps a file-backed runtime or upserts into an existing provider-
+backed runtime while preserving that target's backend identity.
 See [Manage KDCube Secrets](service/secrets/secret-management-cli-README.md)
 for local and remote commands, delegated authority, and safe input/output.
+
+An existing descriptor set with unqualified platform roots must be migrated
+before refresh:
+
+```bash
+kdcube secrets namespace migrate --tenant acme --project local --dry-run
+kdcube secrets namespace migrate --tenant acme --project local --yes
+```
 
 ### Optional: Move Local Secrets To The Host Vault
 

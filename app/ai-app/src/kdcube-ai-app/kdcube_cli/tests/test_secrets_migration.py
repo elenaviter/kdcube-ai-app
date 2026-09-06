@@ -38,14 +38,15 @@ def _write_inventory(config_dir: Path) -> None:
     secrets = config_dir / "secrets.yaml"
     secrets.write_text(
         """
-services:
-  brave:
-    api_key: brave-canary
-  optional:
-    token: <FILL_ME>
-infra:
-  redis:
-    password: redis-canary
+platform:
+  services:
+    brave:
+      api_key: brave-canary
+    optional:
+      token: <FILL_ME>
+  infra:
+    redis:
+      password: redis-canary
 """.strip()
         + "\n",
         encoding="utf-8",
@@ -85,10 +86,25 @@ def test_inventory_matches_file_provider_key_shape_and_filters_placeholders(tmp_
     bundle_key = "bundles.connection-hub@1-0.secrets.connections.token"
     assert inventory.values == {
         bundle_key: "connector-canary",
-        "infra.redis.password": "redis-canary",
-        "services.brave.api_key": "brave-canary",
+        "platform.infra.redis.password": "redis-canary",
+        "platform.services.brave.api_key": "brave-canary",
     }
     assert inventory.skipped_placeholders == 2
+
+
+def test_inventory_refuses_legacy_unqualified_platform_roots(tmp_path):
+    config_dir = tmp_path / "config"
+    _write_inventory(config_dir)
+    secrets = config_dir / "secrets.yaml"
+    secrets.write_text(
+        "services:\n  brave:\n    api_key: legacy-canary\n",
+        encoding="utf-8",
+    )
+    if os.name == "posix":
+        secrets.chmod(0o600)
+
+    with pytest.raises(HostVaultStageError, match="namespace migrate"):
+        load_file_secret_inventory(config_dir, is_placeholder=_is_placeholder)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX file modes are required")
@@ -125,7 +141,9 @@ def test_stage_refuses_all_writes_when_one_destination_value_differs(tmp_path):
     config_dir = tmp_path / "config"
     _write_inventory(config_dir)
     inventory = load_file_secret_inventory(config_dir, is_placeholder=_is_placeholder)
-    destination = _MemoryDestination({"services.brave.api_key": "other-value"})
+    destination = _MemoryDestination(
+        {"platform.services.brave.api_key": "other-value"}
+    )
 
     with pytest.raises(HostVaultStageError, match=r"1 conflict\(s\)") as exc_info:
         stage_file_secrets(inventory, destination, dry_run=False)
@@ -152,19 +170,26 @@ def test_compose_destination_keeps_values_and_digests_out_of_arguments(monkeypat
     )
     secret = "must-not-enter-process-arguments"
 
-    assert destination.verify("services.fixture.token", secret) is VerificationState.MISSING
-    destination.create("services.fixture.token", secret)
+    assert (
+        destination.verify("platform.services.fixture.token", secret)
+        is VerificationState.MISSING
+    )
+    destination.create("platform.services.fixture.token", secret)
 
     assert len(calls) == 2
     assert all(secret not in command for command, _kwargs in calls)
     verify_command, verify_kwargs = calls[0]
     create_command, create_kwargs = calls[1]
-    assert verify_command[-3:] == ["verify", "services.fixture.token", "--sha256-stdin"]
+    assert verify_command[-3:] == [
+        "verify",
+        "platform.services.fixture.token",
+        "--sha256-stdin",
+    ]
     assert len(str(verify_kwargs["input"])) == 64
     assert str(verify_kwargs["input"]) not in verify_command
     assert create_command[-4:] == [
         "set",
-        "services.fixture.token",
+        "platform.services.fixture.token",
         "--stdin",
         "--if-absent",
     ]
@@ -194,6 +219,9 @@ def test_compose_destination_retries_transient_broker_failure(monkeypatch, tmp_p
         transient_delay_seconds=0.25,
     )
 
-    assert destination.verify("services.fixture.token", "value") is VerificationState.MISSING
+    assert (
+        destination.verify("platform.services.fixture.token", "value")
+        is VerificationState.MISSING
+    )
     assert len(calls) == 2
     assert sleeps == [0.25]

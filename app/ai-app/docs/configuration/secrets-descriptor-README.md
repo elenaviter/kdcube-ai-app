@@ -1,9 +1,10 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/configuration/secrets-descriptor-README.md
 title: "Platform Secrets Descriptor"
-summary: "Platform-level secret configuration in secrets.yaml: model provider credentials, git and auth secrets, and other global deployment secrets across local file mode and AWS. Service keys under services.* can be overridden per bundle via bundles.secrets.yaml."
+summary: "Canonical platform and user secret configuration in secrets.yaml, deployment-bundle secrets in bundles.secrets.yaml, and the same portable shape across file, Host Vault, and cloud providers."
 tags: ["service", "configuration", "platform", "secrets", "deployment", "descriptor"]
 keywords: ["platform global secrets", "model provider credentials", "git transport credentials", "identity provider secrets", "cloud credentials", "email credentials", "local secrets file mode", "aws secrets manager global secrets", "canonical secret keys", "deployment secret inventory", "bundle service key override", "per-bundle api key"]
+updated_at: 2026-09-06
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/descriptors-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/bundles-secrets-descriptor-README.md
@@ -15,22 +16,35 @@ see_also:
 ---
 # Platform Secrets Descriptor
 
-`secrets.yaml` stores platform/global secrets.
+`secrets.yaml` is the portable private descriptor for platform and user
+secrets. It has exactly two top-level namespaces:
+
+```yaml
+platform:
+  services: {}
+  infra: {}
+  auth: {}
+users: {}
+```
+
+Deployment-bundle values live in `bundles.secrets.yaml`. The selected runtime
+provider may store the same logical keys in files, Host Vault, AWS Secrets
+Manager, or memory, but it does not change their canonical identities.
 
 An empty string or `null` is an unconfigured placeholder, not a stored secret.
 Use the delete operation to remove a live value; delegated management rejects
 an empty replacement so file, host-vault, and cloud providers retain the same
 observable contract.
 
-Typical keys:
+Typical platform keys:
 
-- `services.openai.api_key`
-- `services.google.api_key`
-- `services.anthropic.api_key`
-- `services.git.http_token`
-- `auth.cognito.client_secret`
-- `aws.access_key_id`
-- `aws.secret_access_key`
+- `platform.services.openai.api_key`
+- `platform.services.google.api_key`
+- `platform.services.anthropic.api_key`
+- `platform.services.git.http_token`
+- `platform.auth.cognito.client_secret`
+- `platform.aws.access_key_id`
+- `platform.aws.secret_access_key`
 
 ## Direct runtime contract from this descriptor
 
@@ -38,8 +52,9 @@ Typical keys:
 
 | Need | API | Notes |
 |---|---|---|
-| platform/global secret | `await get_secret("canonical.key")` | canonical dot path is the stable contract |
-| legacy env alias | `await get_secret("canonical.key")` | also accepts the documented env aliases below |
+| platform secret | `await get_secret("platform.canonical.key")` | `platform.` is required |
+| current bundle secret | `await get_secret("b:relative.key")` | explicit bundle-relative lookup |
+| user secret | platform-owned user-secret APIs | exact user identity is part of the provider key |
 
 ### File-resolution env vars
 
@@ -48,30 +63,34 @@ Typical keys:
 | `GLOBAL_SECRETS_YAML` | Explicit file URI or path for `secrets.yaml` in `secrets-file` mode | direct local service run |
 | `HOST_SECRETS_YAML_DESCRIPTOR_PATH` | Host file staged into `/config/secrets.yaml` by the CLI installer | CLI local compose |
 
-### Canonical secret keys and accepted env aliases
+### Canonical secret keys and settings projections
 
-| Canonical key | Accepted env alias(es) | Primary API |
+The second column names compatibility settings fields used by platform
+bootstrap code. These names are not accepted as secret keys. Runtime calls use
+the canonical first column.
+
+| Canonical key | Settings projection name(s) | Primary API |
 |---|---|---|
-| `services.openai.api_key` | `OPENAI_API_KEY` | `get_secret(...)` |
-| `services.anthropic.api_key` | `ANTHROPIC_API_KEY` | `get_secret(...)` |
-| `services.anthropic.claude_code_key` | `CLAUDE_CODE_KEY` | `get_secret(...)` |
-| `services.brave.api_key` | `BRAVE_API_KEY` | `get_secret(...)` |
-| `services.brave.api_comm_mid_key` | `BRAVE_API_COMM_MID_KEY` | `get_secret(...)` |
-| `services.google.api_key` | `GOOGLE_API_KEY`, `GEMINI_API_KEY` | `get_secret(...)` |
-| `services.git.http_token` | `GIT_HTTP_TOKEN` | `get_secret(...)` |
-| `services.git.http_user` | `GIT_HTTP_USER` | `get_secret(...)` |
-| `services.openrouter.api_key` | `OPENROUTER_API_KEY` | `get_secret(...)` |
-| `services.serpapi.api_key` | `SERPAPI_API_KEY` | `get_secret(...)` |
-| `services.stripe.secret_key` | `STRIPE_SECRET_KEY`, `STRIPE_API_KEY` | `get_secret(...)` |
-| `services.stripe.webhook_secret` | `STRIPE_WEBHOOK_SECRET` | `get_secret(...)` |
-| `services.huggingface.api_key` | `HUGGING_FACE_KEY`, `HUGGINGFACE_API_KEY`, `HUGGING_FACE_API_TOKEN` | `get_secret(...)` |
-| `services.firecrawl.api_key` | `FIRECRAWL_API_KEY` | `get_secret(...)` |
-| `services.federated_token.secret` | none | `get_secret(...)` |
-| `services.session_token.secret` | none | `get_secret(...)` |
-| `services.email.password` | `EMAIL_PASSWORD` | `get_secret(...)` |
-| `auth.oidc.admin_email` | `OIDC_SERVICE_USER_EMAIL` | `get_secret(...)` |
-| `auth.oidc.admin_username` | `OIDC_SERVICE_ADMIN_USERNAME` | `get_secret(...)` |
-| `auth.oidc.admin_password` | `OIDC_SERVICE_ADMIN_PASSWORD` | `get_secret(...)` |
+| `platform.services.openai.api_key` | `OPENAI_API_KEY` | `get_secret(...)` |
+| `platform.services.anthropic.api_key` | `ANTHROPIC_API_KEY` | `get_secret(...)` |
+| `platform.services.anthropic.claude_code_key` | `CLAUDE_CODE_KEY` | `get_secret(...)` |
+| `platform.services.brave.api_key` | `BRAVE_API_KEY` | `get_secret(...)` |
+| `platform.services.brave.api_comm_mid_key` | `BRAVE_API_COMM_MID_KEY` | `get_secret(...)` |
+| `platform.services.google.api_key` | `GOOGLE_API_KEY`, `GEMINI_API_KEY` | `get_secret(...)` |
+| `platform.services.git.http_token` | `GIT_HTTP_TOKEN` | `get_secret(...)` |
+| `platform.services.git.http_user` | `GIT_HTTP_USER` | `get_secret(...)` |
+| `platform.services.openrouter.api_key` | `OPENROUTER_API_KEY` | `get_secret(...)` |
+| `platform.services.serpapi.api_key` | `SERPAPI_API_KEY` | `get_secret(...)` |
+| `platform.services.stripe.secret_key` | `STRIPE_SECRET_KEY`, `STRIPE_API_KEY` | `get_secret(...)` |
+| `platform.services.stripe.webhook_secret` | `STRIPE_WEBHOOK_SECRET` | `get_secret(...)` |
+| `platform.services.huggingface.api_key` | `HUGGING_FACE_KEY`, `HUGGINGFACE_API_KEY`, `HUGGING_FACE_API_TOKEN` | `get_secret(...)` |
+| `platform.services.firecrawl.api_key` | `FIRECRAWL_API_KEY` | `get_secret(...)` |
+| `platform.services.federated_token.secret` | none | `get_secret(...)` |
+| `platform.services.session_token.secret` | none | `get_secret(...)` |
+| `platform.services.email.password` | `EMAIL_PASSWORD` | `get_secret(...)` |
+| `platform.auth.oidc.admin_email` | `OIDC_SERVICE_USER_EMAIL` | `get_secret(...)` |
+| `platform.auth.oidc.admin_username` | `OIDC_SERVICE_ADMIN_USERNAME` | `get_secret(...)` |
+| `platform.auth.oidc.admin_password` | `OIDC_SERVICE_ADMIN_PASSWORD` | `get_secret(...)` |
 
 ## What it is not for
 
@@ -79,14 +98,15 @@ Do not put bundle-scoped secrets here if they belong to a specific bundle.
 
 Use `bundles.secrets.yaml` for bundle secrets.
 
-The `services.*` keys listed above can be overridden per bundle via
+The `platform.services.*` keys listed above can be overridden per bundle via
 `bundles.secrets.yaml` using the same key path.
 When bundle code wants bundle-first service-key lookup, use the explicit pattern
-`await get_secret("b:services.<name>.<key>") or await get_secret("services.<name>.<key>")`.
+`await get_secret("b:services.<name>.<key>") or await get_secret("platform.services.<name>.<key>")`.
 See [bundles-secrets-descriptor-README.md](bundles-secrets-descriptor-README.md)
 for the override mechanism and the list of overridable keys.
 
-`services.federated_token.secret` and `services.session_token.secret` are
+`platform.services.federated_token.secret` and
+`platform.services.session_token.secret` are
 platform-wide service secrets. Keep each value consistent across ingress/proc
 workers.
 
@@ -106,9 +126,10 @@ Otherwise:
 
 - it is installer input used to populate the active runtime secrets provider
 
-An administrator can reconstruct an explicit set of platform and bundle keys
-through the browser-approved `kdcube secrets export` ceremony documented in
-[Manage KDCube Secrets](../service/secrets/secret-management-cli-README.md#owner-only-export).
+An administrator can reconstruct selected keys or the whole provider
+inventory, including every current user value, through the browser-approved
+`kdcube secrets export` ceremony documented in
+[Manage KDCube Secrets](../service/secrets/secret-management-cli-README.md#human-only-export).
 
 Secret inventory is provider-derived. `.__keys` is a virtual compatibility
 selector used by the runtime and must not be authored, staged, or mutated in a
@@ -147,6 +168,30 @@ In `aws-sm`:
 - `secrets.yaml` is deployment input
 - live secret authority is AWS Secrets Manager, not the YAML file
 
+The synchronized provider identities retain the same namespaces:
+`platform.*`, `bundles.<bundle-id>.secrets.*`, and `users.<user-id>.*`.
+
+## Migrate Existing Descriptors
+
+Runtime reads do not infer an unqualified platform key. Before loading source
+that uses this contract, migrate an existing private descriptor pair:
+
+```bash
+kdcube secrets namespace migrate \
+  --workdir ~/.kdcube/kdcube-runtime/demo-tenant__demo-project \
+  --dry-run
+
+kdcube secrets namespace migrate \
+  --workdir ~/.kdcube/kdcube-runtime/demo-tenant__demo-project \
+  --yes
+```
+
+The migration moves every former top-level platform root under `platform` and
+moves any misplaced `bundles.<id>.secrets.*` values into
+`bundles.secrets.yaml`. It preserves `users`, refuses conflicting duplicate
+values without writing, performs atomic owner-only file replacement, and
+reports identities and counts without rendering values.
+
 ## Local isolation boundary
 
 Owner-only mode is local filesystem hygiene. It prevents another OS account
@@ -162,6 +207,7 @@ See [README-iso-runtime.md](../exec/README-iso-runtime.md) for that boundary.
 
 ## Practical rule
 
-- use `secrets.yaml` for platform/global secrets
+- use `secrets.yaml` for `platform.*` and `users.*` secrets
 - use `bundles.secrets.yaml` for bundle secrets
 - treat YAML files as live authority only in `secrets-file` mode
+- use the same literal pair for complete administrator export and bootstrap

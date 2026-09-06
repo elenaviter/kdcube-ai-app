@@ -67,12 +67,12 @@ Preferred resolution order:
 In practice the helper resolves:
 
 - HTTPS token:
-  - `services.git.http_token`
-  - `services.git.http_user`
+  - `platform.services.git.http_token`
+  - `platform.services.git.http_user`
 - SSH transport:
-  - `services.git.git_ssh_key_path`
-  - `services.git.git_ssh_known_hosts`
-  - `services.git.git_ssh_strict_host_key_checking`
+  - `platform.services.git.git_ssh_key_path`
+  - `platform.services.git.git_ssh_known_hosts`
+  - `platform.services.git.git_ssh_strict_host_key_checking`
 
 These are exposed through `get_settings()` / `get_secret()`.
 

@@ -131,7 +131,13 @@ async def test_settings_infers_descriptor_root_from_explicit_assembly_path(monke
     )
     secrets_path.write_text(
         yaml.safe_dump(
-            {"secrets": {"services": {"brave": {"api_key": "brave-secret"}}}},
+            {
+                "secrets": {
+                    "platform": {
+                        "services": {"brave": {"api_key": "brave-secret"}}
+                    }
+                }
+            },
             sort_keys=False,
         ),
         encoding="utf-8",
@@ -145,7 +151,7 @@ async def test_settings_infers_descriptor_root_from_explicit_assembly_path(monke
     assert settings.GLOBAL_SECRETS_YAML == secrets_path.resolve().as_uri()
     assert settings.BRAVE_API_KEY is None
     sdk_config.get_settings.cache_clear()
-    assert await sdk_config.get_secret("services.brave.api_key") == "brave-secret"
+    assert await sdk_config.get_secret("platform.services.brave.api_key") == "brave-secret"
     assert exported["PLATFORM_DESCRIPTORS_DIR"] == str(tmp_path)
     assert exported["GLOBAL_SECRETS_YAML"] == secrets_path.resolve().as_uri()
 

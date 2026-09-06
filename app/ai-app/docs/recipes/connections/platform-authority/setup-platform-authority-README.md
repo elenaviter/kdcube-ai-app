@@ -316,12 +316,12 @@ Keep sensitive values in the secrets lifecycle, not in public descriptors.
 | Secret | Used by |
 | --- | --- |
 | Cognito app/client secret, if applicable | Cognito provider/runtime. |
-| `services.session_token.secret` | KDCube `kst1` platform-session signing and verification. |
+| `platform.services.session_token.secret` | KDCube `kst1` platform-session signing and verification. |
 | Upstream provider secrets | Application-hosted login operations or request authenticators. |
 | Bot/webhook/OAuth client secrets | Connection Hub authenticators and integration providers. |
 
 Every ingress/proc worker that validates `kst1` platform-session tokens must
-read the same `services.session_token.secret`.
+read the same `platform.services.session_token.secret`.
 
 ## Switching Providers
 

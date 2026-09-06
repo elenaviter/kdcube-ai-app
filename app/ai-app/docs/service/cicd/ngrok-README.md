@@ -226,9 +226,9 @@ Initialize and start the runtime:
 kdcube init --tenant <t> --project <p> \
   --descriptors-location /path/to/descriptors \
   --cors-origin https://<stable-ngrok-domain> \
-  --set-secret services.openai.api_key "<openai-key>" \
-  --set-secret services.anthropic.api_key "<anthropic-key>" \
-  --set-secret services.git.http_token "<github-token>" \
+  --set-secret platform.services.openai.api_key "<openai-key>" \
+  --set-secret platform.services.anthropic.api_key "<anthropic-key>" \
+  --set-secret platform.services.git.http_token "<github-token>" \
   --set-secret git.http_token "<github-token>"
 
 kdcube start --tenant <t> --project <p>

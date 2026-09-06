@@ -98,10 +98,10 @@ async def _user_secret_lookup(*, user_id: str, bundle_id: str, key: str) -> str:
 
 async def _claude_code_env(*, entrypoint: Any, user_id: str, bundle_id: str) -> Dict[str, str]:
     env: Dict[str, str] = {}
-    anthropic_key = await _secret_lookup("services.anthropic.api_key", "ANTHROPIC_API_KEY")
+    anthropic_key = await _secret_lookup("platform.services.anthropic.api_key", "ANTHROPIC_API_KEY")
     claude_code_key = (
         await _user_secret_lookup(user_id=user_id, bundle_id=bundle_id, key="anthropic.claude_code_key")
-        or await _secret_lookup("services.anthropic.claude_code_key", "CLAUDE_CODE_KEY")
+        or await _secret_lookup("platform.services.anthropic.claude_code_key", "CLAUDE_CODE_KEY")
     )
     if anthropic_key:
         env["ANTHROPIC_API_KEY"] = anthropic_key

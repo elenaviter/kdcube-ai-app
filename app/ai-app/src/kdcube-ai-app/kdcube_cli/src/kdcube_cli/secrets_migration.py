@@ -145,6 +145,16 @@ def load_file_secret_inventory(
         if isinstance(global_data.get("secrets"), dict)
         else global_data
     )
+    invalid_roots = sorted(
+        str(key)
+        for key in global_root
+        if str(key) not in {"platform", "users"}
+    )
+    if invalid_roots:
+        raise HostVaultStageError(
+            "secrets.yaml uses legacy unqualified platform roots; run "
+            "`kdcube secrets namespace migrate` first."
+        )
     skipped += _flatten(
         "",
         global_root,

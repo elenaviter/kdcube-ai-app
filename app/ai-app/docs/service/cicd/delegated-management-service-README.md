@@ -5,13 +5,14 @@ summary: "Documents KDCube's deployment-scoped management service: Card-governed
 status: current-source; live-deployment-acceptance-pending
 tags: ["service", "cicd", "management", "connection-hub", "delegated-authority", "idempotency"]
 keywords: ["KDCube management resource", "application reload", "request-bound permit", "secret provider", "secret descriptor export", "human approval", "Cognito Managed Login", "Google auth_time", "WebAuthn", "passkey", "PKCE", "effect ledger", "OAuth protected resource"]
-updated_at: 2026-09-05
+updated_at: 2026-09-06
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/deployment-target-control-api-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/delegated-authority-and-admission-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/secrets/secret-management-cli-README.md
   - https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/package/delegated-authority-and-admission.md
+  - https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/package/delegated-secret-administration.md
   - https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/recipes/direct-protected-service.md
   - https://docs.aws.amazon.com/cognito/latest/developerguide/authorization-endpoint.html
   - https://developers.google.com/identity/openid-connect/reference
@@ -22,9 +23,9 @@ see_also:
 The delegated management service exposes a bounded public API for one running
 KDCube tenant/project deployment. A caller authenticated through Connection
 Hub can inspect deployment state, discover one application's declared
-surfaces, reload one exact declared application, and manage one exact secret
+surfaces, reload one exact declared application, and manage exact secrets
 through the deployment-selected provider when its live delegated card grants
-the corresponding operation.
+the corresponding operation and an exact or matching broad selector.
 
 The approving user provides the Card-bound authority to an agent or operator.
 The canonical `kdcube secrets` commands accept that bearer through a hidden
@@ -33,17 +34,17 @@ host CLI obtains and stores its bearer through `connection-hub host authorize`
 using OAuth Authorization Code plus PKCE, then calls the same KDCube management
 library. Another API client may present an opaque bearer issued through its
 approved caller flow. In every case, the
-caller is a delegated KDCube administrator for the Card's exact resources and
+caller is a delegated KDCube administrator for the Card's resources and
 operations: the token is the user's explicit authority to administer those API
 surfaces. KDCube preserves the external actor, `access_id`, grantor, Card
 revision, and invocation policy on every call. This authority does not grant
 host login, Docker control, descriptor-file access, or a secret-provider
 workload identity.
 
-The same service exposes a separate owner-performed export ceremony. It reads
-an explicit list of secret keys after browser confirmation and returns the
-values once to a PKCE-bound loopback CLI. This ceremony creates no delegated
-card grant.
+The same service exposes a separate administrator-performed export ceremony.
+It reads either an explicit list or the complete frozen provider inventory
+after browser confirmation and returns the values once to a PKCE-bound
+loopback CLI. This ceremony creates no delegated card grant.
 
 These routes operate inside the running chat processor. Starting or recovering
 a stopped deployment remains a local Docker, orchestrator, or infrastructure
@@ -63,7 +64,7 @@ Each secret operation constructs a concrete resource from the server-owned
 coordinates and validated target:
 
 ```text
-urn:kdcube:management:secret:<tenant>:<project>:<scope>:<bundle-or-_>:<key>
+urn:kdcube:management:secret:<tenant>:<project>:<scope>:<scope-id>:<key>
 ```
 
 No operation accepts a tenant or project override.
@@ -73,7 +74,7 @@ No operation accepts a tenant or project override.
 | `kdcube.management.deployment.inspect` | `GET /api/integrations/management/v1/deployment` | Bounded platform release, aggregate readiness, and declared-application preparation state. |
 | `kdcube.management.application.surfaces.read` | `GET /api/integrations/management/v1/applications/{application_id}/surfaces` | Enabled API, MCP, widget, job, and messaging declarations for one exact application. |
 | `kdcube.management.application.reload` | `POST /api/integrations/management/v1/applications/{application_id}/reload` | Reload evidence for one exact application from current descriptor authority. |
-| `kdcube.management.secret.metadata.read` | `POST /api/integrations/management/v1/secrets/metadata/read` | Existence, provider, and write capability for one exact platform or bundle key. |
+| `kdcube.management.secret.metadata.read` | `POST /api/integrations/management/v1/secrets/metadata/read` | Existence, provider, and write capability for one exact platform, bundle, user, or user-bundle key. |
 | `kdcube.management.secret.value.read` | `POST /api/integrations/management/v1/secrets/value/read` | One exact plaintext value for an admitted caller. Responses use `Cache-Control: no-store`. |
 | `kdcube.management.secret.value.write` | `POST /api/integrations/management/v1/secrets/value/write` | Set one exact value through the selected provider. |
 | `kdcube.management.secret.delete` | `POST /api/integrations/management/v1/secrets/delete` | Delete one exact value through the selected provider. |
@@ -84,10 +85,12 @@ body `{}`. Inspect and surface discovery accept no body. Application IDs are
 single exact identifiers; wildcard, path, URL, and reload-all forms are
 rejected.
 
-Secret operations accept one exact `platform` or `bundle` target. Bundle
-targets include one exact application id. Wildcards, metadata keys, user
-scope, path escapes, and platform-to-bundle namespace escapes are rejected
-before admission. A secret-operation request digest is a keyed HMAC over the
+Secret operation requests accept one exact `platform`, `bundle`, or `user`
+target. Bundle and user-bundle targets include one exact application id.
+Wildcards, metadata keys, path escapes, and cross-scope namespace escapes are
+rejected before admission. The Card may authorize that exact resource or a
+matching namespace/whole-scope selector; broad selectors require `Always`.
+A secret-operation request digest is a keyed HMAC over the
 full validated request, including a write value. It binds approval and replay
 to the exact value without exposing a reusable plaintext hash. Secret values
 stay outside recovery URLs, logs, Card records, and effect-ledger records.
@@ -109,15 +112,16 @@ delegated automation
 
 agent or operator CLI
   -> user-approved OAuth/PKCE session or issued Card-bound bearer
-  -> exact resource + operation + invocation policy
+  -> exact request matched against Card resource + operation + invocation policy
   -> Connection Hub admission on every call
   -> KDCube selected secret provider
   -> bounded result
 
-owner-performed descriptor export
+administrator-performed descriptor export
 
 KDCube CLI or a product CLI using its management library
-  -> exact non-secret key manifest + PKCE challenge + loopback callback
+  -> exact non-secret key manifest or whole-inventory selection
+     + PKCE challenge + loopback callback
   -> KDCube browser page
   -> current platform admin session + explicit Export once decision
   -> one-use authorization code bound to manifest digest and PKCE verifier
@@ -125,10 +129,13 @@ KDCube CLI or a product CLI using its management library
   -> new local secrets.yaml + bundles.secrets.yaml directory
 ```
 
-For delegated automation, choosing `Once` updates the caller's Card and its
-invocation policy. The Card continues to identify who may attempt the
-operation, while the policy consumes the one admitted invocation. Choosing
-`Always` records reusable Card authority.
+For delegated automation, choosing `Once` on one exact key updates the caller's
+Card and its invocation policy. The Card continues to identify who may attempt
+the operation, while the policy consumes the one admitted invocation.
+Choosing `Always` records reusable exact or broad Card authority.
+Every secret operation requires one of these explicit policies. A matching
+Card resource with no policy fails closed instead of receiving the generic
+admission default.
 
 The selected provider is reached by trusted KDCube code after admission. For
 the local host-vault backend, the internal `kdcube-secrets` broker uses its own
@@ -138,22 +145,30 @@ its configured task or deployment identity. Provider choice therefore changes
 storage and workload authentication, not the user's delegated API contract.
 
 For human export, the person performs the action directly. The transaction
-therefore stands alone: it is short-lived, exact-manifest-bound, and consumed
+therefore stands alone: it is short-lived, frozen-manifest-bound, and consumed
 once, with no Card mutation and no reusable export credential.
 
 ## Human Secret Export
 
-The CLI names every requested key explicitly. This works uniformly with file,
-host-vault, and cloud secret providers. Host Vault encrypts names in its
-records and exposes scoped inventory to its authenticated KDCube broker, but
-the owner export protocol deliberately requires an exact manifest rather than
-providing a bulk plaintext export.
+The CLI can name requested keys explicitly or select the complete deployment
+inventory. This works uniformly with file, Host Vault, and cloud secret
+providers. For `--all`, KDCube freezes provider inventory before the browser
+decision so the approved digest identifies every exported target. The public
+start response exposes the count and digest, not the inventory names. An
+authenticated administrator sees the names on the approval page; the CLI
+receives and verifies them only in the one-use exchange.
 
 ```bash
 kdcube secrets export \
-  --platform-key services.brave.api_key \
+  --platform-key platform.services.brave.api_key \
   --bundle-key connection-hub@1-0=connections.oauth_state_secret \
   --output-directory ./kdcube-secret-export-20260905
+```
+
+```bash
+kdcube secrets export \
+  --all \
+  --output-directory ./kdcube-secret-export-all
 ```
 
 `connection-hub secrets host ...` remains the Connection Hub convenience
@@ -172,7 +187,7 @@ The protocol has three server routes:
 
 | Route | Purpose |
 | --- | --- |
-| `POST /secrets/export/start` | Validate and persist the exact manifest, loopback callback, state, and S256 challenge with a short TTL. |
+| `POST /secrets/export/start` | Validate exact targets or freeze whole provider inventory, then persist that manifest, loopback callback, state, and S256 challenge with a short TTL. A whole-export response returns only count and digest. |
 | `GET/POST /secrets/export/authorize` | Resolve a human platform session, display every exact target, and record one approve or deny decision. |
 | `POST /secrets/export/exchange` | Atomically consume the code and verifier, then read exactly the approved keys. |
 
@@ -300,7 +315,7 @@ validation.
 Credential listing, naming, and revocation are required before
 `user_verification` becomes a deployment default. Until that lifecycle surface
 is enabled, deployments use `session_confirmation` or `fresh_authentication`
-for owner export and may exercise WebAuthn in controlled acceptance runs.
+for administrator export and may exercise WebAuthn in controlled acceptance runs.
 
 ### Descriptor configuration
 
@@ -495,7 +510,7 @@ management:
     max_evidence_age_seconds: 300
     transaction_ttl_seconds: 180
     consumed_tombstone_seconds: 600
-    max_targets: 64
+    max_targets: 4096
     max_total_value_bytes: 1048576
 ```
 
@@ -503,8 +518,9 @@ An empty `admission_url` resolves to the Connection Hub app operation on the
 same descriptor-owned processor port. A different URL is an explicit
 descriptor choice.
 
-The Connection Hub app descriptor registers the workload, both protected
-resource families, and every request-bound operation:
+The Connection Hub app descriptor registers the workload and both protected
+resource families. Reload is request-bound; secret operations use Card
+`Once`/`Always` invocation policy and exact or broad secret resources:
 
 ```yaml
 connections:
@@ -519,10 +535,6 @@ connections:
             - "urn:kdcube:management:secret:*:*:*:*:*"
           request_bound_operations:
             - kdcube.management.application.reload
-            - kdcube.management.secret.metadata.read
-            - kdcube.management.secret.value.read
-            - kdcube.management.secret.value.write
-            - kdcube.management.secret.delete
           request_permit_ttl_seconds: 600
 ```
 

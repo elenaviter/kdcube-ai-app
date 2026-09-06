@@ -13,7 +13,7 @@ from kdcube_ai_app.apps.chat.proc.rest.management.secret_contracts import (
 def test_exact_platform_and_bundle_secret_resources() -> None:
     platform = SecretTarget(
         scope=PLATFORM_SCOPE,
-        key="services.brave.api_key",
+        key="platform.services.brave.api_key",
     )
     bundle = SecretTarget(
         scope=BUNDLE_SCOPE,
@@ -21,10 +21,10 @@ def test_exact_platform_and_bundle_secret_resources() -> None:
         key="provider.api-key",
     )
 
-    assert platform.provider_key == "services.brave.api_key"
+    assert platform.provider_key == "platform.services.brave.api_key"
     assert platform.resource(tenant="tenant-a", project="project-a") == (
         "urn:kdcube:management:secret:tenant-a:project-a:platform:_:"
-        "services.brave.api_key"
+        "platform.services.brave.api_key"
     )
     assert bundle.provider_key == (
         "bundles.workspace@1-0.secrets.provider.api-key"

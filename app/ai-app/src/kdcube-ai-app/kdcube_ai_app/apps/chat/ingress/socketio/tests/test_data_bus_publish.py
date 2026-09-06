@@ -695,7 +695,7 @@ async def _federated_handler(monkeypatch):
 
     async def fake_get_secret(key, default=None, **kwargs):
         del kwargs
-        if key == "services.federated_token.secret":
+        if key == "platform.services.federated_token.secret":
             return "test-secret"
         return default
 

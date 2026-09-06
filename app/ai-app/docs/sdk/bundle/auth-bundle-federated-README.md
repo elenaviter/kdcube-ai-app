@@ -234,6 +234,6 @@ services:
     secret: "<generated shared signing secret>"
 ```
 
-The canonical lookup key is `services.federated_token.secret`. Local CLI
+The canonical lookup key is `platform.services.federated_token.secret`. Local CLI
 runtimes persist it through the runtime secret path; managed deployments
 materialize it through the configured secrets provider.

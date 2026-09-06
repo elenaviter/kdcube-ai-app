@@ -15,13 +15,13 @@ async def get_service_key_fn(provider: AIProviderName) -> str:
     from kdcube_ai_app.apps.chat.sdk.config import get_secret
 
     if provider == AIProviderName.open_ai:
-        return await get_secret("services.openai.api_key", default="") or ""
+        return await get_secret("platform.services.openai.api_key", default="") or ""
     if provider == AIProviderName.hugging_face:
-        return await get_secret("services.huggingface.api_key", default="") or ""
+        return await get_secret("platform.services.huggingface.api_key", default="") or ""
     if provider == AIProviderName.anthropic:
-        return await get_secret("services.anthropic.api_key", default="") or ""
+        return await get_secret("platform.services.anthropic.api_key", default="") or ""
     if provider == AIProviderName.open_router:
-        return await get_secret("services.openrouter.api_key", default="") or ""
+        return await get_secret("platform.services.openrouter.api_key", default="") or ""
     return ""
 
 

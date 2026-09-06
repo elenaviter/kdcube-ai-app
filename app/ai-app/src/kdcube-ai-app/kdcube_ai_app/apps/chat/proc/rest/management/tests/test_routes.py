@@ -31,6 +31,7 @@ from kdcube_ai_app.apps.chat.proc.rest.management.secret_contracts import (
     SECRET_READ_OPERATION,
     SECRET_RESOURCE_SELECTOR,
     SECRET_WRITE_OPERATION,
+    SecretTarget,
 )
 from kdcube_ai_app.apps.chat.proc.rest.management.secret_export import (
     SECRET_EXPORT_REQUEST_SCHEMA,
@@ -125,6 +126,10 @@ class _HumanApprovalChallengeVerifier:
 class _SecretRuntime:
     def __init__(self) -> None:
         self.reads = []
+        self.inventory_targets: tuple[SecretTarget, ...] = ()
+
+    async def inventory(self):
+        return self.inventory_targets
 
     async def read(self, target):
         self.reads.append(target)
@@ -459,7 +464,10 @@ def test_human_secret_export_is_exact_pkce_bound_and_one_use(monkeypatch) -> Non
             "code_challenge": challenge,
             "code_challenge_method": "S256",
             "targets": [
-                {"scope": "platform", "key": "services.brave.api_key"},
+                {
+                    "scope": "platform",
+                    "key": "platform.services.brave.api_key",
+                },
                 {
                     "scope": "bundle",
                     "bundle_id": "connection-hub@1-0",
@@ -477,7 +485,7 @@ def test_human_secret_export_is_exact_pkce_bound_and_one_use(monkeypatch) -> Non
 
     authorization = client.get(start_payload["authorization_url"])
     assert authorization.status_code == 200
-    assert "services.brave.api_key" in authorization.text
+    assert "platform.services.brave.api_key" in authorization.text
     assert "connections.oauth_state_secret" in authorization.text
     assert "canary::" not in authorization.text
     csrf_match = re.search(r'name="csrf" value="([A-Za-z0-9_-]+)"', authorization.text)
@@ -540,6 +548,66 @@ def test_human_secret_export_is_exact_pkce_bound_and_one_use(monkeypatch) -> Non
     assert "canary::" not in records
 
 
+def test_human_secret_export_all_freezes_complete_provider_inventory(monkeypatch) -> None:
+    client, _redis, runtime = _export_client(monkeypatch)
+    runtime.inventory_targets = (
+        SecretTarget(
+            scope="user",
+            user_id="user-1",
+            key="personal.token",
+        ),
+        SecretTarget(
+            scope="bundle",
+            bundle_id="connection-hub@1-0",
+            key="connections.oauth_state_secret",
+        ),
+        SecretTarget(
+            scope="platform",
+            key="platform.infra.redis.password",
+        ),
+    )
+    verifier = "v" * 64
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode("ascii")).digest()
+    ).decode("ascii").rstrip("=")
+
+    response = client.post(
+        "/api/integrations/management/v1/secrets/export/start",
+        json={
+            "schema": SECRET_EXPORT_REQUEST_SCHEMA,
+            "callback_uri": "http://127.0.0.1:53123/callback",
+            "state": "s" * 43,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "selection": "all",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["target_count"] == 3
+    assert payload["targets"] == []
+    frozen_targets = [
+        {
+            "scope": "bundle",
+            "bundle_id": "connection-hub@1-0",
+            "key": "connections.oauth_state_secret",
+        },
+        {
+            "scope": "platform",
+            "key": "platform.infra.redis.password",
+        },
+        {
+            "scope": "user",
+            "user_id": "user-1",
+            "key": "personal.token",
+        },
+    ]
+    record = json.loads(next(iter(_redis.values.values())))
+    assert record["request"]["targets"] == frozen_targets
+    assert "selection" not in record["request"]
+
+
 def test_human_secret_export_rejects_ambiguous_query_and_oversized_approval(
     monkeypatch,
 ) -> None:
@@ -576,7 +644,10 @@ def test_human_secret_export_redirects_get_step_up_and_rejects_post_challenge(
             ).decode("ascii").rstrip("="),
             "code_challenge_method": "S256",
             "targets": [
-                {"scope": "platform", "key": "services.brave.api_key"},
+                {
+                    "scope": "platform",
+                    "key": "platform.services.brave.api_key",
+                },
             ],
         },
     )

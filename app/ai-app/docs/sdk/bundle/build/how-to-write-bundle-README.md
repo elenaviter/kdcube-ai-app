@@ -973,7 +973,7 @@ Use this quick map while writing code:
 | What you need | Read | Write |
 | --- | --- | --- |
 | platform/global props | `get_settings()` | none |
-| platform/global secrets | `await get_secret("canonical.key")` | none |
+| platform/global secrets | `await get_secret("platform.canonical.key")` | none |
 | deployment-scoped bundle props | `self.bundle_prop("path", default=...)`, `self.bundle_props` | `await set_bundle_prop(...)` |
 | deployment-scoped bundle secrets | `await get_secret("b:...")` | `await set_bundle_secret(...)` |
 | user-scoped bundle props | `await get_user_prop(...)`, `await get_user_props()` | `await set_user_prop(...)`, `await delete_user_prop(...)` |
@@ -1123,8 +1123,8 @@ from kdcube_ai_app.apps.chat.sdk.config import get_secret
 
 async def fetch_repo():
     env = build_git_env(
-        git_http_token=await get_secret("services.git.http_token"),
-        git_http_user=await get_secret("services.git.http_user"),
+        git_http_token=await get_secret("platform.services.git.http_token"),
+        git_http_user=await get_secret("platform.services.git.http_user"),
     )
     await asyncio.to_thread(
         subprocess.run,

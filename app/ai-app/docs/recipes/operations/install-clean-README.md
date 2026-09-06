@@ -80,8 +80,8 @@ export KDCUBE_ADMIN_EMAIL="admin@example.com"
   --auth-type bundle \
   --client-id "<google-web-oauth-client-id>" \
   --bootstrap-admin-email "admin@example.com" \
-  --set-secret services.openai.api_key "$OPENAI_API_KEY" \
-  --set-secret services.anthropic.api_key "$ANTHROPIC_API_KEY"
+  --set-secret platform.services.openai.api_key "$OPENAI_API_KEY" \
+  --set-secret platform.services.anthropic.api_key "$ANTHROPIC_API_KEY"
 ```
 
 `--bootstrap-admin-email` is the verified Google email granted `super-admin` on

@@ -75,7 +75,7 @@ def _request(*, targets=None) -> SecretExportRequest:
             or [
                 {
                     "scope": "platform",
-                    "key": "services.brave.api_key",
+                    "key": "platform.services.brave.api_key",
                 },
                 {
                     "scope": "bundle",
@@ -232,8 +232,8 @@ def test_request_is_exact_sorted_and_bound_to_loopback_pkce() -> None:
     with pytest.raises(SecretExportError) as duplicate:
         _request(
             targets=[
-                {"scope": "platform", "key": "services.brave.api_key"},
-                {"scope": "platform", "key": "services.brave.api_key"},
+                {"scope": "platform", "key": "platform.services.brave.api_key"},
+                {"scope": "platform", "key": "platform.services.brave.api_key"},
             ]
         )
     assert duplicate.value.code == "secret_export_targets_invalid"
@@ -527,7 +527,7 @@ async def test_export_code_is_pkce_bound_and_consumed_once() -> None:
     assert consumed.request_digest == transaction.request_digest
     assert [target.provider_key for target in consumed.request.targets] == [
         "bundles.connection-hub@1-0.secrets.connections.oauth_state_secret",
-        "services.brave.api_key",
+        "platform.services.brave.api_key",
     ]
 
     with pytest.raises(SecretExportError) as replay:

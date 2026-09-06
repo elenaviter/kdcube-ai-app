@@ -163,7 +163,7 @@ enabled, Proxy Login enforces MFA during the Cognito login flow.
 where an application/front shell validates an external identity and calls the
 async platform session authority to issue platform-recognized `kst1.*`
 cookies. It requires
-`services.session_token.secret` in `secrets.yaml`. See
+`platform.services.session_token.secret` in `secrets.yaml`. See
 [Application-Hosted Platform Login And Session](../service/auth/app-hosted-platform-login-and-session-README.md).
 
 `auth.authenticators` configures request-auth surfaces. The platform

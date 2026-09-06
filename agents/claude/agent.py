@@ -110,8 +110,8 @@ async def agent_config(
     if not check_only and shutil.which(command) is None:
         raise RuntimeError(f"Claude Code executable {command!r} is not on PATH")
     api_key = str(
-        await get_secret("services.anthropic.claude_code_key")
-        or await get_secret("services.anthropic.api_key")
+        await get_secret("platform.services.anthropic.claude_code_key")
+        or await get_secret("platform.services.anthropic.api_key")
         or ""
     )
     python_bin = Path(sys.executable).resolve().parent

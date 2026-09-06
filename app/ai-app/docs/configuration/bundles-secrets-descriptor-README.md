@@ -4,6 +4,7 @@ title: "Bundles Secrets Descriptor"
 summary: "Deployment-scoped bundle secret configuration in bundles.secrets.yaml: per-bundle credentials, integration tokens, provider service key overrides, and bundle secrets across local file mode and AWS."
 tags: ["service", "configuration", "bundle", "secrets", "deployment", "descriptor"]
 keywords: ["bundle secret inventory", "per-bundle credentials", "integration tokens", "bundle api keys", "deployment-scoped bundle secrets", "local secrets file mode", "aws secrets manager bundle secrets", "bundle secret provider", "bundle secret export path", "service key override", "per-bundle provider key", "get_secret", "bundle openai key", "bundle anthropic key", "bundle stripe key", "bundle git token", "services namespace override"]
+updated_at: 2026-09-06
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/descriptors-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/bundles-descriptor-README.md
@@ -106,14 +107,15 @@ from kdcube_ai_app.apps.chat.sdk.config import get_secret
 
 api_key = (
     await get_secret("b:services.openai.api_key")
-    or await get_secret("services.openai.api_key")
+    or await get_secret("platform.services.openai.api_key")
 )
 ```
 
 Resolution order:
 
 1. `bundles.<current_bundle_id>.secrets.services.<key>` — read from `bundles.secrets.yaml`
-2. `services.<key>` — read from `secrets.yaml` (platform/global fallback)
+2. `platform.services.<key>` — read from the `platform` subtree of
+   `secrets.yaml` (deployment fallback)
 
 The current bundle id is resolved from the async-task-local request context
 (`BUNDLE_ID_CV`), so isolation between concurrent bundle requests is automatic.

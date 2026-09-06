@@ -382,7 +382,7 @@ git --git-dir output/claude-session-store.git for-each-ref \
 
 To use a private remote, set `storage.claude_code_session.repo` in
 `descriptors.local/assembly.yaml` and the matching
-`services.git.http_token` credential in `descriptors.local/secrets.yaml`.
+`platform.services.git.http_token` credential in `descriptors.local/secrets.yaml`.
 
 ## 12. Change the agent
 

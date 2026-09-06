@@ -177,7 +177,7 @@ async def openrouter_completion(
     resolved_key = (
         api_key
         or await get_secret("b:services.openrouter.api_key")
-        or await get_secret("services.openrouter.api_key")
+        or await get_secret("platform.services.openrouter.api_key")
         or ""
     )
     if not resolved_key:

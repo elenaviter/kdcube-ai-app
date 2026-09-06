@@ -85,7 +85,7 @@ class _Runtime:
     def verify_consumer(self, service: str, *, key: str, digest: str) -> None:
         provider = self._assembly()["secrets"]["provider"]
         self.events.append(f"verify:{provider}:{service}")
-        assert key == "services.fixture.token"
+        assert key == "platform.services.fixture.token"
         assert len(digest) == 64
         if self.fail_active_verify and provider == "secrets-service":
             raise HostVaultActivationError(
@@ -94,7 +94,10 @@ class _Runtime:
             )
         if self.mutate_source_after_verify and service == "chat-proc":
             path = self.config_dir / "secrets.yaml"
-            path.write_text("services:\n  fixture:\n    token: changed\n", encoding="utf-8")
+            path.write_text(
+                "platform:\n  services:\n    fixture:\n      token: changed\n",
+                encoding="utf-8",
+            )
             path.chmod(0o600)
 
 
@@ -125,7 +128,7 @@ secrets:
         (config_dir / name).write_text("GATEWAY_COMPONENT=test\n", encoding="utf-8")
     secrets = config_dir / "secrets.yaml"
     secrets.write_text(
-        "services:\n  fixture:\n    token: activation-canary\n",
+        "platform:\n  services:\n    fixture:\n      token: activation-canary\n",
         encoding="utf-8",
     )
     secrets.chmod(0o600)
@@ -139,7 +142,9 @@ secrets:
 
 
 def _destination() -> _MemoryDestination:
-    return _MemoryDestination({"services.fixture.token": "activation-canary"})
+    return _MemoryDestination(
+        {"platform.services.fixture.token": "activation-canary"}
+    )
 
 
 def test_activation_dry_run_checks_parity_without_quiescing(tmp_path: Path):
@@ -297,7 +302,7 @@ def test_interrupted_activation_leaves_secret_free_marker_and_recovery_is_repeat
     assert "runtime_recreated" not in marker_text
     assert "configured" in marker_text
     assert "activation-canary" not in marker_text
-    assert "services.fixture.token" not in marker_text
+    assert "platform.services.fixture.token" not in marker_text
 
     recovery_runtime = _Runtime(config_dir)
     result = recover_host_vault_activation(
@@ -447,7 +452,7 @@ def test_compose_runtime_uses_one_token_overlay_and_secret_safe_probe(
     runtime.recreate_secret_path()
     runtime.verify_consumer(
         "chat-proc",
-        key="services.fixture.token",
+        key="platform.services.fixture.token",
         digest="a" * 64,
     )
 
@@ -465,9 +470,12 @@ def test_compose_runtime_uses_one_token_overlay_and_secret_safe_probe(
         for command, kwargs in calls
         if command[-3:-1] == ["python", "-c"] and command[-4] == "chat-proc"
     )
-    assert "services.fixture.token" not in probe_command
+    assert "platform.services.fixture.token" not in probe_command
     payload = json.loads(str(probe_kwargs["input"]))
-    assert payload == {"key": "services.fixture.token", "digest": "a" * 64}
+    assert payload == {
+        "key": "platform.services.fixture.token",
+        "digest": "a" * 64,
+    }
 
 
 def test_compose_runtime_rejects_unknown_consumer_without_dispatch(tmp_path: Path):

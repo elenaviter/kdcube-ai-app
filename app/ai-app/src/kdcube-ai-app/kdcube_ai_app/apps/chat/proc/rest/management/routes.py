@@ -319,7 +319,7 @@ async def _secret_payload(
 ) -> tuple[SecretTarget, dict[str, Any]]:
     maximum = MAX_SECRET_VALUE_BYTES + 4096 if include_value else 4096
     payload = await read_json_object(request, maximum_bytes=maximum)
-    allowed = {"scope", "bundle_id", "key"}
+    allowed = {"scope", "bundle_id", "user_id", "key"}
     required = {"scope", "key"}
     if include_value:
         allowed.add("value")

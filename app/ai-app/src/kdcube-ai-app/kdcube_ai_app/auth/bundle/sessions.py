@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 SESSION_TOKEN_SCHEMA = "kdcube.session_token.v1"
 SESSION_TOKEN_PREFIX = "kst1"
-BUNDLE_SESSION_SECRET_KEY = "services.session_token.secret"
+BUNDLE_SESSION_SECRET_KEY = "platform.services.session_token.secret"
 BUNDLE_SESSION_REDIS_BASE = "kdcube:auth:bundle-session"
 BUNDLE_SESSION_DEFAULT_TTL_SECONDS = 12 * 3600
 BUNDLE_SESSION_MAX_TTL_SECONDS = 7 * 24 * 3600

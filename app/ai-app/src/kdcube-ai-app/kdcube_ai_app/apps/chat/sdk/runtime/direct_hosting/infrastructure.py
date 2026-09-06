@@ -48,7 +48,7 @@ def activate_platform_descriptors(descriptors_dir: Path):
 def redis_url(settings, *, check_only: bool = False) -> str:
     password = str(getattr(settings, "REDIS_PASSWORD", "") or "")
     if not password and not check_only:
-        raise RuntimeError("infra.redis.password is not set in secrets.yaml")
+        raise RuntimeError("platform.infra.redis.password is not set in secrets.yaml")
     password = quote(password or "check-only", safe="")
     host = str(getattr(settings, "REDIS_HOST", "") or "127.0.0.1")
     port = int(getattr(settings, "REDIS_PORT", 56379) or 56379)
@@ -59,7 +59,7 @@ def redis_url(settings, *, check_only: bool = False) -> str:
 def postgres_url(settings, *, check_only: bool = False) -> str:
     password_raw = str(getattr(settings, "PGPASSWORD", "") or "")
     if not password_raw and not check_only:
-        raise RuntimeError("infra.postgres.password is not set in secrets.yaml")
+        raise RuntimeError("platform.infra.postgres.password is not set in secrets.yaml")
     password = quote(password_raw or "check-only", safe="")
     user = quote(str(getattr(settings, "PGUSER", "") or "kdcube_agents"), safe="")
     host = str(getattr(settings, "PGHOST", "") or "127.0.0.1")

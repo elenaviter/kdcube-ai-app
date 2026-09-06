@@ -47,24 +47,24 @@ _SECRET_LOG = logging.getLogger("kdcube.settings.secrets")
 _SECRET_LOGGED: set[str] = set()
 
 _SECRET_ALIASES: dict[str, list[str]] = {
-    "services.openai.api_key": ["OPENAI_API_KEY"],
-    "services.anthropic.api_key": ["ANTHROPIC_API_KEY"],
-    "services.anthropic.claude_code_key": ["CLAUDE_CODE_KEY"],
-    "services.brave.api_key": ["BRAVE_API_KEY"],
-    "services.brave.api_comm_mid_key": ["BRAVE_API_COMM_MID_KEY"],
-    "services.google.api_key": ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
-    "services.git.http_token": ["GIT_HTTP_TOKEN"],
-    "services.git.http_user": ["GIT_HTTP_USER"],
-    "services.openrouter.api_key": ["OPENROUTER_API_KEY"],
-    "services.serpapi.api_key": ["SERPAPI_API_KEY"],
-    "services.stripe.secret_key": ["STRIPE_SECRET_KEY", "STRIPE_API_KEY"],
-    "services.stripe.webhook_secret": ["STRIPE_WEBHOOK_SECRET"],
-    "services.huggingface.api_key": ["HUGGING_FACE_KEY", "HUGGINGFACE_API_KEY", "HUGGING_FACE_API_TOKEN"],
-    "services.firecrawl.api_key": ["FIRECRAWL_API_KEY"],
-    "services.email.password": ["EMAIL_PASSWORD"],
-    "auth.oidc.admin_email": ["OIDC_SERVICE_USER_EMAIL"],
-    "auth.oidc.admin_username": ["OIDC_SERVICE_ADMIN_USERNAME"],
-    "auth.oidc.admin_password": ["OIDC_SERVICE_ADMIN_PASSWORD"],
+    "platform.services.openai.api_key": ["OPENAI_API_KEY"],
+    "platform.services.anthropic.api_key": ["ANTHROPIC_API_KEY"],
+    "platform.services.anthropic.claude_code_key": ["CLAUDE_CODE_KEY"],
+    "platform.services.brave.api_key": ["BRAVE_API_KEY"],
+    "platform.services.brave.api_comm_mid_key": ["BRAVE_API_COMM_MID_KEY"],
+    "platform.services.google.api_key": ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
+    "platform.services.git.http_token": ["GIT_HTTP_TOKEN"],
+    "platform.services.git.http_user": ["GIT_HTTP_USER"],
+    "platform.services.openrouter.api_key": ["OPENROUTER_API_KEY"],
+    "platform.services.serpapi.api_key": ["SERPAPI_API_KEY"],
+    "platform.services.stripe.secret_key": ["STRIPE_SECRET_KEY", "STRIPE_API_KEY"],
+    "platform.services.stripe.webhook_secret": ["STRIPE_WEBHOOK_SECRET"],
+    "platform.services.huggingface.api_key": ["HUGGING_FACE_KEY", "HUGGINGFACE_API_KEY", "HUGGING_FACE_API_TOKEN"],
+    "platform.services.firecrawl.api_key": ["FIRECRAWL_API_KEY"],
+    "platform.services.email.password": ["EMAIL_PASSWORD"],
+    "platform.auth.oidc.admin_email": ["OIDC_SERVICE_USER_EMAIL"],
+    "platform.auth.oidc.admin_username": ["OIDC_SERVICE_ADMIN_USERNAME"],
+    "platform.auth.oidc.admin_password": ["OIDC_SERVICE_ADMIN_PASSWORD"],
 }
 _LEGACY_SECRET_TO_CANON: dict[str, str] = {
     legacy: canon for canon, aliases in _SECRET_ALIASES.items() for legacy in aliases
@@ -170,7 +170,8 @@ def _normalize_secret_lookup_key(key: str, *, bundle_id: str | None = None) -> s
     if not raw:
         return raw
     if raw.startswith("a:") or raw.startswith("assembly:"):
-        return raw.split(":", 1)[1].strip()
+        tail = raw.split(":", 1)[1].strip().strip(".")
+        return f"platform.{tail}" if tail else raw
     if raw.startswith("b:") or raw.startswith("bundles:"):
         tail = raw.split(":", 1)[1].strip().strip(".")
         if not tail:
@@ -180,7 +181,13 @@ def _normalize_secret_lookup_key(key: str, *, bundle_id: str | None = None) -> s
             _SECRET_LOG.warning("Bundle-scoped secret %s requested without bundle context", raw)
             return None
         return f"bundles.{resolved_bundle_id}.secrets.{tail}"
-    return raw
+    if raw.startswith(("platform.", "bundles.", "users.")):
+        return raw
+    _SECRET_LOG.warning(
+        "Unqualified secret key %s rejected; use platform.*, b:*, or u:*",
+        raw,
+    )
+    return None
 
 
 async def get_secret(
@@ -545,13 +552,13 @@ def log_secret_statuses(force: bool = False) -> None:
     git_user_source = "env" if env_git_user else "settings"
     if not env_git_user and settings.GIT_HTTP_USER == "x-access-token" and settings.GIT_HTTP_TOKEN:
         git_user_source = "default"
-    _log_secret_status("services.openai.api_key", settings.OPENAI_API_KEY, "env" if env_openai else "settings")
-    _log_secret_status("services.anthropic.api_key", settings.ANTHROPIC_API_KEY, "env" if env_anthropic else "settings")
-    _log_secret_status("services.google.api_key", settings.GOOGLE_API_KEY, "env" if env_gemini else "settings")
-    _log_secret_status("services.brave.api_key", settings.BRAVE_API_KEY, "env" if env_brave else "settings")
-    _log_secret_status("services.git.http_token", settings.GIT_HTTP_TOKEN, "env" if env_git_token else "settings")
-    _log_secret_status("services.git.http_user", settings.GIT_HTTP_USER, git_user_source)
-    _log_secret_status("services.openrouter.api_key", settings.OPENROUTER_API_KEY, "env" if env_openrouter else "settings")
+    _log_secret_status("platform.services.openai.api_key", settings.OPENAI_API_KEY, "env" if env_openai else "settings")
+    _log_secret_status("platform.services.anthropic.api_key", settings.ANTHROPIC_API_KEY, "env" if env_anthropic else "settings")
+    _log_secret_status("platform.services.google.api_key", settings.GOOGLE_API_KEY, "env" if env_gemini else "settings")
+    _log_secret_status("platform.services.brave.api_key", settings.BRAVE_API_KEY, "env" if env_brave else "settings")
+    _log_secret_status("platform.services.git.http_token", settings.GIT_HTTP_TOKEN, "env" if env_git_token else "settings")
+    _log_secret_status("platform.services.git.http_user", settings.GIT_HTTP_USER, git_user_source)
+    _log_secret_status("platform.services.openrouter.api_key", settings.OPENROUTER_API_KEY, "env" if env_openrouter else "settings")
 
 class CorsConfig(BaseModel):
     allow_origins: list[str] = Field(default_factory=lambda: ["*"])
@@ -1039,7 +1046,7 @@ class Settings(PLATFORM_CONFIG):
             pg_password = self._resolve_sensitive_str(
                 "POSTGRES_PASSWORD",
                 plain_path="infra.postgres.password",
-                secret_path="infra.postgres.password",
+                secret_path="platform.infra.postgres.password",
             )
             if pg_password is not None:
                 self.PGPASSWORD = pg_password
@@ -1064,7 +1071,7 @@ class Settings(PLATFORM_CONFIG):
             self.REDIS_PASSWORD = self._resolve_sensitive_str(
                 "REDIS_PASSWORD",
                 plain_path="infra.redis.password",
-                secret_path="infra.redis.password",
+                secret_path="platform.infra.redis.password",
             )
         val = self._assembly_str("infra.redis.topology")
         if val:
@@ -1514,13 +1521,13 @@ class Settings(PLATFORM_CONFIG):
         if not self.OPENROUTER_BASE_URL:
             self.OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
 
-        _log_secret_status("services.openai.api_key", self.OPENAI_API_KEY, "env" if env_openai else "settings")
-        _log_secret_status("services.anthropic.api_key", self.ANTHROPIC_API_KEY, "env" if env_anthropic else "settings")
-        _log_secret_status("services.google.api_key", self.GOOGLE_API_KEY, "env" if env_gemini else "settings")
-        _log_secret_status("services.brave.api_key", self.BRAVE_API_KEY, "env" if env_brave else "settings")
-        _log_secret_status("services.git.http_token", self.GIT_HTTP_TOKEN, "env" if env_git_token else "settings")
-        _log_secret_status("services.git.http_user", self.GIT_HTTP_USER, git_http_user_source)
-        _log_secret_status("services.openrouter.api_key", self.OPENROUTER_API_KEY, "env" if env_openrouter else "settings")
+        _log_secret_status("platform.services.openai.api_key", self.OPENAI_API_KEY, "env" if env_openai else "settings")
+        _log_secret_status("platform.services.anthropic.api_key", self.ANTHROPIC_API_KEY, "env" if env_anthropic else "settings")
+        _log_secret_status("platform.services.google.api_key", self.GOOGLE_API_KEY, "env" if env_gemini else "settings")
+        _log_secret_status("platform.services.brave.api_key", self.BRAVE_API_KEY, "env" if env_brave else "settings")
+        _log_secret_status("platform.services.git.http_token", self.GIT_HTTP_TOKEN, "env" if env_git_token else "settings")
+        _log_secret_status("platform.services.git.http_user", self.GIT_HTTP_USER, git_http_user_source)
+        _log_secret_status("platform.services.openrouter.api_key", self.OPENROUTER_API_KEY, "env" if env_openrouter else "settings")
 
         # 13. Build AUTH config (env > Connection Hub authority registry > assembly.yaml > default).
         _cognito_region = (
@@ -1590,14 +1597,17 @@ class Settings(PLATFORM_CONFIG):
             OIDC_SERVICE_USER_EMAIL=self._resolve_sensitive_str(
                 "OIDC_SERVICE_USER_EMAIL",
                 plain_path="auth.oidc.admin_email",
+                secret_path="platform.auth.oidc.admin_email",
             ),
             OIDC_SERVICE_ADMIN_USERNAME=self._resolve_sensitive_str(
                 "OIDC_SERVICE_ADMIN_USERNAME",
                 plain_path="auth.oidc.admin_username",
+                secret_path="platform.auth.oidc.admin_username",
             ),
             OIDC_SERVICE_ADMIN_PASSWORD=self._resolve_sensitive_str(
                 "OIDC_SERVICE_ADMIN_PASSWORD",
                 plain_path="auth.oidc.admin_password",
+                secret_path="platform.auth.oidc.admin_password",
             ),
             IDP=IDPConfig(
                 local=IDPLocalConfig(

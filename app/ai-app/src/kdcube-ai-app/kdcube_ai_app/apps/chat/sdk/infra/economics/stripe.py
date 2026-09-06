@@ -53,11 +53,12 @@ async def _resolve_stripe_secret_async(key: str) -> str:
     SDK economics services are constructed synchronously, so callers resolve the
     key lazily on first async use rather than in __init__."""
     name = {
-        "stripe.secret_key": "services.stripe.secret_key",
-        "stripe.webhook_secret": "services.stripe.webhook_secret",
+        "stripe.secret_key": "platform.services.stripe.secret_key",
+        "stripe.webhook_secret": "platform.services.stripe.webhook_secret",
     }.get(key, key)
     try:
-        val = await get_secret(f"b:{name}") or await get_secret(name)
+        bundle_name = name.removeprefix("platform.")
+        val = await get_secret(f"b:{bundle_name}") or await get_secret(name)
     except Exception:
         val = None
     val = str(val).strip() if val else ""
@@ -167,7 +168,7 @@ class StripeSubscriptionService:
     def _stripe(self):
         import stripe
         if not self.stripe_api_key:
-            raise RuntimeError("Stripe API key not configured (services.stripe.secret_key)")
+            raise RuntimeError("Stripe API key not configured (platform.services.stripe.secret_key)")
         stripe.api_key = self.stripe_api_key
         return stripe
 
@@ -572,7 +573,7 @@ class StripeEconomicsWebhookHandler:
 
     def _verify_and_parse(self, *, body: bytes, stripe_signature: Optional[str]) -> Dict[str, Any]:
         if not self.webhook_secret:
-            raise RuntimeError("services.stripe.webhook_secret not configured")
+            raise RuntimeError("platform.services.stripe.webhook_secret not configured")
 
         if not stripe_signature:
             raise ValueError("Missing Stripe-Signature header")
@@ -1326,7 +1327,7 @@ class StripeEconomicsAdminService:
     def _stripe(self):
         import stripe
         if not self.stripe_api_key:
-            raise RuntimeError("Stripe API key not configured (services.stripe.secret_key)")
+            raise RuntimeError("Stripe API key not configured (platform.services.stripe.secret_key)")
         stripe.api_key = self.stripe_api_key
         return stripe
 

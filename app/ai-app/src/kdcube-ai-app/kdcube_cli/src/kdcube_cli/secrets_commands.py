@@ -9,6 +9,7 @@ import json
 import sys
 import time
 import webbrowser
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -30,13 +31,19 @@ from kdcube_cli.management.models import (
 )
 from kdcube_cli.management.presentation import management_view
 from kdcube_cli.management.secret_descriptors import (
+    SecretDescriptorExport,
+    SecretDescriptorImport,
+    load_secret_descriptors,
+    validate_existing_secret_descriptor_directory,
     validate_secret_descriptor_export,
     write_secret_descriptors,
+    write_secret_descriptors_into_directory,
 )
 from kdcube_cli.management.secret_export import (
     BrowserSecretExportService,
     HttpxSecretExportTransport,
     SecretExportClient,
+    SecretExportResult,
 )
 from kdcube_cli.management.secret_output import (
     validate_private_secret_output,
@@ -45,31 +52,20 @@ from kdcube_cli.management.secret_output import (
 from kdcube_cli.management.transport import HttpxManagementTransport
 
 
-def _target_from_args(
-    args: argparse.Namespace,
+def local_management_target(
+    workdir: Path,
     *,
-    local_workdir: Path | None,
-    tenant: str,
-    project: str,
+    tenant: str = "",
+    project: str = "",
 ) -> ManagementTarget:
-    endpoint = str(getattr(args, "endpoint", "") or "").strip()
-    if endpoint:
-        if not tenant or not project:
-            raise ManagementCliError(
-                "management_coordinates_required",
-                "A remote KDCube endpoint requires both --tenant and --project.",
-            )
-        return ManagementTarget.create(
-            public_base_url=endpoint,
-            tenant=tenant,
-            project=project,
-        )
-    if local_workdir is None:
+    """Resolve one initialized local runtime into its public management target."""
+
+    if workdir is None:
         raise ManagementCliError(
             "management_target_required",
             "Select a local KDCube workdir or provide --endpoint with coordinates.",
         )
-    workdir = local_workdir.expanduser().resolve()
+    workdir = workdir.expanduser().resolve()
     env_path = workdir / "config" / ".env"
     if not env_path.is_file():
         raise ManagementCliError(
@@ -98,7 +94,38 @@ def _target_from_args(
     )
 
 
-def _delegated_credential(args: argparse.Namespace) -> str:
+def _target_from_args(
+    args: argparse.Namespace,
+    *,
+    local_workdir: Path | None,
+    tenant: str,
+    project: str,
+) -> ManagementTarget:
+    endpoint = str(getattr(args, "endpoint", "") or "").strip()
+    if endpoint:
+        if not tenant or not project:
+            raise ManagementCliError(
+                "management_coordinates_required",
+                "A remote KDCube endpoint requires both --tenant and --project.",
+            )
+        return ManagementTarget.create(
+            public_base_url=endpoint,
+            tenant=tenant,
+            project=project,
+        )
+    if local_workdir is None:
+        raise ManagementCliError(
+            "management_target_required",
+            "Select a local KDCube workdir or provide --endpoint with coordinates.",
+        )
+    return local_management_target(
+        local_workdir,
+        tenant=tenant,
+        project=project,
+    )
+
+
+def delegated_credential_from_input(args: argparse.Namespace) -> str:
     if bool(args.credential_stdin):
         candidate = sys.stdin.readline()
         candidate = candidate.removesuffix("\n").removesuffix("\r")
@@ -133,10 +160,47 @@ def _secret_targets(args: argparse.Namespace) -> tuple[ManagementSecretTarget, .
                 key=key,
             )
         )
+    for value in args.user_key or []:
+        user_id, separator, key = str(value or "").partition("=")
+        if not separator:
+            raise ManagementCliError(
+                "secret_export_user_target_invalid",
+                "Each --user-key must use USER_ID=KEY.",
+            )
+        targets.append(
+            ManagementSecretTarget.create(
+                scope="user",
+                user_id=user_id,
+                key=key,
+            )
+        )
+    for value in args.user_bundle_key or []:
+        owner, separator, key = str(value or "").partition("=")
+        user_id, owner_separator, bundle_id = owner.partition("/")
+        if not separator or not owner_separator:
+            raise ManagementCliError(
+                "secret_export_user_bundle_target_invalid",
+                "Each --user-bundle-key must use USER_ID/BUNDLE_ID=KEY.",
+            )
+        targets.append(
+            ManagementSecretTarget.create(
+                scope="user",
+                user_id=user_id,
+                bundle_id=bundle_id,
+                key=key,
+            )
+        )
+    if bool(args.all_secrets):
+        if targets:
+            raise ManagementCliError(
+                "secret_export_selection_invalid",
+                "--all cannot be combined with exact-key export options.",
+            )
+        return ()
     if not targets:
         raise ManagementCliError(
             "secret_export_targets_required",
-            "Secret export requires at least one --platform-key or --bundle-key.",
+            "Secret export requires --all or at least one exact-key option.",
         )
     ordered = tuple(sorted(targets, key=lambda item: item.identity))
     if len({item.identity for item in ordered}) != len(ordered):
@@ -164,16 +228,33 @@ async def _result_with_consent(
     request: ManagementRequest,
     bearer: str,
 ) -> ManagementResult | ManagementDenial:
+    return await _execute_with_consent(
+        client,
+        request,
+        bearer,
+        no_open=bool(args.no_open),
+        no_wait=bool(args.no_wait),
+    )
+
+
+async def _execute_with_consent(
+    client: ManagementClient,
+    request: ManagementRequest,
+    bearer: str,
+    *,
+    no_open: bool,
+    no_wait: bool,
+) -> ManagementResult | ManagementDenial:
     result = await client.execute(request, bearer=bearer)
     if isinstance(result, ManagementDenial) and result.recovery is not None:
         recovery = result.recovery
         opened = False
-        if recovery.expires_at > int(time.time()) and not args.no_open:
+        if recovery.expires_at > int(time.time()) and not no_open:
             try:
                 opened = bool(webbrowser.open(recovery.authorization_url))
             except Exception:  # noqa: BLE001
                 opened = False
-        if opened and sys.stdin.isatty() and not args.no_wait:
+        if opened and sys.stdin.isatty() and not no_wait:
             input("Approve the exact operation in the browser, then press Enter: ")
             result = await client.execute(request, bearer=bearer)
     return result
@@ -187,6 +268,7 @@ def _request_for_args(
         "scope": args.scope,
         "key": args.key,
         "bundle_id": args.bundle_id,
+        "user_id": args.user_id,
         "invocation_id": args.invocation_id,
     }
     if args.secrets_command == "metadata":
@@ -215,7 +297,7 @@ async def _run_delegated(
             Path(args.output),
             replace=bool(args.replace),
         )
-    bearer = _delegated_credential(args)
+    bearer = delegated_credential_from_input(args)
     request = _request_for_args(args, target)
     client = ManagementClient(transport=HttpxManagementTransport())
     result = await _result_with_consent(args, client, request, bearer)
@@ -258,49 +340,231 @@ async def _run_export(
     target: ManagementTarget,
 ) -> int:
     targets = _secret_targets(args)
-    output_directory = validate_secret_descriptor_export(
-        Path(args.output_directory),
-        targets,
+    result, exported = await export_secret_descriptor_pair(
+        target=target,
+        output_directory=Path(args.output_directory),
+        targets=targets,
+        selection="all" if args.all_secrets else "",
+        timeout_seconds=args.wait_seconds,
+        no_open=bool(args.no_open),
+        into_existing_directory=bool(
+            getattr(args, "into_descriptor_directory", False)
+        ),
+        replace=bool(getattr(args, "replace_descriptor_files", False)),
     )
+    _print_json(_secret_export_view(target, result, exported))
+    return 0
+
+
+async def export_secret_descriptor_pair(
+    *,
+    target: ManagementTarget,
+    output_directory: Path,
+    targets: tuple[ManagementSecretTarget, ...] = (),
+    selection: str = "all",
+    timeout_seconds: float = 300.0,
+    no_open: bool = False,
+    into_existing_directory: bool = False,
+    replace: bool = False,
+) -> tuple[SecretExportResult, SecretDescriptorExport]:
+    """Export current provider values into the literal descriptor pair."""
+
+    if into_existing_directory:
+        output_directory = validate_existing_secret_descriptor_directory(
+            output_directory,
+            targets,
+            replace=replace,
+        )
+    else:
+        if replace:
+            raise ManagementCliError(
+                "secret_export_replace_invalid",
+                "Replacing secret files requires --into-descriptor-directory.",
+            )
+        output_directory = validate_secret_descriptor_export(
+            output_directory,
+            targets,
+        )
     service = BrowserSecretExportService(
         client=SecretExportClient(transport=HttpxSecretExportTransport())
     )
     browser_options: dict[str, Any] = {}
-    if args.no_open:
+    if no_open:
         browser_options["browser_opener"] = _print_manual_authorization_url
     result = await service.export(
         target=target,
         targets=targets,
-        timeout_seconds=args.wait_seconds,
+        selection=selection,
+        timeout_seconds=timeout_seconds,
         **browser_options,
     )
-    exported = write_secret_descriptors(output_directory, result.values)
-    _print_json(
-        {
-            "schema": "kdcube_cli.secret_descriptor_export.v1",
-            "ok": True,
-            "target": {"tenant": target.tenant, "project": target.project},
-            "request_digest": result.request_digest,
-            "approval": {
-                "assurance": result.assurance,
-                "method": result.approval_method,
-                "verified_at": result.approval_verified_at,
-            },
-            "output": {
-                "directory": str(exported.directory),
-                "platform_descriptor": str(exported.platform_path),
-                "bundles_descriptor": str(exported.bundles_path),
-                "platform_secret_count": exported.platform_count,
-                "bundle_secret_count": exported.bundle_count,
-                "permissions": (
-                    {"directory_mode": "0700", "file_mode": "0600"}
-                    if sys.platform != "win32"
-                    else {"windows_acl": "inherited_from_output_parent"}
-                ),
-            },
-        }
+    exported = (
+        write_secret_descriptors_into_directory(
+            output_directory,
+            result.values,
+            replace=replace,
+        )
+        if into_existing_directory
+        else write_secret_descriptors(output_directory, result.values)
     )
+    return result, exported
+
+
+def _secret_export_view(
+    target: ManagementTarget,
+    result: SecretExportResult,
+    exported: SecretDescriptorExport,
+) -> dict[str, Any]:
+    return {
+        "schema": "kdcube_cli.secret_descriptor_export.v1",
+        "ok": True,
+        "target": {"tenant": target.tenant, "project": target.project},
+        "request_digest": result.request_digest,
+        "approval": {
+            "assurance": result.assurance,
+            "method": result.approval_method,
+            "verified_at": result.approval_verified_at,
+        },
+        "output": {
+            "directory": str(exported.directory),
+            "platform_descriptor": str(exported.platform_path),
+            "bundles_descriptor": str(exported.bundles_path),
+            "platform_secret_count": exported.platform_count,
+            "bundle_secret_count": exported.bundle_count,
+            "user_secret_count": exported.user_count,
+            "total_secret_count": exported.total_count,
+            "permissions": (
+                {"directory_mode": "0700", "file_mode": "0600"}
+                if sys.platform != "win32"
+                else {"windows_acl": "inherited_from_output_parent"}
+            ),
+        },
+    }
+
+
+def _import_summary(imported: Any) -> dict[str, Any]:
+    return {
+        "directory": str(imported.directory),
+        "platform_secret_count": imported.platform_count,
+        "bundle_secret_count": imported.bundle_count,
+        "user_secret_count": imported.user_count,
+        "total_secret_count": imported.total_count,
+    }
+
+
+async def _run_import(
+    args: argparse.Namespace,
+    *,
+    target: ManagementTarget,
+) -> int:
+    imported = load_secret_descriptors(Path(args.input_directory))
+    if args.dry_run:
+        _print_json(
+            {
+                "schema": "kdcube_cli.secret_descriptor_import.v1",
+                "ok": True,
+                "dry_run": True,
+                "target": {"tenant": target.tenant, "project": target.project},
+                "input": _import_summary(imported),
+                "applied": 0,
+            }
+        )
+        return 0
+    if not args.yes:
+        raise ManagementCliError(
+            "secret_import_confirmation_required",
+            "Secret import requires --yes after reviewing --dry-run.",
+        )
+
+    result = await apply_secret_descriptor_import(
+        target=target,
+        imported=imported,
+        bearer=delegated_credential_from_input(args),
+        no_open=bool(args.no_open),
+        no_wait=bool(args.no_wait),
+    )
+    if result.denial is not None and result.failed_request is not None:
+        _print_json(secret_import_result_view(target, imported, result))
+        return 3
+
+    _print_json(secret_import_result_view(target, imported, result))
     return 0
+
+
+@dataclass(frozen=True)
+class SecretDescriptorApplyResult:
+    applied: int
+    failed_target: ManagementSecretTarget | None = None
+    failed_request: ManagementRequest | None = None
+    denial: ManagementDenial | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.denial is None
+
+
+async def apply_secret_descriptor_import(
+    *,
+    target: ManagementTarget,
+    imported: SecretDescriptorImport,
+    bearer: str,
+    no_open: bool,
+    no_wait: bool,
+) -> SecretDescriptorApplyResult:
+    """Upsert every literal descriptor value through the selected provider."""
+
+    client = ManagementClient(transport=HttpxManagementTransport())
+    applied = 0
+    for exported in imported.values:
+        secret_target = exported.target
+        request = ManagementRequest.secret_write(
+            target,
+            scope=secret_target.scope,
+            key=secret_target.key,
+            bundle_id=secret_target.bundle_id,
+            user_id=secret_target.user_id,
+            value=exported.value,
+        )
+        result = await _execute_with_consent(
+            client,
+            request,
+            bearer,
+            no_open=no_open,
+            no_wait=no_wait,
+        )
+        if isinstance(result, ManagementDenial):
+            return SecretDescriptorApplyResult(
+                applied=applied,
+                failed_target=secret_target,
+                failed_request=request,
+                denial=result,
+            )
+        applied += 1
+    return SecretDescriptorApplyResult(applied=applied)
+
+
+def secret_import_result_view(
+    target: ManagementTarget,
+    imported: SecretDescriptorImport,
+    result: SecretDescriptorApplyResult,
+) -> dict[str, Any]:
+    view: dict[str, Any] = {
+        "schema": "kdcube_cli.secret_descriptor_import.v1",
+        "ok": result.ok,
+        "dry_run": False,
+        "target": {"tenant": target.tenant, "project": target.project},
+        "input": _import_summary(imported),
+        "applied": result.applied,
+        "semantics": "upsert_present_values",
+    }
+    if (
+        result.denial is not None
+        and result.failed_request is not None
+        and result.failed_target is not None
+    ):
+        view["failed_target"] = result.failed_target.to_dict()
+        view["denial"] = management_view(result.failed_request, result.denial)
+    return view
 
 
 def run_management_secret_command(
@@ -318,7 +582,17 @@ def run_management_secret_command(
     )
     if args.secrets_command == "export":
         return asyncio.run(_run_export(args, target=target))
+    if args.secrets_command == "import":
+        return asyncio.run(_run_import(args, target=target))
     return asyncio.run(_run_delegated(args, target=target))
 
 
-__all__ = ["run_management_secret_command"]
+__all__ = [
+    "SecretDescriptorApplyResult",
+    "apply_secret_descriptor_import",
+    "delegated_credential_from_input",
+    "export_secret_descriptor_pair",
+    "local_management_target",
+    "run_management_secret_command",
+    "secret_import_result_view",
+]

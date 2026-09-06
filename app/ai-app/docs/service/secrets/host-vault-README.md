@@ -4,7 +4,7 @@ title: "Host Vault for Provider Secrets"
 summary: "Durable host-owned secret storage for local KDCube: selector states, system and trust-boundary flows, deployment workload identity over mTLS, migration, activation, and recovery."
 tags: ["service", "secrets", "security", "vault", "runtime"]
 keywords: ["host vault", "kdcube-host-vault/1", "secrets.service.backend", "workload identity", "mTLS", "kdcube-secrets broker", "envelope encryption", "trust registry", "hostvaultctl", "shadow staging", "activation"]
-updated_at: 2026-09-05
+updated_at: 2026-09-06
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/secrets/secrets-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
@@ -191,7 +191,7 @@ subprocess, and isolated execution without placing secret material in
 generated code. See
 [Cross-Runtime Context](../../runtime/cross-runtime-context-README.md).
 
-### 2.3 Write, delete, and owner export
+### 2.3 Write, delete, import, and administrator export
 
 ```text
 authenticated admin settings surface
@@ -215,10 +215,11 @@ selected ISecretsManager -> new owner-controlled YAML files
 
 After activation, ordinary mutations commit to the host vault and update
 provider-derived inventory; they do not rewrite the old plaintext descriptor
-files. A delegated operator or agent can set, get, or delete only the exact
-secret resources and operations approved on its live Card. Reconstructing
-descriptor files is an owner-performed export ceremony rather than a Card
-grant. See
+files. A delegated operator or agent can act only through the resources and
+operations approved on its live Card. An exact key may be `Once` or `Always`;
+a namespace or whole-scope selector is reusable `Always` authority. Every
+effect remains exact and value-free in audit. Reconstructing descriptor files
+is an administrator-performed export ceremony rather than a Card grant. See
 [Delegated KDCube Management Service](../cicd/delegated-management-service-README.md).
 
 The delegated bearer and the vault workload identity solve different hops:
@@ -257,35 +258,36 @@ Host Vault has four distinct inspection surfaces:
 | Which storage is configured for this local runtime? | `kdcube secrets backend status --json` | Descriptor-selected provider, authoritative-store kind, retained descriptor-file presence, migration state, and evidence source. |
 | Does one exact secret exist and which provider serves it? | `kdcube secrets metadata KEY --scope platform` or the same command with `--scope bundle --bundle-id APP_ID` | Non-secret metadata only. The live Card must grant metadata read for that exact secret resource. |
 | What is one exact stored value? | `kdcube secrets get KEY --scope ... --output PRIVATE_FILE` | One admitted plaintext value written atomically to the named file. The CLI does not print it. The live Card must grant value read for that exact resource. |
-| How can the owner reconstruct selected descriptor files? | `kdcube secrets export` with repeated exact `--platform-key` and `--bundle-key APP_ID=KEY` arguments | A new owner-controlled directory containing only the approved keys, after a fresh one-use browser ceremony. |
+| How can an administrator reconstruct selected descriptor entries? | `kdcube secrets export` with repeated exact platform, bundle, user, or user-bundle targets | A new private directory containing only the approved keys, after a fresh one-use browser ceremony. |
+| How can an administrator reconstruct the complete private descriptor pair? | `kdcube secrets export --all` or full `kdcube config export --include-platform-descriptors` | Literal `secrets.yaml` and `bundles.secrets.yaml` containing all current platform, bundle, user, and user-bundle values. |
 
 For example:
 
 ```bash
 # Presence and provider capability, without disclosing the value.
-kdcube secrets metadata services.brave.api_key \
+kdcube secrets metadata platform.services.brave.api_key \
   --scope platform
 
 # Deliberately disclose one exact value to a mode-0600 local file.
 umask 077
-kdcube secrets get services.brave.api_key \
+kdcube secrets get platform.services.brave.api_key \
   --scope platform \
   --output ./brave-api-key.txt
 
 # Reconstruct only the explicitly named descriptor entries.
 kdcube secrets export \
-  --platform-key services.brave.api_key \
+  --platform-key platform.services.brave.api_key \
   --bundle-key connection-hub@1-0=connections.oauth_state_secret \
   --output-directory ./kdcube-secret-export-20260905
 ```
 
-The exact-key management commands are also available to an agent or operator
-when the owner grants their Card the corresponding operation and resource.
-Descriptor export is owner-performed: its one-use approval is bound to the
-manifest and remains outside reusable Card authority. Host Vault's internal
-`secret.list` protocol supports trusted provider inventory and migration; the
-owner-facing management boundary uses exact-key requests and exact-manifest
-export, so each approval discloses only its named values.
+The management commands are also available to an agent or operator when the
+administrator grants its Card the corresponding operation and exact or broad
+resource selector. Descriptor export is administrator-performed: its one-use
+approval is bound to the frozen manifest and remains outside reusable Card
+authority. Host Vault's internal `secret.list` protocol supports trusted
+provider inventory and migration. The administrator-facing export boundary
+supports either named targets or the complete frozen inventory.
 
 The KDCube CLI prompts for a delegated bearer or reads it from the first stdin
 line. The Connection Hub CLI remains a convenience client around the same
@@ -296,9 +298,9 @@ complete command and input contract is in
 User-owned Connection Hub connector credentials use the same selected
 `ISecretsManager` through the user-secret scope. Their owner surface is the
 Connections interface: it reports whether a credential is present and allows
-the owner to replace or remove it. The platform/bundle management commands and
-descriptor export cannot cross into that user scope, and the Connections
-interface does not reveal the stored plaintext value.
+the owner to replace or remove it without revealing plaintext. Explicit user-
+scope management authority can administer them, and complete administrator
+export includes them in `secrets.yaml`.
 
 ## 3. Trust model in one pass
 
@@ -779,14 +781,19 @@ The provider contract remains uniform after cutover:
 | Resolve a secret for Brave, Slack, an external MCP connector, or another trusted provider adapter | Runtime `get_secret()` through `SecretsServiceSecretsManager` | Read the exact host-vault record; no descriptor mutation. |
 | Add or replace a bundle/user secret from an existing authenticated settings surface | Existing KDCube secret mutation API | Commit the value through the broker and refresh provider-derived inventory. |
 | Let an approved agent or operator inspect, set, retrieve, or delete one exact secret | Delegated KDCube management API through `kdcube secrets ...`; Connection Hub may supply its stored OAuth session | Enforce the live Card operation and invocation policy, then use the same broker. |
-| Reconstruct selected descriptor files for the owner | `kdcube secrets export` plus browser approval | Create a new owner-controlled output directory once; active vault records remain unchanged. |
+| Reconstruct selected or whole descriptor files for the administrator | `kdcube secrets export` plus browser approval | Create a new administrator-controlled output directory once; active vault records remain unchanged. |
+| Restore an administrator's literal private pair | `connection-hub secrets host import` with its stored OAuth session, or `kdcube config import` with an issued delegated bearer | Upsert present values through live Card authority; omitted keys remain unchanged. |
 | Revoke the deployment's vault access | `hostvaultctl revoke` as the vault operator | Reject the broker certificate on its next connection. |
 | Rotate deployment identity or the root key | `hostvaultctl rotate-identity` or `rotate-root-key` | Replace identity with bounded overlap, or rewrap data keys without changing secret values. |
 
 There is no automatic vault-to-descriptor synchronization. The old source
 files are rollback material until the operator explicitly cleans them up.
 Later writes change the selected provider only. Human export is the explicit
-reverse path and names every requested key before the vault is read.
+reverse path: exact export names every requested key, while whole export
+freezes the complete provider inventory before approval. Whole output includes
+platform, deployment-bundle, user, and user-bundle values and reconstructs the
+ordinary `secrets.yaml` and `bundles.secrets.yaml` pair in the configuration
+export directory.
 
 Broker verification retries a small number of transient connection and
 `502`/`503`/`504` failures. Permission, conflict, and malformed-request errors

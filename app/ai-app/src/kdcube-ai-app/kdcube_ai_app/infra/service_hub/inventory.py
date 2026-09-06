@@ -580,19 +580,20 @@ async def resolve_config_request_secrets(
             return
         value = None
         if bundle_id:
-            value = await get_secret(f"b:{canonical_key}", bundle_id=bundle_id)
+            bundle_key = canonical_key.removeprefix("platform.")
+            value = await get_secret(f"b:{bundle_key}", bundle_id=bundle_id)
         value = value or await get_secret(canonical_key)
         if value:
             updates[field] = value
 
-    await _resolve("openai_api_key", "services.openai.api_key")
-    await _resolve("claude_api_key", "services.anthropic.api_key")
-    await _resolve("google_api_key", "services.google.api_key")
-    await _resolve("huggingface_api_key", "services.huggingface.api_key")
-    await _resolve("openrouter_api_key", "services.openrouter.api_key")
+    await _resolve("openai_api_key", "platform.services.openai.api_key")
+    await _resolve("claude_api_key", "platform.services.anthropic.api_key")
+    await _resolve("google_api_key", "platform.services.google.api_key")
+    await _resolve("huggingface_api_key", "platform.services.huggingface.api_key")
+    await _resolve("openrouter_api_key", "platform.services.openrouter.api_key")
     # provider "custom" (locally served models / models gateway): same
     # door-time, bundle-then-platform key resolution as hosted providers
-    await _resolve("custom_model_api_key", "services.llm.custom.api_key")
+    await _resolve("custom_model_api_key", "platform.services.llm.custom.api_key")
 
     if not updates:
         return config_request
@@ -1187,7 +1188,7 @@ Please fix the JSON to match the expected format. Return only the fixed JSON, no
 from kdcube_ai_app.apps.chat.reg import EMBEDDERS
 async def embedding_model() -> ModelRecord:
     provider_name = AIProviderName.open_ai
-    api_token = await get_secret("services.openai.api_key", default="") or ""
+    api_token = await get_secret("platform.services.openai.api_key", default="") or ""
     provider = AIProvider(provider=provider_name, apiToken=api_token)
     model_config = EMBEDDERS.get("openai-text-embedding-3-small")
     model_name = model_config.get("model_name")

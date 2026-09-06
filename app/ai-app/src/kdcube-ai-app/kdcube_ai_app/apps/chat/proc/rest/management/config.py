@@ -380,7 +380,7 @@ class HumanSecretExportConfig:
                 name="consumed tombstone",
             ),
             max_targets=_configured_int(
-                plain("management.secret_export.max_targets", default=64),
+                plain("management.secret_export.max_targets", default=4096),
                 name="target count",
             ),
             max_total_value_bytes=_configured_int(
@@ -405,7 +405,7 @@ class HumanSecretExportConfig:
             ("evidence age", self.max_evidence_age_seconds, 900),
             ("transaction TTL", self.transaction_ttl_seconds, 900),
             ("consumed tombstone", self.consumed_tombstone_seconds, 86400),
-            ("target count", self.max_targets, 256),
+            ("target count", self.max_targets, 4096),
             ("result bytes", self.max_total_value_bytes, 8 * 1024 * 1024),
         )
         for name, value, maximum in limits:

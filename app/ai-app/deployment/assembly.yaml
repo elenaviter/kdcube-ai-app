@@ -34,7 +34,7 @@ auth:
     provider_id: "workspace_google_session"
     entrypoint: "login"
 
-  # OIDC service account credentials → secrets.yaml: auth.oidc.{admin_email,admin_username,admin_password}
+  # OIDC service account credentials → secrets.yaml: platform.auth.oidc.{admin_email,admin_username,admin_password}
 
   # Cognito — fill in when auth.idp = "cognito"
   cognito:
@@ -104,7 +104,7 @@ management:
     max_evidence_age_seconds: 300
     transaction_ttl_seconds: 180
     consumed_tombstone_seconds: 600
-    max_targets: 64
+    max_targets: 4096
     max_total_value_bytes: 1048576
 
 proxy:
@@ -140,7 +140,7 @@ ports:
 
 # ---------------------------------------------------------------------------
 # Infrastructure — Postgres and Redis
-# Passwords live in secrets.yaml (infra.postgres.password / infra.redis.password)
+# Passwords live in secrets.yaml (platform.infra.postgres.password / platform.infra.redis.password)
 # ---------------------------------------------------------------------------
 infra:
   postgres:
@@ -148,7 +148,7 @@ infra:
     port: "5432"         # POSTGRES_PORT
     user: "postgres"     # POSTGRES_USER
     database: "kdcube"   # POSTGRES_DATABASE
-    password: null       # secret only; resolve from secrets.yaml/provider: infra.postgres.password
+    password: null       # secret only; resolve from secrets.yaml/provider: platform.infra.postgres.password
     postgres_ssl: false  # POSTGRES_SSL (new)
     # postgres_ssl_mode: "require"  # POSTGRES_SSL_MODE (new, optional)
     # postgres_ssl_root_cert: ""    # POSTGRES_SSL_ROOT_CERT (new, optional)
@@ -156,7 +156,7 @@ infra:
     host: "redis"        # REDIS_HOST
     port: "6379"         # REDIS_PORT
     topology: "standalone" # REDIS_TOPOLOGY
-    password: null       # secret only; resolve from secrets.yaml/provider: infra.redis.password
+    password: null       # secret only; resolve from secrets.yaml/provider: platform.infra.redis.password
 
 # ---------------------------------------------------------------------------
 # Storage
@@ -260,7 +260,7 @@ notifications:
     from: ""               # EMAIL_FROM
     to: "ops@example.com"  # EMAIL_TO
     use_tls: true          # EMAIL_USE_TLS
-    # email_password → secrets.yaml: services.email.password
+    # email_password → secrets.yaml: platform.services.email.password
 
 # ---------------------------------------------------------------------------
 # Scheduled routines
@@ -344,7 +344,7 @@ paths:
 #     only be used with auth.idp="simple" or controlled local/dev deployments.
 #     The old value "hardcoded" is accepted by clients as a legacy alias only.
 #   - "cognito": OSS Cognito frontend auth. OIDC authority/client_id are derived
-#     from auth.cognito.* unless explicitly overridden under oidcConfig.
+#     from platform.auth.cognito.* unless explicitly overridden under oidcConfig.
 #   - "delegated": custom delegated frontend auth via proxy-login. Backend idp
 #     is still usually "cognito"; browser talks to auth.apiBase.
 #   - "bundle": external bundle/front-shell login. The browser already carries

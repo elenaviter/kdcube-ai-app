@@ -15,11 +15,11 @@ class _FakeSecretsManager:
         self.get_calls = []
         self.user_get_calls = []
         self.values = {
-            "services.openai.api_key": "sk-openai-test",
-            "services.anthropic.api_key": "sk-anthropic-test",
-            "services.git.http_token": "gh-token-test",
-            "infra.postgres.password": "pg-secret-test",
-            "infra.redis.password": "redis-secret-test",
+            "platform.services.openai.api_key": "sk-openai-test",
+            "platform.services.anthropic.api_key": "sk-anthropic-test",
+            "platform.services.git.http_token": "gh-token-test",
+            "platform.infra.postgres.password": "pg-secret-test",
+            "platform.infra.redis.password": "redis-secret-test",
             "bundles.bundle.demo.secrets.user_management.cognito_user_pool_id": "pool-123",
         }
 
@@ -89,8 +89,8 @@ async def test_get_secret_reads_through_provider(monkeypatch, caplog):
     assert settings.OPENAI_API_KEY is None
     assert settings.ANTHROPIC_API_KEY is None
     assert manager.get_calls == []
-    assert await sdk_config.get_secret("services.openai.api_key") == "sk-openai-test"
-    assert await sdk_config.get_secret("services.git.http_token") == "gh-token-test"
+    assert await sdk_config.get_secret("platform.services.openai.api_key") == "sk-openai-test"
+    assert await sdk_config.get_secret("platform.services.git.http_token") == "gh-token-test"
 
 
 @pytest.mark.asyncio
@@ -104,25 +104,28 @@ async def test_get_secret_uses_central_provider_cache_and_explicit_clear(monkeyp
         lambda: SimpleNamespace(TENANT="tenant-a", PROJECT="project-a"),
     )
 
-    assert await sdk_config.get_secret("services.openai.api_key") == "sk-openai-test"
-    assert await sdk_config.get_secret("services.openai.api_key") == "sk-openai-test"
-    assert manager.get_calls == ["services.openai.api_key"]
+    assert await sdk_config.get_secret("platform.services.openai.api_key") == "sk-openai-test"
+    assert await sdk_config.get_secret("platform.services.openai.api_key") == "sk-openai-test"
+    assert manager.get_calls == ["platform.services.openai.api_key"]
 
     cleared = sdk_config.clear_secret_cache(
         tenant="tenant-a",
         project="project-a",
-        key="services.openai.api_key",
+        key="platform.services.openai.api_key",
     )
     assert cleared == 1
 
-    assert await sdk_config.get_secret("services.openai.api_key") == "sk-openai-test"
-    assert manager.get_calls == ["services.openai.api_key", "services.openai.api_key"]
+    assert await sdk_config.get_secret("platform.services.openai.api_key") == "sk-openai-test"
+    assert manager.get_calls == [
+        "platform.services.openai.api_key",
+        "platform.services.openai.api_key",
+    ]
 
 
 @pytest.mark.asyncio
-async def test_get_secret_canonicalizes_legacy_alias_for_provider(monkeypatch):
+async def test_get_secret_rejects_unqualified_legacy_alias(monkeypatch):
     manager = _FakeSecretsManager()
-    manager.values["services.git.http_user"] = "git-user-secret"
+    manager.values["platform.services.git.http_user"] = "git-user-secret"
     monkeypatch.setattr(sdk_config, "get_secrets_manager", lambda _settings: manager)
     sdk_config._SECRET_LOGGED.clear()
 
@@ -130,8 +133,8 @@ async def test_get_secret_canonicalizes_legacy_alias_for_provider(monkeypatch):
     monkeypatch.setattr(sdk_config, "get_settings", lambda: settings)
     manager.get_calls.clear()
 
-    assert await sdk_config.get_secret("GIT_HTTP_USER") == "git-user-secret"
-    assert manager.get_calls == ["services.git.http_user"]
+    assert await sdk_config.get_secret("GIT_HTTP_USER") is None
+    assert manager.get_calls == []
 
 
 def test_settings_does_not_read_provider_during_sync_construction(monkeypatch):
@@ -177,11 +180,12 @@ def test_plain_config_reads_use_value_cache_until_descriptor_changes(monkeypatch
 def test_settings_reads_platform_secrets_from_descriptor_without_provider_lookup(monkeypatch, tmp_path):
     secrets_path = tmp_path / "secrets.yaml"
     secrets_path.write_text(
-        "infra:\n"
-        "  postgres:\n"
-        "    password: pg-secret-from-file\n"
-        "  redis:\n"
-        "    password: redis-secret-from-file\n",
+        "platform:\n"
+        "  infra:\n"
+        "    postgres:\n"
+        "      password: pg-secret-from-file\n"
+        "    redis:\n"
+        "      password: redis-secret-from-file\n",
         encoding="utf-8",
     )
     monkeypatch.delenv("POSTGRES_PASSWORD", raising=False)
@@ -202,9 +206,9 @@ def test_settings_prefers_sensitive_env_without_provider_lookup(monkeypatch):
     manager = _FakeSecretsManager()
     manager.values.update(
         {
-            "auth.oidc.admin_email": "secret@example.com",
-            "auth.oidc.admin_username": "secret-user",
-            "auth.oidc.admin_password": "secret-pass",
+            "platform.auth.oidc.admin_email": "secret@example.com",
+            "platform.auth.oidc.admin_username": "secret-user",
+            "platform.auth.oidc.admin_password": "secret-pass",
         }
     )
     monkeypatch.setenv("POSTGRES_PASSWORD", "env-postgres-pass")
@@ -221,11 +225,11 @@ def test_settings_prefers_sensitive_env_without_provider_lookup(monkeypatch):
     assert settings.AUTH.OIDC_SERVICE_USER_EMAIL == "env@example.com"
     assert settings.AUTH.OIDC_SERVICE_ADMIN_USERNAME == "env-user"
     assert settings.AUTH.OIDC_SERVICE_ADMIN_PASSWORD == "env-pass"
-    assert "infra.postgres.password" not in manager.get_calls
-    assert "infra.redis.password" not in manager.get_calls
-    assert "auth.oidc.admin_email" not in manager.get_calls
-    assert "auth.oidc.admin_username" not in manager.get_calls
-    assert "auth.oidc.admin_password" not in manager.get_calls
+    assert "platform.infra.postgres.password" not in manager.get_calls
+    assert "platform.infra.redis.password" not in manager.get_calls
+    assert "platform.auth.oidc.admin_email" not in manager.get_calls
+    assert "platform.auth.oidc.admin_username" not in manager.get_calls
+    assert "platform.auth.oidc.admin_password" not in manager.get_calls
 
 
 @pytest.mark.asyncio

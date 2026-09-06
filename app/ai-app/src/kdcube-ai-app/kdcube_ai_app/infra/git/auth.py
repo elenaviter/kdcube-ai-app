@@ -22,9 +22,9 @@ def _clean(value: str | None) -> str | None:
 
 async def _configured_git_secret(key: str) -> str | None:
     if key == "git.http_token":
-        return _clean(await get_secret("services.git.http_token"))
+        return _clean(await get_secret("platform.services.git.http_token"))
     if key == "git.http_user":
-        return _clean(await get_secret("services.git.http_user"))
+        return _clean(await get_secret("platform.services.git.http_user"))
     return None
 
 

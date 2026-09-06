@@ -465,9 +465,9 @@ storage:
     repo: ""      # used only when type=git
 ```
 
-HTTPS credentials use `services.git.http_token` and
-`services.git.http_user` in `secrets.yaml`. SSH transport uses the
-`services.git.git_ssh_key_path`, `git_ssh_known_hosts`, and
+HTTPS credentials use `platform.services.git.http_token` and
+`platform.services.git.http_user` in `secrets.yaml`. SSH transport uses the
+`platform.services.git.git_ssh_key_path`, `git_ssh_known_hosts`, and
 `git_ssh_strict_host_key_checking` fields in `assembly.yaml`. The shared Git
 helper resolves this standard descriptor-backed configuration for bootstrap
 and publish.

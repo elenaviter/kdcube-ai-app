@@ -15,13 +15,15 @@ def _mode(path: Path) -> int:
 
 def test_write_secret_descriptor_repairs_mode_and_keeps_atomic_temp_private(tmp_path: Path):
     target = tmp_path / "secrets.yaml"
-    target.write_text("services: {}\n", encoding="utf-8")
+    target.write_text("platform:\n  services: {}\n", encoding="utf-8")
     target.chmod(0o644)
 
-    write_descriptor_text(target, "services:\n  demo: value\n")
+    write_descriptor_text(target, "platform:\n  services:\n    demo: value\n")
 
     assert _mode(target) == 0o600
-    assert target.read_text(encoding="utf-8") == "services:\n  demo: value\n"
+    assert target.read_text(encoding="utf-8") == (
+        "platform:\n  services:\n    demo: value\n"
+    )
     assert list(tmp_path.glob(".secrets.yaml.tmp-*")) == []
 
 

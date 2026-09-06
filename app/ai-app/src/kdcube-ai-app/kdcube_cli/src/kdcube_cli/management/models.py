@@ -36,7 +36,7 @@ MANAGEMENT_ERROR_SCHEMA = "kdcube.management.error.v1"
 _ERROR_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,127}$")
 _HEX_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _CHOICES = frozenset({"allow_once", "allow_always"})
-_SECRET_SCOPES = frozenset({"platform", "bundle"})
+_SECRET_SCOPES = frozenset({"platform", "bundle", "user"})
 _SECRET_KEY_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.@-]{0,511}$")
 _MAX_SECRET_VALUE_BYTES = 64 * 1024
 
@@ -113,7 +113,7 @@ def _secret_scope(value: str) -> str:
     if candidate not in _SECRET_SCOPES:
         raise ManagementCliError(
             "management_secret_scope_invalid",
-            "The secret scope must be platform or bundle.",
+            "The secret scope must be platform, bundle, or user.",
         )
     return candidate
 
@@ -125,7 +125,11 @@ def _secret_key(value: str, *, scope: str) -> str:
         or ".." in candidate
         or candidate.endswith((".", ".__keys"))
         or candidate == "__keys"
-        or (scope == "platform" and candidate.startswith(("bundles.", "users.")))
+        or (scope == "platform" and not candidate.startswith("platform."))
+        or (
+            scope in {"bundle", "user"}
+            and candidate.startswith(("platform.", "bundles.", "users."))
+        )
     ):
         raise ManagementCliError(
             "management_secret_key_invalid",
@@ -152,6 +156,7 @@ class ManagementSecretTarget:
     scope: str
     key: str
     bundle_id: str = ""
+    user_id: str = ""
 
     @classmethod
     def create(
@@ -160,31 +165,103 @@ class ManagementSecretTarget:
         scope: str,
         key: str,
         bundle_id: str = "",
+        user_id: str = "",
     ) -> ManagementSecretTarget:
         normalized_scope = _secret_scope(scope)
         normalized_key = _secret_key(key, scope=normalized_scope)
         normalized_bundle = ""
+        normalized_user = ""
         if normalized_scope == "bundle":
             normalized_bundle = _application_id(bundle_id)
-        elif bundle_id:
+            if user_id:
+                raise ManagementCliError(
+                    "management_secret_scope_invalid",
+                    "A user identifier is valid only for a user secret.",
+                )
+        elif normalized_scope == "user":
+            normalized_user = _text(user_id, maximum=256)
+            if (
+                not _SECRET_KEY_RE.fullmatch(normalized_user)
+                or "." in normalized_user
+                or normalized_user in {"_", "__keys"}
+            ):
+                raise ManagementCliError(
+                    "management_secret_user_invalid",
+                    "The user identifier must name one exact user.",
+                )
+            if bundle_id:
+                normalized_bundle = _application_id(bundle_id)
+        elif bundle_id or user_id:
             raise ManagementCliError(
                 "management_secret_scope_invalid",
-                "A bundle identifier is valid only for a bundle secret.",
+                "Bundle and user identifiers are valid only for their secret scopes.",
             )
         return cls(
             scope=normalized_scope,
             key=normalized_key,
             bundle_id=normalized_bundle,
+            user_id=normalized_user,
+        )
+
+    @classmethod
+    def from_provider_key(cls, value: str) -> ManagementSecretTarget:
+        key = _text(value, maximum=1024)
+        if key.startswith("platform."):
+            return cls.create(scope="platform", key=key)
+        if key.startswith("bundles.") and ".secrets." in key:
+            bundle_id, tail = key[len("bundles.") :].split(".secrets.", 1)
+            return cls.create(scope="bundle", bundle_id=bundle_id, key=tail)
+        if key.startswith("users."):
+            user_path = key[len("users.") :]
+            bundle_marker = user_path.find(".bundles.")
+            secrets_marker = user_path.find(".secrets.")
+            if bundle_marker >= 0 and (
+                secrets_marker < 0 or bundle_marker < secrets_marker
+            ):
+                user_id, bundle_path = user_path.split(".bundles.", 1)
+                if ".secrets." not in bundle_path:
+                    raise ManagementCliError(
+                        "management_secret_key_invalid",
+                        "The user bundle secret identity is invalid.",
+                    )
+                bundle_id, tail = bundle_path.split(".secrets.", 1)
+                return cls.create(
+                    scope="user",
+                    user_id=user_id,
+                    bundle_id=bundle_id,
+                    key=tail,
+                )
+            if ".secrets." in user_path:
+                user_id, tail = user_path.split(".secrets.", 1)
+                return cls.create(scope="user", user_id=user_id, key=tail)
+        raise ManagementCliError(
+            "management_secret_key_invalid",
+            "The secret identity must use platform, bundle, or user scope.",
         )
 
     @property
-    def identity(self) -> tuple[str, str, str]:
-        return (self.scope, self.bundle_id, self.key)
+    def identity(self) -> tuple[str, str, str, str]:
+        return (self.scope, self.user_id, self.bundle_id, self.key)
+
+    @property
+    def provider_key(self) -> str:
+        if self.scope == "bundle":
+            return f"bundles.{self.bundle_id}.secrets.{self.key}"
+        if self.scope == "user":
+            if self.bundle_id:
+                return (
+                    f"users.{self.user_id}.bundles.{self.bundle_id}.secrets."
+                    f"{self.key}"
+                )
+            return f"users.{self.user_id}.secrets.{self.key}"
+        return self.key
 
     def to_dict(self) -> dict[str, str]:
         result = {"scope": self.scope, "key": self.key}
         if self.bundle_id:
             result["bundle_id"] = self.bundle_id
+        if self.user_id:
+            result["user_id"] = self.user_id
         return result
 
 
@@ -193,6 +270,7 @@ def _secret_body(
     scope: str,
     key: str,
     bundle_id: str = "",
+    user_id: str = "",
     value: Any = None,
     include_value: bool = False,
 ) -> dict[str, Any]:
@@ -200,6 +278,7 @@ def _secret_body(
         scope=scope,
         key=key,
         bundle_id=bundle_id,
+        user_id=user_id,
     ).to_dict()
     if include_value:
         body["value"] = _secret_value(value)
@@ -252,8 +331,14 @@ class ManagementTarget:
             scope=body.get("scope"),
             key=body.get("key"),
             bundle_id=body.get("bundle_id", ""),
+            user_id=body.get("user_id", ""),
         )
-        scope_id = secret_target.bundle_id or "_"
+        if secret_target.scope == "user":
+            scope_id = secret_target.user_id
+            if secret_target.bundle_id:
+                scope_id += f"~{secret_target.bundle_id}"
+        else:
+            scope_id = secret_target.bundle_id or "_"
         encoded = (
             quote(self.tenant, safe="-._~"),
             quote(self.project, safe="-._~"),
@@ -365,6 +450,7 @@ class ManagementRequest:
         scope: str,
         key: str,
         bundle_id: str = "",
+        user_id: str = "",
         invocation_id: str | None = None,
     ) -> ManagementRequest:
         return cls._secret(
@@ -374,6 +460,7 @@ class ManagementRequest:
             scope=scope,
             key=key,
             bundle_id=bundle_id,
+            user_id=user_id,
             invocation_id=invocation_id,
         )
 
@@ -385,6 +472,7 @@ class ManagementRequest:
         scope: str,
         key: str,
         bundle_id: str = "",
+        user_id: str = "",
         invocation_id: str | None = None,
     ) -> ManagementRequest:
         return cls._secret(
@@ -394,6 +482,7 @@ class ManagementRequest:
             scope=scope,
             key=key,
             bundle_id=bundle_id,
+            user_id=user_id,
             invocation_id=invocation_id,
         )
 
@@ -406,6 +495,7 @@ class ManagementRequest:
         key: str,
         value: str,
         bundle_id: str = "",
+        user_id: str = "",
         invocation_id: str | None = None,
     ) -> ManagementRequest:
         return cls._secret(
@@ -415,6 +505,7 @@ class ManagementRequest:
             scope=scope,
             key=key,
             bundle_id=bundle_id,
+            user_id=user_id,
             value=value,
             include_value=True,
             invocation_id=invocation_id,
@@ -428,6 +519,7 @@ class ManagementRequest:
         scope: str,
         key: str,
         bundle_id: str = "",
+        user_id: str = "",
         invocation_id: str | None = None,
     ) -> ManagementRequest:
         return cls._secret(
@@ -437,6 +529,7 @@ class ManagementRequest:
             scope=scope,
             key=key,
             bundle_id=bundle_id,
+            user_id=user_id,
             invocation_id=invocation_id,
         )
 
@@ -450,6 +543,7 @@ class ManagementRequest:
         scope: str,
         key: str,
         bundle_id: str,
+        user_id: str,
         invocation_id: str | None,
         value: Any = None,
         include_value: bool = False,
@@ -458,6 +552,7 @@ class ManagementRequest:
             scope=scope,
             key=key,
             bundle_id=bundle_id,
+            user_id=user_id,
             value=value,
             include_value=include_value,
         )

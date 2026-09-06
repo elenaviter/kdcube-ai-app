@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Any
 
 AddQuietArgument = Callable[[argparse.ArgumentParser], None]
-_MANAGEMENT_COMMANDS = frozenset({"metadata", "get", "set", "delete", "export"})
+_MANAGEMENT_COMMANDS = frozenset(
+    {"metadata", "get", "set", "delete", "export", "import"}
+)
 
 
 def _add_target_options(command: argparse.ArgumentParser) -> None:
@@ -54,17 +56,28 @@ def _add_management_options(command: argparse.ArgumentParser) -> None:
 
 
 def _add_secret_target(command: argparse.ArgumentParser) -> None:
-    command.add_argument("key", help="Exact provider-relative secret key.")
+    command.add_argument(
+        "key",
+        help=(
+            "Exact canonical key. Platform keys begin with platform.; "
+            "bundle and user keys are relative to their explicit scope."
+        ),
+    )
     command.add_argument(
         "--scope",
-        choices=("platform", "bundle"),
+        choices=("platform", "bundle", "user"),
         required=True,
-        help="Platform scope or one declared application bundle.",
+        help="Platform, application-bundle, or user-owned scope.",
     )
     command.add_argument(
         "--bundle-id",
         default="",
         help="Exact application id; required for --scope bundle.",
+    )
+    command.add_argument(
+        "--user-id",
+        default="",
+        help="Exact immutable user id; required for --scope user.",
     )
     _add_management_options(command)
 
@@ -201,9 +214,15 @@ def configure_secrets_parser(
 
     export = commands.add_parser(
         "export",
-        help="Export exact values once after explicit browser confirmation.",
+        help="Export current values once after explicit browser confirmation.",
     )
     _add_target_options(export)
+    export.add_argument(
+        "--all",
+        action="store_true",
+        dest="all_secrets",
+        help="Export the complete deployment inventory, including all users.",
+    )
     export.add_argument("--platform-key", action="append", default=[])
     export.add_argument(
         "--bundle-key",
@@ -211,10 +230,82 @@ def configure_secrets_parser(
         default=[],
         metavar="BUNDLE_ID=KEY",
     )
+    export.add_argument(
+        "--user-key",
+        action="append",
+        default=[],
+        metavar="USER_ID=KEY",
+    )
+    export.add_argument(
+        "--user-bundle-key",
+        action="append",
+        default=[],
+        metavar="USER_ID/BUNDLE_ID=KEY",
+    )
     export.add_argument("--output-directory", required=True)
+    export.add_argument(
+        "--into-descriptor-directory",
+        action="store_true",
+        help=(
+            "Write secrets.yaml and bundles.secrets.yaml into an existing "
+            "ordinary descriptor directory."
+        ),
+    )
+    export.add_argument(
+        "--replace-descriptor-files",
+        action="store_true",
+        help=(
+            "Replace only existing secrets.yaml and bundles.secrets.yaml; "
+            "requires --into-descriptor-directory."
+        ),
+    )
     export.add_argument("--no-open", action="store_true")
     export.add_argument("--wait-seconds", type=float, default=300.0)
     export.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
+
+    import_command = commands.add_parser(
+        "import",
+        help=(
+            "Apply values from the ordinary secrets.yaml and "
+            "bundles.secrets.yaml descriptor pair."
+        ),
+    )
+    _add_management_options(import_command)
+    import_command.add_argument(
+        "--input-directory",
+        required=True,
+        help="Directory containing secrets.yaml and bundles.secrets.yaml.",
+    )
+    import_command.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate and inventory the descriptors without sending values.",
+    )
+    import_command.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm that every descriptor value should be applied.",
+    )
+
+    namespace = commands.add_parser(
+        "namespace",
+        help="Migrate persisted secret identities to the canonical namespace.",
+    )
+    namespace_actions = namespace.add_subparsers(
+        dest="secrets_namespace_action",
+        required=True,
+    )
+    migrate = namespace_actions.add_parser(
+        "migrate",
+        help="Move legacy platform roots under platform: without exposing values.",
+    )
+    add_quiet(migrate)
+    migrate.add_argument("--tenant", default="")
+    migrate.add_argument("--project", default="")
+    migrate.add_argument("--workdir", default=None)
+    migrate.add_argument("--dry-run", action="store_true")
+    migrate.add_argument("--yes", action="store_true")
+    migrate.add_argument("--json", action="store_true", dest="json_output")
 
     backend = commands.add_parser(
         "backend",
@@ -257,6 +348,13 @@ def is_backend_status_command(args: argparse.Namespace) -> bool:
     )
 
 
+def is_secret_namespace_command(args: argparse.Namespace) -> bool:
+    return (
+        getattr(args, "secrets_command", "") == "namespace"
+        and getattr(args, "secrets_namespace_action", "") == "migrate"
+    )
+
+
 def is_host_vault_lifecycle_command(args: argparse.Namespace) -> bool:
     return getattr(args, "secrets_command", "") == "host-vault" or (
         getattr(args, "secrets_command", "") == "backend"
@@ -269,4 +367,5 @@ __all__ = [
     "is_backend_status_command",
     "is_host_vault_lifecycle_command",
     "is_management_secret_command",
+    "is_secret_namespace_command",
 ]

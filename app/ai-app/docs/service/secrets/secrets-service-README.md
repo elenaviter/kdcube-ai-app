@@ -4,7 +4,7 @@ title: "Secrets Manager Implementations"
 summary: "System map for KDCube secret resolution: descriptor selectors, trusted-runtime read and write flows, persistence choices, and provider-specific behavior."
 tags: ["service", "secrets", "configuration", "aws", "runtime"]
 keywords: ["SECRETS_PROVIDER", "secrets.service.backend", "secrets-service", "host-vault", "aws-sm", "secrets-file", "in-memory", "user secrets", "bundle secrets", "secret flow"]
-updated_at: 2026-09-05
+updated_at: 2026-09-06
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/service-runtime-configuration-mapping-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/secrets-descriptor-README.md
@@ -21,7 +21,7 @@ see_also:
 This document is the system-level map of secret resolution in KDCube. It
 describes the runtime secrets manager implementations and how they behave for:
 
-- global service secrets
+- platform secrets
 - bundle-shared secrets
 - user-scoped bundle secrets
 
@@ -192,7 +192,7 @@ selected ISecretsManager
 delegated operator or agent
         |
         | user-provided Card-bound bearer
-        | + exact resource + exact operation
+        | + exact request + granted exact/namespace/scope selector
         v
 KDCube delegated management API
         |
@@ -206,8 +206,9 @@ The approving user can give that bearer to an agent or operator CLI. The agent
 is then a delegated KDCube administrator for exactly the resources and
 operations on the live Card. Delegated management defines separate grants for
 metadata read, plaintext value read, value write, and delete; granting
-plaintext read intentionally discloses that exact value to the caller. `Once`
-and `Always` apply independently per operation.
+plaintext read intentionally discloses that exact value to the caller. An
+exact target can use `Once` or `Always`. A namespace or whole-scope selector is
+standing `Always` authority; the resulting provider operation is still exact.
 
 This API authority is distinct from host administration. The bearer is
 accepted by KDCube's public management boundary and is never accepted by the
@@ -217,19 +218,21 @@ exact internal secret reference. The delegated agent therefore needs no
 Docker access, vault filesystem access, or deployment private key.
 
 Human descriptor export is a separate CLI-initiated,
-browser-confirmed, one-use ceremony; it creates new local descriptor files and
-does not add reusable export authority to a Card. See
+browser-confirmed, one-use ceremony. Selected export returns named targets;
+whole export freezes and returns all current platform, bundle, user, and user-
+bundle values. Both create the normal private `secrets.yaml` and
+`bundles.secrets.yaml` and do not add reusable export authority to a Card. See
 [Delegated KDCube Management Service](../cicd/delegated-management-service-README.md).
 
 ## 3. Supported secret scopes
 
-### Global service secrets
+### Platform secrets
 
 Examples:
 
-- `services.openai.api_key`
-- `services.anthropic.api_key`
-- `services.git.http_token`
+- `platform.services.openai.api_key`
+- `platform.services.anthropic.api_key`
+- `platform.services.git.http_token`
 
 These are used as shared service-wide defaults.
 
@@ -328,7 +331,7 @@ Restart behavior follows `secrets.service.backend`:
 
 User-scoped secrets:
 
-- stored under the same canonical flat key namespace
+- stored under the same canonical provider key namespace
 - for example:
   - `users.alice.bundles.rms@06-04-26-156.secrets.anthropic.api_key`
 
@@ -347,8 +350,8 @@ Behavior:
 
 Secret id mapping examples:
 
-- `services.openai.api_key`
-  - `kdcube/<tenant>/<project>/services/openai/api_key`
+- `platform.services.openai.api_key`
+  - `kdcube/<tenant>/<project>/platform/services/openai/api_key`
 - `bundles.rms@06-04-26-156.secrets.git.http_token`
   - `kdcube/<tenant>/<project>/bundles/rms@06-04-26-156/secrets/git/http_token`
 - `users.alice.bundles.rms@06-04-26-156.secrets.anthropic.api_key`
@@ -378,10 +381,12 @@ Configured URIs:
 - `GLOBAL_SECRETS_YAML`
 - `BUNDLE_SECRETS_YAML`
 
-Current important implementation detail:
+Descriptor placement:
 
-- user-scoped secrets are currently persisted into `GLOBAL_SECRETS_YAML`
-- there is not yet a separate `USER_SECRETS_YAML`
+- `secrets.yaml` contains only the `platform` and `users` top-level roots
+- `bundles.secrets.yaml` contains deployment-bundle values
+- no separate `USER_SECRETS_YAML` is needed; whole administrator export
+  reconstructs user values under `users` in the ordinary `secrets.yaml`
 
 Restart behavior:
 
@@ -538,14 +543,14 @@ RMS now prefers credentials in this order:
 
 1. `users.<user_id>.bundles.rms@06-04-26-156.secrets.git.http_token`
 2. `bundles.rms@06-04-26-156.secrets.git.http_token`
-3. `services.git.http_token`
+3. `platform.services.git.http_token`
 4. process / machine git auth
 
 ### Claude
 
 1. `users.<user_id>.bundles.rms@06-04-26-156.secrets.anthropic.api_key`
 2. `bundles.rms@06-04-26-156.secrets.anthropic.api_key`
-3. `services.anthropic.api_key`
+3. `platform.services.anthropic.api_key`
 4. process / machine Claude auth
 
 This means:

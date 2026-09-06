@@ -832,9 +832,9 @@ Stage explicit values without prompts:
 
 ```bash
 kdcube init \
-  --set-secret services.openai.api_key "sk-..." \
-  --set-secret services.anthropic.api_key "sk-ant-..." \
-  --set-secret services.git.http_token "ghp_..."
+  --set-secret platform.services.openai.api_key "sk-..." \
+  --set-secret platform.services.anthropic.api_key "sk-ant-..." \
+  --set-secret platform.services.git.http_token "ghp_..."
 ```
 
 The full interactive wizard (`kdcube init -i`) also includes the standard
@@ -1120,7 +1120,8 @@ In `secrets-file` mode runtime resolves `/config/secrets.yaml` via
 
 Values injected through the `secrets-service` flow are still **not** written to `.env.proc`.
 
-Secrets are keyed by **dot‑path** (e.g. `services.openai.api_key`).
+Platform secrets are keyed by a canonical **dot‑path** under `platform`
+(for example, `platform.services.openai.api_key`).
 
 Template:
 - [`app/ai-app/deployment/secrets.yaml`](../../../deployment/secrets.yaml)

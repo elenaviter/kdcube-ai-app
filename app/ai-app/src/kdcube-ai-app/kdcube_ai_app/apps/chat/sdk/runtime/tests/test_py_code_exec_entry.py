@@ -216,7 +216,9 @@ def test_prepare_runtime_environment_materializes_descriptors_before_settings_ca
     monkeypatch.delenv("KDCUBE_RUNTIME_ENV_PREPARED", raising=False)
     monkeypatch.setenv(
         "KDCUBE_RUNTIME_SECRETS_YAML_B64",
-        base64.b64encode(b"secrets:\n  services:\n    brave:\n      api_key: brave-secret\n").decode("ascii"),
+        base64.b64encode(
+            b"secrets:\n  platform:\n    services:\n      brave:\n        api_key: brave-secret\n"
+        ).decode("ascii"),
     )
     cache_clear_calls: list[bool] = []
 
@@ -235,7 +237,7 @@ def test_prepare_runtime_environment_materializes_descriptors_before_settings_ca
 
         assert os.environ["KDCUBE_RUNTIME_ENV_PREPARED"] == "1"
         assert pathlib.Path(os.environ["GLOBAL_SECRETS_YAML"]).read_text(encoding="utf-8") == (
-            "secrets:\n  services:\n    brave:\n      api_key: brave-secret\n"
+            "secrets:\n  platform:\n    services:\n      brave:\n        api_key: brave-secret\n"
         )
         assert cache_clear_calls == [True]
     finally:
@@ -261,7 +263,9 @@ async def test_prepare_runtime_environment_makes_materialized_secrets_visible_to
     )
     monkeypatch.setenv(
         "KDCUBE_RUNTIME_SECRETS_YAML_B64",
-        base64.b64encode(b"secrets:\n  services:\n    brave:\n      api_key: brave-secret\n").decode("ascii"),
+        base64.b64encode(
+            b"secrets:\n  platform:\n    services:\n      brave:\n        api_key: brave-secret\n"
+        ).decode("ascii"),
     )
     logger = _CaptureLogger()
 
@@ -271,7 +275,9 @@ async def test_prepare_runtime_environment_makes_materialized_secrets_visible_to
         settings = sdk_config.Settings()
 
         assert settings.BRAVE_API_KEY is None
-        assert await sdk_config.get_secret("services.brave.api_key") == "brave-secret"
+        assert await sdk_config.get_secret(
+            "platform.services.brave.api_key"
+        ) == "brave-secret"
     finally:
         sdk_config.get_settings.cache_clear()
         for key in (
@@ -285,7 +291,7 @@ async def test_prepare_runtime_environment_makes_materialized_secrets_visible_to
 
 
 @pytest.mark.asyncio
-async def test_prepare_runtime_environment_reads_root_services_secret_descriptor(monkeypatch):
+async def test_prepare_runtime_environment_reads_platform_secret_descriptor(monkeypatch):
     exec_id = "exec-root-services-settings-test"
     runtime_dir = pathlib.Path("/tmp/kdcube-runtime-descriptors") / exec_id
     shutil.rmtree(runtime_dir, ignore_errors=True)
@@ -297,7 +303,9 @@ async def test_prepare_runtime_environment_reads_root_services_secret_descriptor
     )
     monkeypatch.setenv(
         "KDCUBE_RUNTIME_SECRETS_YAML_B64",
-        base64.b64encode(b"services:\n  brave:\n    api_key: brave-secret\n").decode("ascii"),
+        base64.b64encode(
+            b"platform:\n  services:\n    brave:\n      api_key: brave-secret\n"
+        ).decode("ascii"),
     )
     logger = _CaptureLogger()
 
@@ -308,7 +316,9 @@ async def test_prepare_runtime_environment_reads_root_services_secret_descriptor
 
         assert settings.GLOBAL_SECRETS_YAML == str((runtime_dir / "secrets.yaml").resolve())
         assert settings.BRAVE_API_KEY is None
-        assert await sdk_config.get_secret("services.brave.api_key") == "brave-secret"
+        assert await sdk_config.get_secret(
+            "platform.services.brave.api_key"
+        ) == "brave-secret"
     finally:
         sdk_config.get_settings.cache_clear()
         for key in (

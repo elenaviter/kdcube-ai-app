@@ -62,6 +62,9 @@ class _Manager:
     async def set_many(self, values: dict[str, str]) -> None:
         self.data.update(values)
 
+    async def list_all_secret_keys(self) -> list[str]:
+        return sorted(self.data)
+
 
 def _request(redis: _Redis) -> Request:
     app = SimpleNamespace(state=SimpleNamespace(redis_async=redis))
@@ -82,21 +85,8 @@ def _request(redis: _Redis) -> Request:
     )
 
 
-@pytest.fixture()
-def declared_bundle(monkeypatch):
-    from kdcube_ai_app.apps.chat.proc.rest.management import secret_runtime
-
-    async def _registry(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
-        return SimpleNamespace(bundles={"workspace@1-0": object()})
-
-    monkeypatch.setattr(secret_runtime, "load_registry", _registry)
-
-
 @pytest.mark.asyncio
-async def test_bundle_secret_lifecycle_invalidates_derived_inventory_cache(
-    declared_bundle,
-) -> None:
-    del declared_bundle
+async def test_bundle_secret_lifecycle_invalidates_derived_inventory_cache() -> None:
     redis = _Redis()
     manager = _Manager()
     runtime = KDCubeSecretRuntime(
@@ -147,10 +137,7 @@ async def test_bundle_secret_lifecycle_invalidates_derived_inventory_cache(
 
 
 @pytest.mark.asyncio
-async def test_bundle_write_does_not_mutate_legacy_inventory_record(
-    declared_bundle,
-) -> None:
-    del declared_bundle
+async def test_bundle_write_does_not_mutate_legacy_inventory_record() -> None:
     manager = _Manager()
     metadata_key = "bundles.workspace@1-0.secrets.__keys"
     manager.data[metadata_key] = json.dumps(
@@ -190,7 +177,7 @@ async def test_platform_secret_does_not_enter_bundle_metadata() -> None:
     )
     target = SecretTarget(
         scope=PLATFORM_SCOPE,
-        key="services.brave.api_key",
+        key="platform.services.brave.api_key",
     )
 
     await runtime.write(
@@ -199,14 +186,13 @@ async def test_platform_secret_does_not_enter_bundle_metadata() -> None:
         caller_profile="devops-agent",
     )
 
-    assert manager.data == {"services.brave.api_key": "platform-canary"}
+    assert manager.data == {
+        "platform.services.brave.api_key": "platform-canary"
+    }
 
 
 @pytest.mark.asyncio
-async def test_missing_secret_and_read_only_provider_fail_closed(
-    declared_bundle,
-) -> None:
-    del declared_bundle
+async def test_missing_secret_and_read_only_provider_fail_closed() -> None:
     manager = _Manager(writable=False)
     runtime = KDCubeSecretRuntime(
         _request(_Redis()),
@@ -232,6 +218,32 @@ async def test_missing_secret_and_read_only_provider_fail_closed(
 
 
 @pytest.mark.asyncio
+async def test_inventory_and_lifecycle_include_predeclared_bundle_secrets() -> None:
+    manager = _Manager()
+    target = SecretTarget(
+        scope=BUNDLE_SCOPE,
+        bundle_id="future.bundle@1-0",
+        key="provider.api_key",
+    )
+    manager.data[target.provider_key] = "portable-canary"
+    runtime = KDCubeSecretRuntime(
+        _request(_Redis()),
+        tenant="tenant-a",
+        project="project-a",
+        manager=manager,
+    )
+
+    assert await runtime.inventory() == (target,)
+    assert (await runtime.read(target))["value"] == "portable-canary"
+    await runtime.write(
+        target,
+        value="replacement-canary",
+        caller_profile="devops-agent",
+    )
+    assert manager.data[target.provider_key] == "replacement-canary"
+
+
+@pytest.mark.asyncio
 async def test_provider_exception_text_is_normalized_before_orchestration() -> None:
     marker = "provider-secret-marker"
 
@@ -250,7 +262,7 @@ async def test_provider_exception_text_is_normalized_before_orchestration() -> N
     )
     target = SecretTarget(
         scope=PLATFORM_SCOPE,
-        key="services.brave.api_key",
+        key="platform.services.brave.api_key",
     )
 
     with pytest.raises(ManagementSecretsProviderUnavailable) as write_error:
@@ -283,7 +295,7 @@ async def test_strict_provider_read_failure_is_not_reported_as_absence() -> None
     )
     target = SecretTarget(
         scope=PLATFORM_SCOPE,
-        key="services.brave.api_key",
+        key="platform.services.brave.api_key",
     )
 
     with pytest.raises(ManagementSecretsProviderUnavailable) as captured:
@@ -300,7 +312,7 @@ async def test_management_read_rejects_oversized_existing_value() -> None:
     manager = _Manager()
     target = SecretTarget(
         scope=PLATFORM_SCOPE,
-        key="services.fixture.api_key",
+        key="platform.services.fixture.api_key",
     )
     manager.data[target.provider_key] = "x" * (MAX_SECRET_VALUE_BYTES + 1)
     runtime = KDCubeSecretRuntime(

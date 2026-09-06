@@ -174,7 +174,7 @@ Redis keys:
 The `session` record stores `token_sha256`, not only bearer claims. Validation
 checks:
 
-1. token signature using `services.session_token.secret`;
+1. token signature using `platform.services.session_token.secret`;
 2. token expiry;
 3. active Redis session record;
 4. `token_sha256` match;
@@ -421,8 +421,8 @@ Examples:
 Google OAuth client secret
 Slack OAuth client secret
 Telegram bot token
-services.session_token.secret
-services.federated_token.secret
+platform.services.session_token.secret
+platform.services.federated_token.secret
 ```
 
 These live in the configured secrets provider:

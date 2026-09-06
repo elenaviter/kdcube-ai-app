@@ -38,6 +38,8 @@ from kdcube_cli.host_vault import (
     config_from_assembly as host_vault_config_from_assembly,
     validate_assembly_for_start as validate_host_vault_assembly_for_start,
 )
+from kdcube_cli.management.models import ManagementSecretTarget
+from kdcube_cli.secrets_namespace import canonical_global_secret_root
 from kdcube_cli.tty_keys import (
     KEY_DOWN,
     KEY_ENTER,
@@ -1500,22 +1502,30 @@ def apply_runtime_secrets_to_file_descriptors(
         if bundles_secrets_path.exists()
         else {"bundles": {"items": []}}
     )
+    global_root = canonical_global_secret_root(secrets_data)
 
     for key, value in runtime_secrets.items():
         parts = [part for part in str(key or "").split(".") if part]
         if not parts:
             continue
-        if len(parts) >= 4 and parts[0] == "bundles" and parts[2] == "secrets":
-            if parts[-1] == "__keys":
-                continue
+        if key.endswith(".__keys"):
+            if not (
+                key in {"platform.__keys", "bundles.__keys", "users.__keys"}
+                or key.startswith("bundles.")
+                or key.startswith("users.")
+            ):
+                raise ValueError("Runtime secret inventory key is not canonical")
+            continue
+        target = ManagementSecretTarget.from_provider_key(key)
+        if target.scope == "bundle":
             _upsert_bundle_secret(
                 bundles_secrets_data,
-                bundle_id=parts[1],
-                secret_path=parts[3:],
+                bundle_id=target.bundle_id,
+                secret_path=target.key.split("."),
                 value=value,
             )
             continue
-        _set_nested(secrets_data, parts, value)
+        _set_nested(global_root, target.provider_key.split("."), value)
 
     save_release_descriptor(secrets_path, secrets_data)
     save_release_descriptor(bundles_secrets_path, bundles_secrets_data)
@@ -1530,27 +1540,40 @@ def ensure_generated_runtime_secrets(config_dir: Path) -> Dict[str, str]:
     """
     secrets_path = config_dir / "secrets.yaml"
     secrets_data = load_release_descriptor(secrets_path) if secrets_path.exists() else {}
+    global_root = canonical_global_secret_root(secrets_data)
     generated: Dict[str, str] = {}
 
-    federated_token_secret = _get_nested(secrets_data, "services", "federated_token", "secret")
+    federated_token_secret = _get_nested(
+        global_root,
+        "platform",
+        "services",
+        "federated_token",
+        "secret",
+    )
     if not isinstance(federated_token_secret, str) or is_placeholder(federated_token_secret):
         federated_token_secret = secrets.token_urlsafe(32)
         _set_nested(
-            secrets_data,
-            ["services", "federated_token", "secret"],
+            global_root,
+            ["platform", "services", "federated_token", "secret"],
             federated_token_secret,
         )
-        generated["services.federated_token.secret"] = federated_token_secret
+        generated["platform.services.federated_token.secret"] = federated_token_secret
 
-    session_token_secret = _get_nested(secrets_data, "services", "session_token", "secret")
+    session_token_secret = _get_nested(
+        global_root,
+        "platform",
+        "services",
+        "session_token",
+        "secret",
+    )
     if not isinstance(session_token_secret, str) or is_placeholder(session_token_secret):
         session_token_secret = secrets.token_urlsafe(32)
         _set_nested(
-            secrets_data,
-            ["services", "session_token", "secret"],
+            global_root,
+            ["platform", "services", "session_token", "secret"],
             session_token_secret,
         )
-        generated["services.session_token.secret"] = session_token_secret
+        generated["platform.services.session_token.secret"] = session_token_secret
 
     if generated:
         save_release_descriptor(secrets_path, secrets_data)
@@ -3213,6 +3236,10 @@ def gather_configuration(
     bundles_data: Dict[str, object] = dict(bundles_descriptor or {})
     bundles_secrets_data: Dict[str, object] = dict(bundles_secrets_descriptor or {})
     secrets_data: Dict[str, object] = dict(secrets_descriptor or {})
+    secrets_root = canonical_global_secret_root(secrets_data)
+    platform_secrets_data = secrets_root.get("platform")
+    if not isinstance(platform_secrets_data, dict):
+        platform_secrets_data = {}
     gateway_data: Dict[str, object] = dict(gateway_descriptor or {})
     if isinstance(gateway_data, dict) and isinstance(gateway_data.get("gateway"), dict):
         gateway_data = dict(gateway_data.get("gateway") or {})
@@ -3237,9 +3264,9 @@ def gather_configuration(
     def _secret_pick(*paths: object) -> Optional[str]:
         for path in paths:
             if isinstance(path, str):
-                val = secrets_data.get(path)
+                val = platform_secrets_data.get(path)
             elif isinstance(path, (list, tuple)):
-                val = _get_nested(secrets_data, *path)
+                val = _get_nested(platform_secrets_data, *path)
             else:
                 continue
             if isinstance(val, str):
@@ -3251,11 +3278,11 @@ def gather_configuration(
     def _secret_raw(*paths: object) -> tuple[bool, object]:
         for path in paths:
             if isinstance(path, str):
-                if isinstance(secrets_data, dict) and path in secrets_data:
-                    return True, secrets_data.get(path)
+                if path in platform_secrets_data:
+                    return True, platform_secrets_data.get(path)
             elif isinstance(path, (list, tuple)):
-                if _has_nested(secrets_data, *path):
-                    return True, _get_nested(secrets_data, *path)
+                if _has_nested(platform_secrets_data, *path):
+                    return True, _get_nested(platform_secrets_data, *path)
         return False, None
 
     def _flatten_bundle_secrets(data: Dict[str, object]) -> Dict[str, str]:
@@ -3901,7 +3928,7 @@ def gather_configuration(
             )
         if proxy_client_secret and not is_placeholder(proxy_client_secret):
             update_env_value(env_proxy, "COGNITO_CLIENTSECRET", proxy_client_secret)
-            runtime_secrets["auth.cognito.client_secret"] = proxy_client_secret
+            runtime_secrets["platform.auth.cognito.client_secret"] = proxy_client_secret
         elif auth_mode == "delegated":
             update_env_value(env_proxy, "COGNITO_CLIENTSECRET", "")
 
@@ -4595,20 +4622,20 @@ def gather_configuration(
     if not federated_token_secret:
         federated_token_secret = secrets.token_urlsafe(32)
         _set_nested(
-            secrets_data,
-            ["services", "federated_token", "secret"],
+            secrets_root,
+            ["platform", "services", "federated_token", "secret"],
             federated_token_secret,
         )
-    runtime_secrets["services.federated_token.secret"] = federated_token_secret
+    runtime_secrets["platform.services.federated_token.secret"] = federated_token_secret
     session_token_secret = _secret_pick(("services", "session_token", "secret"))
     if not session_token_secret:
         session_token_secret = secrets.token_urlsafe(32)
         _set_nested(
-            secrets_data,
-            ["services", "session_token", "secret"],
+            secrets_root,
+            ["platform", "services", "session_token", "secret"],
             session_token_secret,
         )
-    runtime_secrets["services.session_token.secret"] = session_token_secret
+    runtime_secrets["platform.services.session_token.secret"] = session_token_secret
     openai_key = prompt_secret_value(
         console,
         "OpenAI API key",
@@ -4624,29 +4651,29 @@ def gather_configuration(
         force_prompt=force_prompt,
     )
     if openai_key:
-        runtime_secrets["services.openai.api_key"] = openai_key
+        runtime_secrets["platform.services.openai.api_key"] = openai_key
     if anthropic_key:
-        runtime_secrets["services.anthropic.api_key"] = anthropic_key
+        runtime_secrets["platform.services.anthropic.api_key"] = anthropic_key
     if brave_from_secrets:
-        runtime_secrets["services.brave.api_key"] = brave_from_secrets
+        runtime_secrets["platform.services.brave.api_key"] = brave_from_secrets
     if openrouter_from_secrets:
-        runtime_secrets["services.openrouter.api_key"] = openrouter_from_secrets
+        runtime_secrets["platform.services.openrouter.api_key"] = openrouter_from_secrets
     if google_from_secrets:
-        runtime_secrets["services.google.api_key"] = google_from_secrets
+        runtime_secrets["platform.services.google.api_key"] = google_from_secrets
     if huggingface_from_secrets:
-        runtime_secrets["services.huggingface.api_key"] = huggingface_from_secrets
+        runtime_secrets["platform.services.huggingface.api_key"] = huggingface_from_secrets
     if aws_access_key_from_secrets:
-        runtime_secrets["aws.access_key_id"] = aws_access_key_from_secrets
+        runtime_secrets["platform.aws.access_key_id"] = aws_access_key_from_secrets
         update_env_value(env_proxy, "AWS_ACCESS_KEY_ID", aws_access_key_from_secrets)
     if aws_secret_key_from_secrets:
-        runtime_secrets["aws.secret_access_key"] = aws_secret_key_from_secrets
+        runtime_secrets["platform.aws.secret_access_key"] = aws_secret_key_from_secrets
         update_env_value(env_proxy, "AWS_SECRET_ACCESS_KEY", aws_secret_key_from_secrets)
     if stripe_secret_from_secrets:
-        runtime_secrets["services.stripe.secret_key"] = stripe_secret_from_secrets
+        runtime_secrets["platform.services.stripe.secret_key"] = stripe_secret_from_secrets
     if stripe_webhook_from_secrets:
-        runtime_secrets["services.stripe.webhook_secret"] = stripe_webhook_from_secrets
+        runtime_secrets["platform.services.stripe.webhook_secret"] = stripe_webhook_from_secrets
     if claude_code_from_secrets:
-        runtime_secrets["services.anthropic.claude_code_key"] = claude_code_from_secrets
+        runtime_secrets["platform.services.anthropic.claude_code_key"] = claude_code_from_secrets
     if use_bundles_secrets is None:
         use_bundles_secrets = bool(bundles_secrets_data)
     if use_bundles_secrets and bundles_secrets_data:
@@ -4930,7 +4957,7 @@ def gather_configuration(
             update_env_value(env_main, "HOST_GIT_KNOWN_HOSTS_PATH", "/dev/null")
 
         if git_token_from_secrets and not is_placeholder(git_token_from_secrets):
-            runtime_secrets["services.git.http_token"] = git_token_from_secrets
+            runtime_secrets["platform.services.git.http_token"] = git_token_from_secrets
         elif default_local_bootstrap_mode:
             token = prompt_secret_value(
                 console,
@@ -4940,7 +4967,7 @@ def gather_configuration(
                 force_prompt=force_prompt,
             )
             if token:
-                runtime_secrets["services.git.http_token"] = token
+                runtime_secrets["platform.services.git.http_token"] = token
     else:
         env_http = env_proc.entries.get("GIT_HTTP_TOKEN", (None, None))[1]
         existing_ssh = env_proc.entries.get("GIT_SSH_KEY_PATH", (None, None))[1]
@@ -4998,7 +5025,7 @@ def gather_configuration(
                     default=True,
                 )
             if use_git_secret:
-                runtime_secrets["services.git.http_token"] = git_token_from_secrets
+                runtime_secrets["platform.services.git.http_token"] = git_token_from_secrets
             else:
                 token = prompt_secret_value(
                     console,
@@ -5008,7 +5035,7 @@ def gather_configuration(
                     force_prompt=force_prompt,
                 )
                 if token:
-                    runtime_secrets["services.git.http_token"] = token
+                    runtime_secrets["platform.services.git.http_token"] = token
             # Never store the token in env files.
             update_env_value(env_proc, "GIT_HTTP_TOKEN", "")
             # Avoid dangling SSH placeholders if user chose token

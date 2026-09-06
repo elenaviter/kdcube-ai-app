@@ -161,7 +161,7 @@ def _targets(
         for value in values:
             if not isinstance(value, Mapping):
                 raise TypeError("target must be an object")
-            if set(value) - {"scope", "bundle_id", "key"}:
+            if set(value) - {"scope", "bundle_id", "user_id", "key"}:
                 raise ValueError("target has unknown fields")
             targets.append(SecretTarget.from_mapping(value))
     except (TypeError, ValueError):
@@ -169,7 +169,9 @@ def _targets(
             "secret_export_targets_invalid",
             status_code=400,
         ) from None
-    targets.sort(key=lambda item: (item.scope, item.bundle_id, item.key))
+    targets.sort(
+        key=lambda item: (item.scope, item.user_id, item.bundle_id, item.key)
+    )
     identities = [item.provider_key for item in targets]
     if len(identities) != len(set(identities)):
         raise SecretExportError("secret_export_targets_invalid", status_code=400)

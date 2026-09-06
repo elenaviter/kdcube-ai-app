@@ -63,7 +63,7 @@ def kb_workdir(tenant: str, project: str):
 async def metadata_model() -> ModelRecord:
     provider = AIProviderName.open_ai
     provider = AIProvider(provider=provider,
-                          apiToken=await get_secret("services.openai.api_key", default="") or "")
+                          apiToken=await get_secret("platform.services.openai.api_key", default="") or "")
     model_config = MODEL_CONFIGS.get("gpt-4o", {})
     model_name = model_config.get("model_name")
 
@@ -76,7 +76,7 @@ async def metadata_model() -> ModelRecord:
 async def embedding_model() -> ModelRecord:
     provider = AIProviderName.open_ai
     provider = AIProvider(provider=provider,
-                          apiToken=await get_secret("services.openai.api_key", default="") or "")
+                          apiToken=await get_secret("platform.services.openai.api_key", default="") or "")
     model_config = EMBEDDERS.get("openai-text-embedding-3-small")
     model_name = model_config.get("model_name")
     return ModelRecord(

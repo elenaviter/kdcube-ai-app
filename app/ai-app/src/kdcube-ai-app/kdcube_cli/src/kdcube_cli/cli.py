@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import io
 import json
 import os
@@ -53,8 +54,16 @@ from kdcube_cli.local_python_packages import (
     stage_local_python_package_sources,
 )
 from kdcube_cli.management.errors import ManagementCliError
+from kdcube_cli.management.secret_descriptors import load_secret_descriptors
 from kdcube_cli.secrets_backend import backend_status
-from kdcube_cli.secrets_commands import run_management_secret_command
+from kdcube_cli.secrets_commands import (
+    apply_secret_descriptor_import,
+    delegated_credential_from_input,
+    export_secret_descriptor_pair,
+    local_management_target,
+    run_management_secret_command,
+    secret_import_result_view,
+)
 from kdcube_cli.secrets_activation import (
     ComposeHostVaultActivationRuntime,
     HostVaultActivationError,
@@ -70,6 +79,10 @@ from kdcube_cli.secrets_migration import (
     load_file_secret_inventory,
     stage_file_secrets,
 )
+from kdcube_cli.secrets_namespace import (
+    SecretNamespaceMigrationError,
+    migrate_platform_secret_namespace,
+)
 from kdcube_cli.secrets_prepare import (
     ComposeHostVaultPrepareRuntime,
     HostVaultPrepareError,
@@ -81,6 +94,7 @@ from kdcube_cli.secrets_parser import (
     is_backend_status_command,
     is_host_vault_lifecycle_command,
     is_management_secret_command,
+    is_secret_namespace_command,
 )
 from kdcube_cli.tty_keys import (
     KEY_DOWN,
@@ -102,21 +116,21 @@ DOCKER_STATUS_TIMEOUT_SECONDS = 20
 DOCKER_CLEAN_TIMEOUT_SECONDS = 120
 PLATFORM_DESCRIPTOR_FILENAMES = ("assembly.yaml", "secrets.yaml", "gateway.yaml", "economics.yaml")
 STANDARD_INIT_SECRET_PROMPTS: tuple[tuple[str, str], ...] = (
-    ("services.openai.api_key", "OpenAI API key"),
-    ("services.anthropic.api_key", "Anthropic API key"),
-    ("services.git.http_token", "Git HTTPS token"),
+    ("platform.services.openai.api_key", "OpenAI API key"),
+    ("platform.services.anthropic.api_key", "Anthropic API key"),
+    ("platform.services.git.http_token", "Git HTTPS token"),
 )
 SECRET_KEY_ALIASES: dict[str, str] = {
-    "OPENAI_API_KEY": "services.openai.api_key",
-    "ANTHROPIC_API_KEY": "services.anthropic.api_key",
-    "GIT_HTTP_TOKEN": "services.git.http_token",
-    "BRAVE_API_KEY": "services.brave.api_key",
-    "GOOGLE_API_KEY": "services.google.api_key",
-    "GEMINI_API_KEY": "services.google.api_key",
-    "OPENROUTER_API_KEY": "services.openrouter.api_key",
-    "HUGGINGFACE_API_KEY": "services.huggingface.api_key",
-    "STRIPE_SECRET_KEY": "services.stripe.secret_key",
-    "STRIPE_WEBHOOK_SECRET": "services.stripe.webhook_secret",
+    "OPENAI_API_KEY": "platform.services.openai.api_key",
+    "ANTHROPIC_API_KEY": "platform.services.anthropic.api_key",
+    "GIT_HTTP_TOKEN": "platform.services.git.http_token",
+    "BRAVE_API_KEY": "platform.services.brave.api_key",
+    "GOOGLE_API_KEY": "platform.services.google.api_key",
+    "GEMINI_API_KEY": "platform.services.google.api_key",
+    "OPENROUTER_API_KEY": "platform.services.openrouter.api_key",
+    "HUGGINGFACE_API_KEY": "platform.services.huggingface.api_key",
+    "STRIPE_SECRET_KEY": "platform.services.stripe.secret_key",
+    "STRIPE_WEBHOOK_SECRET": "platform.services.stripe.webhook_secret",
 }
 KDCUBE_REPOS = {
     "kdcube-chat-ingress",
@@ -1873,6 +1887,7 @@ def apply_bundle_config_descriptors(
     repo_root: Path | None = None,
     verbose: bool = False,
     quiet: bool = False,
+    stage_secret_descriptor: bool = True,
 ) -> dict[str, object]:
     """Stage bundle content descriptors into an initialized runtime.
 
@@ -1943,6 +1958,7 @@ def apply_bundle_config_descriptors(
                 "source": str(source_bundles_secrets_path),
                 "target": str(target_bundles_secrets_path),
                 "changed": secrets_changed,
+                "staged": stage_secret_descriptor,
             }
         )
     else:
@@ -1971,7 +1987,7 @@ def apply_bundle_config_descriptors(
             console.print("[yellow]Dry run: bundle content descriptors were not modified.[/yellow]")
     else:
         installer_mod.save_release_descriptor(target_bundles_path, incoming_bundles)
-        if secrets_will_apply:
+        if secrets_will_apply and stage_secret_descriptor:
             copy_descriptor_file(source_bundles_secrets_path, target_bundles_secrets_path)
         if not quiet:
             console.print(f"[green]Applied bundle content descriptors:[/green] {source_dir}")
@@ -2101,6 +2117,27 @@ def _denormalize_exported_assembly_descriptor(data: dict[str, object]) -> bool:
             installer_mod._delete_nested(data, list(path))
             changed = True
 
+    secret_backend = str(
+        _get_nested(data, "secrets", "service", "backend") or ""
+    ).strip()
+    if secret_backend == "host-vault":
+        # A host-vault identity and endpoint belong to one machine. A portable
+        # descriptor export bootstraps through the literal private files, then
+        # the recipient provisions and activates its own durable backend.
+        installer_mod._set_nested(data, ["secrets", "provider"], "secrets-file")
+        installer_mod._set_nested(
+            data,
+            ["secrets", "service", "backend"],
+            "ephemeral",
+        )
+        for key in ("address", "server_name", "identity_dir"):
+            installer_mod._set_nested(
+                data,
+                ["secrets", "service", "host_vault", key],
+                None,
+            )
+        changed = True
+
     return changed
 
 
@@ -2120,15 +2157,59 @@ def _export_platform_descriptor_file(source: Path, target: Path) -> None:
     )
 
 
+def _apply_platform_descriptor_file(
+    source: Path,
+    target: Path,
+    *,
+    preserve_secret_backend: bool,
+) -> None:
+    if source.name != "assembly.yaml" or not preserve_secret_backend:
+        copy_descriptor_file(source, target)
+        return
+    incoming = installer_mod.load_release_descriptor_soft(source)
+    current = installer_mod.load_release_descriptor_soft(target)
+    current_secrets = current.get("secrets") if isinstance(current, dict) else None
+    if isinstance(current_secrets, dict):
+        incoming["secrets"] = current_secrets
+    target.write_text(
+        yaml.safe_dump(incoming, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+
+
+def _configured_secrets_provider(config_dir: Path) -> str:
+    assembly = installer_mod.load_release_descriptor_soft(
+        config_dir / "assembly.yaml"
+    )
+    return installer_mod.normalize_secrets_provider(
+        _get_nested(assembly, "secrets", "provider"),
+        default="secrets-file",
+    )
+
+
+def _secret_import_summary(imported: object) -> dict[str, object]:
+    return {
+        "platform_secret_count": int(getattr(imported, "platform_count", 0)),
+        "bundle_secret_count": int(getattr(imported, "bundle_count", 0)),
+        "user_secret_count": int(getattr(imported, "user_count", 0)),
+        "total_secret_count": int(getattr(imported, "total_count", 0)),
+        "semantics": "upsert_present_values",
+        "omitted_keys": "unchanged",
+    }
+
+
 def _export_platform_descriptors(
     console: Console,
     *,
     config_dir: Path,
     out_dir: Path,
     quiet: bool = False,
+    include_secret_descriptor: bool = True,
 ) -> list[dict[str, object]]:
     files: list[dict[str, object]] = []
     for name in PLATFORM_DESCRIPTOR_FILENAMES:
+        if name == "secrets.yaml" and not include_secret_descriptor:
+            continue
         source = config_dir / name
         target = out_dir / name
         if not source.exists():
@@ -2157,6 +2238,8 @@ def _apply_platform_config_descriptors(
     descriptors_location: Path,
     dry_run: bool = False,
     quiet: bool = False,
+    stage_secret_descriptor: bool = True,
+    preserve_secret_backend: bool = False,
 ) -> list[dict[str, object]]:
     source_dir = descriptors_location.expanduser().resolve()
     if not source_dir.exists() or not source_dir.is_dir():
@@ -2164,6 +2247,8 @@ def _apply_platform_config_descriptors(
 
     files: list[dict[str, object]] = []
     for name in PLATFORM_DESCRIPTOR_FILENAMES:
+        if name == "secrets.yaml" and not stage_secret_descriptor:
+            continue
         source = source_dir / name
         target = config_dir / name
         if not source.exists():
@@ -2179,7 +2264,11 @@ def _apply_platform_config_descriptors(
         )
         if not dry_run:
             target.parent.mkdir(parents=True, exist_ok=True)
-            copy_descriptor_file(source, target)
+            _apply_platform_descriptor_file(
+                source,
+                target,
+                preserve_secret_backend=preserve_secret_backend,
+            )
 
     if not quiet:
         if dry_run:
@@ -2245,6 +2334,7 @@ def apply_config_descriptors(
     repo_root: Path | None = None,
     verbose: bool = False,
     quiet: bool = False,
+    stage_secret_descriptors: bool = True,
 ) -> dict[str, object]:
     config_dir = _canonical_descriptor_dir_from_initialized_workdir(workdir)
     if config_dir is None:
@@ -2271,6 +2361,8 @@ def apply_config_descriptors(
             descriptors_location=source_dir,
             dry_run=dry_run,
             quiet=quiet,
+            stage_secret_descriptor=stage_secret_descriptors,
+            preserve_secret_backend=not stage_secret_descriptors,
         )
 
     bundle_result = apply_bundle_config_descriptors(
@@ -2282,6 +2374,7 @@ def apply_config_descriptors(
         repo_root=repo_root,
         verbose=verbose,
         quiet=quiet,
+        stage_secret_descriptor=stage_secret_descriptors,
     )
 
     regenerated = False
@@ -2312,6 +2405,7 @@ def apply_config_descriptors(
         "platform_files": platform_files,
         "bundle_result": bundle_result,
         "runtime_config_regenerated": regenerated,
+        "secret_descriptors_staged": stage_secret_descriptors,
     }
 
 
@@ -2747,8 +2841,11 @@ def _parse_init_secret_pairs(items: list[list[str]] | None) -> dict[str, str]:
             raise SystemExit("Invalid --set-secret usage. Use: --set-secret KEY VALUE.")
         raw_key, value = item
         key = _canonical_secret_key(raw_key)
-        if not key or "." not in key:
-            raise SystemExit(f"Invalid secret key '{raw_key}'. Use a dotted descriptor key.")
+        if not key.startswith(("platform.", "bundles.", "users.")):
+            raise SystemExit(
+                f"Invalid secret key '{raw_key}'. Use an explicit platform.*, "
+                "bundles.*.secrets.*, or users.* key."
+            )
         secrets[key] = value
     return secrets
 
@@ -4294,6 +4391,45 @@ def main() -> None:
     _sp.add_argument("--aws-profile", default="", help="With `config export`, AWS profile for aws-sm bundle descriptor export")
     _sp.add_argument("--aws-sm-prefix", default="", help="With `config export`, explicit AWS Secrets Manager prefix")
     _sp.add_argument("--dry-run", action="store_true", help="With `config import` or `config apply`, show what would change without writing files")
+    _sp.add_argument(
+        "--yes",
+        action="store_true",
+        help="With provider-backed `config import`, confirm governed secret upserts after a dry run.",
+    )
+    _sp.add_argument(
+        "--credential-stdin",
+        action="store_true",
+        help="With provider-backed `config import`, read the delegated bearer from the first stdin line.",
+    )
+    _sp.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Print browser authorization recovery without opening it automatically.",
+    )
+    _sp.add_argument(
+        "--no-wait",
+        action="store_true",
+        help="With provider-backed `config import`, do not wait for interactive consent retry.",
+    )
+    _sp.add_argument(
+        "--wait-seconds",
+        type=float,
+        default=300.0,
+        help="With provider-backed `config export`, browser approval timeout.",
+    )
+    _sp.add_argument(
+        "--replace-descriptor-files",
+        action="store_true",
+        help="With provider-backed `config export`, replace an existing literal secret descriptor pair.",
+    )
+    _sp.add_argument(
+        "--skip-secret-values",
+        action="store_true",
+        help=(
+            "With `config import`, apply ordinary descriptors while preserving "
+            "the target's current secret values and backend."
+        ),
+    )
     _sp.add_argument("--reload", action="store_true", dest="reload_changed", help="With `config import`, reload changed bundle ids after staging descriptors")
     _sp.add_argument("--json", action="store_true", dest="json_output", help="Print machine-readable JSON")
     _sp.add_argument(
@@ -4659,8 +4795,29 @@ def main() -> None:
                         )
                     )
                     return
+                if is_secret_namespace_command(args):
+                    if not args.dry_run and not args.yes:
+                        raise SystemExit(
+                            "Namespace migration requires --yes; run --dry-run first."
+                        )
+                    _namespace_workdir = _resolve_subcommand_workdir(
+                        args.workdir,
+                        cli_defaults,
+                        tenant_arg=_effective_tenant,
+                        project_arg=_effective_project,
+                    )
+                    result = migrate_platform_secret_namespace(
+                        _namespace_workdir / "config",
+                        dry_run=bool(args.dry_run),
+                    )
+                    _print_json(result.to_dict())
+                    if result.conflicts:
+                        raise SystemExit(3)
+                    return
             except ManagementCliError as exc:
                 raise SystemExit(f"error[{exc.code}]: {exc.message}") from exc
+            except SecretNamespaceMigrationError as exc:
+                raise SystemExit(f"error[secret_namespace_migration_failed]: {exc}") from exc
             if not is_host_vault_lifecycle_command(args) or args.secrets_action not in {
                 "prepare",
                 "stage",
@@ -5256,8 +5413,20 @@ def main() -> None:
                     raise SystemExit("--out-dir is required with `kdcube config export`.")
                 if str(args.descriptors_location or "").strip():
                     raise SystemExit("--descriptors-location is only supported with `kdcube config import`.")
-                if args.dry_run or args.reload_changed or args.verbose:
-                    raise SystemExit("--dry-run, --reload, and --verbose are only supported with `kdcube config import`.")
+                if (
+                    args.dry_run
+                    or args.reload_changed
+                    or args.verbose
+                    or args.yes
+                    or args.credential_stdin
+                    or args.no_wait
+                    or args.skip_secret_values
+                ):
+                    raise SystemExit(
+                        "--dry-run, --reload, --verbose, --yes, --credential-stdin, "
+                        "--no-wait, and --skip-secret-values are only supported with "
+                        "`kdcube config import`."
+                    )
                 _out_dir = Path(os.path.expanduser(args.out_dir)).resolve()
                 _aws_export = bool(
                     str(getattr(args, "aws_region", "") or "").strip()
@@ -5265,6 +5434,11 @@ def main() -> None:
                     or str(getattr(args, "aws_sm_prefix", "") or "").strip()
                 )
                 if _aws_export:
+                    if args.no_open or args.replace_descriptor_files:
+                        raise SystemExit(
+                            "--no-open and --replace-descriptor-files require the governed "
+                            "provider export of an initialized runtime."
+                        )
                     if args.include_platform_descriptors:
                         raise SystemExit(
                             "`kdcube config export --include-platform-descriptors` "
@@ -5293,6 +5467,7 @@ def main() -> None:
                         aws_sm_prefix=str(args.aws_sm_prefix or "").strip() or None,
                         bundles_path=None,
                         bundles_secrets_path=None,
+                        include_secrets=True,
                     )
                     if args.json_output:
                         _print_json(
@@ -5318,6 +5493,23 @@ def main() -> None:
                         "unless `config export` is explicitly using AWS SM flags."
                     )
                 _t, _p = _parse_workdir_namespace(_resolved)
+                _secrets_provider = _configured_secrets_provider(_config_dir)
+                _provider_backed_export = _secrets_provider != "secrets-file"
+                if not _provider_backed_export and (
+                    args.no_open
+                    or args.replace_descriptor_files
+                    or float(args.wait_seconds) != 300.0
+                ):
+                    raise SystemExit(
+                        "--no-open, --wait-seconds, and --replace-descriptor-files "
+                        "apply only to provider-backed config export."
+                    )
+                if _provider_backed_export and not args.include_platform_descriptors:
+                    raise SystemExit(
+                        "A provider-backed config export requires "
+                        "--include-platform-descriptors so one browser-confirmed whole export "
+                        "can reconstruct both ordinary secret descriptor files."
+                    )
                 export_live_bundle_descriptors(
                     _op_console,
                     tenant=_t,
@@ -5328,6 +5520,7 @@ def main() -> None:
                     aws_sm_prefix=None,
                     bundles_path=_config_dir / "bundles.yaml",
                     bundles_secrets_path=_config_dir / "bundles.secrets.yaml",
+                    include_secrets=not _provider_backed_export,
                 )
                 _platform_files: list[dict[str, object]] = []
                 if args.include_platform_descriptors:
@@ -5336,7 +5529,60 @@ def main() -> None:
                         config_dir=_config_dir,
                         out_dir=_out_dir,
                         quiet=bool(args.quiet or args.json_output),
+                        include_secret_descriptor=not _provider_backed_export,
                     )
+                _provider_export: dict[str, object] | None = None
+                if _provider_backed_export:
+                    _management_target = local_management_target(_resolved)
+                    _export_result, _secret_descriptors = asyncio.run(
+                        export_secret_descriptor_pair(
+                            target=_management_target,
+                            output_directory=_out_dir,
+                            selection="all",
+                            timeout_seconds=float(args.wait_seconds),
+                            no_open=bool(args.no_open),
+                            into_existing_directory=True,
+                            replace=bool(args.replace_descriptor_files),
+                        )
+                    )
+                    _provider_export = {
+                        "provider": _secrets_provider,
+                        "selection": "all",
+                        "request_digest": _export_result.request_digest,
+                        "approval": {
+                            "assurance": _export_result.assurance,
+                            "method": _export_result.approval_method,
+                            "verified_at": _export_result.approval_verified_at,
+                        },
+                        "platform_secret_count": _secret_descriptors.platform_count,
+                        "bundle_secret_count": _secret_descriptors.bundle_count,
+                        "user_secret_count": _secret_descriptors.user_count,
+                        "total_secret_count": _secret_descriptors.total_count,
+                    }
+                    _platform_files.extend(
+                        [
+                            {
+                                "name": "secrets.yaml",
+                                "source": f"provider:{_secrets_provider}",
+                                "target": str(_secret_descriptors.platform_path),
+                                "size_bytes": _secret_descriptors.platform_path.stat().st_size,
+                            },
+                            {
+                                "name": "bundles.secrets.yaml",
+                                "source": f"provider:{_secrets_provider}",
+                                "target": str(_secret_descriptors.bundles_path),
+                                "size_bytes": _secret_descriptors.bundles_path.stat().st_size,
+                            },
+                        ]
+                    )
+                    if not bool(args.quiet or args.json_output):
+                        console.print(
+                            "[green]Exported current selected-provider secrets after "
+                            "one browser approval.[/green]"
+                        )
+                        console.print(
+                            f"[dim]secret count:[/dim] {_secret_descriptors.total_count}"
+                        )
                 if args.json_output:
                     _print_json(
                         {
@@ -5345,9 +5591,20 @@ def main() -> None:
                             "workdir": str(_resolved),
                             "out_dir": str(_out_dir),
                             "include_platform_descriptors": bool(args.include_platform_descriptors),
+                            "secrets_provider": _secrets_provider,
+                            "provider_secret_export": _provider_export,
                             "files": [
                                 {"name": "bundles.yaml", "target": str(_out_dir / "bundles.yaml")},
-                                {"name": "bundles.secrets.yaml", "target": str(_out_dir / "bundles.secrets.yaml")},
+                                *(
+                                    []
+                                    if _provider_backed_export
+                                    else [
+                                        {
+                                            "name": "bundles.secrets.yaml",
+                                            "target": str(_out_dir / "bundles.secrets.yaml"),
+                                        }
+                                    ]
+                                ),
                                 *_platform_files,
                             ],
                         }
@@ -5369,18 +5626,110 @@ def main() -> None:
                     raise SystemExit("--descriptors-location is required with `kdcube config import`.")
                 if str(args.out_dir or "").strip():
                     raise SystemExit("--out-dir is only supported with `kdcube config export`.")
-                _repo = _resolve_subcommand_repo(args.path, workdir=_resolved, path_provided=_arg_provided("--path"))
+                if args.replace_descriptor_files:
+                    raise SystemExit(
+                        "--replace-descriptor-files is only supported with `kdcube config export`."
+                    )
+                if float(args.wait_seconds) != 300.0:
+                    raise SystemExit(
+                        "--wait-seconds is only supported with `kdcube config export`."
+                    )
+                _source_dir = Path(
+                    os.path.expanduser(args.descriptors_location)
+                ).resolve()
+                _repo = _resolve_subcommand_repo(
+                    args.path,
+                    workdir=_resolved,
+                    path_provided=_arg_provided("--path"),
+                )
+                _secrets_provider = _configured_secrets_provider(_config_dir)
+                _provider_backed_import = _secrets_provider != "secrets-file"
+                _skip_secret_values = bool(args.skip_secret_values)
+                _secret_import = None
+                _secret_apply = None
+                if _provider_backed_import and not _skip_secret_values:
+                    _secret_import = load_secret_descriptors(
+                        _source_dir,
+                        include_platform=bool(args.include_platform_descriptors),
+                        allow_empty=True,
+                    )
+                    if not args.dry_run and _secret_import.total_count:
+                        apply_config_descriptors(
+                            Console(file=_NullWriter()),
+                            workdir=_resolved,
+                            descriptors_location=_source_dir,
+                            include_platform_descriptors=bool(
+                                args.include_platform_descriptors
+                            ),
+                            dry_run=True,
+                            reload_changed=False,
+                            repo_root=_repo,
+                            verbose=False,
+                            quiet=True,
+                            stage_secret_descriptors=False,
+                        )
+                        if not args.yes:
+                            raise SystemExit(
+                                "Provider-backed config import requires --yes after reviewing --dry-run."
+                            )
+                        _management_target = local_management_target(_resolved)
+                        _secret_apply = asyncio.run(
+                            apply_secret_descriptor_import(
+                                target=_management_target,
+                                imported=_secret_import,
+                                bearer=delegated_credential_from_input(args),
+                                no_open=bool(args.no_open),
+                                no_wait=bool(args.no_wait),
+                            )
+                        )
+                        if not _secret_apply.ok:
+                            _denial_view = secret_import_result_view(
+                                _management_target,
+                                _secret_import,
+                                _secret_apply,
+                            )
+                            if args.json_output:
+                                _print_json(_denial_view)
+                            else:
+                                console.print_json(data=_denial_view)
+                            raise SystemExit(3)
+                elif args.yes or args.credential_stdin or args.no_open or args.no_wait:
+                    raise SystemExit(
+                        "--yes, --credential-stdin, --no-open, and --no-wait apply only "
+                        "when importing secret values into a provider-backed runtime."
+                    )
                 _result = apply_config_descriptors(
                     _op_console,
                     workdir=_resolved,
-                    descriptors_location=Path(os.path.expanduser(args.descriptors_location)).resolve(),
+                    descriptors_location=_source_dir,
                     include_platform_descriptors=bool(args.include_platform_descriptors),
                     dry_run=bool(args.dry_run),
                     reload_changed=bool(args.reload_changed),
                     repo_root=_repo,
                     verbose=bool(args.verbose),
                     quiet=bool(args.quiet or args.json_output),
+                    stage_secret_descriptors=(
+                        not _provider_backed_import and not _skip_secret_values
+                    ),
                 )
+                _result["secrets_provider"] = _secrets_provider
+                _result["secret_values"] = (
+                    "preserved" if _skip_secret_values else "imported"
+                )
+                if _secret_import is not None:
+                    _result["provider_secret_import"] = {
+                        **_secret_import_summary(_secret_import),
+                        "dry_run": bool(args.dry_run),
+                        "applied": (
+                            0 if _secret_apply is None else _secret_apply.applied
+                        ),
+                    }
+                    if not bool(args.quiet or args.json_output):
+                        verb = "would upsert" if args.dry_run else "upserted"
+                        console.print(
+                            f"[green]Selected-provider secrets {verb}:[/green] "
+                            f"{_result['provider_secret_import']['total_secret_count']}"
+                        )
                 if args.json_output:
                     _print_json(_result)
                 return
@@ -5392,6 +5741,18 @@ def main() -> None:
                     )
                 if str(args.descriptors_location or "").strip() or str(args.out_dir or "").strip():
                     raise SystemExit("--descriptors-location/--out-dir are not used with `kdcube config apply`.")
+                if (
+                    args.yes
+                    or args.credential_stdin
+                    or args.no_open
+                    or args.no_wait
+                    or args.replace_descriptor_files
+                    or args.skip_secret_values
+                    or float(args.wait_seconds) != 300.0
+                ):
+                    raise SystemExit(
+                        "Secret export/import flags are not used with `kdcube config apply`."
+                    )
                 _assembly_path = _config_dir / "assembly.yaml"
                 _assembly = installer_mod.load_release_descriptor_soft(_assembly_path)
                 _apply_auth_flags(_op_console, _assembly, args)
@@ -6460,6 +6821,8 @@ def main() -> None:
                 )
             except Exception:
                 pass
+    except ManagementCliError as exc:
+        raise SystemExit(f"error[{exc.code}]: {exc.message}") from exc
     except _AmbiguousWorkdirError as exc:
         tbl = Table(show_header=True, header_style="bold", box=None, padding=(0, 2))
         tbl.add_column("Tenant")

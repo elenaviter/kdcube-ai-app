@@ -74,12 +74,15 @@ def test_ephemeral_service_fails_closed_on_corrupt_storage(
     module = _load_script(_DEPLOYMENT_SECRETS / "secrets_server.py", "secrets_server")
 
     with pytest.raises(HTTPException) as read_failure:
-        module.get_secret("services.fixture.token", None)
+        module.get_secret("platform.services.fixture.token", None)
     assert read_failure.value.status_code == 503
 
     with pytest.raises(HTTPException) as write_failure:
         module.set_secret(
-            module.SecretItem(key="services.fixture.token", value="must-not-land"),
+            module.SecretItem(
+                key="platform.services.fixture.token",
+                value="must-not-land",
+            ),
             None,
         )
     assert write_failure.value.status_code == 503
@@ -229,7 +232,7 @@ def test_host_vault_broker_does_not_turn_backend_denial_into_absence(
     module.BROKER = _DeniedBroker()
 
     with pytest.raises(HTTPException) as captured:
-        module.get_secret("services.fixture.token", None)
+        module.get_secret("platform.services.fixture.token", None)
 
     assert captured.value.status_code == 403
     assert captured.value.detail == "forbidden"

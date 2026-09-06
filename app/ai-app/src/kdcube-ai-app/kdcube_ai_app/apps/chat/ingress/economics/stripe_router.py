@@ -68,7 +68,7 @@ def _usd_from_cents(cents: Optional[int]) -> Optional[float]:
 async def _get_stripe():
     api_key = (
         await get_secret("b:services.stripe.secret_key")
-        or await get_secret("services.stripe.secret_key")
+        or await get_secret("platform.services.stripe.secret_key")
     )
     if not api_key:
         raise HTTPException(status_code=500, detail="Stripe API key not configured")

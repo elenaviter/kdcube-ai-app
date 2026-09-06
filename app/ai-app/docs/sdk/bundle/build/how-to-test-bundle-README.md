@@ -844,8 +844,8 @@ Minimal check pattern:
 
 ```python
 env = build_git_env(
-    git_http_token=get_secret("services.git.http_token"),
-    git_http_user=get_secret("services.git.http_user"),
+    git_http_token=get_secret("platform.services.git.http_token"),
+    git_http_user=get_secret("platform.services.git.http_user"),
 )
 subprocess.run(["git", "config", "--get", "remote.origin.url"], env=env, check=True)
 ```

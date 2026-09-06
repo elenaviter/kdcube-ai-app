@@ -82,7 +82,7 @@ Platform UserSession
 | Browser cookies | Connection Hub provider config | Carry the `kst1.*` auth token under configured cookie names. |
 | Gateway auth manager | Platform | Validates token, Redis session, user record, and roles on each request. |
 | Redis | Platform | Stores active session records, user records, token versions, and session indexes. |
-| `secrets.yaml` / secret provider | Deployment | Stores `services.session_token.secret` shared by all validating services. |
+| `secrets.yaml` / secret provider | Deployment | Stores `platform.services.session_token.secret` shared by all validating services. |
 
 ## Descriptor Contract
 
@@ -126,7 +126,7 @@ services:
     secret: "<generated shared signing secret>"
 ```
 
-The canonical secret lookup key is `services.session_token.secret`. CLI-managed
+The canonical secret lookup key is `platform.services.session_token.secret`. CLI-managed
 local runtimes generate this value when absent during init/refresh. Managed
 deployments must materialize the same key through their configured secrets
 provider. Every ingress/proc worker must read the same value. Secret rotation
@@ -264,7 +264,7 @@ Browser
   KDCube session only as an HttpOnly cookie
 
 KDCube trusted runtime
-  services.session_token.secret
+  platform.services.session_token.secret
   user and grant records
   no Google platform-login client secret
 
@@ -285,7 +285,7 @@ The current flow already enforces these boundaries:
 |---|---|
 | Google identity proof | Server verifies the Google RS256 signature through Google's JWKS, exact configured audience, Google issuer, stable subject, and token expiry. |
 | Bootstrap administrator | An email-based bootstrap rule matches only a Google-verified email. The canonical KDCube subject remains `google:<sub>`, not the email address. |
-| KDCube session integrity | `kst1` is HMAC-SHA256 signed with the server-side `services.session_token.secret`. |
+| KDCube session integrity | `kst1` is HMAC-SHA256 signed with the server-side `platform.services.session_token.secret`. |
 | KDCube session liveness | Every request must match an active Redis session, current user version, and enabled user record. |
 | Browser cookie | The default issuer sets `Secure`, `HttpOnly`, `SameSite=Lax`, and `Path=/`. |
 | Secret placement | The Google Web client id is public configuration. The KDCube session secret remains in runtime secrets and never enters browser configuration. |
@@ -332,7 +332,7 @@ names are tenant/project namespaced.
 | Session record | `{tenant}:{project}:kdcube:auth:bundle-session:session:{sid}` | Session TTL | Token activation, logout, and token hash match. |
 | User sessions set | `{tenant}:{project}:kdcube:auth:bundle-session:user-sessions:{sub}` | Session TTL window | Invalidate/delete all sessions for a subject. |
 | User version | `{tenant}:{project}:kdcube:auth:bundle-session:user-version:{sub}` | Until delete | Role/session revocation boundary. |
-| Signing secret | `services.session_token.secret` | Deployment secret lifecycle | HMAC signature verification. |
+| Signing secret | `platform.services.session_token.secret` | Deployment secret lifecycle | HMAC signature verification. |
 | Browser auth cookie | descriptor-configured name | Cookie lifecycle | Transport from browser to gateway. |
 
 Validation reads the current user record. A role update made through
@@ -713,7 +713,7 @@ Redis session + user records
 ```
 
 All ingress and proc replicas that accept the session must resolve the same
-`services.session_token.secret` and the same tenant/project Redis namespace.
+`platform.services.session_token.secret` and the same tenant/project Redis namespace.
 The token is signed, but Redis is the mutable source of truth. This gives these
 properties:
 
@@ -826,7 +826,7 @@ If `/profile` is anonymous, check these items in order:
 | Check | Expected |
 |---|---|
 | Descriptor | `auth.idp: session` in `assembly.yaml`. |
-| Secret | `services.session_token.secret` exists and is identical for ingress/proc. |
+| Secret | `platform.services.session_token.secret` exists and is identical for ingress/proc. |
 | Cookie name | Browser sends the selected provider auth cookie to the platform origin. |
 | Token prefix | Cookie value starts with `kst1.`. |
 | Redis session | The backing session key exists until logout/expiry. |

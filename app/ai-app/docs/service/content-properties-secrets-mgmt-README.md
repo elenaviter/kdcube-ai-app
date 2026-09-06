@@ -253,7 +253,7 @@ Bundle/runtime code should use:
 
 | Need | Helper |
 |---|---|
-| platform/global secret | `await get_secret("canonical.key")` |
+| platform/global secret | `await get_secret("platform.canonical.key")` |
 | current bundle deployment secret | `await get_secret("b:group.key")` |
 | current-user bundle secret | `await get_secret("u:group.key")` |
 | write current-user bundle secret | `await set_user_secret("group.key", value)` |

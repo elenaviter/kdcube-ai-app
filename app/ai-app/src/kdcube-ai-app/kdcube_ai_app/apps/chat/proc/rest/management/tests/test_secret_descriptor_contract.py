@@ -47,7 +47,7 @@ def test_shipped_local_descriptor_exposes_secret_management_contract() -> None:
     assert set(secret_resource["operations"]) == set(SECRET_OPERATIONS)
 
     assert SECRET_RESOURCE_SELECTOR in admission["resources"]
-    assert set(SECRET_OPERATIONS).issubset(
+    assert not set(SECRET_OPERATIONS).intersection(
         admission["request_bound_operations"]
     )
 
@@ -64,7 +64,7 @@ def test_shipped_local_descriptor_enables_bounded_human_export() -> None:
         "max_evidence_age_seconds": 300,
         "transaction_ttl_seconds": 180,
         "consumed_tombstone_seconds": 600,
-        "max_targets": 64,
+        "max_targets": 4096,
         "max_total_value_bytes": 1048576,
     }
 

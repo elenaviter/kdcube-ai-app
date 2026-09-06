@@ -614,11 +614,11 @@ For the exact helper contract and cloud-mode differences, use:
 | Scope | Typical examples | Read / write API | Live authority in the local runtime | Export / ejection path |
 |---|---|---|---|---|
 | platform/global props | ports, auth ids, storage backends, path roots, gateway and Data Bus publish limits | `get_settings()` for effective values; `get_plain("...")` for raw descriptor inspection; no supported write API from bundle code | staged `assembly.yaml` and `gateway.yaml` under `workdir/config/`, plus env | exported by `kdcube config export --include-platform-descriptors`; otherwise manage through the deployment descriptor set |
-| platform/global secrets | deployment-wide API keys, auth secrets | async read: `await get_secret("canonical.key")`; no supported write API from bundle code | `secrets.yaml` only when `secrets-file` is active; otherwise the configured secrets provider | exported by `kdcube config export --include-platform-descriptors` only when the provider/export flow can reconstruct them; otherwise manage through deployment secret workflows |
+| platform/global secrets | deployment-wide API keys, auth secrets | async read: `await get_secret("platform.canonical.key")`; no supported write API from ordinary bundle code | `secrets.yaml` only when `secrets-file` is active; otherwise the configured secrets provider | complete administrator export uses `kdcube config export --include-platform-descriptors` |
 | deployment-scoped bundle props | feature flags, cron expressions, model selection, bundle UI config | read: `self.bundle_prop(...)`; write: `await set_bundle_prop(...)` | `workdir/config/bundles.yaml` when file-backed descriptor mode is active, with Redis as runtime cache | exported by `kdcube config export` to `bundles.yaml` |
 | deployment-scoped bundle secrets | webhook secrets, shared API tokens, bundle-specific credentials | async read: `await get_secret("b:...")`; write: `await set_bundle_secret(...)` | `workdir/config/bundles.secrets.yaml` only in local `secrets-file` mode; otherwise the configured secrets provider | exported by `kdcube config export` to `bundles.secrets.yaml` when the provider/export flow can reconstruct them |
 | user-scoped bundle props | one user's preferences or bundle-managed non-secret state | read/write: `await get_user_prop(...)`, `await set_user_prop(...)`, `await delete_user_prop(...)` | PostgreSQL user bundle props table | never exported |
-| user-scoped bundle secrets | one user's personal tokens or credentials managed by the bundle | read/write: `await get_secret("u:...")`, `await set_user_secret(...)`, `await delete_user_secret(...)` | configured secrets provider; in local `secrets-file` mode this is `secrets.yaml` | never exported |
+| user-scoped bundle secrets | one user's personal tokens or credentials managed by the bundle | read/write: `await get_secret("u:...")`, `await set_user_secret(...)`, `await delete_user_secret(...)` | configured secrets provider; in local `secrets-file` mode this is the `users` subtree of `secrets.yaml` | included in explicit whole administrator export; omitted from ordinary bundle export |
 
 In the user-scoped rows, "user" means the bundle user scope, not necessarily a
 KDCube control-plane account. A KDCube-authenticated widget may use the KDCube
@@ -631,8 +631,9 @@ Two hard rules:
 
 - `kdcube config export` exports bundle descriptors by default. Add
   `--include-platform-descriptors` only when you intentionally need
-  `assembly.yaml`, `gateway.yaml`, `economics.yaml`, and platform secrets in the reviewed export.
-  User props and user secrets are never exported.
+  `assembly.yaml`, `gateway.yaml`, `economics.yaml`, and the complete private
+  secret descriptor pair in the reviewed export. Whole export includes user
+  secrets; user props remain operational data and are not exported.
 - Bundle Admin writes live deployment-scoped bundle state only. It does not rewrite platform/global deployment descriptors.
 - In async bundle code, use `get_secret(...)`, `set_user_secret(...)`, and
   `delete_user_secret(...)` from `kdcube_ai_app.apps.chat.sdk.config`.
@@ -993,11 +994,10 @@ dotted descriptor keys:
 ```bash
 kdcube init --tenant <t> --project <p> \
   --descriptors-location /abs/path/to/descriptors \
-  --set-secret services.openai.api_key "sk-..." \
-  --set-secret services.anthropic.api_key "sk-ant-..." \
-  --set-secret services.brave.api_key "..." \
-  --set-secret services.git.http_token "github_pat_..." \
-  --set-secret git.http_token "github_pat_..."
+  --set-secret platform.services.openai.api_key "sk-..." \
+  --set-secret platform.services.anthropic.api_key "sk-ant-..." \
+  --set-secret platform.services.brave.api_key "..." \
+  --set-secret platform.services.git.http_token "github_pat_..."
 ```
 
 For guided secret entry, use:

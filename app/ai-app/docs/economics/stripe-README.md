@@ -63,16 +63,17 @@ Stripe secrets are **not** set in `.env` files. They are injected via the secret
 sidecar using dot‑path keys. Set them in `secrets.yaml`:
 
 ```yaml
-services:
-  stripe:
-    secret_key: sk_live_...        # or sk_test_... for dev
-    webhook_secret: whsec_...      # from Stripe Dashboard → Webhooks
+platform:
+  services:
+    stripe:
+      secret_key: sk_live_...        # or sk_test_... for dev
+      webhook_secret: whsec_...      # from Stripe Dashboard → Webhooks
 ```
 
 In code these are read as:
 ```python
-get_secret("services.stripe.secret_key")
-get_secret("services.stripe.webhook_secret")
+get_secret("platform.services.stripe.secret_key")
+get_secret("platform.services.stripe.webhook_secret")
 ```
 
 See: [secrets-descriptor-README.md](../configuration/secrets-descriptor-README.md)
@@ -118,7 +119,7 @@ throttled and Stripe will retry — causing duplicate processing attempts.
 - Store `stripe_price_id` in `plans` table for each plan.
 - Configure webhook endpoint: `POST https://<your-domain>/api/economics/webhooks/stripe`
 - Select events to listen for (see "Webhook Events Handled" below).
-- Copy signing secret → `services.stripe.webhook_secret` in `secrets.yaml`.
+- Copy signing secret → `platform.services.stripe.webhook_secret` in `secrets.yaml`.
 
 ---
 
@@ -558,7 +559,7 @@ stripe listen --forward-to http://localhost:8010/api/economics/webhooks/stripe
 ```
 
 The CLI prints a **webhook signing secret** (`whsec_...`). Use this as
-`services.stripe.webhook_secret` in your local `secrets.yaml` (or as
+`platform.services.stripe.webhook_secret` in your local `secrets.yaml` (or as
 `STRIPE_WEBHOOK_SECRET` env var for quick dev runs).
 
 
@@ -597,21 +598,21 @@ Configuration via `get_settings()` (non-secret fields) and `get_secret()` (passw
 | `EMAIL_FROM` | `get_settings()` / env | _(EMAIL_USER)_ | From address |
 | `EMAIL_TO` | `get_settings()` / env | `ops@example.com` | Default recipient |
 | `EMAIL_USE_TLS` | `get_settings()` / env | `true` | Enable STARTTLS |
-| `services.email.password` | `get_secret()` / `secrets.yaml` | _(unset)_ | SMTP password |
+| `platform.services.email.password` | `get_secret()` / `secrets.yaml` | _(unset)_ | SMTP password |
 
 Set `EMAIL_*` variables via `assembly.yaml` (`notifications.email` section) or directly in `.env.ingress`.
-Set the password in `secrets.yaml` under `services.email.password` (alias: `EMAIL_PASSWORD` env var).
+Set the password in `secrets.yaml` under `platform.services.email.password`.
 
 ---
 
 ## Operational Checklist
 
 - [ ] Create Stripe products/prices; store `stripe_price_id` in `plans`
-- [ ] Set `services.stripe.secret_key` and `services.stripe.webhook_secret` in `secrets.yaml`
+- [ ] Set `platform.services.stripe.secret_key` and `platform.services.stripe.webhook_secret` in `secrets.yaml`
 - [ ] Configure webhook URL in Stripe Dashboard: `POST /api/economics/webhooks/stripe`
 - [ ] Add `bypass_throttling_patterns` for `^.*/webhooks/stripe$` to `GATEWAY_CONFIG_JSON`
 - [ ] Enable and configure `STRIPE_RECONCILE_ENABLED` / `STRIPE_RECONCILE_CRON`
-- [ ] Set `services.email.password` in `secrets.yaml` and configure `notifications.email` in `assembly.yaml`
+- [ ] Set `platform.services.email.password` in `secrets.yaml` and configure `notifications.email` in `assembly.yaml`
 - [ ] For local dev: install Stripe CLI and run `stripe listen --forward-to ...`
 
 ---
@@ -622,4 +623,4 @@ Set the password in `secrets.yaml` under `services.email.password` (alias: `EMAI
 - Project budget is never topped up by Stripe events directly.
 - Idempotency is enforced via `external_economics_events` keyed by Stripe event ID.
 - The reconcile job uses an ascending-timestamp watermark — it will not reprocess already-seen events unless the watermark Redis key is deleted.
-- If `services.stripe.webhook_secret` is not set, webhooks are accepted without signature verification (not recommended for production).
+- If `platform.services.stripe.webhook_secret` is not set, webhooks are accepted without signature verification (not recommended for production).

@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -45,6 +46,11 @@ from kdcube_cli.cli import (
     apply_config_descriptors,
 )
 from kdcube_cli import export_live_bundles as export_mod
+from kdcube_cli.management.models import ManagementSecretTarget
+from kdcube_cli.management.secret_descriptors import (
+    write_secret_descriptors_into_directory,
+)
+from kdcube_cli.management.secret_export import ExportedSecret
 from kdcube_cli.installer import (
     EnvFile,
     PathsContext,
@@ -413,12 +419,12 @@ def test_prepare_default_init_source_preserves_upstream_and_build_modes(monkeypa
 def test_parse_init_secret_pairs_accepts_dotted_keys_and_aliases():
     assert _parse_init_secret_pairs(
         [
-            ["services.openai.api_key", "sk-openai"],
+            ["platform.services.openai.api_key", "sk-openai"],
             ["ANTHROPIC_API_KEY", "sk-anthropic"],
         ]
     ) == {
-        "services.openai.api_key": "sk-openai",
-        "services.anthropic.api_key": "sk-anthropic",
+        "platform.services.openai.api_key": "sk-openai",
+        "platform.services.anthropic.api_key": "sk-anthropic",
     }
 
 
@@ -1432,7 +1438,7 @@ def test_stage_descriptor_directory_stages_complete_canonical_set(tmp_path: Path
     source_dir = tmp_path / "descriptors"
     source_dir.mkdir()
     (source_dir / "assembly.yaml").write_text("context:\n  tenant: demo\n  project: demo\n")
-    (source_dir / "secrets.yaml").write_text("services: {}\n")
+    (source_dir / "secrets.yaml").write_text("platform:\n  services: {}\n")
     (source_dir / "bundles.yaml").write_text("bundles: {}\n")
     (source_dir / "bundles.secrets.yaml").write_text("bundles:\n  items: []\n")
     (source_dir / "gateway.yaml").write_text("gateway:\n  tenant: demo\n  project: demo\n")
@@ -1933,7 +1939,7 @@ def test_gather_configuration_accepts_descriptor_secret_paths(monkeypatch, tmp_p
             "proxy": {"ssl": False},
         },
         secrets_descriptor_path=str(secrets_path),
-        secrets_descriptor={"services": {}},
+        secrets_descriptor={"platform": {"services": {}}},
         bundles_descriptor_path=str(bundles_path),
         bundles_descriptor={"bundles": {}},
         bundles_secrets_path=str(bundles_secrets_path),
@@ -2057,9 +2063,11 @@ def test_gather_configuration_treats_null_redis_secret_as_unset(monkeypatch, tmp
         },
         secrets_descriptor_path=str(secrets_path),
         secrets_descriptor={
-            "infra": {
-                "redis": {
-                    "password": None,
+            "platform": {
+                "infra": {
+                    "redis": {
+                        "password": None,
+                    },
                 },
             },
         },
@@ -2208,7 +2216,7 @@ def test_gather_configuration_keeps_service_env_minimal_with_platform_descriptor
             "proxy": {"ssl": False},
         },
         secrets_descriptor_path=str(secrets_path),
-        secrets_descriptor={"services": {}},
+        secrets_descriptor={"platform": {"services": {}}},
         bundles_descriptor_path=str(bundles_path),
         bundles_descriptor={"bundles": {"items": []}},
         bundles_secrets_path=str(bundles_secrets_path),
@@ -2349,7 +2357,7 @@ def test_gather_configuration_supports_explicit_proxy_host_ports(monkeypatch, tm
             "frontend": {"build": {"repo": "git@example/repo.git", "ref": "main", "dockerfile": "Dockerfile_UI", "src": "ui"}},
         },
         secrets_descriptor_path=str(secrets_path),
-        secrets_descriptor={"services": {}},
+        secrets_descriptor={"platform": {"services": {}}},
         gateway_descriptor={},
     )
 
@@ -2498,7 +2506,7 @@ def test_gather_configuration_keeps_proc_and_ingress_env_minimal_for_user_descri
             },
         },
         secrets_descriptor_path=str(secrets_path),
-        secrets_descriptor={"services": {}},
+        secrets_descriptor={"platform": {"services": {}}},
         bundles_descriptor_path=str(bundles_path),
         bundles_descriptor={"bundles": {"items": []}},
         bundles_secrets_path=str(bundles_secrets_path),
@@ -2601,7 +2609,7 @@ def test_gather_configuration_resolves_null_missing_and_s3_storage(monkeypatch, 
         assembly_path = config_dir / "assembly.yaml"
         assembly_path.write_text("x: 1\n")
         secrets_path = config_dir / "secrets.yaml"
-        secrets_path.write_text("services: {}\n")
+        secrets_path.write_text("platform:\n  services: {}\n")
         bundles_path = config_dir / "bundles.yaml"
         bundles_path.write_text("bundles:\n  items: []\n")
         bundles_secrets_path = config_dir / "bundles.secrets.yaml"
@@ -2659,7 +2667,7 @@ def test_gather_configuration_resolves_null_missing_and_s3_storage(monkeypatch, 
                 },
             },
             secrets_descriptor_path=str(secrets_path),
-            secrets_descriptor={"services": {}},
+            secrets_descriptor={"platform": {"services": {}}},
             bundles_descriptor_path=str(bundles_path),
             bundles_descriptor={"bundles": {"items": []}},
             bundles_secrets_path=str(bundles_secrets_path),
@@ -2844,7 +2852,7 @@ def test_gather_configuration_uses_descriptor_git_ssh_mounts(monkeypatch, tmp_pa
     assembly_path = config_dir / "assembly.yaml"
     assembly_path.write_text("x: 1\n")
     secrets_path = config_dir / "secrets.yaml"
-    secrets_path.write_text("services: {}\n")
+    secrets_path.write_text("platform:\n  services: {}\n")
     bundles_path = config_dir / "bundles.yaml"
     bundles_path.write_text("bundles:\n  items: []\n")
     bundles_secrets_path = config_dir / "bundles.secrets.yaml"
@@ -2930,7 +2938,7 @@ def test_gather_configuration_uses_descriptor_git_ssh_mounts(monkeypatch, tmp_pa
             "proxy": {"ssl": False},
         },
         secrets_descriptor_path=str(secrets_path),
-        secrets_descriptor={"services": {}},
+        secrets_descriptor={"platform": {"services": {}}},
         bundles_descriptor_path=str(bundles_path),
         bundles_descriptor={"bundles": {"items": []}},
         bundles_secrets_path=str(bundles_secrets_path),
@@ -2974,7 +2982,7 @@ def test_gather_configuration_rewrites_local_bundle_paths_into_staged_descriptor
     assembly_path = config_dir / "assembly.yaml"
     assembly_path.write_text("x: 1\n")
     secrets_path = config_dir / "secrets.yaml"
-    secrets_path.write_text("services: {}\n")
+    secrets_path.write_text("platform:\n  services: {}\n")
     bundles_path = config_dir / "bundles.yaml"
     bundles_path.write_text("bundles:\n  items: []\n")
     bundles_secrets_path = config_dir / "bundles.secrets.yaml"
@@ -3042,7 +3050,7 @@ def test_gather_configuration_rewrites_local_bundle_paths_into_staged_descriptor
             "proxy": {"ssl": False},
         },
         secrets_descriptor_path=str(secrets_path),
-        secrets_descriptor={"services": {}},
+        secrets_descriptor={"platform": {"services": {}}},
         bundles_descriptor_path=str(bundles_path),
         bundles_descriptor={
             "bundles": {
@@ -3107,7 +3115,7 @@ def test_gather_configuration_reuses_existing_container_bundle_paths_from_runtim
     assembly_path = config_dir / "assembly.yaml"
     assembly_path.write_text("x: 1\n")
     secrets_path = config_dir / "secrets.yaml"
-    secrets_path.write_text("services: {}\n")
+    secrets_path.write_text("platform:\n  services: {}\n")
     bundles_path = config_dir / "bundles.yaml"
     bundles_path.write_text("bundles:\n  items: []\n")
     bundles_secrets_path = config_dir / "bundles.secrets.yaml"
@@ -3187,7 +3195,7 @@ def test_gather_configuration_reuses_existing_container_bundle_paths_from_runtim
             "proxy": {"ssl": False},
         },
         secrets_descriptor_path=str(secrets_path),
-        secrets_descriptor={"services": {}},
+        secrets_descriptor={"platform": {"services": {}}},
         bundles_descriptor_path=str(bundles_path),
         bundles_descriptor={
             "bundles": {
@@ -3230,8 +3238,10 @@ def test_apply_runtime_secrets_to_file_descriptors_updates_secrets_files(tmp_pat
     config_dir.mkdir()
     (config_dir / "secrets.yaml").write_text(
         """
-git:
-  http_token: legacy-token
+platform:
+  services:
+    git:
+      http_token: legacy-token
 """.strip()
     )
     (config_dir / "bundles.secrets.yaml").write_text(
@@ -3248,8 +3258,8 @@ bundles:
     apply_runtime_secrets_to_file_descriptors(
         config_dir=config_dir,
         runtime_secrets={
-            "services.git.http_token": "new-token",
-            "services.git.http_user": "x-access-token",
+            "platform.services.git.http_token": "new-token",
+            "platform.services.git.http_user": "x-access-token",
             "bundles.demo-bundle.secrets.api.token": "abc",
             "bundles.demo-bundle.secrets.__keys": "[\"ignored\"]",
         },
@@ -3258,8 +3268,8 @@ bundles:
     secrets_data = yaml.safe_load((config_dir / "secrets.yaml").read_text())
     bundles_secrets_data = yaml.safe_load((config_dir / "bundles.secrets.yaml").read_text())
 
-    assert secrets_data["services"]["git"]["http_token"] == "new-token"
-    assert secrets_data["services"]["git"]["http_user"] == "x-access-token"
+    assert secrets_data["platform"]["services"]["git"]["http_token"] == "new-token"
+    assert secrets_data["platform"]["services"]["git"]["http_user"] == "x-access-token"
     items = bundles_secrets_data["bundles"]["items"]
     bundle_item = next(item for item in items if item["id"] == "demo-bundle")
     assert bundle_item["secrets"]["existing"]["key"] == "value"
@@ -3269,14 +3279,19 @@ bundles:
 def test_ensure_generated_runtime_secrets_backfills_federated_token_secret(tmp_path: Path):
     config_dir = tmp_path / "config"
     config_dir.mkdir()
-    (config_dir / "secrets.yaml").write_text("services:\n  openai:\n    api_key: sk-test\n")
+    (config_dir / "secrets.yaml").write_text(
+        "platform:\n  services:\n    openai:\n      api_key: sk-test\n"
+    )
 
     generated = ensure_generated_runtime_secrets(config_dir)
     secrets_data = yaml.safe_load((config_dir / "secrets.yaml").read_text())
-    secret = secrets_data["services"]["federated_token"]["secret"]
-    session_secret = secrets_data["services"]["session_token"]["secret"]
+    secret = secrets_data["platform"]["services"]["federated_token"]["secret"]
+    session_secret = secrets_data["platform"]["services"]["session_token"]["secret"]
 
-    assert sorted(generated) == ["services.federated_token.secret", "services.session_token.secret"]
+    assert sorted(generated) == [
+        "platform.services.federated_token.secret",
+        "platform.services.session_token.secret",
+    ]
     assert isinstance(secret, str)
     assert secret
     assert isinstance(session_secret, str)
@@ -3286,8 +3301,8 @@ def test_ensure_generated_runtime_secrets_backfills_federated_token_secret(tmp_p
     secrets_data_again = yaml.safe_load((config_dir / "secrets.yaml").read_text())
 
     assert generated_again == {}
-    assert secrets_data_again["services"]["federated_token"]["secret"] == secret
-    assert secrets_data_again["services"]["session_token"]["secret"] == session_secret
+    assert secrets_data_again["platform"]["services"]["federated_token"]["secret"] == secret
+    assert secrets_data_again["platform"]["services"]["session_token"]["secret"] == session_secret
 
 
 def test_resolve_aws_sm_prefix_defaults_from_tenant_project():
@@ -3371,6 +3386,39 @@ def test_export_live_bundle_descriptors_reconstructs_effective_files(monkeypatch
     }
     if os.name == "posix":
         assert (tmp_path / "bundles.secrets.yaml").stat().st_mode & 0o777 == 0o600
+
+
+def test_bundle_export_can_defer_secret_pair_to_selected_provider(tmp_path: Path):
+    source = tmp_path / "source"
+    source.mkdir()
+    bundles = source / "bundles.yaml"
+    bundle_secrets = source / "bundles.secrets.yaml"
+    bundles.write_text(
+        "bundles:\n  version: '1'\n  items: []\n",
+        encoding="utf-8",
+    )
+    bundle_secrets.write_text(
+        "bundles:\n  version: '1'\n  items:\n"
+        "  - id: fixture@1-0\n    secrets: {token: retained}\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "output"
+
+    export_mod.export_live_bundle_descriptors(
+        Console(file=None),
+        tenant="demo",
+        project="proj",
+        out_dir=output,
+        aws_region=None,
+        aws_profile=None,
+        aws_sm_prefix=None,
+        bundles_path=bundles,
+        bundles_secrets_path=bundle_secrets,
+        include_secrets=False,
+    )
+
+    assert (output / "bundles.yaml").is_file()
+    assert not (output / "bundles.secrets.yaml").exists()
 
 
 def test_export_live_bundle_descriptors_prefers_local_descriptor_files(tmp_path: Path):
@@ -3486,7 +3534,12 @@ def test_export_live_bundle_descriptors_removes_platform_managed_example_paths(t
     assert {item["action"] for item in translations} == {"translated_path", "removed_platform_managed_path"}
 
 
-def _write_initialized_runtime_config(workdir: Path, *, marker: str = "old") -> Path:
+def _write_initialized_runtime_config(
+    workdir: Path,
+    *,
+    marker: str = "old",
+    secrets_provider: str = "secrets-file",
+) -> Path:
     config_dir = workdir / "config"
     config_dir.mkdir(parents=True)
     (config_dir / "install-meta.json").write_text(
@@ -3503,6 +3556,7 @@ def _write_initialized_runtime_config(workdir: Path, *, marker: str = "old") -> 
             {
                 "context": {"tenant": "demo", "project": "project"},
                 "platform": {"repo": "https://github.com/example/platform.git", "ref": marker},
+                "secrets": {"provider": secrets_provider},
                 "auth": {"type": "simple"},
                 "proxy": {"ssl": False},
                 "paths": {"host_bundles_path": str(workdir / "bundles")},
@@ -3510,7 +3564,9 @@ def _write_initialized_runtime_config(workdir: Path, *, marker: str = "old") -> 
             sort_keys=False,
         )
     )
-    (config_dir / "secrets.yaml").write_text(f"services:\n  marker: {marker}\n")
+    (config_dir / "secrets.yaml").write_text(
+        f"platform:\n  services:\n    marker: {marker}\n"
+    )
     (config_dir / "gateway.yaml").write_text(f"routes:\n  marker: {marker}\n")
     (config_dir / "economics.yaml").write_text(f"economics:\n  marker: {marker}\n")
     (config_dir / "bundles.yaml").write_text(
@@ -3550,6 +3606,31 @@ def test_export_platform_descriptors_copies_platform_files(tmp_path: Path):
         assert (out_dir / name).read_text() == (config_dir / name).read_text()
     if os.name == "posix":
         assert (out_dir / "secrets.yaml").stat().st_mode & 0o777 == 0o600
+
+
+def test_provider_backed_platform_export_skips_retained_secret_snapshot(
+    tmp_path: Path,
+):
+    config_dir = _write_initialized_runtime_config(
+        tmp_path / "runtime",
+        marker="retained",
+    )
+    out_dir = tmp_path / "out"
+
+    files = _export_platform_descriptors(
+        Console(file=None),
+        config_dir=config_dir,
+        out_dir=out_dir,
+        quiet=True,
+        include_secret_descriptor=False,
+    )
+
+    assert {item["name"] for item in files} == {
+        "assembly.yaml",
+        "gateway.yaml",
+        "economics.yaml",
+    }
+    assert not (out_dir / "secrets.yaml").exists()
 
 
 def test_export_platform_descriptors_denormalizes_local_infra_hosts(tmp_path: Path):
@@ -3624,6 +3705,51 @@ def test_export_platform_descriptors_drops_cli_managed_local_paths(tmp_path: Pat
     assert exported["platform"]["services"]["proc"]["log"]["log_level"] == "INFO"
 
 
+def test_export_platform_descriptors_removes_host_vault_machine_identity(
+    tmp_path: Path,
+) -> None:
+    config_dir = _write_initialized_runtime_config(
+        tmp_path / "runtime",
+        marker="source",
+        secrets_provider="secrets-service",
+    )
+    assembly_path = config_dir / "assembly.yaml"
+    assembly = yaml.safe_load(assembly_path.read_text(encoding="utf-8"))
+    assembly["secrets"]["service"] = {
+        "backend": "host-vault",
+        "host_vault": {
+            "address": "host.docker.internal:7781",
+            "server_name": "host.docker.internal",
+            "identity_dir": "/private/source-machine/identity",
+        },
+    }
+    assembly_path.write_text(
+        yaml.safe_dump(assembly, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    out_dir = tmp_path / "out"
+    _export_platform_descriptors(
+        Console(file=None),
+        config_dir=config_dir,
+        out_dir=out_dir,
+        quiet=True,
+    )
+
+    exported = yaml.safe_load((out_dir / "assembly.yaml").read_text())
+    assert exported["secrets"] == {
+        "provider": "secrets-file",
+        "service": {
+            "backend": "ephemeral",
+            "host_vault": {
+                "address": None,
+                "server_name": None,
+                "identity_dir": None,
+            },
+        },
+    }
+
+
 def test_apply_config_descriptors_overwrites_platform_files_and_regenerates(monkeypatch, tmp_path: Path):
     target_config = _write_initialized_runtime_config(tmp_path / "runtime", marker="old")
     source_config = _write_initialized_runtime_config(tmp_path / "source", marker="new")
@@ -3656,6 +3782,369 @@ def test_apply_config_descriptors_overwrites_platform_files_and_regenerates(monk
         assert (target_config / name).read_text() == (source_config / name).read_text()
 
 
+def test_provider_backed_config_import_does_not_copy_plaintext_secret_files(
+    monkeypatch,
+    tmp_path: Path,
+):
+    target_config = _write_initialized_runtime_config(
+        tmp_path / "runtime",
+        marker="retained",
+    )
+    source_config = _write_initialized_runtime_config(
+        tmp_path / "source",
+        marker="incoming",
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "_regenerate_runtime_config_from_descriptors",
+        lambda *args, **kwargs: None,
+    )
+
+    result = apply_config_descriptors(
+        Console(file=None),
+        workdir=target_config.parent,
+        descriptors_location=source_config,
+        include_platform_descriptors=True,
+        stage_secret_descriptors=False,
+        quiet=True,
+    )
+
+    assert yaml.safe_load((target_config / "assembly.yaml").read_text())["platform"][
+        "ref"
+    ] == "incoming"
+    assert yaml.safe_load((target_config / "secrets.yaml").read_text())["platform"][
+        "services"
+    ]["marker"] == "retained"
+    assert yaml.safe_load((target_config / "bundles.secrets.yaml").read_text())[
+        "bundles"
+    ]["items"][0]["secrets"]["api"]["key"] == "retained"
+    assert result["secret_descriptors_staged"] is False
+
+
+def test_config_import_can_preserve_secret_values_after_separate_sync(
+    monkeypatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    workdir = tmp_path / "demo__project"
+    target_config = _write_initialized_runtime_config(
+        workdir,
+        marker="retained",
+        secrets_provider="secrets-file",
+    )
+    source_config = _write_initialized_runtime_config(
+        tmp_path / "incoming-runtime",
+        marker="incoming",
+        secrets_provider="secrets-service",
+    )
+
+    monkeypatch.setattr(cli_mod, "_load_cli_defaults", lambda: {})
+    monkeypatch.setattr(
+        cli_mod,
+        "_resolve_subcommand_workdir",
+        lambda *_args, **_kwargs: workdir,
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "_resolve_cli_workdir",
+        lambda path, **_kwargs: Path(path),
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "_canonical_descriptor_dir_from_initialized_workdir",
+        lambda _workdir: target_config,
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "_resolve_subcommand_repo",
+        lambda *_args, **_kwargs: tmp_path / "repo",
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "_regenerate_runtime_config_from_descriptors",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "kdcube",
+            "config",
+            "import",
+            "--workdir",
+            str(workdir),
+            "--descriptors-location",
+            str(source_config),
+            "--include-platform-descriptors",
+            "--skip-secret-values",
+            "--json",
+        ],
+    )
+
+    cli_mod.main()
+
+    platform = yaml.safe_load(
+        (target_config / "secrets.yaml").read_text(encoding="utf-8")
+    )
+    bundles = yaml.safe_load(
+        (target_config / "bundles.secrets.yaml").read_text(encoding="utf-8")
+    )
+    assembly = yaml.safe_load(
+        (target_config / "assembly.yaml").read_text(encoding="utf-8")
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert platform["platform"]["services"]["marker"] == "retained"
+    assert bundles["bundles"]["items"][0]["secrets"]["api"]["key"] == (
+        "retained"
+    )
+    assert assembly["platform"]["ref"] == "incoming"
+    assert assembly["secrets"]["provider"] == "secrets-file"
+    assert payload["secret_values"] == "preserved"
+    assert payload["secret_descriptors_staged"] is False
+
+
+def test_provider_backed_config_export_writes_one_complete_descriptor_directory(
+    monkeypatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    workdir = tmp_path / "demo__project"
+    config_dir = _write_initialized_runtime_config(
+        workdir,
+        marker="retained",
+        secrets_provider="secrets-service",
+    )
+    output = tmp_path / "complete-export"
+    values = (
+        ExportedSecret(
+            target=ManagementSecretTarget.create(
+                scope="platform",
+                key="platform.services.fixture.token",
+            ),
+            value="platform-export-canary",
+        ),
+        ExportedSecret(
+            target=ManagementSecretTarget.create(
+                scope="bundle",
+                bundle_id="demo.bundle",
+                key="provider.token",
+            ),
+            value="bundle-export-canary",
+        ),
+        ExportedSecret(
+            target=ManagementSecretTarget.create(
+                scope="user",
+                user_id="owner-1",
+                key="provider.token",
+            ),
+            value="user-export-canary",
+        ),
+    )
+
+    async def _export_pair(**kwargs):
+        assert kwargs["selection"] == "all"
+        assert kwargs["into_existing_directory"] is True
+        exported = write_secret_descriptors_into_directory(
+            kwargs["output_directory"],
+            values,
+            replace=kwargs["replace"],
+        )
+        return (
+            SimpleNamespace(
+                request_digest="a" * 64,
+                assurance="session_confirmation",
+                approval_method="browser_session",
+                approval_verified_at=1,
+            ),
+            exported,
+        )
+
+    monkeypatch.setattr(cli_mod, "_load_cli_defaults", lambda: {})
+    monkeypatch.setattr(
+        cli_mod,
+        "_resolve_subcommand_workdir",
+        lambda *_args, **_kwargs: workdir,
+    )
+    monkeypatch.setattr(cli_mod, "_resolve_cli_workdir", lambda path, **_kwargs: Path(path))
+    monkeypatch.setattr(
+        cli_mod,
+        "_canonical_descriptor_dir_from_initialized_workdir",
+        lambda _workdir: config_dir,
+    )
+    monkeypatch.setattr(cli_mod, "_parse_workdir_namespace", lambda _workdir: ("demo", "project"))
+    monkeypatch.setattr(cli_mod, "local_management_target", lambda _workdir: object())
+    monkeypatch.setattr(cli_mod, "export_secret_descriptor_pair", _export_pair)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "kdcube",
+            "config",
+            "export",
+            "--workdir",
+            str(workdir),
+            "--out-dir",
+            str(output),
+            "--include-platform-descriptors",
+            "--json",
+        ],
+    )
+
+    cli_mod.main()
+
+    assert {path.name for path in output.iterdir()} == {
+        "assembly.yaml",
+        "bundles.secrets.yaml",
+        "bundles.yaml",
+        "economics.yaml",
+        "gateway.yaml",
+        "secrets.yaml",
+    }
+    platform = yaml.safe_load((output / "secrets.yaml").read_text(encoding="utf-8"))
+    bundles = yaml.safe_load(
+        (output / "bundles.secrets.yaml").read_text(encoding="utf-8")
+    )
+    assert platform["platform"]["services"]["fixture"]["token"] == (
+        "platform-export-canary"
+    )
+    assert platform["users"]["owner-1"]["secrets"]["provider"]["token"] == (
+        "user-export-canary"
+    )
+    assert bundles["bundles"]["items"][0]["secrets"]["provider"]["token"] == (
+        "bundle-export-canary"
+    )
+    output_text = capsys.readouterr().out
+    assert "platform-export-canary" not in output_text
+    assert "bundle-export-canary" not in output_text
+    assert "user-export-canary" not in output_text
+
+
+def test_provider_backed_config_import_applies_all_scopes_without_staging_secrets(
+    monkeypatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    workdir = tmp_path / "demo__project"
+    target_config = _write_initialized_runtime_config(
+        workdir,
+        marker="retained",
+        secrets_provider="secrets-service",
+    )
+    target_assembly_path = target_config / "assembly.yaml"
+    target_assembly = yaml.safe_load(target_assembly_path.read_text(encoding="utf-8"))
+    target_assembly["secrets"]["service"] = {
+        "backend": "host-vault",
+        "host_vault": {
+            "address": "host.docker.internal:7781",
+            "server_name": "host.docker.internal",
+            "identity_dir": "/local/deployment/identity",
+        },
+    }
+    target_assembly_path.write_text(
+        yaml.safe_dump(target_assembly, sort_keys=False),
+        encoding="utf-8",
+    )
+    source = tmp_path / "incoming"
+    _write_initialized_runtime_config(
+        source.parent / "incoming-runtime",
+        marker="incoming",
+        secrets_provider="secrets-file",
+    ).rename(source)
+    incoming = yaml.safe_load((source / "secrets.yaml").read_text(encoding="utf-8"))
+    incoming["users"] = {
+        "owner-1": {"secrets": {"provider": {"token": "user-import-canary"}}}
+    }
+    (source / "secrets.yaml").write_text(
+        yaml.safe_dump(incoming, sort_keys=False),
+        encoding="utf-8",
+    )
+    if os.name == "posix":
+        source.chmod(0o700)
+        (source / "secrets.yaml").chmod(0o600)
+        (source / "bundles.secrets.yaml").chmod(0o600)
+
+    applied: list[str] = []
+
+    async def _apply_secret_import(**kwargs):
+        assert kwargs["bearer"] == "delegated-test-bearer"
+        applied.extend(
+            item.target.provider_key for item in kwargs["imported"].values
+        )
+        return SimpleNamespace(ok=True, applied=len(applied))
+
+    monkeypatch.setattr(cli_mod, "_load_cli_defaults", lambda: {})
+    monkeypatch.setattr(
+        cli_mod,
+        "_resolve_subcommand_workdir",
+        lambda *_args, **_kwargs: workdir,
+    )
+    monkeypatch.setattr(cli_mod, "_resolve_cli_workdir", lambda path, **_kwargs: Path(path))
+    monkeypatch.setattr(
+        cli_mod,
+        "_canonical_descriptor_dir_from_initialized_workdir",
+        lambda _workdir: target_config,
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "_resolve_subcommand_repo",
+        lambda *_args, **_kwargs: tmp_path / "repo",
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "_regenerate_runtime_config_from_descriptors",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "delegated_credential_from_input",
+        lambda _args: "delegated-test-bearer",
+    )
+    monkeypatch.setattr(cli_mod, "local_management_target", lambda _workdir: object())
+    monkeypatch.setattr(cli_mod, "apply_secret_descriptor_import", _apply_secret_import)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "kdcube",
+            "config",
+            "import",
+            "--workdir",
+            str(workdir),
+            "--descriptors-location",
+            str(source),
+            "--include-platform-descriptors",
+            "--yes",
+            "--credential-stdin",
+            "--json",
+        ],
+    )
+
+    cli_mod.main()
+
+    assert applied == [
+        "bundles.demo.bundle.secrets.api.key",
+        "platform.services.marker",
+        "users.owner-1.secrets.provider.token",
+    ]
+    retained = yaml.safe_load(
+        (target_config / "secrets.yaml").read_text(encoding="utf-8")
+    )
+    retained_bundles = yaml.safe_load(
+        (target_config / "bundles.secrets.yaml").read_text(encoding="utf-8")
+    )
+    assert retained["platform"]["services"]["marker"] == "retained"
+    assert retained_bundles["bundles"]["items"][0]["secrets"]["api"]["key"] == (
+        "retained"
+    )
+    applied_assembly = yaml.safe_load(
+        (target_config / "assembly.yaml").read_text(encoding="utf-8")
+    )
+    assert applied_assembly["platform"]["ref"] == "incoming"
+    assert applied_assembly["secrets"] == target_assembly["secrets"]
+    output_text = capsys.readouterr().out
+    assert "user-import-canary" not in output_text
+
+
 def test_gather_configuration_default_bootstrap_prompts_only_minimal_inputs(monkeypatch, tmp_path: Path):
     config_dir = tmp_path / "config"
     config_dir.mkdir()
@@ -3672,7 +4161,7 @@ def test_gather_configuration_default_bootstrap_prompts_only_minimal_inputs(monk
     assembly_path = config_dir / "assembly.yaml"
     assembly_path.write_text("x: 1\n")
     secrets_path = config_dir / "secrets.yaml"
-    secrets_path.write_text("services: {}\n")
+    secrets_path.write_text("platform:\n  services: {}\n")
     bundles_path = config_dir / "bundles.yaml"
     bundles_path.write_text("bundles:\n  version: '1'\n  default_bundle_id: workspace@2026-03-31-13-36\n  items: []\n")
     bundles_secrets_path = config_dir / "bundles.secrets.yaml"
@@ -3785,7 +4274,7 @@ def test_gather_configuration_default_bootstrap_prompts_only_minimal_inputs(monk
             "ports": {"ui": "5174"},
         },
         secrets_descriptor_path=str(secrets_path),
-        secrets_descriptor={"services": {}},
+        secrets_descriptor={"platform": {"services": {}}},
         bundles_descriptor_path=str(bundles_path),
         bundles_descriptor={"bundles": {"version": "1", "default_bundle_id": "workspace@2026-03-31-13-36", "items": []}},
         bundles_secrets_path=str(bundles_secrets_path),
@@ -4820,7 +5309,9 @@ def test_patch_gateway_descriptor_file_preserves_real_values(tmp_path: Path):
 
 def test_ensure_generated_runtime_secrets_fills_oauth_state_secret(tmp_path: Path):
     config_dir = tmp_path
-    (config_dir / "secrets.yaml").write_text(yaml.safe_dump({"services": {}}))
+    (config_dir / "secrets.yaml").write_text(
+        yaml.safe_dump({"platform": {"services": {}}})
+    )
     (config_dir / "bundles.secrets.yaml").write_text(
         yaml.safe_dump(
             {

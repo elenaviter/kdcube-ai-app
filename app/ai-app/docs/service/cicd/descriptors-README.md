@@ -185,7 +185,7 @@ selects the platform authority/provider. Provider details live under
 | `bundle` | application-hosted session provider id | Application/front shell validates external identity and KDCube issues platform-recognized session cookies. Technical provider type: `bundle_session_login`. |
 
 Application-hosted platform sessions require the platform/global secret
-`services.session_token.secret` in `secrets.yaml` or the configured secret
+`platform.services.session_token.secret` in `secrets.yaml` or the configured secret
 provider. See [Application-Hosted Platform Login And Session](../auth/app-hosted-platform-login-and-session-README.md).
 
 For mixed runtime scenes, keep the selector in `assembly.yaml` and place the

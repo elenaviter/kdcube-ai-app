@@ -71,7 +71,7 @@ async def send_admin_email(
     to_addrs: Optional[Sequence[str]] = None,
     cc: Optional[Sequence[str]] = None,
 ) -> bool:
-    cfg = _smtp_settings(password=await get_secret("services.email.password"))
+    cfg = _smtp_settings(password=await get_secret("platform.services.email.password"))
     to_list = list(to_addrs) if to_addrs else [cfg["to_default"]]
     return await asyncio.to_thread(
         _send_email_sync,

@@ -64,7 +64,11 @@ class TestOpenrouterServiceKeyResolution:
         """get_secret returns global key when no bundle context sets an override."""
 
         async def _get_secret(key, default=None):
-            return "sk-global-or" if key == "services.openrouter.api_key" else None
+            return (
+                "sk-global-or"
+                if key == "platform.services.openrouter.api_key"
+                else None
+            )
 
         monkeypatch.setattr(openrouter_mod, "get_secret", _get_secret)
 

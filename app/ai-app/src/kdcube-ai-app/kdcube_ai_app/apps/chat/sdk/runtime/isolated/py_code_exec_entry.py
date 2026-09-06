@@ -324,10 +324,17 @@ def _prepare_runtime_environment(logger: AgentLogger) -> None:
 
     try:
         from kdcube_ai_app.apps.chat.sdk.config import get_settings
+        from kdcube_ai_app.apps.chat.sdk.config_cache import clear_config_cache
+        from kdcube_ai_app.infra.secrets import reset_secrets_manager_cache
 
         get_settings.cache_clear()
+        clear_config_cache()
+        reset_secrets_manager_cache()
     except Exception as exc:
-        logger.log(f"[exec.payload] Failed to clear settings cache after env prep: {exc}", "WARNING")
+        logger.log(
+            f"[exec.payload] Failed to clear configuration caches after env prep: {exc}",
+            "WARNING",
+        )
 
     os.environ[_RUNTIME_ENV_PREPARED_MARKER] = "1"
 

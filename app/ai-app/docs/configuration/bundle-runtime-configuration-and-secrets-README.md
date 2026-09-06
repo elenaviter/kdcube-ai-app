@@ -4,7 +4,7 @@ title: "Bundle Runtime Settings, Configuration, and Secrets"
 summary: "Canonical author-facing configuration model for bundle code: how platform settings, bundle props and secrets, and user-scoped state are read, written, owned, stored, and exported."
 tags: ["sdk", "configuration", "bundle", "props", "secrets"]
 keywords: ["programmatic configuration access", "platform settings and secrets", "bundle scoped props and secrets", "user scoped props and secrets", "helper api selection", "ownership boundary", "live authority and export rules", "get_settings and get_secret", "bundle_prop and set_bundle_prop", "user prop and user secret CRUD", "get_secret", "service key override", "per-bundle provider key"]
-updated_at: 2026-07-05
+updated_at: 2026-09-06
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-properties-and-secrets-lifecycle-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-developer-guide-README.md
@@ -97,11 +97,11 @@ Those remain deployment-owned.
 | Data class | Read API | Write API from bundle code | Ownership boundary | Live authority today | Export / ejection path |
 |---|---|---|---|---|---|
 | platform/global props | `get_settings()` for effective values; `get_plain("...")` for raw descriptor inspection | none supported | tenant + project deployment | promoted runtime config assembled from env plus descriptor files such as `assembly.yaml` and `gateway.yaml` | exported by `kdcube config export --include-platform-descriptors`; otherwise manage through deployment descriptors |
-| platform/global secrets | `await get_secret("canonical.key")` | none supported | tenant + project deployment | configured secrets provider; in local `secrets-file` mode this is `secrets.yaml` | exported by `kdcube config export --include-platform-descriptors` only when the provider/export flow can reconstruct them; otherwise manage through deployment secret workflows |
+| platform/global secrets | `await get_secret("platform.canonical.key")` | none supported from ordinary bundle code | tenant + project deployment | configured secrets provider; in local `secrets-file` mode this is the `platform` subtree of `secrets.yaml` | complete administrator export uses `kdcube config export --include-platform-descriptors` |
 | deployment-scoped bundle props | `self.bundle_prop(...)`, `self.bundle_props` | `await set_bundle_prop(...)` | tenant + project + bundle | configured bundle descriptor authority; Redis is the runtime cache. Recommended cloud mode is writable mounted `bundles.yaml` with `BUNDLES_DESCRIPTOR_PROVIDER=file`. | exported to `bundles.yaml`; `kdcube config export` includes it |
 | deployment-scoped bundle secrets | `await get_secret("b:...")` | `await set_bundle_secret(...)` | tenant + project + bundle | configured secrets provider; in local `secrets-file` mode this is `bundles.secrets.yaml` | exported to `bundles.secrets.yaml` when the provider/export flow can reconstruct them |
 | user-scoped bundle props | `await get_user_prop(...)`, `await get_user_props()` | `await set_user_prop(...)`, `await delete_user_prop(...)` | tenant + project + bundle + user | PostgreSQL `<SCHEMA>.user_bundle_props` | never exported to descriptors or bundle export |
-| user-scoped bundle secrets | `await get_secret("u:...")` | `await set_user_secret(...)`, `await delete_user_secret(...)` | tenant + project + bundle + user | configured secrets provider; in local `secrets-file` mode this is `secrets.yaml` | never exported to descriptors or bundle export |
+| user-scoped bundle secrets | `await get_secret("u:...")` | `await set_user_secret(...)`, `await delete_user_secret(...)` | tenant + project + bundle + user | configured secrets provider; in local `secrets-file` mode this is the `users` subtree of `secrets.yaml` | included only in an explicit super-admin whole descriptor export; omitted from ordinary bundle export |
 
 In the user-scoped rows, `user` means the resolved bundle user scope. It may be
 a KDCube account id in control-plane chat/widgets, but public integrations can
@@ -231,7 +231,7 @@ tool runtimes while the context is bound. For surface-specific examples, see
 
 | If the value belongs to... | Use | Do not use |
 |---|---|---|
-| the environment or platform deployment as a whole | `get_settings()` or `await get_secret("canonical.key")` | `self.bundle_prop(...)` |
+| the environment or platform deployment as a whole | `get_settings()` or `await get_secret("platform.canonical.key")` | `self.bundle_prop(...)` |
 | one bundle for the whole deployment | `self.bundle_prop(...)` or `await get_secret("b:...")` | user props or user secrets |
 | one user inside one bundle | `await get_user_prop(...)` or `await get_secret("u:...")` | `bundles.yaml` or `bundles.secrets.yaml` |
 
@@ -266,9 +266,9 @@ from kdcube_ai_app.apps.chat.sdk.config import (
 
 Use:
 
-- `await get_secret("canonical.key")` for platform/global secrets
+- `await get_secret("platform.canonical.key")` for platform/global secrets
 - `await get_secret("b:group.key")` for current-bundle deployment secrets
-- `await get_secret("b:services.openai.api_key") or await get_secret("services.openai.api_key")`
+- `await get_secret("b:services.openai.api_key") or await get_secret("platform.services.openai.api_key")`
   for service keys when a bundle-specific override should win before the platform fallback
   (see [bundles-secrets-descriptor-README.md](bundles-secrets-descriptor-README.md)
   for the list of overridable `services.*` keys)
@@ -301,7 +301,7 @@ These are deployment-owned values, not bundle-owned values.
 Use:
 
 - `get_settings()` for effective typed runtime settings
-- `await get_secret("canonical.key")` for deployment-scoped platform/global secrets
+- `await get_secret("platform.canonical.key")` for deployment-scoped platform/global secrets
 - `get_plain("...")` only when you intentionally need the raw descriptor file
 
 Typical examples:
@@ -617,33 +617,48 @@ that can be reconstructed from the local runtime:
 - `gateway.yaml`
 - `secrets.yaml`
 
-It never exports:
+For a super-admin whole export, `secrets.yaml` is whole: it includes platform
+keys and the complete `users` subtree containing user-written secrets.
+`bundles.secrets.yaml` contains complete deployment-bundle secrets. The output
+therefore carries credentials for the entire deployment and belongs only with
+a recipient trusted with that deployment.
+
+Within the canonical descriptor shape, `secrets.yaml` has exactly the
+`platform` and `users` roots. Deployment-bundle secrets belong only in
+`bundles.secrets.yaml`; a legacy
+`bundles.<bundle-id>.secrets.<key>` subtree found in `secrets.yaml` is
+bundle-scoped compatibility data that must be migrated, not platform authority.
+Code and authorization must classify that namespace as bundle scope even before
+the physical descriptor is normalized.
+
+It does not export:
 
 - user props
-- user secrets
 
 For a runtime whose selected provider is the live secret authority, an
-administrator can reconstruct an explicit platform/bundle key manifest with
-`kdcube secrets export`. KDCube displays the exact keys through its configured
-browser identity, then a one-use PKCE exchange writes a new
-`secrets.yaml` and `bundles.secrets.yaml` directory. This works for file,
-host-vault, and cloud providers without requiring provider key enumeration.
-See [Manage KDCube Secrets](../service/secrets/secret-management-cli-README.md#owner-only-export).
+administrator can reconstruct selected targets with `kdcube secrets export`
+or the complete provider inventory with `kdcube secrets export --all`. A
+provider-backed `kdcube config export --include-platform-descriptors` performs
+the whole browser-confirmed export and writes both literal secret files beside
+the regular descriptors, including user-written values.
+See [Manage KDCube Secrets](../service/secrets/secret-management-cli-README.md#human-only-export).
 
 So the rule is:
 
 - deployment-scoped bundle config can be ejected back into bundle descriptors
 - platform/global deployment config stays in deployment descriptors and
   deployment secret workflows
-- user-scoped bundle state remains operational data unless the bundle provides
-  its own export path
+- user props remain operational data unless the bundle provides its own export
+  path
+- user-written secrets are included when a super-admin explicitly requests a
+  whole descriptor export
 
 ## What bundle code is allowed to mutate
 
 Supported directly from normal bundle code:
 
 - read platform/global props via `get_settings()`
-- read platform/global secrets via `await get_secret("canonical.key")`
+- read platform/global secrets via `await get_secret("platform.canonical.key")`
 - read deployment-scoped bundle props via `self.bundle_prop(...)`
 - read deployment-scoped bundle secrets via `await get_secret("b:...")`
 - write deployment-scoped bundle props via `await set_bundle_prop(...)`

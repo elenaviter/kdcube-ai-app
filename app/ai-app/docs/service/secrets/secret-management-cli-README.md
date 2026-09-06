@@ -4,7 +4,7 @@ title: "Manage KDCube Secrets"
 summary: "Canonical backend-neutral CLI and API flow for exact secret metadata, read, write, delete, owner export, and storage-backend lifecycle."
 tags: ["service", "secrets", "cli", "delegation", "operations"]
 keywords: ["kdcube secrets", "secret metadata", "secret get", "secret set", "secret delete", "secret export", "backend status", "delegated bearer"]
-updated_at: 2026-09-05
+updated_at: 2026-09-06
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/delegated-management-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/secrets/secrets-service-README.md
@@ -52,7 +52,7 @@ alias. New procedures use `kdcube secrets backend host-vault ...`.
 | `get` | Live Card grant for one exact value-read resource | Writes one admitted value to `--output`; the terminal receives a receipt. |
 | `set` | Live Card grant for one exact value-write resource | Reads the value from a hidden prompt or stdin; returns a receipt. |
 | `delete` | Live Card grant for one exact delete resource | Returns whether an exact value existed as metadata only. |
-| `export` | Fresh browser-confirmed, one-use admin transaction | Writes only the explicitly named manifest into a new private directory. |
+| `export` | Fresh browser-confirmed, one-use admin transaction | Writes an exact manifest or frozen whole-deployment inventory into a new private directory. |
 | `backend status` | Local operator access to the runtime workdir | Reports descriptor-selected storage and migration metadata. |
 | `backend host-vault ...` | Local deployment operator | Prepares, stages, activates, or recovers the local durable backend. |
 
@@ -65,15 +65,17 @@ kdcube.management.secret.value.write
 kdcube.management.secret.delete
 ```
 
-Each operation is granted against one resource:
+Each request names one exact resource:
 
 ```text
-urn:kdcube:management:secret:<tenant>:<project>:<scope>:<bundle-or-_>:<key>
+urn:kdcube:management:secret:<tenant>:<project>:<scope>:<scope-id>:<key>
 ```
 
-`Once` and `Always` use the same Card editor and invocation-policy registry as
-other delegated operations. `Once` remains a Card selection with a one-use
-policy; the server consumes it atomically when it admits the operation.
+The Card can grant one exact resource, a trailing namespace selector, or a
+whole scope. `Once` is valid only for an exact resource. Namespace and whole-
+scope selectors are standing authority and require `Always`. When a broad
+selector admits an exact request, the selector owns the policy while the exact
+resource owns the provider effect and audit record.
 
 ## Select A Deployment
 
@@ -81,7 +83,7 @@ A local command derives the endpoint and coordinates from an initialized
 workdir:
 
 ```bash
-kdcube secrets metadata services.brave.api_key \
+kdcube secrets metadata platform.services.brave.api_key \
   --scope platform \
   --workdir ~/.kdcube/kdcube-runtime/demo-tenant__demo-project
 ```
@@ -92,7 +94,7 @@ defaults saved for another deployment.
 A remote command names the KDCube origin and coordinates explicitly:
 
 ```bash
-kdcube secrets metadata services.brave.api_key \
+kdcube secrets metadata platform.services.brave.api_key \
   --scope platform \
   --endpoint https://runtime.example \
   --tenant demo-tenant \
@@ -142,7 +144,7 @@ commands call the same KDCube management models and transports.
 Metadata returns existence and provider capability:
 
 ```bash
-kdcube secrets metadata services.brave.api_key \
+kdcube secrets metadata platform.services.brave.api_key \
   --scope platform \
   --workdir ~/.kdcube/kdcube-runtime/demo-tenant__demo-project
 ```
@@ -150,7 +152,7 @@ kdcube secrets metadata services.brave.api_key \
 Set uses a hidden value prompt by default:
 
 ```bash
-kdcube secrets set services.brave.api_key \
+kdcube secrets set platform.services.brave.api_key \
   --scope platform \
   --workdir ~/.kdcube/kdcube-runtime/demo-tenant__demo-project
 ```
@@ -162,7 +164,7 @@ explicitly replaced.
 
 ```bash
 umask 077
-kdcube secrets get services.brave.api_key \
+kdcube secrets get platform.services.brave.api_key \
   --scope platform \
   --output ./brave-api-key.txt \
   --workdir ~/.kdcube/kdcube-runtime/demo-tenant__demo-project
@@ -171,7 +173,7 @@ kdcube secrets get services.brave.api_key \
 Delete targets the same logical key:
 
 ```bash
-kdcube secrets delete services.brave.api_key \
+kdcube secrets delete platform.services.brave.api_key \
   --scope platform \
   --workdir ~/.kdcube/kdcube-runtime/demo-tenant__demo-project
 ```
@@ -185,9 +187,18 @@ kdcube secrets metadata connections.oauth_state_secret \
   --workdir ~/.kdcube/kdcube-runtime/demo-tenant__demo-project
 ```
 
-These commands use explicit keys within platform and bundle scopes. Connection
-Hub's per-user connector credentials have their own owner surface, which
-supports presence, replacement, and removal while keeping values concealed.
+User and user-bundle keys use the same provider-neutral surface:
+
+```bash
+kdcube secrets metadata provider.refresh_token \
+  --scope user \
+  --user-id USER_ID \
+  --bundle-id connection-hub@1-0 \
+  --workdir ~/.kdcube/kdcube-runtime/demo-tenant__demo-project
+```
+
+Platform keys always begin with `platform.`. Bundle and user keys are relative
+to their explicit scope. Unqualified legacy platform names are rejected.
 
 ## Demand-Driven Consent
 
@@ -215,29 +226,154 @@ agent-oriented mode: the agent presents the returned URL to the user, then
 retries with the same explicit `--invocation-id`. A new invocation id is a new
 operation attempt.
 
-## Owner-Only Export
+## Human-Only Export
 
 Descriptor export derives authority from a fresh, exact-manifest browser
 transaction, independently of delegated bearers and Card grants:
 
 ```bash
 kdcube secrets export \
-  --platform-key services.brave.api_key \
+  --platform-key platform.services.brave.api_key \
   --bundle-key connection-hub@1-0=connections.oauth_state_secret \
-  --output-directory ./kdcube-secret-export-20260905 \
+  --user-key USER_ID=provider.token \
+  --user-bundle-key USER_ID/connection-hub@1-0=provider.refresh_token \
+  --output-directory ./kdcube-secret-export \
+  --endpoint https://runtime.example \
+  --tenant demo-tenant \
+  --project demo-project
+```
+
+Whole export uses the same literal pair and includes every current platform,
+bundle, user, and user-bundle value:
+
+```bash
+kdcube secrets export \
+  --all \
+  --output-directory ./kdcube-secret-export \
   --endpoint https://runtime.example \
   --tenant demo-tenant \
   --project demo-project
 ```
 
 The KDCube page authenticates through the authority configured by that
-deployment, displays the exact keys and digest, and issues one PKCE-bound code
-after explicit approval. The code can be exchanged once. The destination must
-be new and receives canonical `secrets.yaml` and `bundles.secrets.yaml` files.
+deployment. For exact export it displays the requested manifest and digest.
+For whole export KDCube first freezes the current provider inventory, then
+returns only its count and digest to the unauthenticated CLI start request.
+Inventory names appear only after the browser has an authenticated KDCube
+administrator session; the CLI receives them with the values only during the
+approved one-use exchange and verifies the frozen digest again. Explicit
+approval issues one PKCE-bound code. The code can be exchanged once. The
+destination must be new and receives canonical `secrets.yaml` and
+`bundles.secrets.yaml` files.
 
 This is the explicit path back to descriptors after a durable backend becomes
 authoritative. Ordinary `set` and `delete` operations update the selected
 provider; retained bootstrap descriptor files remain rollback snapshots.
+
+Export is independent of delegated bearers and Cards. It proves a current
+administrator browser session plus the explicit one-use decision required by
+the deployment's configured assurance adapter. The resulting plaintext files
+must be handled as complete administrator credentials.
+
+## Complete Configuration Export And Import
+
+`config export` keeps the private pair beside the ordinary descriptors. In
+`secrets-file` mode it copies the current files. With Host Vault or another
+provider it starts the browser-confirmed whole export automatically:
+
+```bash
+kdcube config export \
+  --workdir ~/.kdcube/kdcube-runtime/demo-tenant__demo-project \
+  --out-dir ./portable-descriptors \
+  --include-platform-descriptors
+```
+
+The output directory contains the ordinary descriptor set plus the literal
+`secrets.yaml` and `bundles.secrets.yaml`. Whole means all current platform,
+bundle, user, and user-bundle values. On POSIX, the directory is owner-only and
+both secret files are `0600`.
+
+A Host Vault identity and endpoint belong to one machine. Therefore a portable
+full export writes `assembly.yaml` with a `secrets-file`/ephemeral bootstrap
+shape and clears the source machine's vault address, certificate name, and
+identity path. The secret values remain in the ordinary private pair.
+
+Preview an import into an initialized runtime:
+
+```bash
+kdcube config import \
+  --workdir ~/.kdcube/kdcube-runtime/demo-tenant__demo-project \
+  --descriptors-location ./portable-descriptors \
+  --include-platform-descriptors \
+  --dry-run
+```
+
+For a file-backed target, rerun without `--dry-run`. For a provider-backed
+target, confirm after reviewing the dry run:
+
+```bash
+kdcube config import \
+  --workdir ~/.kdcube/kdcube-runtime/demo-tenant__demo-project \
+  --descriptors-location ./portable-descriptors \
+  --include-platform-descriptors \
+  --yes
+```
+
+The hidden prompt accepts the Card-bound delegated bearer. A trusted agent can
+use `--credential-stdin`; its Card needs write authority for every imported
+target, normally the three whole-deployment selectors shown in Connection
+Hub's secret-resource editor.
+
+Provider-backed import preserves the target deployment's existing `secrets`
+backend configuration and machine identity. It upserts every value present in
+the pair through exact management operations, then applies ordinary
+descriptors. Omitted keys remain unchanged; deletion is always explicit. If a
+later target is denied, the result reports how many earlier idempotent upserts
+completed so the operator can grant, correct, and rerun safely.
+
+For a human whose reusable session is already held by the Connection Hub CLI,
+restore the values without extracting that bearer, then apply the remaining
+ordinary descriptors while preserving those values:
+
+```bash
+connection-hub secrets host import \
+  --input-directory ./portable-descriptors \
+  --dry-run
+connection-hub secrets host import \
+  --input-directory ./portable-descriptors \
+  --yes
+
+kdcube config import \
+  --workdir ~/.kdcube/kdcube-runtime/demo-tenant__demo-project \
+  --descriptors-location ./portable-descriptors \
+  --include-platform-descriptors \
+  --skip-secret-values \
+  --dry-run
+kdcube config import \
+  --workdir ~/.kdcube/kdcube-runtime/demo-tenant__demo-project \
+  --descriptors-location ./portable-descriptors \
+  --include-platform-descriptors \
+  --skip-secret-values
+```
+
+`--skip-secret-values` preserves the target's current provider values and
+backend identity. It exists for this split human flow; a trusted agent with a
+delegated bearer normally uses the single provider-backed `kdcube config
+import --yes` command above.
+
+The lower-level equivalent is:
+
+```bash
+kdcube secrets import \
+  --input-directory ./portable-descriptors \
+  --workdir ~/.kdcube/kdcube-runtime/demo-tenant__demo-project \
+  --dry-run
+
+kdcube secrets import \
+  --input-directory ./portable-descriptors \
+  --workdir ~/.kdcube/kdcube-runtime/demo-tenant__demo-project \
+  --yes
+```
 
 ## Reusable Management Library
 
@@ -261,7 +397,7 @@ target = ManagementTarget.create(
 request = ManagementRequest.secret_metadata(
     target,
     scope="platform",
-    key="services.brave.api_key",
+    key="platform.services.brave.api_key",
 )
 client = ManagementClient(transport=HttpxManagementTransport())
 ```
@@ -273,6 +409,23 @@ secret-safe projection, private writers, and browser export. Connection Hub
 uses this boundary for its native-store OAuth session and selected-host UX.
 
 ## Storage Status And Migration
+
+Migrate an existing file pair before switching runtime code to canonical
+identities:
+
+```bash
+kdcube secrets namespace migrate \
+  --workdir ~/.kdcube/kdcube-runtime/demo-tenant__demo-project \
+  --dry-run
+
+kdcube secrets namespace migrate \
+  --workdir ~/.kdcube/kdcube-runtime/demo-tenant__demo-project \
+  --yes
+```
+
+The command moves legacy platform roots below `platform`, moves misplaced
+bundle values to `bundles.secrets.yaml`, preserves `users`, and refuses any
+conflicting duplicate without writing. It reports keys and counts only.
 
 Inspect a local deployment through secret-free metadata:
 

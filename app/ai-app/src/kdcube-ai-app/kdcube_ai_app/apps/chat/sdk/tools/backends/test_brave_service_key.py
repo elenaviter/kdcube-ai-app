@@ -27,7 +27,11 @@ class TestBraveServiceKeyResolution:
     @pytest.mark.asyncio
     async def test_async_factory_uses_global_secret_as_fallback(self, monkeypatch):
         async def _fake_get_secret(key, default=None, **kwargs):
-            return "sk-global-brave" if key == "services.brave.api_key" else default
+            return (
+                "sk-global-brave"
+                if key == "platform.services.brave.api_key"
+                else default
+            )
 
         monkeypatch.setattr(search_mod, "get_secret", _fake_get_secret)
         backend = await search_mod.get_search_backend("brave")

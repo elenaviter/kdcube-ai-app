@@ -22,10 +22,10 @@ async def build_model_service(
     selected = workflow.ensure_role(role)
     provider = str(selected.get("provider") or "").strip()
     credential = {
-        "openai": ("openai_api_key", "services.openai.api_key"),
-        "anthropic": ("claude_api_key", "services.anthropic.api_key"),
-        "google": ("google_api_key", "services.google.api_key"),
-        "openrouter": ("openrouter_api_key", "services.openrouter.api_key"),
+        "openai": ("openai_api_key", "platform.services.openai.api_key"),
+        "anthropic": ("claude_api_key", "platform.services.anthropic.api_key"),
+        "google": ("google_api_key", "platform.services.google.api_key"),
+        "openrouter": ("openrouter_api_key", "platform.services.openrouter.api_key"),
     }.get(provider)
     if not check_only and credential and not getattr(workflow, credential[0], None):
         raise RuntimeError(f"secret {credential[1]!r} is not set in secrets.yaml")
