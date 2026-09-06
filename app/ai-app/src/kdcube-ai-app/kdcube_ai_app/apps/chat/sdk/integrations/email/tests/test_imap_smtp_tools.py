@@ -143,3 +143,35 @@ def test_create_draft_rejects_bad_attachments_before_touching_imap(monkeypatch):
     ))
     assert out["ok"] is False and out["error"]["code"] == "attachment_load_failed"
     assert not called
+
+
+def test_login_falls_back_to_the_account_email_when_the_credential_holds_only_the_secret(monkeypatch):
+    """The hub connect form stores the login as an account attribute and the
+    app password as the credential, so a record can hold the secret alone.
+    The verdict's account email is the login then (the live iCloud failure
+    "missing username or app-specific password" of 2026-09-07)."""
+    credential = _Credential(raw_credential={
+        "provider_id": "icloud_mail", "connector_app_id": "app_password",
+        "claims": ["email:read", "email:send"], "app_password": "abcd-efgh-ijkl-mnop",
+    })
+    credential.email = "elena.viter@icloud.com"  # type: ignore[attr-defined]
+    _bind_credential(monkeypatch, credential)
+    seen = {}
+
+    async def fake_fetch(**kwargs):
+        seen["creds"] = await kwargs["store"].get_tokens_async("icloud_1")
+        seen["account_email"] = kwargs["account"]["email"]
+        return {"ok": True, "messages": []}
+
+    monkeypatch.setattr(imap_smtp_tools, "fetch_icloud_messages", fake_fetch)
+    out = asyncio.run(_tools().search(query="newer_than:1d", max_results=1, account_id="icloud_1"))
+    assert out["ok"] is True
+    assert seen["creds"] == {"username": "elena.viter@icloud.com", "password": "abcd-efgh-ijkl-mnop"}
+    assert seen["account_email"] == "elena.viter@icloud.com"
+
+    # a credential that carries its own login keeps it
+    credential = _Credential(raw_credential={"username": "other.login", "app_password": "x"})
+    credential.email = "elena.viter@icloud.com"  # type: ignore[attr-defined]
+    _bind_credential(monkeypatch, credential)
+    asyncio.run(_tools().search(query="", max_results=1, account_id="icloud_1"))
+    assert seen["creds"]["username"] == "other.login"

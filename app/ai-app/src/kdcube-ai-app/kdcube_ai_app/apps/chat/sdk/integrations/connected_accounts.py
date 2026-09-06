@@ -68,6 +68,10 @@ class ConnectedAccountCredential:
     access_token: str = ""
     raw_credential: dict[str, Any] = field(default_factory=dict)
     account_id: str = ""
+    # The connected account's login identity (its email), an account
+    # attribute the hub verdict carries beside the credential. Password-kind
+    # transports need it: the secret alone cannot log in.
+    email: str = ""
     provider_id: str = ""
     connector_app_id: str = ""
     claim: str = ""
@@ -528,6 +532,7 @@ async def resolve_connected_account_claim(
         ok=True,
         access_token=_clean(raw.get("access_token") or raw.get("token")),
         raw_credential=raw,
+        email=_clean(getattr(result, "account_email", "")),
         account_id=result.account_id,
         provider_id=result.provider_id,
         connector_app_id=result.connector_app_id,

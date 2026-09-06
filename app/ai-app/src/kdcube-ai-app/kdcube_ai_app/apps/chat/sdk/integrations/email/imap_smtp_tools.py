@@ -89,14 +89,20 @@ def _error(*, code: str, message: str, where: str, ret: Any = None) -> dict[str,
 
 
 class _HubTokenStore:
-    """The adapter's ``store`` contract over one hub credential."""
+    """The adapter's ``store`` contract over one hub credential.
 
-    def __init__(self, raw_credential: Mapping[str, Any]):
+    ``login`` is the connected account's email from the hub verdict: the
+    connect form stores the login as an account attribute, so a credential
+    record may hold the app password alone. Without this fallback every
+    IMAP/SMTP call on such an account failed with "missing username"."""
+
+    def __init__(self, raw_credential: Mapping[str, Any], *, login: str = ""):
         self._raw = dict(raw_credential or {})
+        self._login = _clean(login)
 
     async def get_tokens_async(self, account_id: str) -> dict[str, Any]:
         return {
-            "username": _clean(self._raw.get("username") or self._raw.get("email")),
+            "username": _clean(self._raw.get("username") or self._raw.get("email")) or self._login,
             "password": _clean(
                 self._raw.get("app_password")
                 or self._raw.get("password")
@@ -176,12 +182,13 @@ class ImapSmtpMailTools:
         raw = dict(getattr(credential, "raw_credential", None) or {})
         # The adapter reads host overrides from the account mapping; the
         # instance's catalog settings ride there so no host is hard-coded.
+        login = _clean(getattr(credential, "email", ""))
         account = {
             "account_id": _clean(getattr(credential, "account_id", "")),
-            "email": _clean(raw.get("email") or raw.get("username")),
+            "email": _clean(raw.get("email") or raw.get("username")) or login,
             **{key: value for key, value in self.settings.items() if key != "drafts_mailbox"},
         }
-        return _HubTokenStore(raw), account
+        return _HubTokenStore(raw, login=login), account
 
     async def search(
         self, *, query: str = "", max_results: int = 5, account_id: str = ""
