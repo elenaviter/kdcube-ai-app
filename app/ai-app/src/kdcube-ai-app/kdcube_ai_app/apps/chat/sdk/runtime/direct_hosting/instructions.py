@@ -184,10 +184,18 @@ _DIRECT_WORKSPACE_FILES = """
 """.strip()
 
 
-def _web_search_guide(tool_name: str) -> str:
+def _web_research_guide(search_tool: str, fetch_tool: str | None = None) -> str:
+    fetch = str(fetch_tool or "").strip()
+    inspect_line = (
+        f"- After search, use `{fetch}` to inspect at least one selected source page before "
+        "treating its claims as research evidence."
+        if fetch
+        else ""
+    )
     return f"""
-[WEB RESEARCH - {tool_name}]
-- Use `{tool_name}` when the task needs current public information. Preserve the returned source URLs and ground factual claims in the results you actually inspected.
+[WEB RESEARCH - {search_tool}{f' + {fetch}' if fetch else ''}]
+- Use `{search_tool}` when the task needs current public information. Preserve the returned source URLs and ground factual claims in the results you actually inspected.
+{inspect_line}
 - Search is a governed capability with configured egress policy. A denied domain or failed request is evidence to report or work around within the allowed source set, never a reason to bypass the tool.
 """.strip()
 
@@ -216,6 +224,7 @@ def compose_provider_native_instructions(
     exec_tool: str | None = None,
     rendering_tools: Sequence[str] = (),
     web_search_tool: str | None = None,
+    web_fetch_tool: str | None = None,
     skill_instructions: str = "",
     native_skill_ids: Sequence[str] = (),
 ) -> str:
@@ -234,7 +243,7 @@ def compose_provider_native_instructions(
     parts = [_DIRECT_WORKSPACE_FILES, workspace_agent_conduct_guards()]
     web = str(web_search_tool or "").strip()
     if web:
-        parts.append(_web_search_guide(web))
+        parts.append(_web_research_guide(web, web_fetch_tool))
     executable = str(exec_tool or "").strip()
     if executable:
         parts.append(exec_capability_guide(exec_tool=executable, pull_tool=""))

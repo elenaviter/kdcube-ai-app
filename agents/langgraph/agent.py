@@ -73,6 +73,7 @@ from kdcube_ai_app.apps.chat.sdk.skills.skills_registry import (  # noqa: E402
 
 ROLE = "standalone.langgraph.answer"
 WEB_SEARCH_TOOL_ID = "web_search"
+WEB_FETCH_TOOL_ID = "web_fetch"
 EXEC_TOOL_ID = "execute_python"
 RENDER_TOOL_IDS = ("write_pdf", "write_docx", "write_pptx")
 
@@ -132,8 +133,14 @@ async def open_postgres_checkpointer(settings: Any, database_url: str):
         await stack.aclose()
 
 
-async def stream_turn(graph: Any, prompt: str, run_config: dict[str, Any], comm: ChatCommunicator) -> str:
+async def stream_turn(
+    graph: Any,
+    prompt: str,
+    run_config: dict[str, Any],
+    comm: ChatCommunicator,
+) -> tuple[str, set[str]]:
     index = 0
+    called_tools: set[str] = set()
     await comm.start(message=prompt)
     async for event in graph.astream_events(
         {"messages": [{"role": "user", "content": prompt}]},
@@ -152,6 +159,7 @@ async def stream_turn(graph: Any, prompt: str, run_config: dict[str, Any], comm:
                 await comm.delta(text=text, index=index, marker="answer", agent="langgraph")
                 index += 1
         elif kind == "on_tool_start":
+            called_tools.add(name)
             await comm.step(
                 step=f"tool.{name}.{str(event.get('run_id') or '')[:8]}",
                 status="running",
@@ -170,7 +178,7 @@ async def stream_turn(graph: Any, prompt: str, run_config: dict[str, Any], comm:
     snapshot = await graph.aget_state(run_config)
     messages = list((snapshot.values or {}).get("messages") or [])
     answer = _content_text(getattr(messages[-1], "content", "")) if messages else ""
-    return answer
+    return answer, called_tools
 
 
 async def host_demo_outputs(
@@ -229,7 +237,7 @@ async def run_one_turn(
     service: Any,
     harness: DirectAgentHarness,
     attachment_source: Path | None = None,
-) -> tuple[str, str, Any]:
+) -> tuple[str, str, set[str], Any]:
     turn_id = f"turn_{number:02d}_{uuid.uuid4().hex[:8]}"
     workspace = DirectTurnWorkspace(run_root=run_root, turn_id=turn_id)
     async with harness.turn(conversation_id=conversation_id, turn_id=turn_id) as turn:
@@ -253,7 +261,7 @@ async def run_one_turn(
             build_tools(runtime, enabled_ids=enabled_tools),
             instructions=instructions,
         )
-        answer = await stream_turn(graph, prompt, run_config, turn.comm)
+        answer, called_tools = await stream_turn(graph, prompt, run_config, turn.comm)
         await host_demo_outputs(turn=turn, workspace=workspace)
         await turn.persist_workspace(
             outdir=workspace.runtime_outdir,
@@ -262,7 +270,7 @@ async def run_one_turn(
         )
         await turn.complete(prompt=prompt, final_answer=answer)
     print(f"[accounting] Redis turn cache contains {len(turn.accounting_events)} event(s)")
-    return answer, turn_id, turn
+    return answer, turn_id, called_tools, turn
 
 
 async def main_async(args: argparse.Namespace) -> None:
@@ -295,7 +303,7 @@ async def main_async(args: argparse.Namespace) -> None:
     tool_config = configured_tools(config)
     require_supported_tools(
         tool_config,
-        supported={WEB_SEARCH_TOOL_ID, EXEC_TOOL_ID, *RENDER_TOOL_IDS},
+        supported={WEB_SEARCH_TOOL_ID, WEB_FETCH_TOOL_ID, EXEC_TOOL_ID, *RENDER_TOOL_IDS},
         adapter="LangGraph direct example",
     )
     unsupported_runtimes = sorted(
@@ -312,6 +320,8 @@ async def main_async(args: argparse.Namespace) -> None:
     enabled_tools = {tool.id for tool in tool_config if tool.enabled}
     if WEB_SEARCH_TOOL_ID not in enabled_tools:
         raise RuntimeError(f"the demonstration requires {WEB_SEARCH_TOOL_ID}")
+    if WEB_FETCH_TOOL_ID not in enabled_tools:
+        raise RuntimeError(f"the demonstration requires {WEB_FETCH_TOOL_ID}")
     if EXEC_TOOL_ID not in enabled_tools:
         raise RuntimeError(f"the demonstration requires {EXEC_TOOL_ID}")
     if "write_pdf" not in enabled_tools:
@@ -327,7 +337,8 @@ async def main_async(args: argparse.Namespace) -> None:
         config,
         default_profile=PROVIDER_NATIVE_WORKSPACE_FILES_PROFILE,
         fallback_additional_instructions=(
-            "You are a research agent. Use web_search for current facts and preserve source URLs. "
+            "You are a research agent. Use web_search for current facts, inspect selected sources "
+            "with web_fetch, and preserve source URLs. "
             "Author Python for structured artifacts, execute it with execute_python, and use the "
             "document-rendering tools for polished PDF, DOCX, and PPTX deliverables."
         ),
@@ -341,6 +352,9 @@ async def main_async(args: argparse.Namespace) -> None:
         web_search_tool=(
             WEB_SEARCH_TOOL_ID if WEB_SEARCH_TOOL_ID in enabled_tools else None
         ),
+        web_fetch_tool=(
+            WEB_FETCH_TOOL_ID if WEB_FETCH_TOOL_ID in enabled_tools else None
+        ),
         skill_instructions=skill_block,
     )
     print("mode: standalone SDK process")
@@ -352,7 +366,7 @@ async def main_async(args: argparse.Namespace) -> None:
         + ("configured" if instruction_selection.additional_instructions else "(none)")
     )
     print(
-        "web search: KDCube Web Search "
+        "web research: KDCube Web Search and Web Fetch "
         f"({config_path}#agent.tools[id={WEB_SEARCH_TOOL_ID}].settings)"
     )
     print(f"skills: {', '.join(skill_config.enabled) or '(none)'}")
@@ -435,9 +449,10 @@ async def main_async(args: argparse.Namespace) -> None:
     )
     prompts = [
         (
-            f"The attached research request asks about {topic}. Search the web for recent, "
-            "concrete information about it. "
-            "Return five sourced findings and retain them for the next turn."
+            f"The attached research request asks about {topic}. Call web_search for recent, "
+            "concrete information, then call web_fetch on at least one selected result URL. "
+            "Return five sourced findings grounded in the inspected page and retain them for "
+            "the next turn."
         ),
         (
             "Use the findings from the previous turn. Author complete Python and call "
@@ -451,12 +466,13 @@ async def main_async(args: argparse.Namespace) -> None:
         ),
     ]
     turn_ids: list[str] = []
+    called_tools_by_turn: list[set[str]] = []
     completed_turns: list[Any] = []
     async with harness:
         async with open_postgres_checkpointer(settings, harness_config.postgres_url) as checkpointer:
             print("infrastructure: Redis, Postgres conversation/checkpoint tables, and storage ready")
             for number, prompt in enumerate(prompts, start=1):
-                answer, turn_id, turn = await run_one_turn(
+                answer, turn_id, called_tools, turn = await run_one_turn(
                     prompt=prompt,
                     number=number,
                     conversation_id=conversation_id,
@@ -472,8 +488,18 @@ async def main_async(args: argparse.Namespace) -> None:
                     attachment_source=request_path if number == 1 else None,
                 )
                 turn_ids.append(turn_id)
+                called_tools_by_turn.append(called_tools)
                 completed_turns.append(turn)
                 print(f"\n[turn {number} answer]\n{answer}\n")
+            required_research = {WEB_SEARCH_TOOL_ID, WEB_FETCH_TOOL_ID}
+            missing_research = sorted(
+                required_research.difference(called_tools_by_turn[0])
+            )
+            if missing_research:
+                raise RuntimeError(
+                    "the research turn completed without required tools: "
+                    + ", ".join(missing_research)
+                )
         records = await harness.verify_conversation(
             conversation_id=conversation_id,
             expected_turn_ids=turn_ids,

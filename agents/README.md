@@ -2,8 +2,8 @@
 id: repo:kdcube-ai-app/agents/README.md
 title: "Add the KDCube Harness to Your Agent"
 summary: "Keep a LangGraph or Claude Code agent core, or start with KDCube Native ReAct, and add durable conversations, tools, skills, isolated code execution, rendering, and usage evidence."
-tags: ["agents", "harness", "native-react", "langgraph", "claude-code", "quickstart", "web-search"]
-keywords: ["agent examples", "DirectAgentHarness", "KDCube Web Search", "Redis", "Postgres", "PDF", "XLSX"]
+tags: ["agents", "harness", "native-react", "langgraph", "claude-code", "quickstart", "web-search", "web-fetch"]
+keywords: ["agent examples", "DirectAgentHarness", "KDCube Web Search", "KDCube Web Fetch", "Redis", "Postgres", "PDF", "XLSX"]
 updated_at: 2026-09-07
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md
@@ -42,9 +42,9 @@ Choose the starting point that matches what you have:
 
 The demonstration makes one agent do all of this in observable steps:
 
-- continue a conversation from Postgres and search an earlier conversation;
+- continue a conversation and search earlier conversations;
 - receive an attachment and retain generated files in configured storage;
-- use YAML-selected tools, skills, instructions, and Web Search policy;
+- research with YAML-selected [KDCube Web Search and Web Fetch](../mcp/web-search/README.md), skills, and instructions;
 - author Python and run it in an isolated Docker workspace;
 - turn HTML or Markdown into PDF, DOCX, and PPTX with reusable renderers;
 - stream events while recording model usage and cost evidence; and
@@ -75,6 +75,19 @@ Each starting-point link opens a self-contained runner, requirements file,
 agent YAML, platform descriptors, skill, Redis/Postgres Compose file, and exact
 commands.
 
+No virtual environment is bundled. Each runner's `README.md` starts by creating
+its own `.venv` and installing that directory's `requirements.txt`. The default
+research-and-report demonstration also requires two explicit preparations:
+
+- install Playwright Chromium with `.venv/bin/python -m playwright install chromium`
+  because the PDF/PPTX renderers use it; and
+- build `py-code-exec:latest` with the documented `docker build` command because
+  model-authored Python runs in the isolated executor image.
+
+Both commands are included in every runner's copyable setup block. If you
+disable those tool rows and replace the default scenario, those corresponding
+prerequisites are not used.
+
 Every runner receives its caller and conversation explicitly:
 
 ```yaml
@@ -95,15 +108,34 @@ accounting lineage, rather than replacing the durable conversation key. The
 values can also be overridden with `--user-id`, `--conversation-id`, and
 `--session-id`.
 
-The built-in two-turn demonstration does this:
+From the selected agent directory, run:
+
+```bash
+.venv/bin/python agent.py \
+  --user-id alice \
+  --conversation-id release-research \
+  --session-id terminal-1
+```
+
+This command replaces the three values under `agent.input` for that process.
+Running it again continues `release-research` for `alice`; changing the user or
+conversation selects another durable history. Changing only `session-id`
+records a different calling/accounting session while keeping the same durable
+conversation.
+
+The built-in two-turn demonstration is illustrated by the **research and report**
+flow below:
 
 ```text
 research request
       |
       v
-KDCube Web Search -> retained conversation context
-      |
-      v
+KDCube Web Search -> KDCube Web Fetch -> inspected source evidence
+                                           |
+                                           v
+                              retained conversation context
+                                           |
+                                           v
 agent authors Python -> isolated executor -> XLSX + HTML
                                              |
                                              v
@@ -132,8 +164,10 @@ teaching. See
 
 Start with one agent link above. The complete shared command sequence is in
 [Run the Agent Harness from Python](../app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md).
-The standalone [Web Search MCP example](../mcp/web-search/README.md) is also
-available.
+All three runners use the implementation surfaced by the
+[Web Search and Web Fetch MCP package](../mcp/web-search/README.md). Native and
+LangGraph bind its SDK functions in-process; Claude starts that package's
+public launcher as a local stdio MCP server.
 
 ## Serve the same agent to users
 

@@ -27,6 +27,9 @@ agent:
           ssrf_guard: true
         server:
           log_level: WARNING
+    - id: web_tools.web_fetch
+      enabled: true
+      runtime: local
     - id: exec_tools.execute_code_python
       enabled: true
       runtime: docker

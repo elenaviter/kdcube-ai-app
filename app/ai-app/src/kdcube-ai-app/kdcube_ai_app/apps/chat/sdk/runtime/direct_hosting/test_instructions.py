@@ -107,6 +107,7 @@ def test_provider_native_profile_teaches_direct_workspace_and_capabilities() -> 
         exec_tool="execute_python",
         rendering_tools=("write_pdf", "write_docx"),
         web_search_tool="web_search",
+        web_fetch_tool="web_fetch",
         skill_instructions="[ACTIVE SKILLS]\nFollow the research brief skill.",
     )
 
@@ -116,7 +117,8 @@ def test_provider_native_profile_teaches_direct_workspace_and_capabilities() -> 
     assert "already materialized in the current-turn workspace" in text
     assert "pull_files" not in text
     assert "[DOCUMENT RENDERING - `write_pdf`, `write_docx`]" in text
-    assert "[WEB RESEARCH - web_search]" in text
+    assert "[WEB RESEARCH - web_search + web_fetch]" in text
+    assert "use `web_fetch` to inspect at least one selected source page" in text
     assert "[ACTIVE SKILLS]" in text
     assert "[START AGENT ADMIN CUSTOMIZATION - HARD OVERRIDE]" in text
     assert text.endswith("[END AGENT ADMIN CUSTOMIZATION]")

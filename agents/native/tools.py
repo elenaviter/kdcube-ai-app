@@ -43,8 +43,30 @@ async def web_search(query: str, max_results: int = 5) -> dict[str, Any]:
     return {"ok": True, "query": query, "results": _rows(hits)}
 
 
+async def web_fetch(
+    url: str,
+    objective: str = "",
+    max_content_length: int = 12000,
+) -> dict[str, Any]:
+    """Fetch one selected web result through KDCube's governed Web Fetch."""
+    try:
+        fetched = await web_search_server.web_fetch(
+            urls=[url],
+            objective=objective or None,
+            refinement="none",
+            max_content_length=max(1000, min(int(max_content_length or 12000), 50000)),
+            include_binary_base64=False,
+            use_archive_fallback=False,
+            use_llm=False,
+        )
+    except Exception as exc:  # Network/provider failures are tool evidence.
+        return {"ok": False, "url": url, "error": str(exc), "result": None}
+    return {"ok": True, "url": url, "result": fetched.get(url)}
+
+
 class _Tools:
     web_search = staticmethod(web_search)
+    web_fetch = staticmethod(web_fetch)
 
 
 tools = _Tools()
@@ -56,5 +78,10 @@ def list_tools() -> dict[str, dict[str, Any]]:
             "callable": web_search,
             "description": web_search.__doc__,
             "returns": "A structured list of web results.",
+        },
+        "web_fetch": {
+            "callable": web_fetch,
+            "description": web_fetch.__doc__,
+            "returns": "The governed content result for one selected URL.",
         },
     }

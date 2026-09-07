@@ -39,6 +39,11 @@ WEB_SEARCH_TOOL_IDS = {
     "langgraph": "web_search",
     "claude": "mcp__kdcube_web_search__web_search",
 }
+WEB_FETCH_TOOL_IDS = {
+    "native": "web_tools.web_fetch",
+    "langgraph": "web_fetch",
+    "claude": "mcp__kdcube_web_search__web_fetch",
+}
 EXEC_TOOL_IDS = {
     "native": "exec_tools.execute_code_python",
     "langgraph": "execute_python",
@@ -83,8 +88,13 @@ def test_agents_root_explains_the_demonstration_and_why_to_run_it() -> None:
     assert "it does not require a running KDCube server" in source
     assert "## Why use the harness?" in source
     assert "## How do I try it?" in source
-    assert "continue a conversation from Postgres and search an earlier conversation" in source
-    assert "YAML-selected tools, skills, instructions, and Web Search policy" in source
+    assert "continue a conversation and search earlier conversations" in source
+    assert "KDCube Web Search and Web Fetch" in source
+    assert "No virtual environment is bundled" in source
+    assert ".venv/bin/python -m playwright install chromium" in source
+    assert "py-code-exec:latest" in source
+    assert "research and report" in source
+    assert "--conversation-id release-research" in source
     assert "isolated Docker workspace" in source
     assert "receive an attachment and retain generated files" in source
     for adapter in ADAPTERS:
@@ -130,6 +140,11 @@ def test_every_agents_readme_answers_the_four_first_use_questions() -> None:
         positions = [source.find(heading) for heading in README_SECTIONS]
         assert all(position >= 0 for position in positions), path
         assert positions == sorted(positions), path
+        assert "python3.11 -m venv .venv" in source, path
+        assert ".venv/bin/python -m pip install -r requirements.txt" in source, path
+        assert ".venv/bin/python -m playwright install chromium" in source, path
+        assert "Dockerfile_Exec" in source, path
+        assert ".venv/bin/python agent.py --infra-check" in source, path
 
 
 @pytest.mark.parametrize("adapter", ADAPTERS)
@@ -173,6 +188,7 @@ def test_each_example_owns_its_runnable_contract(adapter: str) -> None:
     assert agent["tools"]
     assert all(str(item.get("id") or "").strip() for item in agent["tools"])
     configured_by_id = {item["id"]: item for item in agent["tools"]}
+    assert configured_by_id[WEB_FETCH_TOOL_IDS[adapter]]["runtime"] == "local"
     assert configured_by_id[EXEC_TOOL_IDS[adapter]]["runtime"] == "docker"
     assert RENDER_TOOL_IDS[adapter].issubset(configured_by_id)
     assert all(
@@ -203,7 +219,7 @@ def test_each_example_owns_its_runnable_contract(adapter: str) -> None:
     assert "python-pptx" in requirements
 
 
-def test_every_adapter_uses_kdcube_web_search() -> None:
+def test_every_adapter_uses_kdcube_web_search_and_fetch() -> None:
     native_tools = (AGENTS_ROOT / "native" / "tools.py").read_text(encoding="utf-8")
     langgraph_tools = (AGENTS_ROOT / "langgraph" / "tools.py").read_text(
         encoding="utf-8"
@@ -216,6 +232,7 @@ def test_every_adapter_uses_kdcube_web_search() -> None:
     for source in (native_tools, langgraph_tools):
         assert "from ddgs import DDGS" not in source
         assert "web_search_server.web_search(" in source
+        assert "web_search_server.web_fetch(" in source
 
     claude_tools = {
         item["id"]
@@ -226,9 +243,9 @@ def test_every_adapter_uses_kdcube_web_search() -> None:
     assert "WebFetch" not in claude_tools
     assert "Bash" not in claude_tools
     assert "mcp__kdcube_web_search__web_search" in claude_tools
-    assert "mcp__kdcube_web_search__web_fetch" not in claude_tools
+    assert "mcp__kdcube_web_search__web_fetch" in claude_tools
     assert "mcp__kdcube_web_search__allowlist_status" not in claude_tools
-    assert "kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search.web_search_server" in claude_source
+    assert 'REPO_ROOT / "mcp" / "web-search" / "server.py"' in claude_source
     assert 'denied_tools=("WebSearch", "WebFetch", "Bash")' in claude_source
 
 
@@ -254,6 +271,35 @@ async def test_native_web_search_adapter_calls_kdcube_tool(monkeypatch) -> None:
         n=3,
         fetch_content=False,
         include_binary_base64=False,
+        use_llm=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_native_web_fetch_adapter_calls_kdcube_tool(monkeypatch) -> None:
+    from agents.native import tools as native_tools
+
+    fetch = AsyncMock(return_value={"https://python.org/": {"text": "Python"}})
+    monkeypatch.setattr(native_tools.web_search_server, "web_fetch", fetch)
+
+    result = await native_tools.web_fetch(
+        "https://python.org/",
+        objective="verify release",
+        max_content_length=4000,
+    )
+
+    assert result == {
+        "ok": True,
+        "url": "https://python.org/",
+        "result": {"text": "Python"},
+    }
+    fetch.assert_awaited_once_with(
+        urls=["https://python.org/"],
+        objective="verify release",
+        refinement="none",
+        max_content_length=4000,
+        include_binary_base64=False,
+        use_archive_fallback=False,
         use_llm=False,
     )
 
@@ -290,20 +336,84 @@ async def test_langgraph_web_search_adapter_calls_kdcube_tool(
 
 
 @pytest.mark.asyncio
-async def test_claude_web_search_mcp_starts_with_operator_policy() -> None:
+async def test_langgraph_web_fetch_adapter_calls_kdcube_tool(monkeypatch) -> None:
+    from agents.langgraph import tools as langgraph_tools
+
+    fetch = AsyncMock(return_value={"https://python.org/": {"text": "Python"}})
+    monkeypatch.setattr(langgraph_tools.web_search_server, "web_fetch", fetch)
+    tools = langgraph_tools.build_tools(None, enabled_ids={"web_fetch"})
+
+    result = json.loads(
+        await tools[0].ainvoke(
+            {
+                "url": "https://python.org/",
+                "objective": "verify release",
+                "max_content_length": 4000,
+            }
+        )
+    )
+
+    assert result == {
+        "ok": True,
+        "url": "https://python.org/",
+        "result": {"text": "Python"},
+    }
+    fetch.assert_awaited_once_with(
+        urls=["https://python.org/"],
+        objective="verify release",
+        refinement="none",
+        max_content_length=4000,
+        include_binary_base64=False,
+        use_archive_fallback=False,
+        use_llm=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_langgraph_stream_records_search_and_fetch_calls() -> None:
+    from agents.langgraph.agent import stream_turn
+
+    class Graph:
+        async def astream_events(self, *_args, **_kwargs):
+            for name in ("web_search", "web_fetch"):
+                yield {
+                    "event": "on_tool_start",
+                    "name": name,
+                    "run_id": f"{name}-run",
+                    "data": {"input": {}},
+                }
+
+        async def aget_state(self, _config):
+            return SimpleNamespace(
+                values={"messages": [SimpleNamespace(content="research complete")]}
+            )
+
+    comm = SimpleNamespace(
+        start=AsyncMock(),
+        step=AsyncMock(),
+        delta=AsyncMock(),
+    )
+
+    answer, called_tools = await stream_turn(Graph(), "research", {}, comm)
+
+    assert answer == "research complete"
+    assert called_tools == {"web_search", "web_fetch"}
+
+
+@pytest.mark.asyncio
+async def test_public_web_search_mcp_launcher_starts_with_operator_policy() -> None:
     from kdcube_ai_app.apps.chat.sdk.runtime.mcp.client import (
         normalize_mcp_tool_result,
         open_mcp_client,
     )
 
-    module = "kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search.web_search_server"
+    launcher = REPO_ROOT / "mcp" / "web-search" / "server.py"
     config = (AGENTS_ROOT / "claude" / "config.template.yaml").resolve()
     async with open_mcp_client(
         transport="stdio",
         command=sys.executable,
         args=[
-            "-m",
-            module,
+            str(launcher),
             "--transport",
             "stdio",
             "--config",
@@ -327,6 +437,40 @@ async def test_claude_web_search_mcp_starts_with_operator_policy() -> None:
     assert status["allowlist_entries"] == ["python.org"]
     assert status["ssrf_guard"] is True
     assert status["enforced"] is True
+
+
+def test_claude_demo_recognizes_search_and_fetch_calls() -> None:
+    from agents.claude.agent import _called_tool_names
+
+    events = [
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "search-1",
+                            "name": "mcp__kdcube_web_search__web_search",
+                            "input": {"queries": "Python release"},
+                        },
+                        {
+                            "type": "tool_use",
+                            "id": "fetch-1",
+                            "name": "mcp__kdcube_web_search__web_fetch",
+                            "input": {"urls": "https://python.org/"},
+                        },
+                    ]
+                },
+            }
+        ),
+        "not-json",
+    ]
+
+    assert _called_tool_names(events) == {
+        "mcp__kdcube_web_search__web_search",
+        "mcp__kdcube_web_search__web_fetch",
+    }
 
 
 @pytest.mark.asyncio
@@ -770,6 +914,7 @@ def test_native_yaml_can_select_the_isolated_exec_tool() -> None:
 
     assert bindings.enabled_ids == (
         "web_tools.web_search",
+        "web_tools.web_fetch",
         EXEC_TOOL_ID,
         *RENDER_TOOL_IDS,
     )
@@ -869,6 +1014,7 @@ def test_direct_recipe_is_an_executable_configuration_contract() -> None:
         "instructions:\n    profile: lite:core",
         "additional_instructions: |",
         "id: web_tools.web_search",
+        "id: web_tools.web_fetch",
         "id: exec_tools.execute_code_python",
         "skills:\n    root: ./skills",
         "settings:\n        filter:",

@@ -2,12 +2,13 @@
 id: repo:kdcube-ai-app/agents/claude/README.md
 title: "Run the Claude Code Agent"
 summary: "Run Claude Code through the KDCube harness with a Git-backed transcript and durable conversation."
-tags: ["agents", "claude-code", "harness", "conversation", "standalone", "web-search", "mcp"]
-keywords: ["ClaudeCodeAgent", "KDCube Web Search MCP", "Claude transcript", "Git session store", "ChatCommunicator", "accounting"]
+tags: ["agents", "claude-code", "harness", "conversation", "standalone", "web-search", "web-fetch", "mcp"]
+keywords: ["ClaudeCodeAgent", "KDCube Web Search MCP", "KDCube Web Fetch", "Claude transcript", "Git session store", "ChatCommunicator", "accounting"]
 updated_at: 2026-09-07
 see_also:
   - repo:kdcube-ai-app/agents/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md
+  - repo:kdcube-ai-app/mcp/web-search/README.md
 ---
 # Run the Claude Code Agent
 
@@ -55,10 +56,18 @@ For API-key execution, use `--provider anthropic` and set
 `platform.services.anthropic.claude_code_key` in the generated secrets
 descriptor.
 
+The first Python command creates this runner's `.venv`; no prebuilt environment
+is shipped. Installing `requirements.txt` installs the SDK and this runner's
+Python dependencies. Chromium is required by the enabled PDF renderer. The
+Docker build creates the `py-code-exec:latest` image required by the enabled
+isolated Python tool. `--infra-check` verifies both prerequisites before model
+spend, along with the Git transcript store.
+
 ## What the demo shows
 
-Turn one reads a hosted research-request attachment and searches through the
-local KDCube Web Search MCP. The generated Claude workspace denies ambient
+Turn one reads a hosted research-request attachment, searches through the local
+[KDCube Web Search MCP](../../mcp/web-search/README.md), and inspects a selected
+result with its Web Fetch operation. The generated Claude workspace denies
 `WebSearch`, `WebFetch`, and `Bash`, so search and code execution use the
 configured KDCube boundaries.
 
@@ -82,7 +91,7 @@ session and durable conversation. Tenant and project come from
 `descriptors.local/assembly.yaml`; the Git transcript branch and Claude session
 ID add this runner's stable `claude` agent ID. The profile becomes generated
 `CLAUDE.md`; selected KDCube skills become native `.claude/skills` entries. Web
-Search's egress policy is under the
+Search and Web Fetch share the egress policy under the
 `mcp__kdcube_web_search__web_search` tool row's `settings`. Edit
 `descriptors.local/assembly.yaml` to select the Anthropic model and a private
 Git transcript remote, and put its HTTPS token in

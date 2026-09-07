@@ -2,12 +2,13 @@
 id: repo:kdcube-ai-app/agents/native/README.md
 title: "Run the Native ReAct Agent"
 summary: "Run KDCube native ReAct directly from Python with YAML-selected tools and skills."
-tags: ["agents", "native-react", "harness", "standalone", "demonstration", "web-search"]
-keywords: ["ReactSolverV2", "DirectAgentHarness", "KDCube Web Search", "Postgres conversation", "ChatCommunicator", "accounting"]
+tags: ["agents", "native-react", "harness", "standalone", "demonstration", "web-search", "web-fetch"]
+keywords: ["ReactSolverV2", "DirectAgentHarness", "KDCube Web Search", "KDCube Web Fetch", "Postgres conversation", "ChatCommunicator", "accounting"]
 updated_at: 2026-09-07
 see_also:
   - repo:kdcube-ai-app/agents/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md
+  - repo:kdcube-ai-app/mcp/web-search/README.md
 ---
 # Run the Native ReAct Agent
 
@@ -50,6 +51,12 @@ continue that conversation, or choose them explicitly:
 The provider key prompt is hidden. Local secrets and generated descriptors are
 ignored by Git. `setup_local.py` is this one-time preparation command; it does
 not participate in a turn or own agent configuration.
+
+The first command creates this runner's `.venv`; no prebuilt environment is
+shipped. Installing `requirements.txt` installs the SDK and this runner's Python
+dependencies. Chromium is required by the enabled PDF renderer. The Docker
+build creates the `py-code-exec:latest` image required by the enabled isolated
+Python tool. `--infra-check` verifies both prerequisites before model spend.
 
 To use an on-host model, prepare the same directory with no provider secret:
 
@@ -97,9 +104,11 @@ protocol reliably within the configured context window.
 
 ## What the demo shows
 
-Turn one hosts a research-request attachment and searches through KDCube Web
-Search. Turn two makes the model author Python that uses `openpyxl`; KDCube
-executes that code in the configured Docker image to create an XLSX and HTML.
+Turn one hosts a research-request attachment, searches with
+[KDCube Web Search](../../mcp/web-search/README.md), and inspects a selected
+result with KDCube Web Fetch. Turn two makes the model author Python that uses
+`openpyxl`; KDCube executes that code in the configured Docker image to create
+an XLSX and HTML.
 The agent then calls `rendering_tools.write_pdf` to turn the HTML into a
 polished PDF. It does not generate PDF bytes in Python.
 
@@ -123,9 +132,9 @@ Its `agent.input` section selects the local caller session, durable
 conversation, and recall conversation. Tenant and project come from
 `descriptors.local/assembly.yaml`; this runner's stable agent ID is `native`.
 The SDK preserves the ReAct protocol and automatically adds standard blocks for
-the enabled exec, rendering, and web tool families. Web Search's allowlist,
-blocklist, and SSRF policy are under the `web_tools.web_search` tool row's
-`settings`. Edit
+the enabled exec, rendering, and web tool families. Web Search and Web Fetch
+share the allowlist, blocklist, and SSRF policy under the
+`web_tools.web_search` tool row's `settings`. Edit
 `descriptors.local/assembly.yaml` for the model provider and ID, storage, and isolated executor;
 edit `descriptors.local/secrets.yaml` for credentials. The shipped model is
 `claude-haiku-4-5-20251001`.

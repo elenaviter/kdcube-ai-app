@@ -78,6 +78,35 @@ def build_tools(
             )
 
     @tool
+    async def web_fetch(
+        url: str,
+        objective: str = "",
+        max_content_length: int = 12000,
+    ) -> str:
+        """Fetch one selected result through KDCube's governed Web Fetch."""
+        try:
+            fetched = await web_search_server.web_fetch(
+                urls=[url],
+                objective=objective or None,
+                refinement="none",
+                max_content_length=max(
+                    1000, min(int(max_content_length or 12000), 50000)
+                ),
+                include_binary_base64=False,
+                use_archive_fallback=False,
+                use_llm=False,
+            )
+            return json.dumps(
+                {"ok": True, "url": url, "result": fetched.get(url)},
+                ensure_ascii=False,
+                default=str,
+            )
+        except Exception as exc:
+            return json.dumps(
+                {"ok": False, "url": url, "error": str(exc), "result": None}
+            )
+
+    @tool
     async def execute_python(
         code: str,
         artifacts: list[dict[str, Any]],
@@ -131,7 +160,14 @@ def build_tools(
             )
         )
 
-    available = [web_search, execute_python, write_pdf, write_docx, write_pptx]
+    available = [
+        web_search,
+        web_fetch,
+        execute_python,
+        write_pdf,
+        write_docx,
+        write_pptx,
+    ]
     if enabled_ids is None:
         return available
     return [item for item in available if item.name in enabled_ids]

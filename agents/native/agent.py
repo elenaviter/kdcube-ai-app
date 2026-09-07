@@ -87,6 +87,7 @@ from kdcube_ai_app.infra.service_hub.inventory import AgentLogger, ModelServiceB
 
 ROLE = "solver.react.v2.decision.v2.strong"
 WEB_SEARCH_TOOL_ID = "web_tools.web_search"
+WEB_FETCH_TOOL_ID = "web_tools.web_fetch"
 EXEC_TOOL_ID = "exec_tools.execute_code_python"
 RENDER_TOOL_IDS = (
     "rendering_tools.write_pdf",
@@ -96,7 +97,7 @@ RENDER_TOOL_IDS = (
 TOOL_SOURCES = {
     "web_tools": NativeToolSource(
         path=HERE / "tools.py",
-        tool_names=("web_search",),
+        tool_names=("web_search", "web_fetch"),
     ),
     "exec_tools": NativeToolSource(
         module="kdcube_ai_app.apps.chat.sdk.tools.exec_tools",
@@ -523,7 +524,7 @@ async def main_async(args: argparse.Namespace) -> None:
         + ("configured" if instruction_selection.additional_instructions else "(none)")
     )
     print(
-        "web search: KDCube Web Search "
+        "web research: KDCube Web Search and Web Fetch "
         f"({config_path}#agent.tools[id={WEB_SEARCH_TOOL_ID}].settings)"
     )
     print(f"skills: {', '.join(skill_config.enabled) or '(none)'}")
@@ -601,6 +602,10 @@ async def main_async(args: argparse.Namespace) -> None:
         raise RuntimeError(
             f"the built-in demonstration requires agent.tools id {WEB_SEARCH_TOOL_ID}"
         )
+    if WEB_FETCH_TOOL_ID not in tool_bindings.enabled_ids:
+        raise RuntimeError(
+            f"the built-in demonstration requires agent.tools id {WEB_FETCH_TOOL_ID}"
+        )
     if EXEC_TOOL_ID not in tool_bindings.enabled_ids:
         raise RuntimeError(
             "the built-in demonstration requires " + EXEC_TOOL_ID
@@ -630,11 +635,12 @@ async def main_async(args: argparse.Namespace) -> None:
             print("infrastructure check: PASS")
             return
         assert service is not None
-        first, first_turn_id, _first_sources, first_turn = await run_turn(
+        first, first_turn_id, first_sources, first_turn = await run_turn(
             prompt=(
                 f"The attached research-request.md asks about {topic}. "
-                "Search the web for recent, concrete information about it. "
-                "Return five sourced findings and retain them for the next turn."
+                "Call web_tools.web_search for recent, concrete information about it, then "
+                "call web_tools.web_fetch on at least one selected result URL. Return five "
+                "sourced findings grounded in the inspected page and retain them for the next turn."
             ),
             turn_number=1,
             conversation_id=conversation_id,
@@ -651,6 +657,13 @@ async def main_async(args: argparse.Namespace) -> None:
             attachment_source=request_path,
         )
         completed_turns.append(first_turn)
+        required_research = {WEB_SEARCH_TOOL_ID, WEB_FETCH_TOOL_ID}
+        missing_research = sorted(required_research.difference(first_sources))
+        if missing_research:
+            raise RuntimeError(
+                "the research turn completed without required tools: "
+                + ", ".join(missing_research)
+            )
         print(f"\n[first answer]\n{first}\n")
         second, second_turn_id, _second_sources, second_turn = await run_turn(
             prompt=deliverable_prompt,

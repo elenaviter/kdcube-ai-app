@@ -1,10 +1,10 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md
 title: "Recipe: Run the Agent Harness from Python"
-summary: "Run native ReAct, LangGraph, or Claude Code from SDK source with web research, isolated code execution, document rendering, durable conversations, and accounting."
+summary: "Run native ReAct, LangGraph, or Claude Code from SDK source with Web Search and Web Fetch, isolated code execution, document rendering, durable conversations, and accounting."
 status: current
-tags: ["recipe", "quickstart", "agent-harness", "python", "native-react", "langgraph", "claude-code", "self-hosted", "web-search", "rendering"]
-keywords: ["run agent harness", "direct SDK agent", "KDCube Web Search", "standard descriptors", "Redis", "Postgres", "Git transcript", "isolated code execution", "write_pdf", "write_docx", "write_pptx"]
+tags: ["recipe", "quickstart", "agent-harness", "python", "native-react", "langgraph", "claude-code", "self-hosted", "web-search", "web-fetch", "rendering"]
+keywords: ["run agent harness", "direct SDK agent", "KDCube Web Search", "KDCube Web Fetch", "standard descriptors", "Redis", "Postgres", "Git transcript", "isolated code execution", "write_pdf", "write_docx", "write_pptx"]
 updated_at: 2026-09-07
 see_also:
   - repo:kdcube-ai-app/agents/README.md
@@ -62,7 +62,10 @@ Open agents/
        research request is stored as an attachment
               |
               v
-       web research -> next-turn continuity
+       Web Search -> Web Fetch -> inspected evidence
+                              |
+                              v
+                    next-turn continuity
               |
               v
        agent-authored Python -> isolated Docker execution
@@ -125,7 +128,9 @@ python3.11 -m venv .venv
 cp config.template.yaml config.local.yaml
 ```
 
-The requirements install this repository's SDK in editable mode. Chromium is
+No virtual environment is provided: the first command creates the selected
+runner's local `.venv`, and its `requirements.txt` installs this repository's
+SDK in editable mode plus that adapter's dependencies. Chromium is
 required by the default PDF demonstration and other browser-backed render
 paths. DOCX consumes Markdown; PPTX consumes section-based HTML.
 
@@ -269,8 +274,8 @@ cd "$KDCUBE_SOURCE/agents/$AGENT"
 ```
 
 The shipped descriptor sets `network_mode: none`. Research happens through
-the governed Web Search tool; the agent passes selected findings into its
-generated program.
+the governed KDCube Web Search and Web Fetch tools; the agent passes selected
+findings into its generated program.
 
 ## 6. Start Redis and Postgres
 
@@ -312,6 +317,9 @@ agent:
             - python.org
           blocklist: []
           ssrf_guard: true
+    - id: web_tools.web_fetch
+      enabled: true
+      runtime: local
     - id: exec_tools.execute_code_python
       enabled: true
       runtime: docker
@@ -352,14 +360,19 @@ The corresponding IDs are:
 | Capability | Native | LangGraph | Claude Code |
 | --- | --- | --- | --- |
 | Web Search | `web_tools.web_search` | `web_search` | `mcp__kdcube_web_search__web_search` |
+| Web Fetch | `web_tools.web_fetch` | `web_fetch` | `mcp__kdcube_web_search__web_fetch` |
 | Isolated Python | `exec_tools.execute_code_python` | `execute_python` | `mcp__kdcube_harness__execute_python` |
 | PDF | `rendering_tools.write_pdf` | `write_pdf` | `mcp__kdcube_harness__write_pdf` |
 | DOCX | `rendering_tools.write_docx` | `write_docx` | `mcp__kdcube_harness__write_docx` |
 | PPTX | `rendering_tools.write_pptx` | `write_pptx` | `mcp__kdcube_harness__write_pptx` |
 
 Unknown tool or skill IDs fail during `--check`. Tool settings stay on their
-tool row. The Web Search row owns its domain allowlist, blocklist, and SSRF
-policy. Change the allowlist when changing the sample topic.
+tool row. Web Search and Web Fetch run from the same
+[KDCube Web Search MCP implementation](../../../../../mcp/web-search/README.md);
+the Web Search row owns their shared domain allowlist, blocklist, and SSRF
+policy. Native and LangGraph call the SDK implementation in-process. Claude
+starts the public `mcp/web-search/server.py` launcher as a stdio MCP server.
+Change the allowlist when changing the sample topic.
 
 The Native profile is `lite:core`; the SDK adds the existing ReAct exec,
 rendering, and web blocks only when their tool families are enabled. LangGraph
@@ -446,7 +459,8 @@ without model spend. Claude also verifies its Git transcript store.
 
 The full two-turn scenario:
 
-1. Stores `research-request.md` as a user attachment and performs Web Search.
+1. Stores `research-request.md` as a user attachment, performs Web Search, and
+   fetches at least one selected result page before accepting it as evidence.
 2. Continues the conversation, authors Python, and invokes isolated execution.
 3. The program creates an XLSX evidence table and print-ready HTML.
 4. The agent invokes `write_pdf`; KDCube renders and hosts the final PDF.

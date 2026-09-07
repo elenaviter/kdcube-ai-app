@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import shutil
 import sys
@@ -71,9 +72,13 @@ from kdcube_ai_app.apps.chat.sdk.solutions.claude_code import (  # noqa: E402
     publish_claude_code_session_store,
     run_claude_code_turn,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.claude_code.streaming import (  # noqa: E402
+    extract_tool_uses_from_claude_event,
+)
 
 
 WEB_SEARCH_TOOL_ID = "mcp__kdcube_web_search__web_search"
+WEB_FETCH_TOOL_ID = "mcp__kdcube_web_search__web_fetch"
 EXEC_TOOL_ID = "mcp__kdcube_harness__execute_python"
 RENDER_TOOL_IDS = (
     "mcp__kdcube_harness__write_pdf",
@@ -134,7 +139,13 @@ async def agent_config(
     tool_config = configured_tools(config)
     require_supported_tools(
         tool_config,
-        supported={*BUILTIN_TOOL_IDS, WEB_SEARCH_TOOL_ID, EXEC_TOOL_ID, *RENDER_TOOL_IDS},
+        supported={
+            *BUILTIN_TOOL_IDS,
+            WEB_SEARCH_TOOL_ID,
+            WEB_FETCH_TOOL_ID,
+            EXEC_TOOL_ID,
+            *RENDER_TOOL_IDS,
+        },
         adapter="Claude Code direct example",
     )
     unsupported_runtimes = sorted(
@@ -160,6 +171,9 @@ async def agent_config(
         web_search_tool=(
             WEB_SEARCH_TOOL_ID if WEB_SEARCH_TOOL_ID in allowed_tools else None
         ),
+        web_fetch_tool=(
+            WEB_FETCH_TOOL_ID if WEB_FETCH_TOOL_ID in allowed_tools else None
+        ),
         native_skill_ids=skill_ids,
     )
     return ClaudeCodeAgentConfig(
@@ -177,8 +191,7 @@ async def agent_config(
                     "type": "stdio",
                     "command": sys.executable,
                     "args": [
-                        "-m",
-                        "kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search.web_search_server",
+                        str(REPO_ROOT / "mcp" / "web-search" / "server.py"),
                         "--transport",
                         "stdio",
                         "--config",
@@ -186,7 +199,7 @@ async def agent_config(
                         "--tool-id",
                         WEB_SEARCH_TOOL_ID,
                     ],
-                    "env": {"PYTHONPATH": str(SDK_ROOT)},
+                    "env": {},
                 },
                 harness_server_id: {
                     "type": "stdio",
@@ -265,6 +278,19 @@ def session_store_config(
     )
 
 
+def _called_tool_names(raw_output_lines: list[str]) -> set[str]:
+    names: set[str] = set()
+    for line in raw_output_lines:
+        try:
+            event = json.loads(line)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        names.update(
+            call["name"] for call in extract_tool_uses_from_claude_event(event)
+        )
+    return names
+
+
 async def run_one_turn(
     *,
     prompt: str,
@@ -282,7 +308,7 @@ async def run_one_turn(
     instruction_selection: DirectInstructionSelection,
     model: str,
     attachment_source: Path | None = None,
-) -> tuple[str, str, Any]:
+) -> tuple[str, str, set[str], Any]:
     turn_id = f"turn_{number:02d}_{uuid.uuid4().hex[:8]}"
     turn_workspace = DirectTurnWorkspace(run_root=run_root, turn_id=turn_id)
     async with harness.turn(
@@ -376,7 +402,7 @@ async def run_one_turn(
         )
         await turn.complete(prompt=prompt, final_answer=result.final_text)
     print(f"[accounting] Redis turn cache contains {len(turn.accounting_events)} event(s)")
-    return result.final_text, turn_id, turn
+    return result.final_text, turn_id, _called_tool_names(result.raw_output_lines), turn
 
 
 async def main_async(args: argparse.Namespace) -> None:
@@ -468,7 +494,12 @@ async def main_async(args: argparse.Namespace) -> None:
         conversation_id=conversation_id,
         agent_id=harness_config.agent_id,
     )
-    required_demo_tools = {WEB_SEARCH_TOOL_ID, EXEC_TOOL_ID, RENDER_TOOL_IDS[0]}
+    required_demo_tools = {
+        WEB_SEARCH_TOOL_ID,
+        WEB_FETCH_TOOL_ID,
+        EXEC_TOOL_ID,
+        RENDER_TOOL_IDS[0],
+    }
     missing_demo_tools = sorted(required_demo_tools.difference(cfg.allowed_tools))
     if missing_demo_tools:
         raise RuntimeError(
@@ -486,7 +517,7 @@ async def main_async(args: argparse.Namespace) -> None:
         + ("configured" if instruction_selection.additional_instructions else "(none)")
     )
     print(
-        "web search: KDCube Web Search MCP "
+        "web research: KDCube Web Search and Web Fetch MCP "
         f"({config_path}#agent.tools[id={WEB_SEARCH_TOOL_ID}].settings)"
     )
     print(f"skills: {', '.join(skill_config.enabled) or '(none)'}")
@@ -543,10 +574,11 @@ async def main_async(args: argparse.Namespace) -> None:
     )
     prompts = [
         (
-            "Read the attached research-request.md, then use the kdcube_web_search "
-            "web_search MCP tool with use_llm=false and fetch_content=false to research "
-            f"recent, concrete information about {topic}. Return five sourced findings and "
-            "retain them for the next turn."
+            "Read the attached research-request.md, then use the kdcube_web_search web_search "
+            "MCP tool with use_llm=false and fetch_content=false to find recent, concrete "
+            f"information about {topic}. Use the kdcube_web_search web_fetch MCP tool to "
+            "inspect at least one selected result URL. Return five sourced findings grounded "
+            "in the inspected page and retain them for the next turn."
         ),
         (
             "Continue this same session and use the retained findings. Author complete Python "
@@ -561,6 +593,7 @@ async def main_async(args: argparse.Namespace) -> None:
         ),
     ]
     turn_ids: list[str] = []
+    called_tools_by_turn: list[set[str]] = []
     completed_turns: list[Any] = []
     async with harness:
         if args.infra_check:
@@ -574,7 +607,7 @@ async def main_async(args: argparse.Namespace) -> None:
             return
         print("infrastructure: Redis, Postgres conversation tables, and storage ready")
         for number, prompt in enumerate(prompts, start=1):
-            answer, turn_id, turn = await run_one_turn(
+            answer, turn_id, called_tools, turn = await run_one_turn(
                 prompt=prompt,
                 number=number,
                 resume=number > 1,
@@ -592,8 +625,16 @@ async def main_async(args: argparse.Namespace) -> None:
                 attachment_source=request_path if number == 1 else None,
             )
             turn_ids.append(turn_id)
+            called_tools_by_turn.append(called_tools)
             completed_turns.append(turn)
             print(f"\n[turn {number} answer]\n{answer}\n")
+        required_research = {WEB_SEARCH_TOOL_ID, WEB_FETCH_TOOL_ID}
+        missing_research = sorted(required_research.difference(called_tools_by_turn[0]))
+        if missing_research:
+            raise RuntimeError(
+                "the research turn completed without required tools: "
+                + ", ".join(missing_research)
+            )
         records = await harness.verify_conversation(
             conversation_id=conversation_id,
             expected_turn_ids=turn_ids,
