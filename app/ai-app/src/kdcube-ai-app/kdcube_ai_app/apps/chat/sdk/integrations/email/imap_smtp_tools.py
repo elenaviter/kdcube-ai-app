@@ -191,6 +191,23 @@ class ImapSmtpMailTools:
         }
         return _HubTokenStore(raw, login=login), account
 
+    def _split_mailbox(self, query: str) -> tuple[str, str]:
+        """Gmail's ``in:drafts`` / ``in:sent`` / ``in:<mailbox>`` operator, which
+        the agents already speak, selects the IMAP mailbox to search. Drafts
+        maps to this instance's configured Drafts mailbox; other names pass
+        through as the server's mailbox name; no operator means INBOX."""
+        mailbox = ""
+
+        def take(match: "re.Match[str]") -> str:
+            nonlocal mailbox
+            name = (match.group(1) or match.group(2) or "").strip()
+            lowered = name.lower()
+            mailbox = self.drafts_mailbox if lowered == "drafts" else ("INBOX" if lowered == "inbox" else name)
+            return " "
+
+        rest = re.sub(r'(?i)\bin:(?:"([^"]+)"|(\S+))', take, _clean(query))
+        return mailbox, " ".join(rest.split())
+
     async def search(
         self, *, query: str = "", max_results: int = 5, account_id: str = ""
     ) -> dict[str, Any]:
@@ -201,6 +218,7 @@ class ImapSmtpMailTools:
         if not credential.ok:
             return credential.error_envelope(where=where)
         store, account = self._adapter_inputs(credential)
+        mailbox, query = self._split_mailbox(query)
         imap_query, since, before = translate_gmail_query(query)
         result = await fetch_icloud_messages(
             store=store,
@@ -210,6 +228,7 @@ class ImapSmtpMailTools:
             query=imap_query,
             since=since,
             before=before,
+            mailbox=mailbox,
         )
         if not result.get("ok"):
             error = dict(result.get("error") or {})

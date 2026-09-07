@@ -259,3 +259,21 @@ def test_send_draft_without_recipient_leaves_the_draft_in_place(monkeypatch):
     out = asyncio.run(_tools().send_draft(draft_id="18", account_id="icloud_1"))
     assert out["ok"] is False and out["error"]["code"] == "recipient_required"
     assert "STORE" not in events and "expunge" not in events
+
+
+def test_search_in_drafts_selects_the_drafts_mailbox(monkeypatch):
+    _bind_credential(monkeypatch)
+    seen = {}
+
+    async def fake_fetch(**kwargs):
+        seen["mailbox"] = kwargs.get("mailbox"); seen["query"] = kwargs.get("query")
+        return {"ok": True, "messages": []}
+
+    monkeypatch.setattr(imap_smtp_tools, "fetch_icloud_messages", fake_fetch)
+    tools = _tools()
+    asyncio.run(tools.search(query="in:drafts subject:Kontoauszug", max_results=5, account_id="icloud_1"))
+    assert seen["mailbox"] == "Drafts" and "in:" not in seen["query"] and "Kontoauszug" in seen["query"]
+    asyncio.run(tools.search(query="subject:x", max_results=5, account_id="icloud_1"))
+    assert seen["mailbox"] == ""  # INBOX by default
+    asyncio.run(tools.search(query='in:"Sent Messages" x', max_results=5, account_id="icloud_1"))
+    assert seen["mailbox"] == "Sent Messages" and seen["query"] == "x"
