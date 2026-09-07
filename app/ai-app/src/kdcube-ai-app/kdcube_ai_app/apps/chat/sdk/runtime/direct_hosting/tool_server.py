@@ -119,6 +119,9 @@ async def _build_runtime(args: argparse.Namespace) -> DirectToolRuntime:
         descriptors_dir=descriptors,
         bundle_id=args.bundle_id,
         agent_id=args.agent_id,
+        user_id=args.user_id,
+        user_type=args.user_type,
+        session_id=args.session_id,
         check_only=True,
     )
     emitter = ConsoleEmitter(Path(args.events).expanduser().resolve(), echo=False)
@@ -153,6 +156,9 @@ def main() -> None:
     parser.add_argument("--run-root", required=True)
     parser.add_argument("--events", required=True)
     parser.add_argument("--conversation-id", required=True)
+    parser.add_argument("--user-id", required=True)
+    parser.add_argument("--user-type", required=True)
+    parser.add_argument("--session-id", required=True)
     parser.add_argument("--turn-id", required=True)
     parser.add_argument("--bundle-id", required=True)
     parser.add_argument("--agent-id", required=True)

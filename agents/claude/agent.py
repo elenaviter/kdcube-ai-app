@@ -31,6 +31,7 @@ from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.infrastructure import ( 
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.configuration import (  # noqa: E402
     activate_configured_skills,
+    configured_agent_input,
     configured_run_directory,
     configured_tools,
     configured_web_search,
@@ -48,6 +49,9 @@ from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.evidence import (  # noq
     ConsoleEmitter,
     print_evidence_summary,
     write_evidence_index,
+)
+from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.model_service import (  # noqa: E402
+    configured_model_selection,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.workspace import (  # noqa: E402
     DirectTurnWorkspace,
@@ -77,6 +81,8 @@ RENDER_TOOL_IDS = (
     "mcp__kdcube_harness__write_pptx",
 )
 BUILTIN_TOOL_IDS = ("Read", "Write", "Edit", "Grep", "Glob")
+BUNDLE_ID = "standalone-claude-demo@1-0"
+AGENT_ID = "claude"
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -95,12 +101,16 @@ async def agent_config(
     run_root: Path,
     tool_events_path: Path,
     conversation_id: str,
+    user_id: str,
+    user_type: str,
+    session_id: str,
     turn_id: str,
     bundle_id: str,
     agent_id: str,
     check_only: bool,
     skill_ids: tuple[str, ...],
     instruction_selection: DirectInstructionSelection,
+    model: str,
 ) -> ClaudeCodeAgentConfig:
     agent = config.get("agent") or {}
     adapter = agent.get("adapter") or {}
@@ -153,9 +163,9 @@ async def agent_config(
         native_skill_ids=skill_ids,
     )
     return ClaudeCodeAgentConfig(
-        agent_name="standalone-claude",
+        agent_name=agent_id,
         workspace_path=workspace,
-        model=str(adapter.get("model") or "claude-haiku-4-5-20251001"),
+        model=model,
         allowed_tools=allowed_tools,
         command=command,
         env=env,
@@ -192,6 +202,12 @@ async def agent_config(
                         str(tool_events_path),
                         "--conversation-id",
                         conversation_id,
+                        "--user-id",
+                        user_id,
+                        "--user-type",
+                        user_type,
+                        "--session-id",
+                        session_id,
                         "--turn-id",
                         turn_id,
                         "--bundle-id",
@@ -230,7 +246,9 @@ def session_store_config(
     *,
     descriptors_dir: Path,
     workspace: Path,
+    user_id: str,
     conversation_id: str,
+    agent_id: str,
 ) -> ClaudeCodeSessionStoreConfig:
     return ClaudeCodeSessionStoreConfig(
         implementation=str(
@@ -240,9 +258,9 @@ def session_store_config(
         local_root=workspace / ".claude",
         tenant=str(getattr(settings, "TENANT", "") or "standalone"),
         project=str(getattr(settings, "PROJECT", "") or "claude-agent-demo"),
-        user_id="demo-user",
+        user_id=user_id,
         conversation_id=conversation_id,
-        agent_name="standalone-claude",
+        agent_name=agent_id,
         git_repo=_git_repo(settings, descriptors_dir=descriptors_dir),
     )
 
@@ -262,6 +280,7 @@ async def run_one_turn(
     harness: DirectAgentHarness,
     session_store: ClaudeCodeSessionStoreConfig,
     instruction_selection: DirectInstructionSelection,
+    model: str,
     attachment_source: Path | None = None,
 ) -> tuple[str, str, Any]:
     turn_id = f"turn_{number:02d}_{uuid.uuid4().hex[:8]}"
@@ -285,12 +304,16 @@ async def run_one_turn(
             run_root=run_root,
             tool_events_path=turn_workspace.turn_root / "mcp-events.jsonl",
             conversation_id=binding.conversation_id,
+            user_id=binding.user_id,
+            user_type=harness.config.user_type,
+            session_id=binding.session_id,
             turn_id=turn_id,
             bundle_id=harness.config.bundle_id,
             agent_id=harness.config.agent_id,
             check_only=False,
             skill_ids=skill_ids,
             instruction_selection=instruction_selection,
+            model=model,
         )
         agent = ClaudeCodeAgent(config=config, binding=binding, comm=turn.comm)
         await turn.comm.start(message=prompt)
@@ -360,18 +383,24 @@ async def main_async(args: argparse.Namespace) -> None:
     config_path = Path(args.config).expanduser().resolve()
     descriptors_dir = Path(args.descriptors).expanduser().resolve()
     settings = activate_platform_descriptors(descriptors_dir)
+    selected_model = configured_model_selection()
+    if selected_model.provider != "anthropic":
+        raise ValueError(
+            "the Claude Code adapter requires models.default_llm_provider: "
+            "anthropic; use Native or LangGraph for KDCube custom-model routing"
+        )
     config = load_config(config_path)
+    agent_input = configured_agent_input(
+        config,
+        user_id=args.user_id,
+        conversation_id=args.conversation_id,
+        session_id=args.session_id,
+    )
     configured_web_search(config, tool_id=WEB_SEARCH_TOOL_ID)
     output = configured_run_directory(config, config_path=config_path)
-    if args.check:
-        conversation_id = "claude-check"
-    elif args.infra_check:
-        conversation_id = "claude-infra-check"
-    else:
-        conversation_id = str(
-            (config.get("agent") or {}).get("conversation_id") or "claude-demo"
-        ).strip()
-    run_root = output / "runs" / conversation_id
+    conversation_id = agent_input.conversation_id
+    run_id = "check" if args.check else f"run_{uuid.uuid4().hex[:12]}"
+    run_root = agent_input.run_path(output, run_id=run_id)
     workspace = run_root / "workspace"
     _skills_subsystem, skill_config = activate_configured_skills(
         config,
@@ -386,6 +415,32 @@ async def main_async(args: argparse.Namespace) -> None:
             "source URLs, create the requested deliverables, and report tool failures truthfully."
         ),
     )
+    harness_config = direct_harness_config(
+        settings=settings,
+        descriptors_dir=descriptors_dir,
+        bundle_id=BUNDLE_ID,
+        agent_id=AGENT_ID,
+        user_id=agent_input.user_id,
+        user_type=agent_input.user_type,
+        session_id=agent_input.session_id,
+        check_only=args.check,
+    )
+    private_state_key = agent_input.continuity_key(
+        tenant=harness_config.tenant,
+        project=harness_config.project,
+        agent_id=harness_config.agent_id,
+    )
+    binding = ClaudeCodeBinding(
+        user_id=agent_input.user_id,
+        conversation_id=conversation_id,
+        session_id=agent_input.session_id,
+        claude_session_id=str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"kdcube-agent:{private_state_key}",
+            )
+        ),
+    )
     cfg = await agent_config(
         config,
         workspace=workspace,
@@ -394,25 +449,24 @@ async def main_async(args: argparse.Namespace) -> None:
         run_root=run_root,
         tool_events_path=run_root / "turn_check" / "mcp-events.jsonl",
         conversation_id=conversation_id,
+        user_id=agent_input.user_id,
+        user_type=agent_input.user_type,
+        session_id=agent_input.session_id,
         turn_id="turn_check",
-        bundle_id="standalone-claude-demo@1-0",
-        agent_id="claude",
+        bundle_id=BUNDLE_ID,
+        agent_id=AGENT_ID,
         check_only=args.check or args.infra_check,
         skill_ids=skill_config.enabled,
         instruction_selection=instruction_selection,
-    )
-    harness_config = direct_harness_config(
-        settings=settings,
-        descriptors_dir=descriptors_dir,
-        bundle_id="standalone-claude-demo@1-0",
-        agent_id="claude",
-        check_only=args.check,
+        model=selected_model.model,
     )
     session_store = session_store_config(
         settings,
         descriptors_dir=descriptors_dir,
         workspace=workspace,
+        user_id=agent_input.user_id,
         conversation_id=conversation_id,
+        agent_id=harness_config.agent_id,
     )
     required_demo_tools = {WEB_SEARCH_TOOL_ID, EXEC_TOOL_ID, RENDER_TOOL_IDS[0]}
     missing_demo_tools = sorted(required_demo_tools.difference(cfg.allowed_tools))
@@ -424,7 +478,7 @@ async def main_async(args: argparse.Namespace) -> None:
     exec_runtime = platform_exec_profile(settings)
     print("mode: standalone SDK process")
     print("adapter: ClaudeCodeAgent -> local Claude Code subprocess")
-    print(f"model: anthropic/{cfg.model}")
+    print(f"model: {selected_model.provider}/{cfg.model}")
     print(f"tools: {', '.join(cfg.allowed_tools) or '(none)'}")
     print(f"instruction profile: {instruction_selection.profile}")
     print(
@@ -438,6 +492,10 @@ async def main_async(args: argparse.Namespace) -> None:
     print(f"skills: {', '.join(skill_config.enabled) or '(none)'}")
     print(f"workspace: {workspace}")
     print(f"conversation storage: {harness_config.storage_uri}")
+    print(f"user: {agent_input.user_id} ({agent_input.user_type})")
+    print(f"session: {agent_input.session_id}")
+    print(f"conversation: {agent_input.conversation_id}")
+    print(f"agent state scope: {private_state_key}")
     print(
         "Claude transcript store: "
         f"{session_store.implementation} -> {session_store.git_repo or session_store.local_root}"
@@ -450,12 +508,6 @@ async def main_async(args: argparse.Namespace) -> None:
         browser = await verify_playwright_chromium()
         print(f"document renderer: Playwright {browser} ready")
     if args.check:
-        binding = ClaudeCodeBinding(
-            user_id="demo-user",
-            conversation_id=conversation_id,
-            session_id="local-session",
-            claude_session_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"kdcube/demo/{conversation_id}")),
-        )
         emitter = ConsoleEmitter(Path(os.devnull))
         harness = DirectAgentHarness(
             config=harness_config,
@@ -481,12 +533,6 @@ async def main_async(args: argparse.Namespace) -> None:
         config=harness_config,
         model_service=None,
         emitter=emitter,
-    )
-    binding = ClaudeCodeBinding(
-        user_id="demo-user",
-        conversation_id=conversation_id,
-        session_id="local-session",
-        claude_session_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"kdcube/demo/{conversation_id}")),
     )
     topic = str((config.get("agent") or {}).get("topic") or "accountable agent runtimes")
     request_path = workspace / "research-request.md"
@@ -542,6 +588,7 @@ async def main_async(args: argparse.Namespace) -> None:
                 harness=harness,
                 session_store=session_store,
                 instruction_selection=instruction_selection,
+                model=selected_model.model,
                 attachment_source=request_path if number == 1 else None,
             )
             turn_ids.append(turn_id)
@@ -614,6 +661,12 @@ def main() -> None:
         action="store_true",
         help="Verify independent support services without starting Claude Code.",
     )
+    parser.add_argument("--user-id", help="Override agent.input.user_id.")
+    parser.add_argument(
+        "--conversation-id",
+        help="Override agent.input.conversation_id and resume that conversation.",
+    )
+    parser.add_argument("--session-id", help="Override agent.input.session_id.")
     asyncio.run(main_async(parser.parse_args()))
 
 

@@ -24,6 +24,7 @@ storage:
     repo: ../output/claude-session-store.git
 
 models:
+  default_llm_provider: anthropic
   default_llm_model_id: claude-haiku-4-5-20251001
 
 secrets:

@@ -8,6 +8,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,45 @@ class ConfiguredSkills:
     enabled: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class ConfiguredAgentInput:
+    """Explicit caller and conversation input for one direct agent run."""
+
+    user_id: str
+    user_type: str
+    session_id: str
+    conversation_id: str
+
+    def continuity_key(
+        self,
+        *,
+        tenant: str,
+        project: str,
+        agent_id: str,
+    ) -> str:
+        """Stable agent-private key layered on the durable conversation scope."""
+        return "/".join(
+            quote(str(value), safe="-._~@")
+            for value in (
+                tenant,
+                project,
+                self.user_id,
+                self.conversation_id,
+                agent_id,
+            )
+        )
+
+    def run_path(self, root: Path, *, run_id: str) -> Path:
+        """Filesystem-safe evidence path for one invocation of the conversation."""
+        return (
+            root
+            / "runs"
+            / quote(self.user_id, safe="-._~@")
+            / quote(self.conversation_id, safe="-._~@")
+            / quote(run_id, safe="-._~@")
+        )
+
+
 def _agent(config: Mapping[str, Any]) -> Mapping[str, Any]:
     value = config.get("agent")
     if not isinstance(value, Mapping):
@@ -34,6 +74,37 @@ def _agent(config: Mapping[str, Any]) -> Mapping[str, Any]:
 def agent_instructions(config: Mapping[str, Any], *, fallback: str) -> str:
     value = str(_agent(config).get("instructions") or "").strip()
     return value or fallback
+
+
+def configured_agent_input(
+    config: Mapping[str, Any],
+    *,
+    user_id: str | None = None,
+    conversation_id: str | None = None,
+    session_id: str | None = None,
+) -> ConfiguredAgentInput:
+    """Resolve required direct-run input, with explicit CLI overrides."""
+    raw = _agent(config).get("input")
+    if not isinstance(raw, Mapping):
+        raise ValueError("agent.input must be a mapping")
+
+    values = {
+        "user_id": user_id if user_id is not None else raw.get("user_id"),
+        "user_type": raw.get("user_type") or "regular",
+        "session_id": session_id if session_id is not None else raw.get("session_id"),
+        "conversation_id": (
+            conversation_id
+            if conversation_id is not None
+            else raw.get("conversation_id")
+        ),
+    }
+    normalized = {key: str(value or "").strip() for key, value in values.items()}
+    missing = [key for key, value in normalized.items() if not value]
+    if missing:
+        raise ValueError(
+            "agent.input is missing required values: " + ", ".join(missing)
+        )
+    return ConfiguredAgentInput(**normalized)
 
 
 def configured_tools(config: Mapping[str, Any]) -> tuple[ConfiguredTool, ...]:
@@ -228,10 +299,12 @@ async def verify_playwright_chromium() -> str:
 
 
 __all__ = [
+    "ConfiguredAgentInput",
     "ConfiguredSkills",
     "ConfiguredTool",
     "activate_configured_skills",
     "agent_instructions",
+    "configured_agent_input",
     "configured_skills",
     "configured_run_directory",
     "configured_tool_settings",

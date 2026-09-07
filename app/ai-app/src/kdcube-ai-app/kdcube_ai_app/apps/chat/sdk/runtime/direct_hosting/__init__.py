@@ -1,9 +1,11 @@
 """Reusable SDK support for hosting agent cores in a direct Python process."""
 
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.configuration import (
+    ConfiguredAgentInput,
     ConfiguredSkills,
     ConfiguredTool,
     activate_configured_skills,
+    configured_agent_input,
     agent_instructions,
     configured_run_directory,
     configured_skills,
@@ -41,7 +43,9 @@ from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.local_setup import (
     configure,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.model_service import (
+    DirectModelSelection,
     build_model_service,
+    configured_model_selection,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.native_tool_bindings import (
     NativeToolBindings,
@@ -56,15 +60,18 @@ from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.workspace import (
 )
 
 __all__ = [
+    "ConfiguredAgentInput",
     "ConfiguredSkills",
     "ConfiguredTool",
     "ConsoleEmitter",
     "DirectToolRuntime",
     "DirectTurnWorkspace",
     "DirectInstructionSelection",
+    "DirectModelSelection",
     "NativeToolBindings",
     "NativeToolSource",
     "activate_configured_skills",
+    "configured_agent_input",
     "activate_platform_descriptors",
     "agent_instructions",
     "build_model_service",
@@ -75,6 +82,7 @@ __all__ = [
     "configured_tools",
     "configured_web_search",
     "configured_instruction_selection",
+    "configured_model_selection",
     "compose_provider_native_instructions",
     "direct_harness_config",
     "enabled_tool_ids",

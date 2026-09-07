@@ -167,9 +167,11 @@ proves live narrowing or revocation from the running client.
 
 The source checkout also provides smaller executable paths:
 
-- [Runnable Agent Harness examples](../../../agents/README.md) start native
-  ReAct, LangGraph, or Claude Code directly from Python with independent Redis
-  and Postgres services. The full command contract is
+- [Add the KDCube Harness to your agent](../../../agents/README.md): keep a
+  LangGraph or Claude Code core, or start with Native ReAct, then add durable
+  conversations, selected tools and skills, isolated code, files, rendering,
+  streaming, and accounting. The examples run directly from Python with
+  independent Redis and Postgres services. The full command contract is
   [Run the Agent Harness from Python](recipes/quickstart/run-agent-harness-from-python-README.md).
 - [Web Search MCP](../../../mcp/web-search/README.md) starts KDCube Web Search
   as an operator-filtered stdio, HTTP, or SSE MCP server.

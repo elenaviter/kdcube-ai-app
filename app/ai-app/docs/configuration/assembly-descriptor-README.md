@@ -1,10 +1,10 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/configuration/assembly-descriptor-README.md
 title: "Platform Assembly Descriptor"
-summary: "Platform-level non-secret deployment configuration in assembly.yaml: tenant/project identity, auth, ports, storage backends, local runtime paths, and frontend/runtime wiring."
+summary: "Platform-level non-secret deployment configuration in assembly.yaml: tenant/project identity, auth, models, services, ports, storage backends, local runtime paths, and frontend/runtime wiring."
 tags: ["service", "configuration", "platform", "deployment", "assembly", "descriptor"]
 keywords: ["platform deployment identity", "tenant and project scope", "auth and cognito settings", "service port layout", "storage and workspace backends", "runtime path wiring", "application preparation concurrency", "application preparation retry", "bundle descriptor provider", "frontend build metadata", "local compose topology", "aws deployment mapping"]
-updated_at: 2026-08-26
+updated_at: 2026-09-07
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/descriptors-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/service-runtime-configuration-mapping-README.md
@@ -115,6 +115,8 @@ These sections are normal platform configuration in every mode:
 - `ports.*`
 - `storage.*`
 - `infra.*`
+- `models.*`
+- `services.*`
 - `aws.region`
 
 They are consumed either:
@@ -122,6 +124,37 @@ They are consumed either:
 - by the installer/deployment layer
 - by runtime env rendering
 - or by direct `read_plain(...)` reads from `assembly.yaml`
+
+### Direct-agent model selection
+
+A direct SDK agent host selects one default model with an explicit provider
+and model ID:
+
+```yaml
+models:
+  default_llm_provider: custom
+  default_llm_model_id: <model-tag-served-by-the-endpoint>
+
+services:
+  llm:
+    custom:
+      endpoint: http://127.0.0.1:11500/generate
+      num_ctx: 32768
+```
+
+`configured_model_selection()` resolves the pair for any direct adapter.
+`build_model_service()` additionally projects it into a role-bound
+`ModelServiceBase`. An unknown model ID without an explicit provider fails
+instead of falling back to a different registered model. `provider: custom`
+requires an absolute HTTP(S) endpoint and accepts one positive shared
+`num_ctx`; the model ID is sent unchanged on every request. A protected custom
+gateway reads `platform.services.llm.custom.api_key` from `secrets.yaml`.
+
+Native ReAct and LangGraph use this model-service route in the runnable agent
+examples. A provider-native subprocess can consume the same model selection
+while retaining its own protocol constraints; the Claude Code example accepts
+the Anthropic provider only. Hosted application model picks remain bundle
+configuration under `role_models` or the application's supported-model list.
 
 ### Platform Auth Selection
 

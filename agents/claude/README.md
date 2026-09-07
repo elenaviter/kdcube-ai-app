@@ -4,7 +4,7 @@ title: "Run the Claude Code Agent"
 summary: "Run Claude Code through the KDCube harness with a Git-backed transcript and durable conversation."
 tags: ["agents", "claude-code", "harness", "conversation", "standalone", "web-search", "mcp"]
 keywords: ["ClaudeCodeAgent", "KDCube Web Search MCP", "Claude transcript", "Git session store", "ChatCommunicator", "accounting"]
-updated_at: 2026-09-05
+updated_at: 2026-09-07
 see_also:
   - repo:kdcube-ai-app/agents/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md
@@ -39,8 +39,21 @@ cd agents/claude
 .venv/bin/python agent.py
 ```
 
+The default run uses `agent.input.user_id: demo-user` and
+`agent.input.conversation_id: claude-demo`. Run it again with those values to
+continue the same durable conversation and Git-backed Claude transcript, or
+override them:
+
+```bash
+.venv/bin/python agent.py \
+  --user-id alice \
+  --conversation-id release-research \
+  --session-id terminal-1
+```
+
 For API-key execution, use `--provider anthropic` and set
-`services.anthropic.claude_code_key` in the generated secrets descriptor.
+`platform.services.anthropic.claude_code_key` in the generated secrets
+descriptor.
 
 ## What the demo shows
 
@@ -56,24 +69,30 @@ image to create an XLSX and HTML. A second MCP operation calls
 server exposes Markdown-to-DOCX and section-HTML-to-PPTX operations.
 
 The harness independently records both turns and accounting in KDCube storage.
-Inspect `output/runs/<conversation>/evidence.json`; it points to
+Inspect `output/runs/<user>/<conversation>/<run>/evidence.json`; it points to
 `output/kdcube-storage`, the execution ZIP containing `pkg/user_code.py`, and
 the Claude transcript branch. A successful run ends with `demonstration: PASS`.
 
 ## Change the demo
 
-Edit `config.local.yaml` to change Claude's adapter model, the
+Edit `config.local.yaml` to change Claude's command and timeout, the
 `workspace-files` instruction profile, `additional_instructions`, run directory,
-tools, skills, task, or timeout. The profile becomes generated `CLAUDE.md`;
-selected KDCube skills become native `.claude/skills` entries. Web Search's
-egress policy is under
-the `mcp__kdcube_web_search__web_search` tool row's `settings`. Edit
-`descriptors.local/assembly.yaml` to select a private Git
-transcript remote, and put its HTTPS token in
+tools, skills, or task. Its `agent.input` section selects the local caller
+session and durable conversation. Tenant and project come from
+`descriptors.local/assembly.yaml`; the Git transcript branch and Claude session
+ID add this runner's stable `claude` agent ID. The profile becomes generated
+`CLAUDE.md`; selected KDCube skills become native `.claude/skills` entries. Web
+Search's egress policy is under the
+`mcp__kdcube_web_search__web_search` tool row's `settings`. Edit
+`descriptors.local/assembly.yaml` to select the Anthropic model and a private
+Git transcript remote, and put its HTTPS token in
 `descriptors.local/secrets.yaml` at `services.git.http_token`.
 The SDK writes the selected stdio server and exact MCP tool permissions into
-Claude's workspace at run time. Both the adapter and shared descriptor template
-ship with `claude-haiku-4-5-20251001` selected. Tool and skill selection stays
+Claude's workspace at run time. The shared descriptor template ships with
+`claude-haiku-4-5-20251001` selected. The Claude Code
+subprocess requires `default_llm_provider: anthropic`; direct agents that use
+KDCube `ModelServiceBase`, including the Native and LangGraph examples, can
+instead select `provider: custom`. Tool and skill selection stays
 in `config.local.yaml`; executor, storage, and Git settings stay in the
 standard descriptors.
 The exact composition and process-workspace/artifact-workspace distinction are

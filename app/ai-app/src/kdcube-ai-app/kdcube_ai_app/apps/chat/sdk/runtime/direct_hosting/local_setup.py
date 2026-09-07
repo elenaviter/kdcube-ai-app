@@ -139,7 +139,7 @@ def main(*, root: Path | None = None, default_provider: str = "openai") -> None:
         default=default_provider,
         help=(
             "Model credential to place in secrets.yaml; use none for an "
-            "existing Claude CLI login."
+            "unprotected on-host model gateway or an existing Claude CLI login."
         ),
     )
     args = parser.parse_args()

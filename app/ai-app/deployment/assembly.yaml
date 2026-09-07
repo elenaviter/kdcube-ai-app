@@ -192,6 +192,7 @@ aws:
 # Models
 # ---------------------------------------------------------------------------
 models:
+  default_llm_provider: "anthropic"                         # explicit provider for direct SDK agent hosts
   default_llm_model_id: "claude-sonnet-4-6"                   # DEFAULT_LLM_MODEL_ID
   default_embedding_model_id: "openai-text-embedding-3-small"  # DEFAULT_EMBEDDING_MODEL_ID
 

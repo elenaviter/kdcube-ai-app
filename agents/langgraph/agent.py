@@ -33,6 +33,7 @@ from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.infrastructure import ( 
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.configuration import (  # noqa: E402
     activate_configured_skills,
+    configured_agent_input,
     configured_run_directory,
     configured_tools,
     configured_web_search,
@@ -269,6 +270,12 @@ async def main_async(args: argparse.Namespace) -> None:
     descriptors_dir = Path(args.descriptors).expanduser().resolve()
     settings = activate_platform_descriptors(descriptors_dir)
     config = load_config(config_path)
+    agent_input = configured_agent_input(
+        config,
+        user_id=args.user_id,
+        conversation_id=args.conversation_id,
+        session_id=args.session_id,
+    )
     configured_web_search(config, tool_id=WEB_SEARCH_TOOL_ID)
     from kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search import web_search_server
 
@@ -279,6 +286,9 @@ async def main_async(args: argparse.Namespace) -> None:
         descriptors_dir=descriptors_dir,
         bundle_id="standalone-langgraph-demo@1-0",
         agent_id="langgraph",
+        user_id=agent_input.user_id,
+        user_type=agent_input.user_type,
+        session_id=agent_input.session_id,
         check_only=args.check,
     )
     agent_cfg = dict(config.get("agent") or {})
@@ -348,6 +358,15 @@ async def main_async(args: argparse.Namespace) -> None:
     print(f"skills: {', '.join(skill_config.enabled) or '(none)'}")
     print(f"run directory: {output_dir}")
     print(f"conversation storage: {harness_config.storage_uri}")
+    print(f"user: {agent_input.user_id} ({agent_input.user_type})")
+    print(f"session: {agent_input.session_id}")
+    print(f"conversation: {agent_input.conversation_id}")
+    private_state_key = agent_input.continuity_key(
+        tenant=harness_config.tenant,
+        project=harness_config.project,
+        agent_id=harness_config.agent_id,
+    )
+    print(f"agent state scope: {private_state_key}")
     if not args.check:
         image = verify_docker_image(exec_runtime)
         print(f"isolated execution image: {image}")
@@ -369,6 +388,12 @@ async def main_async(args: argparse.Namespace) -> None:
     service = await build_model_service(role=ROLE, check_only=args.check)
     selected_model = service.config.ensure_role(ROLE)
     print(f"model: {selected_model['provider']}/{selected_model['model']}")
+    if selected_model["provider"] == "custom":
+        print(f"model endpoint: {service.config.custom_model_endpoint}")
+        print(
+            "model context: "
+            f"{service.config.custom_model_num_ctx or 'gateway default'}"
+        )
     model = KDCubeChatModel(
         models_service=service,
         role=ROLE,
@@ -383,8 +408,11 @@ async def main_async(args: argparse.Namespace) -> None:
         print("check: PASS")
         return
 
-    conversation_id = f"langgraph-{uuid.uuid4().hex[:10]}"
-    run_root = output_dir / "runs" / conversation_id
+    conversation_id = agent_input.conversation_id
+    run_root = agent_input.run_path(
+        output_dir,
+        run_id=f"run_{uuid.uuid4().hex[:12]}",
+    )
     run_root.mkdir(parents=True, exist_ok=True)
     emitter = ConsoleEmitter(run_root / "communicator.jsonl")
     harness = DirectAgentHarness(
@@ -394,7 +422,7 @@ async def main_async(args: argparse.Namespace) -> None:
     )
     print(f"run output: {run_root}")
     run_config = {
-        "configurable": {"thread_id": conversation_id},
+        "configurable": {"thread_id": private_state_key},
         "recursion_limit": int(agent_cfg.get("recursion_limit") or 24),
     }
     topic = str(agent_cfg.get("topic") or "accountable agent runtimes")
@@ -508,6 +536,12 @@ def main() -> None:
         action="store_true",
         help="Verify Redis and bootstrap Postgres checkpoint tables without calling a provider.",
     )
+    parser.add_argument("--user-id", help="Override agent.input.user_id.")
+    parser.add_argument(
+        "--conversation-id",
+        help="Override agent.input.conversation_id and resume that conversation.",
+    )
+    parser.add_argument("--session-id", help="Override agent.input.session_id.")
     asyncio.run(main_async(parser.parse_args()))
 
 

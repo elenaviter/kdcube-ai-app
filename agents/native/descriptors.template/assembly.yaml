@@ -21,7 +21,14 @@ storage:
     repo: ""
 
 models:
+  default_llm_provider: anthropic
   default_llm_model_id: claude-haiku-4-5-20251001
+
+services:
+  llm:
+    custom:
+      endpoint: http://127.0.0.1:11500/generate
+      num_ctx: 32768
 
 secrets:
   provider: secrets-file

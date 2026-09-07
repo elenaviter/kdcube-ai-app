@@ -129,7 +129,7 @@ You can also start with one SDK component from this checkout:
 
 | Goal | Start here |
 | --- | --- |
-| Run native ReAct, LangGraph, or Claude Code through the Agent Harness directly from Python | [Runnable agents](agents/README.md) · [executable recipe](app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md) |
+| Keep a LangGraph or Claude Code agent, or start with Native ReAct, and add durable conversations, tools, skills, isolated code, files, rendering, streaming, and accounting | [Add the KDCube Harness to your agent](agents/README.md) · [run it step by step](app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md) |
 | Give an agent KDCube Web Search as a standalone, operator-filtered MCP server | [Web Search MCP quick start](mcp/web-search/README.md) · [MCP server catalog](mcp/README.md) |
 
 The direct-agent path uses independent Redis and Postgres services and does

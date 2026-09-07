@@ -1,4 +1,9 @@
 agent:
+  input:
+    user_id: demo-user
+    user_type: regular
+    session_id: local-session
+    conversation_id: langgraph-demo
   max_tokens: 12000
   recursion_limit: 24
   topic: "the current stable Python release and its release date"

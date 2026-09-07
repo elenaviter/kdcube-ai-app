@@ -108,6 +108,9 @@ def direct_harness_config(
     descriptors_dir: Path,
     bundle_id: str,
     agent_id: str,
+    user_id: str,
+    user_type: str,
+    session_id: str,
     check_only: bool = False,
 ):
     """Project standard descriptors into the SDK's direct-host contract."""
@@ -118,9 +121,9 @@ def direct_harness_config(
     return DirectAgentHarnessConfig(
         tenant=str(getattr(settings, "TENANT", "") or "standalone"),
         project=str(getattr(settings, "PROJECT", "") or "agent-harness-demo"),
-        user_id="demo-user",
-        user_type="regular",
-        session_id="local-session",
+        user_id=user_id,
+        user_type=user_type,
+        session_id=session_id,
         bundle_id=bundle_id,
         agent_id=agent_id,
         postgres_url=postgres_url(settings, check_only=check_only),

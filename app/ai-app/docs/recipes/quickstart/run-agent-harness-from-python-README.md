@@ -5,7 +5,7 @@ summary: "Run native ReAct, LangGraph, or Claude Code from SDK source with web r
 status: current
 tags: ["recipe", "quickstart", "agent-harness", "python", "native-react", "langgraph", "claude-code", "self-hosted", "web-search", "rendering"]
 keywords: ["run agent harness", "direct SDK agent", "KDCube Web Search", "standard descriptors", "Redis", "Postgres", "Git transcript", "isolated code execution", "write_pdf", "write_docx", "write_pptx"]
-updated_at: 2026-09-06
+updated_at: 2026-09-07
 see_also:
   - repo:kdcube-ai-app/agents/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/README.md
@@ -14,6 +14,8 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/assembly-descriptor-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/secrets-descriptor-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/exec/README-iso-runtime.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/settle-your-solution-in-kdcube-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/telegram-README.md
   - repo:kdcube-ai-app/mcp/web-search/README.md
 ---
 # Recipe: Run the Agent Harness from Python
@@ -49,6 +51,7 @@ Open agents/
               |
               v
        create local descriptors
+       select user + conversation input
        start Redis + Postgres
        build isolated executor image
               |
@@ -87,7 +90,8 @@ Install Git, Python 3.11, and Docker Engine or Docker Desktop with Compose.
 
 You also need one model interface:
 
-- Native or LangGraph uses a provider API key.
+- Native or LangGraph uses a provider API key or an on-host model behind the
+  KDCube models gateway.
 - Claude uses an authenticated Claude Code CLI or an Anthropic key.
 
 ## 1. Get the source
@@ -127,7 +131,7 @@ paths. DOCX consumes Markdown; PPTX consumes section-based HTML.
 
 ## 4. Create local descriptors
 
-For Native or LangGraph:
+For Native or LangGraph with a hosted provider:
 
 ```bash
 .venv/bin/python setup_local.py --provider anthropic
@@ -154,6 +158,100 @@ descriptors.local/
 Claude setup also initializes `output/claude-session-store.git`. These are
 ordinary app-agnostic platform descriptors; this direct process does not need
 `bundles.yaml`.
+
+### Use an on-host model
+
+Native and LangGraph use the SDK's shared descriptor-to-`ModelServiceBase`
+route. Prepare either example without a provider secret:
+
+```bash
+.venv/bin/python setup_local.py --provider none
+```
+
+Select one exact model in `descriptors.local/assembly.yaml`:
+
+```yaml
+models:
+  default_llm_provider: custom
+  default_llm_model_id: <model-tag-loaded-by-your-local-runtime>
+
+services:
+  llm:
+    custom:
+      endpoint: http://127.0.0.1:11500/generate
+      num_ctx: 32768
+```
+
+`default_llm_model_id` is passed through unchanged. Choose a model your local
+runtime already serves; the sample carries no model allowlist or
+model-specific override map. `num_ctx` is one shared request context budget.
+Set it to a value supported by both the selected model and the available
+memory. If the gateway is protected, put its key at
+`platform.services.llm.custom.api_key` in
+`descriptors.local/secrets.yaml`.
+
+Start the inference runtime in one terminal:
+
+```bash
+ollama serve
+```
+
+Load the selected model and start the protocol gateway in a second terminal:
+
+```bash
+cd "$KDCUBE_SOURCE/agents/$AGENT"
+ollama pull <model-tag-loaded-by-your-local-runtime>
+.venv/bin/python -m uvicorn \
+  kdcube_ai_app.apps.models_gateway.app:app \
+  --host 127.0.0.1 --port 11500
+```
+
+From the terminal that will run the agent, verify the gateway before
+construction:
+
+```bash
+curl -s http://127.0.0.1:11500/health
+.venv/bin/python agent.py --check
+```
+
+The agent process runs on the host, so it uses `127.0.0.1`. A KDCube
+processor running inside Docker uses `host.docker.internal` for the same host
+gateway.
+
+Native ReAct does not require provider-native tool calling. Its instruction
+profile and parser own the action protocol. The chosen model still needs to
+follow that protocol, preserve structured action arguments, and fit the
+instructions, tool catalog, conversation, and requested output inside
+`num_ctx`. LangGraph forwards native tool specifications through the model
+service, so its chosen model endpoint must emit the corresponding tool events.
+
+Claude Code reads its model ID from the same `models` descriptor section, but
+its subprocess owns an Anthropic-specific model protocol. Keep
+`default_llm_provider: anthropic` for the Claude example. This is an adapter
+constraint, not a second model-configuration location.
+
+### Plan local capacity
+
+The model runtime dominates GPU memory. Model weights, quantization, context
+length, and KV cache determine whether the selected model fits; the Python
+harness itself uses no model VRAM. For one developer running turns
+sequentially, use these as starting capacity allowances rather than measured
+guarantees:
+
+| Component | Starting host-memory allowance | What changes it |
+| --- | ---: | --- |
+| Direct harness, Redis, and Postgres | 1-2 GB | retained test data and concurrent turns |
+| One Playwright/Chromium render | 0.5-1.5 GB | page size, images, and browser concurrency |
+| One isolated Python execution | 0.5-2 GB | generated code, workbook size, and container limits |
+| On-host inference | model-dependent | weights, quantization, context/KV cache, and CPU spill |
+
+A machine with 24 GB system RAM and 8 GB VRAM can plausibly run a small
+quantized model plus this sequential demo, but this is not a benchmark or a
+model recommendation. Start with one active turn, one browser render, and one
+executor call at a time. Reduce `num_ctx`, output tokens, or enabled tools when
+the local runtime spills excessively or cannot fit the request. Playwright is
+needed only for browser-backed rendering; disabling the PDF/PPTX tools and
+their demo calls removes that browser workload.
 
 ## 5. Build the isolated Python executor
 
@@ -192,6 +290,12 @@ for the same capabilities:
 
 ```yaml
 agent:
+  input:
+    user_id: demo-user
+    user_type: regular
+    session_id: local-session
+    conversation_id: native-demo
+    recall_conversation_id: native-recall-demo
   topic: "the current stable Python release and its release date"
   instructions:
     profile: lite:core
@@ -225,6 +329,23 @@ agent:
     enabled:
       - demo.research-brief
 ```
+
+`user_id` and `conversation_id` select the durable conversation. Run with the
+same pair again to continue it; change `conversation_id` to start another
+conversation for that user. Tenant and project come from `assembly.yaml`.
+Each runner contributes its stable agent ID, so framework-private checkpoints
+and transcripts use this complete scope:
+
+```text
+tenant / project / user_id / conversation_id / agent_id
+```
+
+The shared conversation itself remains keyed by tenant, project, user, and
+conversation. The final `agent_id` segment prevents two agent implementations
+serving that conversation from colliding in private state. `session_id`
+identifies the current calling session and accounting lineage. Native's
+`recall_conversation_id` is the separate conversation used by its explicit
+cross-conversation search demonstration.
 
 The corresponding IDs are:
 
@@ -270,7 +391,14 @@ storage:
   kdcube: ../output/kdcube-storage
 
 models:
+  default_llm_provider: anthropic
   default_llm_model_id: claude-haiku-4-5-20251001
+
+services:
+  llm:
+    custom:
+      endpoint: http://127.0.0.1:11500/generate
+      num_ctx: 32768
 
 platform:
   services:
@@ -281,8 +409,11 @@ platform:
 ```
 
 Credentials live in `descriptors.local/secrets.yaml`. Model prices and
-economics policy live in `descriptors.local/economics.yaml`. The three samples
-use separate default ports, so their Compose projects can run independently.
+economics policy live in `descriptors.local/economics.yaml`; add a matching
+`provider: custom` price row when a local model needs non-zero cost conversion.
+Token usage remains accountable even when that conversion price is zero. The
+three samples use separate default ports, so their Compose projects can run
+independently.
 
 ## 8. Check and run
 
@@ -291,6 +422,22 @@ use separate default ports, so their Compose projects can run independently.
 .venv/bin/python agent.py --infra-check
 .venv/bin/python agent.py
 ```
+
+The YAML values can be selected from the command line without editing the
+file:
+
+```bash
+.venv/bin/python agent.py \
+  --user-id alice \
+  --conversation-id release-research \
+  --session-id terminal-1
+```
+
+Running the same command again continues `release-research` for `alice`.
+Choosing another user or conversation selects a separate durable history.
+Native also accepts `--recall-conversation-id` for its third-turn recall test.
+Every construction check prints the resolved input and full private-state
+scope before any model call.
 
 `--check` constructs the adapter, exact tool inventory, and skills without
 contacting a provider or support service. `--infra-check` verifies Redis,
@@ -320,8 +467,10 @@ find output/runs -type f \
   -print
 ```
 
-Each `output/runs/<conversation>/evidence.json` is a navigation index. It points
-to authoritative records under the configured `storage.kdcube` root:
+Each `output/runs/<user>/<conversation>/<run>/evidence.json` is a navigation
+index. The final run segment is unique to one process invocation, so an old
+deliverable cannot satisfy a new run's verification. The index points to
+authoritative records under the configured `storage.kdcube` root:
 
 ```text
 output/kdcube-storage/
@@ -369,11 +518,12 @@ Native adds a third turn in a different conversation and requires
 `react.memsearch` to recover the earlier research for the same user.
 
 LangGraph rebuilds its graph with turn-bound tools on every invocation while
-reusing the same Postgres checkpoint thread. The fresh tool binding prevents a
-later turn from writing into an earlier turn's artifact root.
+reusing the same Postgres checkpoint thread. Its thread ID includes tenant,
+project, user, conversation, and agent. The fresh tool binding prevents a later
+turn from writing into an earlier turn's artifact root.
 
-Claude resumes its CLI transcript from a per-conversation Git branch. Inspect
-the local branch with:
+Claude derives its CLI session ID and Git transcript branch from that same
+complete scope. Inspect the local branch with:
 
 ```bash
 git --git-dir output/claude-session-store.git for-each-ref \
@@ -396,17 +546,21 @@ adapters live in `tools.py`. Claude's runner writes the selected stdio MCP
 servers and exact allowed tool IDs into its workspace for each turn. Rerun
 `--check` after any tool or skill change.
 
-## 13. Know the boundary
+## 13. Serve the same agent to users
 
 This direct-host path gives one Python process model accounting, durable
 conversation records, communicator events, skills, attachments, output
 hosting, isolated Python, and document rendering. The process owner controls
 the selected tools.
 
-For a multi-user runtime with chat UI, authentication, managed tools,
-tool-execution enforcement, delegated consent, isolated workspaces,
-rate/spend policy, and app hosting, follow
-[Quick Start: Run KDCube Locally](../../quick-start-README.md).
+To serve the same agent through chat UI, API, or messaging, keep its core and
+harness adapter, place their composition in a KDCube app, and declare the
+required surface. The hosted runtime obtains user and conversation identity
+from authenticated ingress and adds tool-execution enforcement, delegated
+consent, rate/spend policy, and app hosting. Follow
+[Settle Your Solution in KDCube](../apps/settle-your-solution-in-kdcube-README.md).
+For Telegram ingress, also follow the
+[Telegram integration recipe](../connections/integrations/telegram-README.md).
 
 ## 14. Stop services
 

@@ -74,6 +74,36 @@ def test_primary_agents_are_visible_at_the_agents_root() -> None:
     assert top_level_directories == set(ADAPTERS)
 
 
+def test_agents_root_explains_the_demonstration_and_why_to_run_it() -> None:
+    source = (AGENTS_ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "# Add the KDCube Harness to Your Agent" in source
+    assert "Keep the agent core you already have." in source
+    assert "If you do not have an agent core, use the Native ReAct example." in source
+    assert "it does not require a running KDCube server" in source
+    assert "## Why use the harness?" in source
+    assert "## How do I try it?" in source
+    assert "continue a conversation from Postgres and search an earlier conversation" in source
+    assert "YAML-selected tools, skills, instructions, and Web Search policy" in source
+    assert "isolated Docker workspace" in source
+    assert "receive an attachment and retain generated files" in source
+    for adapter in ADAPTERS:
+        assert f"[{adapter}]({adapter}/README.md)" in source
+
+
+def test_repo_entry_points_name_the_agent_harness_value() -> None:
+    root = ROOT_README.read_text(encoding="utf-8")
+    quick_start = QUICK_START.read_text(encoding="utf-8")
+
+    for source in (root, quick_start):
+        normalized = " ".join(source.split())
+        assert "Add the KDCube Harness to your agent" in normalized
+        assert "durable conversations" in normalized
+        assert "isolated code" in normalized
+        assert "rendering" in normalized
+        assert "accounting" in normalized
+
+
 def test_primary_onboarding_links_agents_and_web_search_directly() -> None:
     root = ROOT_README.read_text(encoding="utf-8")
     quick_start = QUICK_START.read_text(encoding="utf-8")
@@ -127,6 +157,13 @@ def test_each_example_owns_its_runnable_contract(adapter: str) -> None:
     assert "web_search" not in config
     assert "infra" not in config
     agent = config["agent"]
+    agent_input = agent["input"]
+    assert agent_input["user_id"] == "demo-user"
+    assert agent_input["user_type"] == "regular"
+    assert agent_input["session_id"] == "local-session"
+    assert agent_input["conversation_id"] == f"{adapter}-demo"
+    if adapter == "native":
+        assert agent_input["recall_conversation_id"] == "native-recall-demo"
     assert agent["instructions"]["profile"] == (
         "lite:core" if adapter == "native" else "workspace-files"
     )
@@ -154,7 +191,7 @@ def test_each_example_owns_its_runnable_contract(adapter: str) -> None:
     assert web_policy["filter"]["blocklist"] == []
     assert web_policy["filter"]["ssrf_guard"] is True
     if adapter == "claude":
-        assert agent["adapter"]["model"] == "claude-haiku-4-5-20251001"
+        assert "model" not in agent["adapter"]
     else:
         assert "adapter" not in agent
 
@@ -314,6 +351,12 @@ async def test_claude_harness_mcp_exposes_execution_and_rendering_tools(
             str(tmp_path / "mcp-events.jsonl"),
             "--conversation-id",
             "conversation-demo",
+            "--user-id",
+            "demo-user",
+            "--user-type",
+            "regular",
+            "--session-id",
+            "local-session",
             "--turn-id",
             "turn_demo",
             "--bundle-id",
@@ -353,6 +396,7 @@ def test_each_example_owns_a_standard_app_agnostic_descriptor_set(adapter: str) 
     assert isinstance(assembly.get("infra", {}).get("redis"), dict)
     assert isinstance(assembly.get("infra", {}).get("postgres"), dict)
     assert assembly.get("storage", {}).get("kdcube") == "../output/kdcube-storage"
+    assert assembly["models"]["default_llm_provider"] == "anthropic"
     assert assembly["models"]["default_llm_model_id"] == "claude-haiku-4-5-20251001"
     assert (
         assembly["platform"]["services"]["proc"]["exec"]["py_code_exec_image"]
@@ -368,6 +412,13 @@ def test_each_example_owns_a_standard_app_agnostic_descriptor_set(adapter: str) 
     else:
         assert "claude_code_session" not in assembly["storage"]
         assert "git" not in secrets["platform"]["services"]
+        custom = assembly["services"]["llm"]["custom"]
+        assert custom == {
+            "endpoint": "http://127.0.0.1:11500/generate",
+            "num_ctx": 32768,
+        }
+        assert "model_overrides" not in custom
+        assert secrets["platform"]["services"]["llm"]["custom"]["api_key"] is None
     prices = economics.get("price_tables", {}).get("llm")
     assert prices
     assert prices[0]["model"] == "claude-haiku-4-5-20251001"
@@ -396,6 +447,21 @@ def test_primary_examples_use_sdk_direct_harness(adapter: str) -> None:
     assert "verify_conversation(" in source
 
 
+def test_each_adapter_uses_the_full_agent_private_state_scope() -> None:
+    native = (AGENTS_ROOT / "native" / "agent.py").read_text(encoding="utf-8")
+    langgraph = (AGENTS_ROOT / "langgraph" / "agent.py").read_text(
+        encoding="utf-8"
+    )
+    claude = (AGENTS_ROOT / "claude" / "agent.py").read_text(encoding="utf-8")
+
+    for source in (native, langgraph, claude):
+        assert ".continuity_key(" in source
+        assert 'user_id="demo-user"' not in source
+        assert 'session_id="local-session"' not in source
+    assert '"thread_id": private_state_key' in langgraph
+    assert 'f"kdcube-agent:{private_state_key}"' in claude
+
+
 def test_claude_uses_sdk_git_session_store_for_its_transcript() -> None:
     source = (AGENTS_ROOT / "claude" / "agent.py").read_text(encoding="utf-8")
     assembly = yaml.safe_load(
@@ -410,6 +476,7 @@ def test_claude_uses_sdk_git_session_store_for_its_transcript() -> None:
     )
     assert "run_claude_code_turn(" in source
     assert "ClaudeCodeSessionStoreConfig(" in source
+    assert source.count("agent_name=agent_id") == 2
     assert assembly["storage"]["claude_code_session"]["type"] == "git"
     assert str(assembly["storage"]["claude_code_session"]["repo"] or "")
     assert "http_token" in secrets["platform"]["services"]["git"]
@@ -444,7 +511,50 @@ def test_offline_adapter_construction(adapter: str) -> None:
     assert "instruction profile:" in completed.stdout
     assert "custom instructions: configured" in completed.stdout
     assert "model: anthropic/claude-haiku-4-5-20251001" in completed.stdout
+    assert f"conversation: {adapter}-demo" in completed.stdout
+    assert (
+        f"agent state scope: standalone/agent-harness-{adapter}/"
+        f"demo-user/{adapter}-demo/{adapter}"
+    ) in completed.stdout
     assert "check: PASS" in completed.stdout
+
+
+@pytest.mark.parametrize("adapter", ADAPTERS)
+def test_offline_adapter_construction_accepts_explicit_caller_overrides(
+    adapter: str,
+) -> None:
+    root = AGENTS_ROOT / adapter
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "agent.py",
+            "--config",
+            "config.template.yaml",
+            "--descriptors",
+            "descriptors.template",
+            "--check",
+            "--user-id",
+            "alice",
+            "--conversation-id",
+            "research-42",
+            "--session-id",
+            "terminal-7",
+        ],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "user: alice (regular)" in completed.stdout
+    assert "session: terminal-7" in completed.stdout
+    assert "conversation: research-42" in completed.stdout
+    assert (
+        f"agent state scope: standalone/agent-harness-{adapter}/"
+        f"alice/research-42/{adapter}"
+    ) in completed.stdout
 
 
 @pytest.mark.parametrize("adapter", ADAPTERS)
@@ -487,6 +597,7 @@ def test_native_model_selection_comes_from_assembly_descriptor(tmp_path: Path) -
     shutil.copytree(AGENTS_ROOT / "native" / "descriptors.template", descriptors)
     assembly_path = descriptors / "assembly.yaml"
     assembly = yaml.safe_load(assembly_path.read_text(encoding="utf-8"))
+    assembly["models"]["default_llm_provider"] = "openai"
     assembly["models"]["default_llm_model_id"] = "gpt-4o"
     assembly_path.write_text(yaml.safe_dump(assembly, sort_keys=False), encoding="utf-8")
 
@@ -507,6 +618,119 @@ def test_native_model_selection_comes_from_assembly_descriptor(tmp_path: Path) -
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert "model: openai/gpt-4o" in completed.stdout
+
+
+@pytest.mark.parametrize("adapter", ("native", "langgraph"))
+def test_model_service_agents_accept_arbitrary_on_host_model_from_assembly(
+    adapter: str,
+    tmp_path: Path,
+) -> None:
+    descriptors = tmp_path / f"{adapter}-descriptors"
+    root = AGENTS_ROOT / adapter
+    shutil.copytree(root / "descriptors.template", descriptors)
+    assembly_path = descriptors / "assembly.yaml"
+    assembly = yaml.safe_load(assembly_path.read_text(encoding="utf-8"))
+    assembly["models"] = {
+        "default_llm_provider": "custom",
+        "default_llm_model_id": "operator-selected:model-tag",
+    }
+    assembly["services"]["llm"]["custom"] = {
+        "endpoint": "http://127.0.0.1:11500/generate",
+        "num_ctx": 24576,
+    }
+    assembly_path.write_text(yaml.safe_dump(assembly, sort_keys=False), encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "agent.py",
+            "--config",
+            "config.template.yaml",
+            "--descriptors",
+            str(descriptors),
+            "--check",
+        ],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "model: custom/operator-selected:model-tag" in completed.stdout
+    assert "model endpoint: http://127.0.0.1:11500/generate" in completed.stdout
+    assert "model context: 24576" in completed.stdout
+    assert "check: PASS" in completed.stdout
+
+
+def test_custom_model_selection_requires_gateway_endpoint(tmp_path: Path) -> None:
+    descriptors = tmp_path / "descriptors"
+    root = AGENTS_ROOT / "native"
+    shutil.copytree(root / "descriptors.template", descriptors)
+    assembly_path = descriptors / "assembly.yaml"
+    assembly = yaml.safe_load(assembly_path.read_text(encoding="utf-8"))
+    assembly["models"] = {
+        "default_llm_provider": "custom",
+        "default_llm_model_id": "operator-selected:model-tag",
+    }
+    del assembly["services"]["llm"]["custom"]["endpoint"]
+    assembly_path.write_text(yaml.safe_dump(assembly, sort_keys=False), encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "agent.py",
+            "--config",
+            "config.template.yaml",
+            "--descriptors",
+            str(descriptors),
+            "--check",
+        ],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "provider 'custom' requires services.llm.custom.endpoint" in completed.stderr
+
+
+def test_claude_model_selection_is_descriptor_owned_and_provider_constrained(
+    tmp_path: Path,
+) -> None:
+    descriptors = tmp_path / "descriptors"
+    root = AGENTS_ROOT / "claude"
+    shutil.copytree(root / "descriptors.template", descriptors)
+    assembly_path = descriptors / "assembly.yaml"
+    assembly = yaml.safe_load(assembly_path.read_text(encoding="utf-8"))
+    assembly["models"] = {
+        "default_llm_provider": "custom",
+        "default_llm_model_id": "operator-selected:model-tag",
+    }
+    assembly_path.write_text(yaml.safe_dump(assembly, sort_keys=False), encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "agent.py",
+            "--config",
+            "config.template.yaml",
+            "--descriptors",
+            str(descriptors),
+            "--check",
+        ],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "Claude Code adapter requires models.default_llm_provider" in completed.stderr
 
 
 def test_each_example_owns_its_selected_research_skill() -> None:
@@ -624,14 +848,24 @@ def test_direct_recipe_is_an_executable_configuration_contract() -> None:
     source = DIRECT_RECIPE.read_text(encoding="utf-8")
     required = (
         ".venv/bin/python setup_local.py --provider anthropic",
+        ".venv/bin/python setup_local.py --provider none",
         "docker compose --env-file .env -f compose.yaml up -d --wait",
         "descriptors.local/",
         "storage:\n  kdcube:",
         "storage.claude_code_session.repo",
         "platform.services.git.http_token",
-        "models:\n  default_llm_model_id: claude-haiku-4-5-20251001",
+        "default_llm_provider: custom",
+        "default_llm_model_id: <model-tag-loaded-by-your-local-runtime>",
+        "endpoint: http://127.0.0.1:11500/generate",
+        "kdcube_ai_app.apps.models_gateway.app:app",
+        "Native ReAct does not require provider-native tool calling",
+        "Playwright/Chromium render",
         ".venv/bin/python agent.py --check",
-        "agent:\n  topic:",
+        "agent:\n  input:",
+        "user_id: demo-user",
+        "conversation_id: native-demo",
+        "tenant / project / user_id / conversation_id / agent_id",
+        "topic: \"the current stable Python release and its release date\"",
         "instructions:\n    profile: lite:core",
         "additional_instructions: |",
         "id: web_tools.web_search",
@@ -642,6 +876,8 @@ def test_direct_recipe_is_an_executable_configuration_contract() -> None:
         "Dockerfile_Exec",
         "docker image inspect py-code-exec:latest",
         "demonstration: PASS",
+        "output/runs/<user>/<conversation>/<run>/evidence.json",
+        "Serve the same agent to users",
     )
     assert not [fragment for fragment in required if fragment not in source]
     assert "api_key_ref" not in source

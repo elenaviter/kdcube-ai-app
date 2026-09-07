@@ -31,6 +31,7 @@ from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.infrastructure import ( 
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.configuration import (  # noqa: E402
     activate_configured_skills,
+    configured_agent_input,
     configured_run_directory,
     configured_web_search,
     verify_docker_image,
@@ -196,17 +197,24 @@ def comm_context(
     tenant: str,
     project: str,
     bundle_id: str,
+    user_id: str,
+    user_type: str,
+    session_id: str,
 ) -> ExternalEventPayload:
     return ExternalEventPayload(
         request=ExternalEventRequest(request_id=f"req-{turn_id}", payload={}),
         routing=ExternalEventRouting(
-            session_id="local-session",
+            session_id=session_id,
             conversation_id=conversation_id,
             turn_id=turn_id,
             bundle_id=bundle_id,
         ),
         actor=ExternalEventActor(tenant_id=tenant, project_id=project),
-        user=ExternalEventUser(user_type="regular", user_id="demo-user", timezone="UTC"),
+        user=ExternalEventUser(
+            user_type=user_type,
+            user_id=user_id,
+            timezone="UTC",
+        ),
     )
 
 
@@ -237,8 +245,8 @@ async def build_turn(
     runtime = RuntimeCtx(
         tenant=harness_config.tenant,
         project=harness_config.project,
-        user_id="demo-user",
-        user_type="regular",
+        user_id=harness_config.user_id,
+        user_type=harness_config.user_type,
         conversation_id=conversation_id,
         turn_id=turn_id,
         bundle_id=harness_config.bundle_id,
@@ -277,7 +285,7 @@ async def build_turn(
         hosting_service=hosting_service,
     )
     scratchpad = TurnScratchpad(
-        "demo-user",
+        harness_config.user_id,
         conversation_id,
         turn_id,
         prompt,
@@ -296,6 +304,9 @@ async def build_turn(
             tenant=harness_config.tenant,
             project=harness_config.project,
             bundle_id=harness_config.bundle_id,
+            user_id=harness_config.user_id,
+            user_type=harness_config.user_type,
+            session_id=harness_config.session_id,
         ),
         ctx_browser=browser,
         hosting_service=hosting_service,
@@ -426,6 +437,28 @@ async def main_async(args: argparse.Namespace) -> None:
     descriptors_dir = Path(args.descriptors).expanduser().resolve()
     settings = activate_platform_descriptors(descriptors_dir)
     config = load_config(config_path)
+    agent_input = configured_agent_input(
+        config,
+        user_id=args.user_id,
+        conversation_id=args.conversation_id,
+        session_id=args.session_id,
+    )
+    input_config = dict((config.get("agent") or {}).get("input") or {})
+    recall_conversation_id = str(
+        args.recall_conversation_id
+        or input_config.get("recall_conversation_id")
+        or ""
+    ).strip()
+    if bool((config.get("agent") or {}).get("cross_conversation_search", True)):
+        if not recall_conversation_id:
+            raise ValueError(
+                "agent.input.recall_conversation_id is required when "
+                "cross_conversation_search is enabled"
+            )
+        if recall_conversation_id == agent_input.conversation_id:
+            raise ValueError(
+                "agent.input.recall_conversation_id must differ from conversation_id"
+            )
     configured_web_search(config, tool_id=WEB_SEARCH_TOOL_ID)
     from kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search import web_search_server
 
@@ -440,6 +473,9 @@ async def main_async(args: argparse.Namespace) -> None:
         descriptors_dir=descriptors_dir,
         bundle_id="standalone-native-demo@1-0",
         agent_id="native",
+        user_id=agent_input.user_id,
+        user_type=agent_input.user_type,
+        session_id=agent_input.session_id,
         check_only=args.check,
     )
     tool_bindings = resolve_native_tool_bindings(
@@ -474,6 +510,12 @@ async def main_async(args: argparse.Namespace) -> None:
     if service is not None:
         selected_model = service.config.ensure_role(ROLE)
         print(f"model: {selected_model['provider']}/{selected_model['model']}")
+        if selected_model["provider"] == "custom":
+            print(f"model endpoint: {service.config.custom_model_endpoint}")
+            print(
+                "model context: "
+                f"{service.config.custom_model_num_ctx or 'gateway default'}"
+            )
     print(f"tools: {', '.join(tool_bindings.enabled_ids) or '(none)'}")
     print(f"instruction profile: {instruction_selection.profile}")
     print(
@@ -494,6 +536,17 @@ async def main_async(args: argparse.Namespace) -> None:
         print(f"document renderer: Playwright {browser} ready")
     print(f"run directory: {root}")
     print(f"conversation storage: {harness_config.storage_uri}")
+    print(f"user: {agent_input.user_id} ({agent_input.user_type})")
+    print(f"session: {agent_input.session_id}")
+    print(f"conversation: {agent_input.conversation_id}")
+    print(
+        "agent state scope: "
+        + agent_input.continuity_key(
+            tenant=harness_config.tenant,
+            project=harness_config.project,
+            agent_id=harness_config.agent_id,
+        )
+    )
     if args.check:
         assert service is not None
         agent_config = dict(config.get("agent") or {})
@@ -507,14 +560,14 @@ async def main_async(args: argparse.Namespace) -> None:
             solver, _browser, _comm, _runtime, tools = await build_turn(
                 prompt="Offline construction check.",
                 turn_id="turn_check",
-                conversation_id="native-check",
+                conversation_id=agent_input.conversation_id,
                 root=check_root,
                 max_iterations=int(agent_config.get("max_iterations") or 8),
                 max_tokens=int(agent_config.get("max_tokens") or 12000),
                 service=service,
                 context_client=_ConstructionContextClient(check_root / "context"),
                 comm=check_harness.communicator(
-                    conversation_id="native-check",
+                    conversation_id=agent_input.conversation_id,
                     turn_id="turn_check",
                 ),
                 tool_bindings=tool_bindings,
@@ -531,8 +584,11 @@ async def main_async(args: argparse.Namespace) -> None:
                 raise RuntimeError(f"native adapter construction incomplete: tools={sorted(tool_ids)}")
         print("check: PASS")
         return
-    conversation_id = f"native-{uuid.uuid4().hex[:10]}"
-    run_root = root / "runs" / conversation_id
+    conversation_id = agent_input.conversation_id
+    run_root = agent_input.run_path(
+        root,
+        run_id=f"run_{uuid.uuid4().hex[:12]}",
+    )
     run_root.mkdir(parents=True, exist_ok=True)
     emitter = ConsoleEmitter(run_root / "communicator.jsonl")
     harness = DirectAgentHarness(
@@ -619,7 +675,6 @@ async def main_async(args: argparse.Namespace) -> None:
         )
         print(f"[conversation] materialized {len(records)} durable turn record(s)")
         if bool((config.get("agent") or {}).get("cross_conversation_search", True)):
-            recall_conversation_id = f"native-recall-{uuid.uuid4().hex[:10]}"
             recall, recall_turn_id, recall_sources, recall_turn = await run_turn(
                 prompt=(
                     f"Call react.memsearch with scope='user' to find the research about {topic!r} "
@@ -700,6 +755,16 @@ def main() -> None:
         "--infra-check",
         action="store_true",
         help="Verify independent support services without calling a provider.",
+    )
+    parser.add_argument("--user-id", help="Override agent.input.user_id.")
+    parser.add_argument(
+        "--conversation-id",
+        help="Override agent.input.conversation_id and resume that conversation.",
+    )
+    parser.add_argument("--session-id", help="Override agent.input.session_id.")
+    parser.add_argument(
+        "--recall-conversation-id",
+        help="Override agent.input.recall_conversation_id for the recall demonstration.",
     )
     args = parser.parse_args()
     asyncio.run(main_async(args))
