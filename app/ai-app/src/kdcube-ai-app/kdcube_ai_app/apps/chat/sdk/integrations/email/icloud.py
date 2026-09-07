@@ -191,13 +191,18 @@ def _fetch_bytes(data: Iterable[Any]) -> bytes:
 
 
 def _fetch_payload_bytes(data: Iterable[Any]) -> bytes:
-    chunks: list[bytes] = []
+    """The message literal from a FETCH response. Servers may add untagged
+    lines (a FLAGS update after a writable SELECT marks the message \\Seen);
+    those are bare bytes, not literals, and must never be glued in front of
+    the headers, or the parser sees a message without a To: line."""
+    literals: list[bytes] = []
+    bare: list[bytes] = []
     for item in data or []:
         if isinstance(item, tuple) and len(item) >= 2 and isinstance(item[1], bytes):
-            chunks.append(item[1])
+            literals.append(item[1])
         elif isinstance(item, bytes) and item not in {b")"}:
-            chunks.append(item)
-    return b"\r\n".join(chunks)
+            bare.append(item)
+    return b"\r\n".join(literals) if literals else b"\r\n".join(bare)
 
 
 def _parse_internal_date_ms(raw: bytes) -> str:
@@ -607,7 +612,8 @@ def _send_draft_sync(*, creds: Mapping[str, Any], mailbox: str, uid: str) -> Dic
     The draft is expunged only after the SMTP server accepted the message."""
     conn = _connect_imap(creds)
     try:
-        typ, _ = conn.select(mailbox, readonly=False)
+        # read-only for the fetch: no flag changes, no untagged FLAGS lines in the response
+        typ, _ = conn.select(mailbox, readonly=True)
         if typ != "OK":
             raise RuntimeError(f"Could not select IMAP mailbox {mailbox!r}.")
         typ, data = conn.uid("FETCH", uid, "(RFC822)")
@@ -634,6 +640,9 @@ def _send_draft_sync(*, creds: Mapping[str, Any], mailbox: str, uid: str) -> Dic
                 smtp.starttls(context=ssl.create_default_context())
             smtp.login(sender, str(creds.get("password") or ""))
             refused = smtp.sendmail(sender, recipients, msg.as_bytes())
+        typ, _ = conn.select(mailbox, readonly=False)  # writable only for the removal
+        if typ != "OK":
+            raise RuntimeError(f"Could not reselect IMAP mailbox {mailbox!r} for removal.")
         conn.uid("STORE", uid, "+FLAGS", r"(\Deleted)")
         conn.expunge()
         return {

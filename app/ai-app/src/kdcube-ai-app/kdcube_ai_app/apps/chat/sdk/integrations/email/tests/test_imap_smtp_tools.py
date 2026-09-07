@@ -197,7 +197,7 @@ def test_send_draft_transmits_the_stored_bytes_then_expunges(monkeypatch):
         def select(self, mailbox, readonly=False): events.append(("select", mailbox, readonly)); return "OK", [b"3"]
         def uid(self, cmd, *args):
             events.append(("uid", cmd) + args)
-            if cmd == "FETCH": return "OK", [(b"1 (RFC822 {%d}" % len(raw), raw), b")"]
+            if cmd == "FETCH": return "OK", [b"786 (FLAGS (\\Seen \\Draft))", (b"1 (RFC822 {%d}" % len(raw), raw), b")"]
             return "OK", [b""]
         def expunge(self): events.append(("expunge",)); return "OK", [b"1"]
         def close(self): pass
@@ -228,7 +228,8 @@ def test_send_draft_transmits_the_stored_bytes_then_expunges(monkeypatch):
     # order: select Drafts (writable) -> fetch by UID -> SMTP -> flag deleted -> expunge
     kinds = [e[0] if e[0] != "uid" else e[1] for e in events]
     assert kinds.index("FETCH") < kinds.index("smtp") < kinds.index("STORE") < kinds.index("expunge")
-    assert events[0] == ("select", "Drafts", False)
+    assert events[0] == ("select", "Drafts", True)  # read-only fetch
+    assert ("select", "Drafts", False) in events  # writable only for the removal
     assert ("uid", "STORE", "17", "+FLAGS", r"(\Deleted)") in events  # one backslash on the wire
 
 
