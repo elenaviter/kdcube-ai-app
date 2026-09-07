@@ -105,10 +105,11 @@ def test_create_draft_appends_into_drafts_with_attachment(monkeypatch):
     resolve = _bind_credential(monkeypatch)
     captured = {}
 
-    def fake_append(creds, raw, mailbox="Drafts"):
+    def fake_append(creds, raw, mailbox="Drafts", flags="\\Draft"):
         captured["creds"] = dict(creds)
         captured["raw"] = raw
         captured["mailbox"] = mailbox
+        captured["flags"] = flags
         return {"uid": "77", "raw": "APPENDUID 1 77"}
 
     monkeypatch.setattr(imap_smtp_tools, "_append_draft_sync", fake_append)
@@ -124,6 +125,7 @@ def test_create_draft_appends_into_drafts_with_attachment(monkeypatch):
     # Drafts ride the send claim: an APPEND is a write to the mailbox.
     assert resolve.calls == [("email:send", "icloud_1", "icloud_mail.create_draft")]
     assert captured["creds"]["username"] == "elena.viter@icloud.com"
+    assert captured["flags"] == "\\Draft"
     assert captured["creds"]["smtp_host"] == "smtp.mail.me.com"
     assert captured["mailbox"] == "Drafts"
     assert b"letter.zip" in captured["raw"] and b"Juli 2026" in captured["raw"]
