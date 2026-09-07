@@ -200,6 +200,7 @@ def test_send_draft_transmits_the_stored_bytes_then_expunges(monkeypatch):
             if cmd == "FETCH": return "OK", [b"786 (FLAGS (\\Seen \\Draft))", (b"1 (RFC822 {%d}" % len(raw), raw), b")"]
             return "OK", [b""]
         def expunge(self): events.append(("expunge",)); return "OK", [b"1"]
+        def append(self, mailbox, flags, date, raw_bytes): events.append(("append", mailbox, flags, len(raw_bytes))); return "OK", [b"[APPENDUID 1 900]"]
         def close(self): pass
         def logout(self): pass
 
@@ -227,7 +228,10 @@ def test_send_draft_transmits_the_stored_bytes_then_expunges(monkeypatch):
     assert b"Bcc:" not in data and b"konto.zip" in data and b"<draft-1@icloud>" in data
     # order: select Drafts (writable) -> fetch by UID -> SMTP -> flag deleted -> expunge
     kinds = [e[0] if e[0] != "uid" else e[1] for e in events]
-    assert kinds.index("FETCH") < kinds.index("smtp") < kinds.index("STORE") < kinds.index("expunge")
+    assert kinds.index("FETCH") < kinds.index("smtp") < kinds.index("append") < kinds.index("STORE") < kinds.index("expunge")
+    # the transmitted copy lands in Sent (quoted mailbox name, \Seen), and the result says where
+    assert ("append", '"Sent Messages"', "\\Seen", len(data)) in events
+    assert out["ret"]["sent_copy_mailbox"] == "Sent Messages"
     assert events[0] == ("select", "Drafts", True)  # read-only fetch
     assert ("select", "Drafts", False) in events  # writable only for the removal
     assert ("uid", "STORE", "17", "+FLAGS", r"(\Deleted)") in events  # one backslash on the wire
@@ -278,3 +282,13 @@ def test_search_in_drafts_selects_the_drafts_mailbox(monkeypatch):
     assert seen["mailbox"] == ""  # INBOX by default
     asyncio.run(tools.search(query='in:"Sent Messages" x', max_results=5, account_id="icloud_1"))
     assert seen["mailbox"] == "Sent Messages" and seen["query"] == "x"
+
+
+def test_imap_mailbox_names_are_quoted_when_needed():
+    from kdcube_ai_app.apps.chat.sdk.integrations.email.icloud import imap_mailbox_arg
+    assert imap_mailbox_arg("INBOX") == "INBOX"
+    assert imap_mailbox_arg("Drafts") == "Drafts"
+    assert imap_mailbox_arg("Sent Messages") == '"Sent Messages"'
+    assert imap_mailbox_arg('"Sent Messages"') == '"Sent Messages"'
+    assert imap_mailbox_arg("[Gmail]/Sent Mail") == '"[Gmail]/Sent Mail"'
+    assert imap_mailbox_arg("") == "INBOX"

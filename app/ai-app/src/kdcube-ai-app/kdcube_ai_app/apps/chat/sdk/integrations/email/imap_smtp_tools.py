@@ -40,7 +40,9 @@ from kdcube_ai_app.apps.chat.sdk.integrations.email.icloud import (
     _imap_credentials,
     fetch_icloud_attachment,
     fetch_icloud_message,
+    append_icloud_sent_copy,
     fetch_icloud_messages,
+    imap_mailbox_arg,
     send_icloud_draft,
     send_icloud_message,
 )
@@ -49,9 +51,10 @@ IMAP_SMTP_ADAPTER = "email.imap_smtp_app_password"
 EMAIL_READ_CLAIM = "email:read"
 EMAIL_SEND_CLAIM = "email:send"
 DRAFTS_MAILBOX = "Drafts"
+SENT_MAILBOX = "Sent Messages"
 # Host settings a provider instance may carry in its catalog adapter_config;
 # absent keys fall back to the adapter module's defaults.
-HOST_SETTING_KEYS = ("imap_host", "imap_port", "smtp_host", "smtp_port", "smtp_starttls", "drafts_mailbox")
+HOST_SETTING_KEYS = ("imap_host", "imap_port", "smtp_host", "smtp_port", "smtp_starttls", "drafts_mailbox", "sent_mailbox")
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 
 _SERVICE: Any = None
@@ -168,6 +171,8 @@ class ImapSmtpMailTools:
         }
         self.label = _clean(label) or self.provider_id
         self.drafts_mailbox = _clean(self.settings.get("drafts_mailbox")) or DRAFTS_MAILBOX
+        # where a transmitted copy is appended after a send; empty disables the copy
+        self.sent_mailbox = _clean(self.settings.get("sent_mailbox")) or SENT_MAILBOX
 
     async def _credential(self, *, claim: str, account_id: str, tool_name: str):
         return await resolve_connected_account_claim(
@@ -187,7 +192,7 @@ class ImapSmtpMailTools:
         account = {
             "account_id": _clean(getattr(credential, "account_id", "")),
             "email": _clean(raw.get("email") or raw.get("username")) or login,
-            **{key: value for key, value in self.settings.items() if key != "drafts_mailbox"},
+            **{key: value for key, value in self.settings.items() if key not in ("drafts_mailbox", "sent_mailbox")},
         }
         return _HubTokenStore(raw, login=login), account
 
@@ -352,7 +357,7 @@ class ImapSmtpMailTools:
         if not credential.ok:
             return credential.error_envelope(where=where)
         store, account = self._adapter_inputs(credential)
-        result = await send_icloud_draft(store=store, account=account, draft_id=draft_id, mailbox=self.drafts_mailbox)
+        result = await send_icloud_draft(store=store, account=account, draft_id=draft_id, mailbox=self.drafts_mailbox, sent_mailbox=self.sent_mailbox)
         if not result.get("ok"):
             error = dict(result.get("error") or {})
             return _error(
@@ -369,6 +374,7 @@ class ImapSmtpMailTools:
                 "recipients": list(result.get("recipients") or []),
                 "attachment_count": int(result.get("attachment_count") or 0),
                 "draft_removed": bool(result.get("draft_removed")),
+                "sent_copy_mailbox": _clean(result.get("sent_copy_mailbox")),
                 "account_id": credential.account_id,
                 "provider": self.provider_id,
             }
@@ -517,9 +523,12 @@ class ImapSmtpMailTools:
                 where=where,
                 ret={"provider": self.provider_id},
             )
+        # Bcc was stripped by the SMTP step; the filed copy is the transmitted one
+        copy = await append_icloud_sent_copy(store=store, account=account, msg=message, mailbox=self.sent_mailbox)
         return _ok(
             {
                 "id": _clean(result.get("provider_message_id")),
+                "sent_copy_mailbox": _clean(copy.get("mailbox")),
                 "sender": sender,
                 "account_id": credential.account_id,
                 "attachment_count": len(attachments),
@@ -534,7 +543,7 @@ def _append_draft_sync(creds: Mapping[str, Any], raw: bytes, mailbox: str = DRAF
     conn = _connect_imap(creds)
     try:
         typ, data = conn.append(
-            mailbox,
+            imap_mailbox_arg(mailbox),
             "\\Draft",
             imaplib.Time2Internaldate(time.time()),
             raw,

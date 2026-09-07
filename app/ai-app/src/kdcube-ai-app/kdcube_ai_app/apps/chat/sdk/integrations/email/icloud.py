@@ -8,6 +8,7 @@ import logging
 import re
 import smtplib
 import ssl
+import time
 import urllib.parse
 from datetime import datetime, timezone
 from email import policy as email_policy
@@ -20,6 +21,7 @@ from typing import Any, Dict, Iterable, Mapping, Optional
 ICLOUD_IMAP_HOST = "imap.mail.me.com"
 ICLOUD_IMAP_PORT = 993
 ICLOUD_SMTP_HOST = "smtp.mail.me.com"
+ICLOUD_SENT_MAILBOX = "Sent Messages"
 ICLOUD_SMTP_PORT = 587
 
 log = logging.getLogger("kdcube.integrations.email.icloud")
@@ -33,6 +35,7 @@ def default_icloud_account_settings() -> Dict[str, Any]:
         "smtp_host": ICLOUD_SMTP_HOST,
         "smtp_port": ICLOUD_SMTP_PORT,
         "smtp_starttls": True,
+        "sent_mailbox": ICLOUD_SENT_MAILBOX,
     }
 
 
@@ -124,6 +127,18 @@ def _imap_search_criteria(
 def _message_id(*, mailbox: str, uid: str) -> str:
     encoded_mailbox = base64.urlsafe_b64encode(str(mailbox or "INBOX").encode("utf-8")).decode("ascii").rstrip("=")
     return f"imap:{encoded_mailbox}:{str(uid or '').strip()}"
+
+
+def imap_mailbox_arg(mailbox: str) -> str:
+    """IMAP wants mailbox names with spaces or specials quoted (``"Sent
+    Messages"``); imaplib passes the argument through verbatim, so an
+    unquoted name makes the server answer ``BAD Parse Error``."""
+    name = str(mailbox or "INBOX")
+    if name.startswith('"') and name.endswith('"'):
+        return name
+    if re.search(r'[\s"(){}%*\\]', name):
+        return '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return name
 
 
 def _parse_message_id(raw: str, *, default_mailbox: str) -> tuple[str, str]:
@@ -363,7 +378,7 @@ def _search_sync(
     conn = _connect_imap(creds)
     try:
         mailbox_norm = str(mailbox or "INBOX").strip() or "INBOX"
-        typ, _ = conn.select(mailbox_norm, readonly=True)
+        typ, _ = conn.select(imap_mailbox_arg(mailbox_norm), readonly=True)
         if typ != "OK":
             raise RuntimeError(f"Could not select iCloud mailbox {mailbox_norm!r}.")
         criteria = _imap_search_criteria(
@@ -455,7 +470,7 @@ async def fetch_icloud_messages(
 def _fetch_message_sync(*, creds: Mapping[str, Any], mailbox: str, uid: str, body_limit: int) -> Dict[str, Any]:
     conn = _connect_imap(creds)
     try:
-        typ, _ = conn.select(mailbox, readonly=True)
+        typ, _ = conn.select(imap_mailbox_arg(mailbox), readonly=True)
         if typ != "OK":
             raise RuntimeError(f"Could not select iCloud mailbox {mailbox!r}.")
         typ, data = conn.uid("FETCH", uid, "(RFC822)")
@@ -502,7 +517,7 @@ def _fetch_attachment_sync(*, creds: Mapping[str, Any], mailbox: str, uid: str, 
     raw_message = None
     conn = _connect_imap(creds)
     try:
-        conn.select(mailbox, readonly=True)
+        conn.select(imap_mailbox_arg(mailbox), readonly=True)
         typ, data = conn.uid("FETCH", uid, "(RFC822)")
         if typ != "OK":
             raise RuntimeError("iCloud IMAP attachment fetch failed.")
@@ -603,7 +618,7 @@ def _smtp_send_sync(*, creds: Mapping[str, Any], msg: EmailMessage) -> Dict[str,
     return {"ok": True, "provider_message_id": str(msg.get("Message-ID") or ""), "refused": refused}
 
 
-def _send_draft_sync(*, creds: Mapping[str, Any], mailbox: str, uid: str) -> Dict[str, Any]:
+def _send_draft_sync(*, creds: Mapping[str, Any], mailbox: str, uid: str, sent_mailbox: str = "") -> Dict[str, Any]:
     """Transmit a stored draft byte-for-byte, then remove it from the mailbox.
 
     Sending is SMTP, storage is IMAP: a client's "send draft" is exactly this
@@ -613,7 +628,7 @@ def _send_draft_sync(*, creds: Mapping[str, Any], mailbox: str, uid: str) -> Dic
     conn = _connect_imap(creds)
     try:
         # read-only for the fetch: no flag changes, no untagged FLAGS lines in the response
-        typ, _ = conn.select(mailbox, readonly=True)
+        typ, _ = conn.select(imap_mailbox_arg(mailbox), readonly=True)
         if typ != "OK":
             raise RuntimeError(f"Could not select IMAP mailbox {mailbox!r}.")
         typ, data = conn.uid("FETCH", uid, "(RFC822)")
@@ -645,13 +660,23 @@ def _send_draft_sync(*, creds: Mapping[str, Any], mailbox: str, uid: str) -> Dic
                 smtp.starttls(context=ssl.create_default_context())
             smtp.login(sender, str(creds.get("password") or ""))
             refused = smtp.sendmail(sender, recipients, msg.as_bytes())
-        typ, _ = conn.select(mailbox, readonly=False)  # writable only for the removal
+        # SMTP leaves no record: a mail client appends the transmitted copy to
+        # Sent itself, so the sender's own mailbox shows what went out.
+        sent_copy = ""
+        if sent_mailbox:
+            try:
+                typ, _ = conn.append(imap_mailbox_arg(sent_mailbox), "\\Seen", imaplib.Time2Internaldate(time.time()), msg.as_bytes())
+                sent_copy = sent_mailbox if typ == "OK" else ""
+            except Exception as exc:  # noqa: BLE001 - the send already happened; report, do not fail
+                log.warning("[icloud.send_draft] sent copy not appended to %r: %s", sent_mailbox, type(exc).__name__)
+        typ, _ = conn.select(imap_mailbox_arg(mailbox), readonly=False)  # writable only for the removal
         if typ != "OK":
             raise RuntimeError(f"Could not reselect IMAP mailbox {mailbox!r} for removal.")
         conn.uid("STORE", uid, "+FLAGS", r"(\Deleted)")
         conn.expunge()
         return {
             "ok": True,
+            "sent_copy_mailbox": sent_copy,
             "provider_message_id": str(msg.get("Message-ID") or ""),
             "subject": _decode_header_value(msg.get("Subject") or ""),
             "recipients": recipients,
@@ -670,15 +695,40 @@ def _send_draft_sync(*, creds: Mapping[str, Any], mailbox: str, uid: str) -> Dic
             pass
 
 
-async def send_icloud_draft(*, store: Any, account: Mapping[str, Any], draft_id: str, mailbox: str = "Drafts", **_: Any) -> Dict[str, Any]:
+async def send_icloud_draft(*, store: Any, account: Mapping[str, Any], draft_id: str, mailbox: str = "Drafts", sent_mailbox: str = "", **_: Any) -> Dict[str, Any]:
     creds = await ensure_icloud_credentials(store=store, account=account)
     if not creds.get("ok"):
         return creds
     try:
         mailbox_norm, uid = _parse_message_id(draft_id, default_mailbox=mailbox or "Drafts")
-        return await asyncio.to_thread(_send_draft_sync, creds=creds, mailbox=mailbox_norm, uid=uid)
+        return await asyncio.to_thread(_send_draft_sync, creds=creds, mailbox=mailbox_norm, uid=uid, sent_mailbox=sent_mailbox)
     except Exception as exc:
         return _provider_error(exc, operation="smtp_send_draft", account=account)
+
+
+def _append_sent_copy_sync(*, creds: Mapping[str, Any], mailbox: str, raw: bytes) -> Dict[str, Any]:
+    conn = _connect_imap(creds)
+    try:
+        typ, _ = conn.append(imap_mailbox_arg(mailbox), "\\Seen", imaplib.Time2Internaldate(time.time()), raw)
+        return {"ok": typ == "OK", "mailbox": mailbox if typ == "OK" else ""}
+    finally:
+        try:
+            conn.logout()
+        except Exception:
+            pass
+
+
+async def append_icloud_sent_copy(*, store: Any, account: Mapping[str, Any], msg: EmailMessage, mailbox: str) -> Dict[str, Any]:
+    """After an SMTP send, file the transmitted copy in the Sent mailbox the
+    way a mail client does; SMTP alone leaves no record on the sender's side."""
+    creds = await ensure_icloud_credentials(store=store, account=account)
+    if not creds.get("ok") or not mailbox:
+        return {"ok": False, "mailbox": ""}
+    try:
+        return await asyncio.to_thread(_append_sent_copy_sync, creds=creds, mailbox=mailbox, raw=msg.as_bytes())
+    except Exception as exc:  # noqa: BLE001 - the send already happened; report, do not fail
+        log.warning("[icloud.send] sent copy not appended to %r: %s", mailbox, type(exc).__name__)
+        return {"ok": False, "mailbox": ""}
 
 
 async def send_icloud_message(*, store: Any, account: Mapping[str, Any], msg: EmailMessage) -> Dict[str, Any]:
