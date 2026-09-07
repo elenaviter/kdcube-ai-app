@@ -623,14 +623,19 @@ def _send_draft_sync(*, creds: Mapping[str, Any], mailbox: str, uid: str) -> Dic
         if not raw:
             return {"ok": False, "error": {"code": "email_draft_not_found", "message": "The draft was not found in the mailbox."}}
         msg = BytesParser(policy=email_policy.default).parsebytes(raw)
-        recipients = [
-            address
-            for _, address in email.utils.getaddresses(
-                [str(msg.get("To") or ""), str(msg.get("Cc") or ""), str(msg.get("Bcc") or "")]
-            )
-            if address
+        header_values = [
+            str(value or "")
+            for name in ("To", "Cc", "Bcc")
+            for value in (msg.get_all(name) or [])
         ]
+        recipients = [address for _, address in email.utils.getaddresses(header_values) if address]
         if not recipients:
+            log.warning(
+                "[icloud.send_draft] no recipient parsed: mailbox=%s uid=%s fetch_items=%s raw_len=%s raw_head=%r header_names=%s",
+                mailbox, uid,
+                [type(item).__name__ + (f"[{len(item)}]" if isinstance(item, tuple) else "") for item in (data or [])],
+                len(raw), raw[:160], list(msg.keys())[:12],
+            )
             return {"ok": False, "error": {"code": "recipient_required", "message": "The draft has no recipient."}}
         if msg.get("Bcc"):
             del msg["Bcc"]
