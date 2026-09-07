@@ -102,6 +102,8 @@ MAIL_TOOLS = {
     "productivity_mail_get",
     "productivity_mail_attachment",
     "productivity_mail_draft",
+    "productivity_mail_send",
+    "productivity_mail_send_draft",
 }
 ALL_TOOLS = {
     "productivity_slack_search",

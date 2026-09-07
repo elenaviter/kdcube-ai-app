@@ -175,3 +175,87 @@ def test_login_falls_back_to_the_account_email_when_the_credential_holds_only_th
     _bind_credential(monkeypatch, credential)
     asyncio.run(_tools().search(query="", max_results=1, account_id="icloud_1"))
     assert seen["creds"]["username"] == "other.login"
+
+
+def test_send_draft_transmits_the_stored_bytes_then_expunges(monkeypatch):
+    """A client's 'send draft' is IMAP fetch -> SMTP -> IMAP expunge. The bytes
+    the person reviewed are the bytes that go out; the draft is removed only
+    after SMTP accepted them; Bcc is stripped from the transmitted copy."""
+    from email.message import EmailMessage
+    from kdcube_ai_app.apps.chat.sdk.integrations.email import icloud
+
+    draft = EmailMessage()
+    draft["From"] = "elena.viter@icloud.com"; draft["To"] = "consultant@example.de"; draft["Bcc"] = "hidden@example.de"
+    draft["Subject"] = "Olena Viter: Jul 2026. 1. Kontoauszug und Hauptbrief"; draft["Message-ID"] = "<draft-1@icloud>"
+    draft.set_content("Sehr geehrter Herr ...")
+    draft.add_attachment(b"PK\x03\x04zip", maintype="application", subtype="zip", filename="konto.zip")
+    raw = draft.as_bytes()
+    events: list = []
+
+    class FakeIMAP:
+        def __init__(self, *a, **k): pass
+        def select(self, mailbox, readonly=False): events.append(("select", mailbox, readonly)); return "OK", [b"3"]
+        def uid(self, cmd, *args):
+            events.append(("uid", cmd) + args)
+            if cmd == "FETCH": return "OK", [(b"1 (RFC822 {%d}" % len(raw), raw), b")"]
+            return "OK", [b""]
+        def expunge(self): events.append(("expunge",)); return "OK", [b"1"]
+        def close(self): pass
+        def logout(self): pass
+
+    class FakeSMTP:
+        sent: list = []
+        def __init__(self, host, port, timeout=0): events.append(("smtp", host, port))
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def starttls(self, context=None): events.append(("starttls",))
+        def login(self, user, password): events.append(("login", user, bool(password)))
+        def sendmail(self, sender, recipients, data): FakeSMTP.sent.append((sender, list(recipients), data)); return {}
+
+    monkeypatch.setattr(icloud, "_connect_imap", lambda creds: FakeIMAP())
+    monkeypatch.setattr(icloud.smtplib, "SMTP", FakeSMTP)
+    credential = _Credential(raw_credential={"app_password": "abcd-efgh-ijkl-mnop"})
+    credential.email = "elena.viter@icloud.com"  # type: ignore[attr-defined]
+    _bind_credential(monkeypatch, credential)
+
+    out = asyncio.run(_tools().send_draft(draft_id="17", account_id="icloud_1"))
+    assert out["ok"] is True, out
+    assert out["ret"]["draft_removed"] is True and out["ret"]["attachment_count"] == 1
+    assert out["ret"]["recipients"] == ["consultant@example.de", "hidden@example.de"]
+    sender, recipients, data = FakeSMTP.sent[0]
+    assert sender == "elena.viter@icloud.com" and recipients == ["consultant@example.de", "hidden@example.de"]
+    assert b"Bcc:" not in data and b"konto.zip" in data and b"<draft-1@icloud>" in data
+    # order: select Drafts (writable) -> fetch by UID -> SMTP -> flag deleted -> expunge
+    kinds = [e[0] if e[0] != "uid" else e[1] for e in events]
+    assert kinds.index("FETCH") < kinds.index("smtp") < kinds.index("STORE") < kinds.index("expunge")
+    assert events[0] == ("select", "Drafts", False)
+    assert ("uid", "STORE", "17", "+FLAGS", r"(\Deleted)") in events  # one backslash on the wire
+
+
+def test_send_draft_without_recipient_leaves_the_draft_in_place(monkeypatch):
+    from email.message import EmailMessage
+    from kdcube_ai_app.apps.chat.sdk.integrations.email import icloud
+
+    draft = EmailMessage(); draft["From"] = "elena.viter@icloud.com"; draft["Subject"] = "no recipient"; draft.set_content("x")
+    raw = draft.as_bytes(); events: list = []
+
+    class FakeIMAP:
+        def __init__(self, *a, **k): pass
+        def select(self, mailbox, readonly=False): return "OK", [b"1"]
+        def uid(self, cmd, *args):
+            events.append(cmd)
+            return ("OK", [(b"1 (RFC822)", raw), b")"]) if cmd == "FETCH" else ("OK", [b""])
+        def expunge(self): events.append("expunge"); return "OK", [b""]
+        def close(self): pass
+        def logout(self): pass
+
+    class ExplodingSMTP:
+        def __init__(self, *a, **k): raise AssertionError("SMTP must not be contacted")
+
+    monkeypatch.setattr(icloud, "_connect_imap", lambda creds: FakeIMAP())
+    monkeypatch.setattr(icloud.smtplib, "SMTP", ExplodingSMTP)
+    credential = _Credential(raw_credential={"app_password": "x"}); credential.email = "elena.viter@icloud.com"  # type: ignore[attr-defined]
+    _bind_credential(monkeypatch, credential)
+    out = asyncio.run(_tools().send_draft(draft_id="18", account_id="icloud_1"))
+    assert out["ok"] is False and out["error"]["code"] == "recipient_required"
+    assert "STORE" not in events and "expunge" not in events

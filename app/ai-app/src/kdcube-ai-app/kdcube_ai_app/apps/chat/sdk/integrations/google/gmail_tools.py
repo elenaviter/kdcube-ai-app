@@ -1112,6 +1112,7 @@ class GmailTools:
         body_html: str,
         attachment_paths: str,
         account_id: str,
+        attachments_base64: str = "",
     ) -> dict[str, Any]:
         recipients = split_email_addresses(to)
         if not recipients:
@@ -1130,6 +1131,11 @@ class GmailTools:
                 where="gmail.send_gmail",
             )
         attachments, attachment_errors = _load_local_attachments(attachment_paths)
+        # inline base64 attachments: the productivity door runs outside a turn
+        # and has no workspace paths to point at
+        inline, inline_errors = _load_inline_attachments(attachments_base64)
+        attachments.extend(inline)
+        attachment_errors.extend(inline_errors)
         if attachment_errors:
             return _error_result(
                 code="attachment_load_failed",
@@ -1364,6 +1370,55 @@ class GmailTools:
                 "drafts_url": "https://mail.google.com/mail/u/0/#drafts",
             }
         )
+
+    async def send_gmail_inline(self, *, to: str, subject: str = "", body_markdown: str = "", cc: str = "",
+                                bcc: str = "", body_html: str = "", attachments_base64: str = "",
+                                account_id: str = "") -> dict[str, Any]:
+        """Send with inline base64 attachments, for surfaces without a
+        workspace (the productivity door). Same gate and path as send_gmail."""
+        return await _run_provider_call(
+            where="gmail.send_gmail",
+            operation="send",
+            run=lambda: self._send_gmail(
+                to=to, subject=subject, body_markdown=body_markdown, cc=cc, bcc=bcc, body_html=body_html,
+                attachment_paths="", attachments_base64=attachments_base64, account_id=account_id,
+            ),
+        )
+
+    async def send_gmail_draft(self, *, draft_id: str, account_id: str = "") -> dict[str, Any]:
+        """Send an existing Gmail draft as it is (``drafts.send``); Gmail
+        removes the draft itself. The reviewed bytes are the sent bytes."""
+        where = "gmail.send_gmail_draft"
+        did = str(draft_id or "").strip()
+        if not did:
+            return _error_result(code="draft_id_required", message="draft_id is required.", where=where)
+        credential = await self._credential(claim=GMAIL_SEND_CLAIM, account_id=account_id, tool_name=where)
+        if not credential.ok:
+            return credential.error_envelope(where=where)
+        if not credential.access_token:
+            return _error_result(code="credential_missing_access_token", message="Connected Gmail credential has no access token.", where=where)
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{GMAIL_API}/drafts/send",
+                headers={"Authorization": f"Bearer {credential.access_token}"},
+                json={"id": did},
+            )
+        if response.status_code >= 400:
+            failure = _gmail_failure(response, operation="send_draft", fallback="Gmail draft send failed.", where=where, mutating=True)
+            if failure.credential_failure:
+                return connected_account_auth_failure(credential, _auth_failure_message(failure))
+            return failure.error_result(where=where)
+        try:
+            data = response.json()
+        except Exception:
+            data = {}
+        return _ok_ret_result({
+            "id": str(data.get("id") or ""),
+            "thread_id": str(data.get("threadId") or ""),
+            "draft_id": did,
+            "draft_removed": True,
+            "account_id": credential.account_id,
+        })
 
     @kernel_function(
         name="forward_gmail_message",

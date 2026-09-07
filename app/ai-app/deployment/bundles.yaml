@@ -2008,6 +2008,16 @@ bundles:
                   description: Create a draft in connected mail accounts without sending it.
                   grants:
                   - mail:draft
+                productivity_mail_send:
+                  label: Send mail message
+                  description: Send an email from connected mail accounts.
+                  grants:
+                  - mail:send
+                productivity_mail_send_draft:
+                  label: Send reviewed draft
+                  description: Send a draft the user reviewed in Drafts, exactly as stored, and remove it.
+                  grants:
+                  - mail:send
                 productivity_sheets_search:
                   label: Find Google Sheets
                   description: Find spreadsheets visible to a connected Google account.

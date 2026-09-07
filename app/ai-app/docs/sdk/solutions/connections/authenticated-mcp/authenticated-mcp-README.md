@@ -603,7 +603,17 @@ layer-2 resource entry whose per-tool grants ARE the claims each tool needs
       grants: [mail:read]
     productivity_mail_attachment:
       grants: [mail:read]
+    productivity_mail_send:
+      grants: [mail:send]
+    productivity_mail_send_draft:
+      grants: [mail:send]
 ```
+
+Two send shapes, both under `mail:send`: `productivity_mail_send` composes
+and transmits in one call, `productivity_mail_send_draft` transmits an
+existing draft exactly as it sits in Drafts and removes it (Gmail
+`drafts.send`; IMAP fetch → SMTP → expunge). The second is the one to use
+when a person reviews before release: what they saw is what goes out.
 
 `productivity_mail_attachment` returns one attachment's bytes as base64
 inside the response (10 MB cap), selected by the stable `part_id` that

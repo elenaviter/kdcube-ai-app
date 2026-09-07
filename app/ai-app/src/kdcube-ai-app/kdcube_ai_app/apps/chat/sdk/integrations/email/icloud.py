@@ -598,6 +598,75 @@ def _smtp_send_sync(*, creds: Mapping[str, Any], msg: EmailMessage) -> Dict[str,
     return {"ok": True, "provider_message_id": str(msg.get("Message-ID") or ""), "refused": refused}
 
 
+def _send_draft_sync(*, creds: Mapping[str, Any], mailbox: str, uid: str) -> Dict[str, Any]:
+    """Transmit a stored draft byte-for-byte, then remove it from the mailbox.
+
+    Sending is SMTP, storage is IMAP: a client's "send draft" is exactly this
+    sequence. The bytes the person reviewed in Drafts are the bytes that go
+    out; only Bcc is stripped from the transmitted copy, as mail clients do.
+    The draft is expunged only after the SMTP server accepted the message."""
+    conn = _connect_imap(creds)
+    try:
+        typ, _ = conn.select(mailbox, readonly=False)
+        if typ != "OK":
+            raise RuntimeError(f"Could not select IMAP mailbox {mailbox!r}.")
+        typ, data = conn.uid("FETCH", uid, "(RFC822)")
+        if typ != "OK":
+            raise RuntimeError("IMAP draft fetch failed.")
+        raw = _fetch_payload_bytes(data)
+        if not raw:
+            return {"ok": False, "error": {"code": "email_draft_not_found", "message": "The draft was not found in the mailbox."}}
+        msg = BytesParser(policy=email_policy.default).parsebytes(raw)
+        recipients = [
+            address
+            for _, address in email.utils.getaddresses(
+                [str(msg.get("To") or ""), str(msg.get("Cc") or ""), str(msg.get("Bcc") or "")]
+            )
+            if address
+        ]
+        if not recipients:
+            return {"ok": False, "error": {"code": "recipient_required", "message": "The draft has no recipient."}}
+        if msg.get("Bcc"):
+            del msg["Bcc"]
+        sender = str(creds.get("username") or "")
+        with smtplib.SMTP(str(creds.get("smtp_host") or ICLOUD_SMTP_HOST), int(creds.get("smtp_port") or ICLOUD_SMTP_PORT), timeout=60) as smtp:
+            if bool(creds.get("smtp_starttls", True)):
+                smtp.starttls(context=ssl.create_default_context())
+            smtp.login(sender, str(creds.get("password") or ""))
+            refused = smtp.sendmail(sender, recipients, msg.as_bytes())
+        conn.uid("STORE", uid, "+FLAGS", r"(\Deleted)")
+        conn.expunge()
+        return {
+            "ok": True,
+            "provider_message_id": str(msg.get("Message-ID") or ""),
+            "subject": _decode_header_value(msg.get("Subject") or ""),
+            "recipients": recipients,
+            "refused": refused,
+            "attachment_count": len(_attachment_metadata(msg)),
+            "draft_removed": True,
+        }
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        try:
+            conn.logout()
+        except Exception:
+            pass
+
+
+async def send_icloud_draft(*, store: Any, account: Mapping[str, Any], draft_id: str, mailbox: str = "Drafts", **_: Any) -> Dict[str, Any]:
+    creds = await ensure_icloud_credentials(store=store, account=account)
+    if not creds.get("ok"):
+        return creds
+    try:
+        mailbox_norm, uid = _parse_message_id(draft_id, default_mailbox=mailbox or "Drafts")
+        return await asyncio.to_thread(_send_draft_sync, creds=creds, mailbox=mailbox_norm, uid=uid)
+    except Exception as exc:
+        return _provider_error(exc, operation="smtp_send_draft", account=account)
+
+
 async def send_icloud_message(*, store: Any, account: Mapping[str, Any], msg: EmailMessage) -> Dict[str, Any]:
     creds = await ensure_icloud_credentials(store=store, account=account)
     if not creds.get("ok"):

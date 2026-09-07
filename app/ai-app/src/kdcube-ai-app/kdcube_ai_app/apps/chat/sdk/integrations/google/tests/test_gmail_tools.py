@@ -309,3 +309,38 @@ def test_read_gmail_attachment_fails_closed_on_size_and_unknown_part(monkeypatch
 
     no_selector = asyncio.run(tools.read_gmail_attachment(message_id="m1"))
     assert no_selector["error"]["code"] == "attachment_selector_required"
+
+
+def test_send_gmail_draft_posts_drafts_send_with_the_send_claim(monkeypatch):
+    import asyncio
+
+    calls: list = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, request.url.path, request.content))
+        if request.url.path.endswith("/drafts/send"):
+            return httpx.Response(200, json={"id": "msg-9", "threadId": "t-9", "labelIds": ["SENT"]})
+        return httpx.Response(404, json={"error": {"message": "not found"}})
+
+    real_client = httpx.AsyncClient
+
+    def fake_client(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handle)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(gmail_tools.httpx, "AsyncClient", fake_client)
+    tools = gmail_tools.GmailTools.__new__(gmail_tools.GmailTools)
+    seen: dict = {}
+
+    async def credential(*, claim, tool_name, account_id=""):
+        seen["claim"] = claim
+        return ConnectedAccountCredential(ok=True, account_id="acct-1", provider_id="google", connector_app_id="gmail",
+                                          claim=claim, tool_name=tool_name, tenant="t", project="p", access_token="tok")
+
+    tools._credential = credential  # type: ignore[method-assign]
+    out = asyncio.run(tools.send_gmail_draft(draft_id="r123", account_id="acct-1"))
+    assert out["ok"] is True and out["ret"]["id"] == "msg-9" and out["ret"]["draft_removed"] is True
+    assert seen["claim"] == "gmail:send"
+    method, path, body = calls[0]
+    assert method == "POST" and path.endswith("/drafts/send") and b'"id": "r123"' in body or b'"id":"r123"' in body
+    assert asyncio.run(tools.send_gmail_draft(draft_id=""))["error"]["code"] == "draft_id_required"

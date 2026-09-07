@@ -41,6 +41,7 @@ from kdcube_ai_app.apps.chat.sdk.integrations.email.icloud import (
     fetch_icloud_attachment,
     fetch_icloud_message,
     fetch_icloud_messages,
+    send_icloud_draft,
     send_icloud_message,
 )
 
@@ -316,6 +317,39 @@ class ImapSmtpMailTools:
                 "mime_type": _clean(result.get("mime_type")) or "application/octet-stream",
                 "size_bytes": int(result.get("size_bytes") or 0),
                 "content_base64": str(result.get("base64") or ""),
+                "account_id": credential.account_id,
+                "provider": self.provider_id,
+            }
+        )
+
+    async def send_draft(self, *, draft_id: str, account_id: str = "") -> dict[str, Any]:
+        """Send a draft that sits in the Drafts mailbox, exactly as stored, and
+        remove it. ``draft_id`` is the UID ``create_draft`` returned (or an
+        ``imap:<mailbox>:<uid>`` message id). Gated on the send claim."""
+        where = f"{self.provider_id}.send_draft"
+        if not _clean(draft_id):
+            return _error(code="draft_id_required", message="draft_id is required.", where=where)
+        credential = await self._credential(claim=EMAIL_SEND_CLAIM, account_id=account_id, tool_name=where)
+        if not credential.ok:
+            return credential.error_envelope(where=where)
+        store, account = self._adapter_inputs(credential)
+        result = await send_icloud_draft(store=store, account=account, draft_id=draft_id, mailbox=self.drafts_mailbox)
+        if not result.get("ok"):
+            error = dict(result.get("error") or {})
+            return _error(
+                code=_clean(error.get("code")) or "smtp_send_draft_failed",
+                message=_clean(error.get("message")) or f"{self.label} draft send failed.",
+                where=where,
+                ret={"provider": self.provider_id},
+            )
+        return _ok(
+            {
+                "id": _clean(result.get("provider_message_id")),
+                "draft_id": _clean(draft_id),
+                "subject": _clean(result.get("subject")),
+                "recipients": list(result.get("recipients") or []),
+                "attachment_count": int(result.get("attachment_count") or 0),
+                "draft_removed": bool(result.get("draft_removed")),
                 "account_id": credential.account_id,
                 "provider": self.provider_id,
             }

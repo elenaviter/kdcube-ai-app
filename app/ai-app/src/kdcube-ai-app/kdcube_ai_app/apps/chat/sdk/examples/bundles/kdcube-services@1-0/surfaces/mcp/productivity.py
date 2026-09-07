@@ -144,6 +144,14 @@ PRODUCTIVITY_TOOLS: dict[str, dict[str, Any]] = {
         "label": "Read mail attachment",
         "description": "Read one attachment of a message from one of the user's connected mail accounts.",
     },
+    "productivity_mail_send": {
+        "label": "Send mail message",
+        "description": "Send an email from one of the user's connected mail accounts.",
+    },
+    "productivity_mail_send_draft": {
+        "label": "Send reviewed draft",
+        "description": "Send a draft the user reviewed in their Drafts folder, exactly as stored, and remove it.",
+    },
     "productivity_mail_draft": {
         "label": "Draft mail message",
         "description": (
@@ -542,10 +550,10 @@ def build_productivity_mcp_app(
         title="Draft mail message",
         description=(
             "Create a DRAFT email in the approving user's connected mail "
-            "account without sending it. The person reviews and sends the "
-            "draft in their own mail client; this surface has no send tool. "
-            "Attachments ride inline as base64 entries. Returns {ok, error, "
-            "ret}; ret carries the draft id."
+            "account without sending it. The person reviews it in Drafts and "
+            "either sends it in their mail client or releases it through "
+            "productivity_mail_send_draft. Attachments ride inline as base64 "
+            "entries. Returns {ok, error, ret}; ret carries the draft id."
         ),
         annotations=write_annotations(ToolAnnotations, title="Draft mail message"),
         structured_output=False,
@@ -624,6 +632,86 @@ def build_productivity_mcp_app(
             attachments_base64=attachments_base64,
             account_id=account.account_id,
         )
+
+    @mcp.tool(
+        name="productivity_mail_send",
+        title="Send mail message",
+        description=(
+            "Send an email from the approving user's connected mail account "
+            "(same fields as productivity_mail_draft; attachments ride inline "
+            "as base64 entries). Sending is final: prefer productivity_mail_draft "
+            "plus productivity_mail_send_draft when the person wants to review "
+            "first. Returns {ok, error, ret}."
+        ),
+        annotations=write_annotations(ToolAnnotations, title="Send mail message"),
+        structured_output=False,
+    )
+    async def _productivity_mail_send(
+        to: Annotated[str, Field(description="Comma, semicolon, or newline separated recipient email addresses.")],
+        subject: Annotated[str, Field(description="Email subject.")] = "",
+        body_markdown: Annotated[str, Field(description="Markdown body sent as text and HTML.")] = "",
+        cc: Annotated[str, Field(description="Optional cc recipients, same separators as `to`.")] = "",
+        bcc: Annotated[str, Field(description="Optional bcc recipients, same separators as `to`.")] = "",
+        body_html: Annotated[str, Field(description="Optional complete HTML body. Leave empty when using body_markdown.")] = "",
+        attachments_base64: Annotated[
+            str,
+            Field(description="Optional JSON list of {filename, content_base64, mime_type?} attachments, up to 25MB decoded each."),
+        ] = "",
+        account_id: Annotated[
+            str,
+            Field(description="Optional connected account id when the user has several mail accounts."),
+        ] = "",
+    ) -> dict[str, Any]:
+        account, denial = await _route_mail(
+            "productivity_mail_send", "send", "send", account_id
+        )
+        if denial is not None:
+            return denial
+        assert account is not None
+        transport = _mail_transport(account.provider)
+        if transport is not gmail:
+            return await transport.send(
+                to=to, subject=subject, body_markdown=body_markdown, cc=cc, bcc=bcc,
+                body_html=body_html, attachments_base64=attachments_base64, account_id=account.account_id,
+            )
+        return await gmail.send_gmail_inline(
+            to=to, subject=subject, body_markdown=body_markdown, cc=cc, bcc=bcc, body_html=body_html,
+            attachments_base64=attachments_base64, account_id=account.account_id,
+        )
+
+    @mcp.tool(
+        name="productivity_mail_send_draft",
+        title="Send reviewed draft",
+        description=(
+            "Send an existing draft from the approving user's connected mail "
+            "account exactly as it sits in their Drafts folder, then remove the "
+            "draft. What the person reviewed is what goes out, byte for byte "
+            "(Bcc stripped in transit). draft_id comes from "
+            "productivity_mail_draft. Returns {ok, error, ret}."
+        ),
+        annotations=write_annotations(ToolAnnotations, title="Send reviewed draft"),
+        structured_output=False,
+    )
+    async def _productivity_mail_send_draft(
+        draft_id: Annotated[
+            str,
+            Field(description="Draft id returned by productivity_mail_draft (Gmail draft id, or the IMAP Drafts UID)."),
+        ],
+        account_id: Annotated[
+            str,
+            Field(description="Optional connected account id when the user has several mail accounts."),
+        ] = "",
+    ) -> dict[str, Any]:
+        account, denial = await _route_mail(
+            "productivity_mail_send_draft", "send_draft", "send", account_id
+        )
+        if denial is not None:
+            return denial
+        assert account is not None
+        transport = _mail_transport(account.provider)
+        if transport is gmail:
+            return await gmail.send_gmail_draft(draft_id=draft_id, account_id=account.account_id)
+        return await transport.send_draft(draft_id=draft_id, account_id=account.account_id)
 
     register_google_sheets_tools(
         mcp=mcp,
