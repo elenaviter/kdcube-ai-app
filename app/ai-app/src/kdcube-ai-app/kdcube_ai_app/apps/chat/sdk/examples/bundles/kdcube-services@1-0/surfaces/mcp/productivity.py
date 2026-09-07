@@ -603,6 +603,13 @@ def build_productivity_mcp_app(
                 )
             ),
         ] = "",
+        file_as_sent: Annotated[
+            bool,
+            Field(description=(
+                "File the message in the Sent folder as already sent (no draft flag) instead of "
+                "Drafts. Nothing is transmitted: this records a message that already went out."
+            )),
+        ] = False,
     ) -> dict[str, Any]:
         account, denial = await _route_mail(
             "productivity_mail_draft", "draft", "draft", account_id
@@ -621,6 +628,7 @@ def build_productivity_mcp_app(
                 body_html=body_html,
                 attachments_base64=attachments_base64,
                 account_id=account.account_id,
+                file_as_sent=file_as_sent,
             )
         return await gmail.create_gmail_draft(
             to=to,
@@ -631,6 +639,7 @@ def build_productivity_mcp_app(
             body_html=body_html,
             attachments_base64=attachments_base64,
             account_id=account.account_id,
+            file_as_sent=file_as_sent,
         )
 
     @mcp.tool(

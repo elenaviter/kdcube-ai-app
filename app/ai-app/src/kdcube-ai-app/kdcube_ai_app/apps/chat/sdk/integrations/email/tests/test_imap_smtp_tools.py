@@ -292,3 +292,26 @@ def test_imap_mailbox_names_are_quoted_when_needed():
     assert imap_mailbox_arg('"Sent Messages"') == '"Sent Messages"'
     assert imap_mailbox_arg("[Gmail]/Sent Mail") == '"[Gmail]/Sent Mail"'
     assert imap_mailbox_arg("") == "INBOX"
+
+
+def test_file_as_sent_appends_to_the_sent_mailbox_as_seen(monkeypatch):
+    """Backfilling the Sent record of a message that already went out: same
+    builder as a draft, filed in the Sent mailbox with \\Seen, no draft flag."""
+    _bind_credential(monkeypatch)
+    seen = {}
+
+    def fake_append(creds, raw, mailbox, flags="\\Draft"):
+        seen["mailbox"] = mailbox; seen["flags"] = flags; seen["raw"] = raw
+        return {"uid": "901", "raw": "[APPENDUID 5 901]"}
+
+    monkeypatch.setattr(imap_smtp_tools, "_append_draft_sync", fake_append)
+    out = asyncio.run(_tools().create_draft(
+        to="consultant@example.de", subject="Olena Viter: Jul 2026. 1. Kontoauszug und Hauptbrief",
+        body_markdown="Sehr geehrter Herr", account_id="icloud_1", file_as_sent=True,
+    ))
+    assert out["ok"] is True and out["ret"]["mailbox"] == "Sent Messages" and out["ret"]["draft_id"] == "901"
+    assert seen["mailbox"] == "Sent Messages" and seen["flags"] == "\\Seen"
+    assert b"To: consultant@example.de" in seen["raw"]
+    # default stays Drafts with the draft flag
+    asyncio.run(_tools().create_draft(to="a@b", subject="s", body_markdown="x", account_id="icloud_1"))
+    assert seen["mailbox"] == "Drafts" and seen["flags"] == "\\Draft"

@@ -1234,6 +1234,7 @@ class GmailTools:
         attachment_paths: Annotated[str, "Optional comma/newline/JSON list of KDCube logical_path or physical_path file refs to attach (conversation lane only)."] = "",
         attachments_base64: Annotated[str, "Optional JSON list of {filename, content_base64, mime_type?} inline attachments (the lane for automation callers with no KDCube workspace)."] = "",
         account_id: Annotated[str, "Optional connected account id when the user has several Gmail accounts."] = "",
+        file_as_sent: Annotated[bool, "File the message in Sent (as already sent) instead of Drafts."] = False,
     ) -> Annotated[dict, "Envelope: {ok, error, ret}."]:
         return await _run_provider_call(
             where="gmail.create_gmail_draft",
@@ -1249,6 +1250,7 @@ class GmailTools:
                 attachment_paths=attachment_paths,
                 attachments_base64=attachments_base64,
                 account_id=account_id,
+                file_as_sent=file_as_sent,
             ),
         )
 
@@ -1264,6 +1266,7 @@ class GmailTools:
         attachment_paths: str,
         attachments_base64: str,
         account_id: str,
+        file_as_sent: bool = False,
     ) -> dict[str, Any]:
         # A draft may legitimately have no recipient yet; unlike send, nothing
         # is required except a connected account with the compose claim.
@@ -1325,11 +1328,19 @@ class GmailTools:
                 attachments=attachments,
             )
             raw = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii").rstrip("=")
-            response = await client.post(
-                f"{GMAIL_API}/drafts",
-                headers={"Authorization": f"Bearer {credential.access_token}"},
-                json={"message": {"raw": raw}},
-            )
+            if file_as_sent:
+                # the record of a message that already went out: insert with the SENT label, no draft
+                response = await client.post(
+                    f"{GMAIL_API}/messages",
+                    headers={"Authorization": f"Bearer {credential.access_token}"},
+                    json={"raw": raw, "labelIds": ["SENT"]},
+                )
+            else:
+                response = await client.post(
+                    f"{GMAIL_API}/drafts",
+                    headers={"Authorization": f"Bearer {credential.access_token}"},
+                    json={"message": {"raw": raw}},
+                )
             if response.status_code >= 400:
                 failure = _gmail_failure(
                     response,

@@ -398,7 +398,12 @@ class ImapSmtpMailTools:
         body_html: str = "",
         attachments_base64: Any = "",
         account_id: str = "",
+        file_as_sent: bool = False,
     ) -> dict[str, Any]:
+        """Append a message to the mailbox. Default: Drafts with the \\Draft
+        flag. ``file_as_sent`` files it in the Sent mailbox as \\Seen instead,
+        the record a mail client keeps of a message that already went out
+        (used to backfill sends made before the Sent copy existed)."""
         where = f"{self.provider_id}.create_draft"
         credential = await self._credential(
             claim=EMAIL_SEND_CLAIM, account_id=account_id, tool_name=where
@@ -435,8 +440,9 @@ class ImapSmtpMailTools:
             attachments=attachments,
         )
         try:
+            target_mailbox = self.sent_mailbox if file_as_sent else self.drafts_mailbox
             appended = await asyncio.to_thread(
-                _append_draft_sync, creds, message.as_bytes(), self.drafts_mailbox
+                _append_draft_sync, creds, message.as_bytes(), target_mailbox, "\\Seen" if file_as_sent else "\\Draft"
             )
         except Exception as exc:  # noqa: BLE001 - provider failure surfaces as an envelope
             LOGGER.warning("[%s.create_draft] append failed: %s", self.provider_id, exc)
@@ -450,7 +456,7 @@ class ImapSmtpMailTools:
             {
                 "draft_id": appended.get("uid", ""),
                 "message_id": _clean(message.get("Message-ID")),
-                "mailbox": self.drafts_mailbox,
+                "mailbox": target_mailbox,
                 "sender": sender,
                 "account_id": credential.account_id,
                 "recipients": split_email_addresses(to),
@@ -537,14 +543,14 @@ class ImapSmtpMailTools:
         )
 
 
-def _append_draft_sync(creds: Mapping[str, Any], raw: bytes, mailbox: str = DRAFTS_MAILBOX) -> dict[str, Any]:
-    """IMAP APPEND into the Drafts mailbox with the \\Draft flag; returns the
-    new UID when the server reports APPENDUID."""
+def _append_draft_sync(creds: Mapping[str, Any], raw: bytes, mailbox: str = DRAFTS_MAILBOX, flags: str = "\\Draft") -> dict[str, Any]:
+    """IMAP APPEND into a mailbox (Drafts with \\Draft by default); returns
+    the new UID when the server reports APPENDUID."""
     conn = _connect_imap(creds)
     try:
         typ, data = conn.append(
             imap_mailbox_arg(mailbox),
-            "\\Draft",
+            flags,
             imaplib.Time2Internaldate(time.time()),
             raw,
         )
