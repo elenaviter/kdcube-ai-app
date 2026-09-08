@@ -4,6 +4,7 @@ import os
 import asyncio
 import datetime
 import json
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -65,8 +66,31 @@ async def _noop_async(*args, **kwargs):
     return None
 
 
+class _ToolPolicyScope:
+    def __init__(self):
+        self.active = None
+
+    @contextmanager
+    def bind_allowed_tool_names_by_alias(self, value):
+        previous = self.active
+        self.active = value
+        try:
+            yield
+        finally:
+            self.active = previous
+
+    def current_allowed_tool_names_by_alias(self):
+        return self.active
+
+
 def test_tool_catalog_renders_named_service_namespace_scope():
-    subsystem = ToolSubsystem.__new__(ToolSubsystem)
+    subsystem = ToolSubsystem(
+        service=None,
+        comm=None,
+        logger=None,
+        bundle_spec=None,
+        context_rag_client=None,
+    )
     entry = subsystem._mk_entry(
         "named_services",
         "search_objects",
@@ -1379,6 +1403,7 @@ async def test_phase_watcher_cancels_when_event_lane_owner_changes():
 async def test_run_closes_external_event_handler_when_cancelled():
     solver = _solver_stub()
     close_calls = 0
+    tool_policy = _ToolPolicyScope()
 
     class _Browser:
         runtime_ctx = SimpleNamespace(agent_role_models={})
@@ -1388,16 +1413,69 @@ async def test_run_closes_external_event_handler_when_cancelled():
             close_calls += 1
 
     async def _cancelled_run(**kwargs):
-        del kwargs
+        assert tool_policy.active == {"web_tools": ["web_search"]}
+        assert kwargs["allowed_tool_names_by_alias"] == tool_policy.active
+        assert solver._run_allowed_tool_names_by_alias == tool_policy.active
         raise asyncio.CancelledError
 
     solver.ctx_browser = _Browser()
+    solver.tools_subsystem = tool_policy
     solver._run_impl = _cancelled_run
 
     with pytest.raises(asyncio.CancelledError):
-        await solver.run(allowed_plugins=[], allowed_tool_names_by_alias={})
+        await solver.run(
+            allowed_plugins=["web_tools"],
+            allowed_tool_names_by_alias={"web_tools": ["web_search"]},
+        )
 
     assert close_calls == 1
+    assert tool_policy.active is None
+
+
+@pytest.mark.asyncio
+async def test_run_forwards_only_effective_tool_policy_to_runtime_and_subagents():
+    solver = _solver_stub()
+    solver.tools_subsystem = ToolSubsystem(
+        service=None,
+        comm=None,
+        logger=None,
+        bundle_spec=None,
+        context_rag_client=None,
+        allowed_tool_names_by_alias={
+            "web_tools": ["web_search"],
+            "files": None,
+        },
+    )
+
+    async def _capture_run(**kwargs):
+        expected = {
+            "web_tools": ["web_search"],
+            "files": ["read"],
+        }
+        assert kwargs["allowed_tool_names_by_alias"] == expected
+        assert solver._run_allowed_tool_names_by_alias == expected
+        assert (
+            solver.tools_subsystem.current_allowed_tool_names_by_alias()
+            == expected
+        )
+        return "ok"
+
+    solver._run_impl = _capture_run
+
+    result = await solver.run(
+        allowed_plugins=["web_tools", "files", "admin"],
+        allowed_tool_names_by_alias={
+            "web_tools": ["web_search", "web_fetch"],
+            "files": ["read"],
+            "admin": ["delete"],
+        },
+    )
+
+    assert result == "ok"
+    assert solver.tools_subsystem.current_allowed_tool_names_by_alias() == {
+        "web_tools": ["web_search"],
+        "files": None,
+    }
 
 
 

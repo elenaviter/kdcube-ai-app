@@ -10,6 +10,7 @@ import os
 import sys
 import tempfile
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -31,8 +32,10 @@ from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.infrastructure import ( 
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.configuration import (  # noqa: E402
     activate_configured_skills,
+    configured_agent_tool_config,
     configured_agent_input,
     configured_run_directory,
+    configured_tool_ids,
     configured_web_search,
     verify_docker_image,
     verify_playwright_chromium,
@@ -47,16 +50,22 @@ from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.evidence import (  # noq
     utc_now,
     write_evidence_index,
 )
+from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.channels import (  # noqa: E402
+    DirectInputAttachment,
+    DirectTurnRequest,
+    add_direct_input_attachments,
+    completed_direct_turn_result,
+    run_terminal_chat,
+)
+from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.telegram import (  # noqa: E402
+    configured_direct_telegram,
+    serve_direct_telegram,
+)
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.workspace import (  # noqa: E402
     DirectTurnWorkspace,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.model_service import (  # noqa: E402
     build_model_service,
-)
-from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.native_tool_bindings import (  # noqa: E402
-    NativeToolBindings,
-    NativeToolSource,
-    resolve_native_tool_bindings,
 )
 from kdcube_ai_app.apps.chat.emitters import ChatCommunicator  # noqa: E402
 from kdcube_ai_app.apps.chat.sdk.protocol import (  # noqa: E402
@@ -67,22 +76,34 @@ from kdcube_ai_app.apps.chat.sdk.protocol import (  # noqa: E402
     ExternalEventUser,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.scratchpad import TurnScratchpad  # noqa: E402
-from kdcube_ai_app.apps.chat.sdk.runtime.tool_subsystem import ToolSubsystem  # noqa: E402
+from kdcube_ai_app.apps.chat.sdk.runtime.tool_subsystem import (
+    ToolSubsystem,
+)  # noqa: E402
+from kdcube_ai_app.apps.chat.sdk.runtime.tool_config import (
+    AgentToolConfig,
+)  # noqa: E402
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_harness import (  # noqa: E402
     DirectAgentHarness,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.harness.timeline import (  # noqa: E402
     block_event_source_id,
 )
-from kdcube_ai_app.apps.chat.sdk.solutions.react.browser import ContextBrowser  # noqa: E402
+from kdcube_ai_app.apps.chat.sdk.solutions.react.browser import (
+    ContextBrowser,
+)  # noqa: E402
 from kdcube_ai_app.apps.chat.sdk.solutions.react.layout import (  # noqa: E402
     build_assistant_completion_blocks,
     build_user_input_blocks,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.react.proto import RuntimeCtx  # noqa: E402
-from kdcube_ai_app.apps.chat.sdk.solutions.react.v3.runtime import ReactSolverV2  # noqa: E402
+from kdcube_ai_app.apps.chat.sdk.solutions.react.v3.runtime import (
+    ReactSolverV2,
+)  # noqa: E402
 from kdcube_ai_app.infra.plugin.bundle_registry import BundleSpec  # noqa: E402
-from kdcube_ai_app.infra.service_hub.inventory import AgentLogger, ModelServiceBase  # noqa: E402
+from kdcube_ai_app.infra.service_hub.inventory import (
+    AgentLogger,
+    ModelServiceBase,
+)  # noqa: E402
 
 
 ROLE = "solver.react.v2.decision.v2.strong"
@@ -94,22 +115,6 @@ RENDER_TOOL_IDS = (
     "rendering_tools.write_docx",
     "rendering_tools.write_pptx",
 )
-TOOL_SOURCES = {
-    "web_tools": NativeToolSource(
-        path=HERE / "tools.py",
-        tool_names=("web_search", "web_fetch"),
-    ),
-    "exec_tools": NativeToolSource(
-        module="kdcube_ai_app.apps.chat.sdk.tools.exec_tools",
-        tool_names=("execute_code_python",),
-        discovery="semantic_kernel",
-    ),
-    "rendering_tools": NativeToolSource(
-        module="kdcube_ai_app.apps.chat.sdk.tools.rendering_tools",
-        tool_names=("write_pdf", "write_docx", "write_pptx"),
-        discovery="semantic_kernel",
-    ),
-}
 
 
 class _ConstructionContextClient:
@@ -128,9 +133,14 @@ class _ConstructionContextClient:
         safe = kind.replace("/", "_").replace(":", "_")
         return self.root / f"{safe}.json"
 
-    async def save_artifact(self, *, kind: str, content: Any, **_: Any) -> dict[str, Any]:
+    async def save_artifact(
+        self, *, kind: str, content: Any, **_: Any
+    ) -> dict[str, Any]:
         path = self._path(kind)
-        path.write_text(json.dumps(content, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        path.write_text(
+            json.dumps(content, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
         return {"ok": True, "path": str(path)}
 
     async def recent(self, *, kinds=(), **_: Any) -> dict[str, Any]:
@@ -148,7 +158,9 @@ class _ConstructionContextClient:
                 }
         return {"items": []}
 
-    async def fetch_latest_feedback_reactions(self, *_: Any, **__: Any) -> dict[str, Any]:
+    async def fetch_latest_feedback_reactions(
+        self, *_: Any, **__: Any
+    ) -> dict[str, Any]:
         return {"items": []}
 
 
@@ -169,7 +181,9 @@ def event_source_ids(blocks: list[dict[str, Any]]) -> set[str]:
         meta = block.get("meta") if isinstance(block.get("meta"), dict) else {}
         tool_id = str(block.get("tool_id") or meta.get("tool_id") or "").strip()
         call_id = str(block.get("call_id") or meta.get("tool_call_id") or "").strip()
-        if block.get("type") == "react.tool.call" and isinstance(block.get("text"), str):
+        if block.get("type") == "react.tool.call" and isinstance(
+            block.get("text"), str
+        ):
             try:
                 payload = json.loads(block["text"])
             except json.JSONDecodeError:
@@ -230,7 +244,7 @@ async def build_turn(
     service: ModelServiceBase,
     context_client: Any,
     comm: ChatCommunicator,
-    tool_bindings: NativeToolBindings,
+    tool_config: AgentToolConfig,
     exec_runtime: dict[str, Any] | None,
     skills_subsystem: Any,
     skills_enabled: bool,
@@ -260,7 +274,12 @@ async def build_turn(
         exec_runtime=exec_runtime or {"mode": "local"},
     )
     logger = AgentLogger("standalone.native")
-    browser = ContextBrowser(ctx_client=context_client, logger=logger, model_service=service, runtime_ctx=runtime)
+    browser = ContextBrowser(
+        ctx_client=context_client,
+        logger=logger,
+        model_service=service,
+        runtime_ctx=runtime,
+    )
     await browser.load_timeline()
     browser.contribute(
         blocks=build_user_input_blocks(
@@ -281,8 +300,10 @@ async def build_turn(
             module="agent",
         ),
         context_rag_client=context_client,
-        tools_specs=list(tool_bindings.tool_specs),
-        tool_runtime=tool_bindings.tool_runtime,
+        raw_tool_specs=list(tool_config.tool_specs),
+        tool_runtime=dict(tool_config.tool_runtime),
+        tool_traits=dict(tool_config.tool_traits),
+        allowed_tool_names_by_alias=tool_config.allowed_tool_names_by_alias,
         hosting_service=hosting_service,
     )
     scratchpad = TurnScratchpad(
@@ -329,26 +350,23 @@ async def run_turn(
     config: dict[str, Any],
     service: ModelServiceBase,
     harness: DirectAgentHarness,
-    tool_bindings: NativeToolBindings,
+    tool_config: AgentToolConfig,
     exec_runtime: dict[str, Any] | None,
     skills_subsystem: Any,
     skills_enabled: bool,
     instruction_blocks: tuple[str, ...],
     additional_instructions: str,
-    attachment_source: Path | None = None,
+    input_attachments: tuple[DirectInputAttachment, ...] = (),
 ) -> tuple[str, str, set[str], Any]:
     turn_id = f"turn_{turn_number:02d}_{uuid.uuid4().hex[:8]}"
     agent_config = dict(config.get("agent") or {})
     async with harness.turn(conversation_id=conversation_id, turn_id=turn_id) as turn:
         workspace = DirectTurnWorkspace(run_root=root, turn_id=turn_id)
-        attachments: list[dict[str, Any]] = []
-        if attachment_source is not None:
-            attachments.append(
-                await turn.add_user_attachment(
-                    attachment_source,
-                    materialize_to=workspace.current_attachment(attachment_source.name),
-                )
-            )
+        attachments = await add_direct_input_attachments(
+            turn=turn,
+            workspace=workspace,
+            attachments=input_attachments,
+        )
         solver, browser, comm, runtime, _tools = await build_turn(
             prompt=prompt,
             turn_id=turn_id,
@@ -359,7 +377,7 @@ async def run_turn(
             service=service,
             context_client=turn.conversation_client,
             comm=turn.comm,
-            tool_bindings=tool_bindings,
+            tool_config=tool_config,
             exec_runtime=exec_runtime,
             skills_subsystem=skills_subsystem,
             skills_enabled=skills_enabled,
@@ -371,8 +389,8 @@ async def run_turn(
         )
         await comm.start(message=prompt)
         result = await solver.run(
-            allowed_plugins=tool_bindings.allowed_plugins,
-            allowed_tool_names_by_alias=tool_bindings.allowed_tool_names_by_alias,
+            allowed_plugins=tool_config.allowed_plugins,
+            allowed_tool_names_by_alias=tool_config.allowed_tool_names_by_alias,
         )
         answer = str(result.final_answer or "")
         ended_at = utc_now()
@@ -387,9 +405,19 @@ async def run_turn(
         turn_blocks = browser.current_turn_blocks()
         event_sources = event_source_ids(turn_blocks)
         required = (
-            ("research/research-data.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "external", EXEC_TOOL_ID),
+            (
+                "research/research-data.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "external",
+                EXEC_TOOL_ID,
+            ),
             ("research/research-brief.html", "text/html", "internal", EXEC_TOOL_ID),
-            ("research/research-brief.pdf", "application/pdf", "external", "rendering_tools.write_pdf"),
+            (
+                "research/research-brief.pdf",
+                "application/pdf",
+                "external",
+                "rendering_tools.write_pdf",
+            ),
         )
         known = {str(row.get("filename") or "") for row in turn.assistant_files}
         pending: list[dict[str, Any]] = []
@@ -429,7 +457,9 @@ async def run_turn(
             started_at=runtime.started_at or "",
             ended_at=ended_at,
         )
-    print(f"[accounting] Redis turn cache contains {len(turn.accounting_events)} event(s)")
+    print(
+        f"[accounting] Redis turn cache contains {len(turn.accounting_events)} event(s)"
+    )
     return answer, turn_id, event_sources, turn
 
 
@@ -446,9 +476,7 @@ async def main_async(args: argparse.Namespace) -> None:
     )
     input_config = dict((config.get("agent") or {}).get("input") or {})
     recall_conversation_id = str(
-        args.recall_conversation_id
-        or input_config.get("recall_conversation_id")
-        or ""
+        args.recall_conversation_id or input_config.get("recall_conversation_id") or ""
     ).strip()
     if bool((config.get("agent") or {}).get("cross_conversation_search", True)):
         if not recall_conversation_id:
@@ -460,13 +488,17 @@ async def main_async(args: argparse.Namespace) -> None:
             raise ValueError(
                 "agent.input.recall_conversation_id must differ from conversation_id"
             )
-    configured_web_search(config, tool_id=WEB_SEARCH_TOOL_ID)
+    configured_web_search(config, connection_id="web")
     from kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search import web_search_server
 
-    web_search_server.load_config(config_path, tool_id=WEB_SEARCH_TOOL_ID)
-    service = None if args.infra_check else await build_model_service(
-        role=ROLE,
-        check_only=args.check,
+    web_search_server.load_config(config_path, tool_id="web")
+    service = (
+        None
+        if args.infra_check
+        else await build_model_service(
+            role=ROLE,
+            check_only=args.check,
+        )
     )
     root = configured_run_directory(config, config_path=config_path)
     harness_config = direct_harness_config(
@@ -479,14 +511,15 @@ async def main_async(args: argparse.Namespace) -> None:
         session_id=agent_input.session_id,
         check_only=args.check,
     )
-    tool_bindings = resolve_native_tool_bindings(
+    tool_config = configured_agent_tool_config(
         config,
-        sources=TOOL_SOURCES,
-        adapter_name="native direct example",
+        agent_id="native",
+        bundle_root=HERE,
     )
+    tool_ids = configured_tool_ids(tool_config)
     exec_runtime = None
-    if EXEC_TOOL_ID in tool_bindings.enabled_ids:
-        if tool_bindings.tool_runtime[EXEC_TOOL_ID] != "docker":
+    if EXEC_TOOL_ID in tool_ids:
+        if tool_config.tool_runtime[EXEC_TOOL_ID] != "docker":
             raise ValueError(f"{EXEC_TOOL_ID} must use runtime: docker in this example")
         exec_runtime = platform_exec_profile(settings)
     skills_subsystem, skill_config = activate_configured_skills(
@@ -504,7 +537,7 @@ async def main_async(args: argparse.Namespace) -> None:
     )
     instruction_blocks = native_react_instruction_blocks(
         instruction_selection,
-        enabled_tool_ids=tool_bindings.enabled_ids,
+        enabled_tool_ids=tool_ids,
     )
     print("mode: standalone SDK process")
     print(f"adapter: ReactSolverV2 ({ROLE})")
@@ -517,7 +550,7 @@ async def main_async(args: argparse.Namespace) -> None:
                 "model context: "
                 f"{service.config.custom_model_num_ctx or 'gateway default'}"
             )
-    print(f"tools: {', '.join(tool_bindings.enabled_ids) or '(none)'}")
+    print(f"tools: {', '.join(tool_ids) or '(none)'}")
     print(f"instruction profile: {instruction_selection.profile}")
     print(
         "custom instructions: "
@@ -525,14 +558,14 @@ async def main_async(args: argparse.Namespace) -> None:
     )
     print(
         "web research: KDCube Web Search and Web Fetch "
-        f"({config_path}#agent.tools[id={WEB_SEARCH_TOOL_ID}].settings)"
+        f"({config_path}#agent.tools[id=web].settings)"
     )
     print(f"skills: {', '.join(skill_config.enabled) or '(none)'}")
     if exec_runtime:
         if not args.check:
             image = verify_docker_image(exec_runtime)
-            print(f"isolated execution image: {image}")
-    if "rendering_tools.write_pdf" in tool_bindings.enabled_ids and not args.check:
+            print(f"isolated code-execution image: {image}")
+    if "rendering_tools.write_pdf" in tool_ids and not args.check:
         browser = await verify_playwright_chromium()
         print(f"document renderer: Playwright {browser} ready")
     print(f"run directory: {root}")
@@ -571,7 +604,7 @@ async def main_async(args: argparse.Namespace) -> None:
                     conversation_id=agent_input.conversation_id,
                     turn_id="turn_check",
                 ),
-                tool_bindings=tool_bindings,
+                tool_config=tool_config,
                 exec_runtime=exec_runtime,
                 skills_subsystem=skills_subsystem,
                 skills_enabled=bool(skill_config.enabled),
@@ -579,12 +612,86 @@ async def main_async(args: argparse.Namespace) -> None:
                 additional_instructions=instruction_selection.additional_instructions,
                 harness_config=harness_config,
             )
-            tool_ids = {str(item.get("id") or "") for item in tools.tools_info}
-            expected = set(tool_bindings.enabled_ids)
-            if not isinstance(solver, ReactSolverV2) or not expected.issubset(tool_ids):
-                raise RuntimeError(f"native adapter construction incomplete: tools={sorted(tool_ids)}")
+            discovered_tool_ids = {
+                str(item.get("id") or "") for item in tools.tools_info
+            }
+            expected = set(tool_ids)
+            if not isinstance(solver, ReactSolverV2) or not expected.issubset(
+                discovered_tool_ids
+            ):
+                raise RuntimeError(
+                    "native adapter construction incomplete: "
+                    f"expected={sorted(expected)} "
+                    f"discovered={sorted(discovered_tool_ids)}"
+                )
         print("check: PASS")
         return
+
+    async def run_channel_turn(request: DirectTurnRequest):
+        request_config = replace(
+            harness_config,
+            user_id=request.user_id,
+            user_type=request.user_type,
+            session_id=request.session_id,
+        )
+        request_root = request.agent_input.run_path(
+            root,
+            run_id=f"run_{uuid.uuid4().hex[:12]}",
+        )
+        request_root.mkdir(parents=True, exist_ok=True)
+        request_harness = DirectAgentHarness(
+            config=request_config,
+            model_service=service,
+            emitter=ConsoleEmitter(request_root / "communicator.jsonl"),
+        )
+        async with request_harness:
+            answer, turn_id, _sources, _turn = await run_turn(
+                prompt=request.prompt,
+                turn_number=1,
+                conversation_id=request.conversation_id,
+                root=request_root,
+                config=config,
+                service=service,
+                harness=request_harness,
+                tool_config=tool_config,
+                exec_runtime=exec_runtime,
+                skills_subsystem=skills_subsystem,
+                skills_enabled=bool(skill_config.enabled),
+                instruction_blocks=instruction_blocks,
+                additional_instructions=instruction_selection.additional_instructions,
+                input_attachments=request.attachments,
+            )
+            return await completed_direct_turn_result(
+                harness=request_harness,
+                conversation_id=request.conversation_id,
+                turn_id=turn_id,
+                answer=answer,
+                metadata={"source": request.source},
+            )
+
+    if args.interactive:
+        await run_terminal_chat(agent_input=agent_input, run_turn=run_channel_turn)
+        return
+    if args.telegram_local:
+        await serve_direct_telegram(
+            config=configured_direct_telegram(config),
+            run_turn=run_channel_turn,
+        )
+        return
+
+    required_demo_tools = {
+        WEB_SEARCH_TOOL_ID,
+        WEB_FETCH_TOOL_ID,
+        EXEC_TOOL_ID,
+        "rendering_tools.write_pdf",
+    }
+    missing_demo_tools = sorted(required_demo_tools.difference(tool_ids))
+    if missing_demo_tools:
+        raise RuntimeError(
+            "the built-in demonstration requires tools: "
+            + ", ".join(missing_demo_tools)
+        )
+
     conversation_id = agent_input.conversation_id
     run_root = agent_input.run_path(
         root,
@@ -597,24 +704,33 @@ async def main_async(args: argparse.Namespace) -> None:
         model_service=service,
         emitter=emitter,
     )
-    topic = str((config.get("agent") or {}).get("topic") or "accountable agent runtimes")
-    if WEB_SEARCH_TOOL_ID not in tool_bindings.enabled_ids:
+    topic = str(
+        (config.get("agent") or {}).get("topic") or "accountable agent runtimes"
+    )
+    if WEB_SEARCH_TOOL_ID not in tool_ids:
         raise RuntimeError(
             f"the built-in demonstration requires agent.tools id {WEB_SEARCH_TOOL_ID}"
         )
-    if WEB_FETCH_TOOL_ID not in tool_bindings.enabled_ids:
+    if WEB_FETCH_TOOL_ID not in tool_ids:
         raise RuntimeError(
             f"the built-in demonstration requires agent.tools id {WEB_FETCH_TOOL_ID}"
         )
-    if EXEC_TOOL_ID not in tool_bindings.enabled_ids:
+    if EXEC_TOOL_ID not in tool_ids:
+        raise RuntimeError("the built-in demonstration requires " + EXEC_TOOL_ID)
+    if "rendering_tools.write_pdf" not in tool_ids:
         raise RuntimeError(
-            "the built-in demonstration requires " + EXEC_TOOL_ID
+            "the built-in demonstration requires rendering_tools.write_pdf"
         )
-    if "rendering_tools.write_pdf" not in tool_bindings.enabled_ids:
-        raise RuntimeError("the built-in demonstration requires rendering_tools.write_pdf")
     deliverable_prompt = (
         "Use the findings from the previous turn. You must author and execute Python with "
-        "exec_tools.execute_code_python. The Python must use openpyxl to create "
+        "exec_tools.execute_code_python. Inside that generated Python, call the configured "
+        "Web Search handle with `await agent_io_tools.tool_call(fn=web_tools.web_search, "
+        "params={'queries': 'site:python.org current stable Python release', "
+        "'objective': 'Verify the stable release used in this report', 'n': 3}, "
+        "call_reason='Verify release from generated code', "
+        "tool_id='web_tools.web_search')`. Use that returned evidence in the workbook. "
+        "Do not import `web_tools`; the isolated runtime supplies the handle from the "
+        "configured tool catalog. The Python must use openpyxl to create "
         "files/research/research-data.xlsx and must create a polished, print-ready HTML brief "
         "at files/research/research-brief.html. Contract the XLSX as external and HTML as "
         "internal. After execution succeeds, call rendering_tools.write_pdf in a later round "
@@ -648,13 +764,13 @@ async def main_async(args: argparse.Namespace) -> None:
             config=config,
             service=service,
             harness=harness,
-            tool_bindings=tool_bindings,
+            tool_config=tool_config,
             exec_runtime=exec_runtime,
             skills_subsystem=skills_subsystem,
             skills_enabled=bool(skill_config.enabled),
             instruction_blocks=instruction_blocks,
             additional_instructions=instruction_selection.additional_instructions,
-            attachment_source=request_path,
+            input_attachments=(DirectInputAttachment.from_path(request_path),),
         )
         completed_turns.append(first_turn)
         required_research = {WEB_SEARCH_TOOL_ID, WEB_FETCH_TOOL_ID}
@@ -673,7 +789,7 @@ async def main_async(args: argparse.Namespace) -> None:
             config=config,
             service=service,
             harness=harness,
-            tool_bindings=tool_bindings,
+            tool_config=tool_config,
             exec_runtime=exec_runtime,
             skills_subsystem=skills_subsystem,
             skills_enabled=bool(skill_config.enabled),
@@ -700,7 +816,7 @@ async def main_async(args: argparse.Namespace) -> None:
                 config=config,
                 service=service,
                 harness=harness,
-                tool_bindings=tool_bindings,
+                tool_config=tool_config,
                 exec_runtime=exec_runtime,
                 skills_subsystem=skills_subsystem,
                 skills_enabled=bool(skill_config.enabled),
@@ -709,13 +825,17 @@ async def main_async(args: argparse.Namespace) -> None:
             )
             completed_turns.append(recall_turn)
             if "react.memsearch" not in recall_sources:
-                raise RuntimeError("the recall turn completed without calling react.memsearch")
+                raise RuntimeError(
+                    "the recall turn completed without calling react.memsearch"
+                )
             await harness.verify_conversation(
                 conversation_id=recall_conversation_id,
                 expected_turn_ids=(recall_turn_id,),
             )
             print(f"\n[cross-conversation answer]\n{recall}\n")
-            print("[conversation] react.memsearch recovered a different conversation for this user")
+            print(
+                "[conversation] react.memsearch recovered a different conversation for this user"
+            )
         evidence_path = run_root / "evidence.json"
         evidence = write_evidence_index(
             evidence_path,
@@ -725,7 +845,9 @@ async def main_async(args: argparse.Namespace) -> None:
             conversation_records=records,
             adapter_evidence={
                 "generated_source_archive_path": f"{second_turn_id}/executions/*/pkg/user_code.py",
-                "cross_conversation_turn": completed_turns[2].turn_id if len(completed_turns) > 2 else None,
+                "cross_conversation_turn": (
+                    completed_turns[2].turn_id if len(completed_turns) > 2 else None
+                ),
             },
         )
         print_evidence_summary(evidence_path, evidence)
@@ -736,7 +858,9 @@ async def main_async(args: argparse.Namespace) -> None:
         if not list(second_turn_root.rglob(name))
     ]
     if missing:
-        raise RuntimeError(f"agent completed without required artifacts: {', '.join(missing)}")
+        raise RuntimeError(
+            f"agent completed without required artifacts: {', '.join(missing)}"
+        )
     print("demonstration: PASS")
 
 
@@ -759,12 +883,13 @@ def main() -> None:
         ),
         help="Directory containing the standard platform descriptor set.",
     )
-    parser.add_argument(
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument(
         "--check",
         action="store_true",
         help="Construct the direct SDK path without calling a provider.",
     )
-    parser.add_argument(
+    modes.add_argument(
         "--infra-check",
         action="store_true",
         help="Verify independent support services without calling a provider.",
@@ -775,12 +900,25 @@ def main() -> None:
         help="Override agent.input.conversation_id and resume that conversation.",
     )
     parser.add_argument("--session-id", help="Override agent.input.session_id.")
+    modes.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Read messages from this terminal and continue the configured conversation.",
+    )
+    modes.add_argument(
+        "--telegram-local",
+        action="store_true",
+        help="Run the local inline Telegram webhook configured under agent.ingress.telegram.",
+    )
     parser.add_argument(
         "--recall-conversation-id",
         help="Override agent.input.recall_conversation_id for the recall demonstration.",
     )
     args = parser.parse_args()
-    asyncio.run(main_async(args))
+    try:
+        asyncio.run(main_async(args))
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":

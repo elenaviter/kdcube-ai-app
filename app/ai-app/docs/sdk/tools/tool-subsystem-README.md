@@ -4,6 +4,7 @@ title: "Tool Subsystem"
 summary: "Canonical runtime flow for agent-scoped tool wiring: surfaces.as_consumer config, tool traits, descriptor adapters, dynamic loading, binding, and execution in in-memory and isolated modes."
 tags: ["sdk", "tools", "subsystem", "runtime", "descriptor", "traits", "isolation", "mcp", "binding"]
 keywords: ["surfaces.as_consumer", "agent tool config", "ToolSubsystem", "tool_traits", "strategy", "execution", "resolve_codegen_tools_specs", "io_tools.tool_call", "ToolStub", "py_code_exec_entry.py", "rewrite_runtime_globals_for_bundle", "bind_module_target", "_SERVICE", "_INTEGRATIONS"]
+updated_at: 2026-09-08
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/tools/custom-tools-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/tools/mcp-README.md
@@ -263,6 +264,20 @@ ReAct passes both allowed aliases and per-alias allowed tool names to
 `ToolSubsystem`. That means a source can be loaded for one agent while another
 agent in the same bundle sees a different subset.
 
+The allow-list is also an execution boundary. `ToolSubsystem` carries the
+active `allowed_tool_names_by_alias` policy in invocation-scoped context. A
+long-lived workflow may therefore serve different agents or a newly narrowed
+configuration without retaining the previous invocation's selection. `None`
+is the legacy unrestricted state; an explicit mapping, including `{}`, is
+default-closed.
+
+The policy supplied when `ToolSubsystem` is constructed is the authority
+ceiling. An invocation may preserve that policy or narrow it; it cannot add an
+alias or callable that the ceiling excludes. Nested invocation scopes apply the
+same intersection rule. The resulting effective policy is used to build the
+agent's catalog, exported to generated-code execution, and inherited by ReAct
+subagents.
+
 ## Runtime Wiring
 
 Bundle workflow code resolves the active agent config and passes the resolved
@@ -343,6 +358,7 @@ distributed isolated execution.
 `ToolSubsystem.export_runtime_globals()` exports:
 - `TOOL_ALIAS_MAP`
 - `TOOL_MODULE_FILES`
+- `ALLOWED_TOOL_NAMES_BY_ALIAS`
 - `RAW_TOOL_SPECS`
 - `BUNDLE_ROOT_HOST`
 
@@ -465,6 +481,49 @@ or supplies an explicit event-source module through `event_specs`.
    attaches it to the runtime `ToolSubsystem`, so catalog tools can use
    `bundle_tool_context.host_files(...)` in both in-process and isolated
    supervisor execution.
+
+The isolated path preserves one tool authority from catalog presentation to
+execution:
+
+```text
+agent consumer descriptor
+  module/ref + alias + allowed callable names
+                     |
+                     v
+              AgentToolConfig
+                     |
+                     v
+              ToolSubsystem
+        catalog + callable resolution
+                     |
+                     +-----------------------------+
+                     |                             |
+                     v                             v
+              top-level call              generated Python
+                                                   |
+                                      agent_io_tools.tool_call
+                                                   |
+                                                   v
+                                        trusted supervisor
+                                        checks the same allow-list
+                                                   |
+                                                   v
+                                        selected tool callable
+```
+
+Generated Python receives proxy handles for aliases in `TOOL_ALIAS_MAP`; it
+does not import the trusted tool modules. A call such as
+`web_tools.web_search` becomes a structured request over the supervisor socket.
+Before resolving the callable, the supervisor checks the invocation's exported
+`ALLOWED_TOOL_NAMES_BY_ALIAS`. A callable omitted from `allowed` is therefore
+absent from the model catalog and rejected if generated code still names it.
+
+The executor receives the alias map so it can create those proxy handles. It
+does not receive the portable service specification, tool module files,
+connected-service configuration, or secret descriptors. Networked tools such
+as Web Search execute in the trusted supervisor, where descriptor-backed
+credentials can be resolved. The generated Python executor remains
+network-isolated and does not receive those credentials.
 
 ## File-producing tool result contract
 

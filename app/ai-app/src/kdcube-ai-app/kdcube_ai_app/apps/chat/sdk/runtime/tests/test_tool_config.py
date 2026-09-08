@@ -1,7 +1,139 @@
 from __future__ import annotations
 
-from kdcube_ai_app.apps.chat.sdk.runtime.tool_config import agent_tool_config_from_bundle_props
-from kdcube_ai_app.apps.chat.sdk.runtime.tool_subsystem import ToolSubsystem
+from kdcube_ai_app.apps.chat.sdk.runtime.tool_config import (
+    agent_tool_config_from_bundle_props,
+)
+from kdcube_ai_app.apps.chat.sdk.runtime.tool_subsystem import (
+    ToolSubsystem,
+    tool_id_allowed_by_alias_names,
+)
+
+
+def test_tool_id_allow_policy_is_default_closed_when_explicit() -> None:
+    assert tool_id_allowed_by_alias_names("web_tools.web_search", None)
+    assert not tool_id_allowed_by_alias_names("web_tools.web_search", {})
+    assert tool_id_allowed_by_alias_names(
+        "web_tools.web_search",
+        {"web_tools": ["web_search"]},
+    )
+    assert not tool_id_allowed_by_alias_names(
+        "web_tools.web_fetch",
+        {"web_tools": ["web_search"]},
+    )
+    assert tool_id_allowed_by_alias_names(
+        "mcp.search.web_search",
+        {"search": ["*"]},
+    )
+
+
+def test_tool_subsystem_exports_invocation_scoped_allow_policy() -> None:
+    manager = ToolSubsystem(
+        service=None,
+        comm=None,
+        logger=None,
+        bundle_spec=None,
+        context_rag_client=None,
+        allowed_tool_names_by_alias={"web_tools": ["web_search"]},
+    )
+
+    assert manager.export_runtime_globals()["ALLOWED_TOOL_NAMES_BY_ALIAS"] == {
+        "web_tools": ["web_search"]
+    }
+    with manager.bind_allowed_tool_names_by_alias({}):
+        assert manager.export_runtime_globals()["ALLOWED_TOOL_NAMES_BY_ALIAS"] == {}
+    assert manager.export_runtime_globals()["ALLOWED_TOOL_NAMES_BY_ALIAS"] == {
+        "web_tools": ["web_search"]
+    }
+
+
+def test_tool_subsystem_invocation_policy_cannot_widen_configured_authority() -> None:
+    manager = ToolSubsystem(
+        service=None,
+        comm=None,
+        logger=None,
+        bundle_spec=None,
+        context_rag_client=None,
+        allowed_tool_names_by_alias={
+            "web_tools": ["web_search"],
+            "files": None,
+        },
+    )
+
+    with manager.bind_allowed_tool_names_by_alias(None):
+        assert manager.current_allowed_tool_names_by_alias() == {
+            "web_tools": ["web_search"],
+            "files": None,
+        }
+
+    with manager.bind_allowed_tool_names_by_alias(
+        {
+            "web_tools": ["web_search", "web_fetch"],
+            "files": ["read"],
+            "admin": ["delete"],
+        }
+    ):
+        assert manager.current_allowed_tool_names_by_alias() == {
+            "web_tools": ["web_search"],
+            "files": ["read"],
+        }
+
+    assert manager.current_allowed_tool_names_by_alias() == {
+        "web_tools": ["web_search"],
+        "files": None,
+    }
+
+
+def test_tool_subsystem_catalog_cannot_bypass_configured_authority() -> None:
+    manager = ToolSubsystem(
+        service=None,
+        comm=None,
+        logger=None,
+        bundle_spec=None,
+        context_rag_client=None,
+        allowed_tool_names_by_alias={
+            "web_tools": ["web_search"],
+            "files": None,
+        },
+    )
+    manager.tools_info = [
+        {"id": "web_tools.web_search", "plugin_alias": "web_tools"},
+        {"id": "web_tools.web_fetch", "plugin_alias": "web_tools"},
+        {"id": "files.read", "plugin_alias": "files"},
+        {"id": "admin.delete", "plugin_alias": "admin"},
+    ]
+    manager._mcp_entries = []
+
+    selected = manager._filter_entries(
+        allowed_plugins=["web_tools", "files", "admin"],
+        allowed_tool_names_by_alias={
+            "web_tools": ["web_search", "web_fetch"],
+            "files": ["read"],
+            "admin": ["delete"],
+        },
+    )
+
+    assert [entry["id"] for entry in selected] == [
+        "web_tools.web_search",
+        "files.read",
+    ]
+
+
+def test_unrestricted_tool_subsystem_accepts_explicit_invocation_narrowing() -> None:
+    manager = ToolSubsystem(
+        service=None,
+        comm=None,
+        logger=None,
+        bundle_spec=None,
+        context_rag_client=None,
+    )
+
+    with manager.bind_allowed_tool_names_by_alias(
+        {"web_tools": ["web_search"]}
+    ):
+        assert manager.current_allowed_tool_names_by_alias() == {
+            "web_tools": ["web_search"]
+        }
+    assert manager.current_allowed_tool_names_by_alias() is None
 
 
 def test_agent_tool_config_translates_named_service_operations_to_agent_tools() -> None:

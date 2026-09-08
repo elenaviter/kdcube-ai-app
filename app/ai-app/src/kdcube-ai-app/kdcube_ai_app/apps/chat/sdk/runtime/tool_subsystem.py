@@ -6,6 +6,7 @@
 from __future__ import annotations
 import os
 from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, asdict
 
 import sys
@@ -52,6 +53,32 @@ def parse_tool_id(tool_id: str) -> Tuple[str, str, str]:
         return origin, provider, tool_name
     return "mod", parts[0], ""
 
+
+def tool_id_allowed_by_alias_names(
+    tool_id: str,
+    allowed_tool_names_by_alias: Optional[Mapping[str, Optional[List[str]]]],
+) -> bool:
+    """Apply the canonical per-alias allow-list to one qualified tool id.
+
+    ``None`` preserves the legacy unrestricted behavior. An explicit mapping,
+    including an empty mapping, is default-closed.
+    """
+    if allowed_tool_names_by_alias is None:
+        return True
+    _origin, provider, tool_name = parse_tool_id(tool_id)
+    if not provider or not tool_name or provider not in allowed_tool_names_by_alias:
+        return False
+    allowed_names = allowed_tool_names_by_alias.get(provider)
+    if allowed_names is None:
+        return True
+    allowed = {
+        str(item).strip()
+        for item in allowed_names
+        if str(item or "").strip()
+    }
+    return "*" in allowed or tool_name in allowed or tool_id in allowed
+
+
 @dataclass
 class ToolModuleSpec:
     ref: str                 # dotted path or file path (abs/rel)
@@ -87,6 +114,7 @@ class ToolSubsystem:
             event_specs: Optional[List[Dict[str, Any]]] = None,
             mcp_subsystem: Optional[Any] = None,
             hosting_service: Optional[Any] = None,
+            allowed_tool_names_by_alias: Optional[Mapping[str, Optional[List[str]]]] = None,
     ):
         self.svc = service
         self.comm = comm
@@ -108,6 +136,14 @@ class ToolSubsystem:
         self.raw_event_specs = event_specs or []
         self.mcp_subsystem = mcp_subsystem
         self.hosting_service = hosting_service
+        self._allowed_tool_names_by_alias_cv: ContextVar[
+            Optional[Dict[str, Optional[List[str]]]]
+        ] = ContextVar(
+            f"tool_subsystem_allowed_names_{id(self)}",
+            default=self._copy_allowed_tool_names_by_alias(
+                allowed_tool_names_by_alias
+            ),
+        )
         self._mcp_entries: List[Dict[str, Any]] = []
         self._named_service_metadata_refreshed = False
 
@@ -206,6 +242,79 @@ class ToolSubsystem:
                 pass
 
         self._secure_stub = ToolStub()
+
+    @staticmethod
+    def _copy_allowed_tool_names_by_alias(
+        value: Optional[Mapping[str, Optional[List[str]]]],
+    ) -> Optional[Dict[str, Optional[List[str]]]]:
+        if value is None:
+            return None
+        return {
+            str(alias): None if names is None else list(names)
+            for alias, names in value.items()
+        }
+
+    def current_allowed_tool_names_by_alias(
+        self,
+    ) -> Optional[Dict[str, Optional[List[str]]]]:
+        """Return the invocation-scoped tool policy carried by this manager."""
+        return self._copy_allowed_tool_names_by_alias(
+            self._allowed_tool_names_by_alias_cv.get()
+        )
+
+    @staticmethod
+    def _narrow_allowed_tool_names_by_alias(
+        current: Optional[Mapping[str, Optional[List[str]]]],
+        requested: Optional[Mapping[str, Optional[List[str]]]],
+    ) -> Optional[Dict[str, Optional[List[str]]]]:
+        """Apply an invocation policy without widening the current authority."""
+        if requested is None:
+            return ToolSubsystem._copy_allowed_tool_names_by_alias(current)
+        if current is None:
+            return ToolSubsystem._copy_allowed_tool_names_by_alias(requested)
+
+        narrowed: Dict[str, Optional[List[str]]] = {}
+        for alias, current_names in current.items():
+            if alias not in requested:
+                continue
+            requested_names = requested.get(alias)
+            current_all = current_names is None or "*" in current_names
+            requested_all = requested_names is None or "*" in requested_names
+            if current_all and requested_all:
+                narrowed[str(alias)] = None
+                continue
+            if current_all:
+                narrowed[str(alias)] = list(requested_names or [])
+                continue
+            if requested_all:
+                narrowed[str(alias)] = list(current_names or [])
+                continue
+
+            allowed: List[str] = []
+            for name in current_names or []:
+                candidate = str(name or "").strip()
+                if not candidate:
+                    continue
+                qualified = candidate if "." in candidate else f"{alias}.{candidate}"
+                if tool_id_allowed_by_alias_names(qualified, requested):
+                    allowed.append(candidate)
+            narrowed[str(alias)] = allowed
+        return narrowed
+
+    @contextmanager
+    def bind_allowed_tool_names_by_alias(
+        self,
+        value: Optional[Mapping[str, Optional[List[str]]]],
+    ):
+        """Bind one invocation's non-widening policy across async descendants."""
+        current = self.current_allowed_tool_names_by_alias()
+        token = self._allowed_tool_names_by_alias_cv.set(
+            self._narrow_allowed_tool_names_by_alias(current, value)
+        )
+        try:
+            yield
+        finally:
+            self._allowed_tool_names_by_alias_cv.reset(token)
 
     def _named_service_tools_configured(self) -> bool:
         try:
@@ -962,8 +1071,16 @@ class ToolSubsystem:
         if allowed_plugins:
             allow = set(p.strip() for p in allowed_plugins if p and str(p).strip())
             ents = [e for e in ents if (e.get("plugin_alias") or "") in allow]
-        if allowed_tool_names_by_alias is not None:
-            ents = [e for e in ents if self._entry_allowed_by_alias_names(e, allowed_tool_names_by_alias)]
+        effective_allowed_names = self._narrow_allowed_tool_names_by_alias(
+            self.current_allowed_tool_names_by_alias(),
+            allowed_tool_names_by_alias,
+        )
+        if effective_allowed_names is not None:
+            ents = [
+                e
+                for e in ents
+                if self._entry_allowed_by_alias_names(e, effective_allowed_names)
+            ]
         if allowed_ids:
             allow_ids = set(allowed_ids)
             ents = [e for e in ents if system_tool(e) or e["id"] in allow_ids]
@@ -978,16 +1095,12 @@ class ToolSubsystem:
         allowed_tool_names_by_alias: Mapping[str, Optional[List[str]]],
     ) -> bool:
         tool_id = str(entry.get("id") or "")
-        alias = str(entry.get("plugin_alias") or "")
-        _, provider, tool_name = parse_tool_id(tool_id)
-        alias = alias or provider
-        if not alias or alias not in allowed_tool_names_by_alias:
-            return False
-        allowed_names = allowed_tool_names_by_alias.get(alias)
-        if allowed_names is None:
-            return True
-        allowed = {str(item).strip() for item in allowed_names if str(item or "").strip()}
-        return tool_name in allowed or tool_id in allowed
+        alias = str(entry.get("plugin_alias") or "").strip()
+        if alias:
+            origin, provider, tool_name = parse_tool_id(tool_id)
+            if provider != alias and tool_name:
+                tool_id = f"{origin}.{alias}.{tool_name}" if origin != "mod" else f"{alias}.{tool_name}"
+        return tool_id_allowed_by_alias_names(tool_id, allowed_tool_names_by_alias)
 
     def _introspect_module(self, mod, mod_name: str, alias: str, use_sk: bool) -> List[Dict[str, Any]]:
         if use_sk and hasattr(mod, "kernel"):
@@ -1283,6 +1396,7 @@ class ToolSubsystem:
         return {
             "TOOL_ALIAS_MAP": alias_to_dyn,
             "TOOL_MODULE_FILES": alias_to_file,
+            "ALLOWED_TOOL_NAMES_BY_ALIAS": self.current_allowed_tool_names_by_alias(),
             "BUNDLE_SPEC": bundle_dict,
             "BUNDLE_ROOT_HOST": str(self.bundle_root) if self.bundle_root else None,
             "RAW_TOOL_SPECS": self.raw_tool_specs or [],

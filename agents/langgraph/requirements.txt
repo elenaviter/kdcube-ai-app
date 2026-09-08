@@ -9,6 +9,8 @@ langgraph-checkpoint-postgres==3.0.5
 psycopg[binary,pool]==3.3.4
 asyncpg==0.31.0
 semantic-kernel
+fastapi
+uvicorn
 playwright
 markdown-it-py
 mdit-py-plugins

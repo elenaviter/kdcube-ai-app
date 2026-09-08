@@ -349,6 +349,11 @@ def _build_tool_subsystem_from_runtime_globals(
             raw_tool_specs=raw_tool_specs,
             tool_runtime=rg.get("TOOL_RUNTIME") if isinstance(rg.get("TOOL_RUNTIME"), dict) else None,
             tool_traits=rg.get("TOOL_TRAITS") if isinstance(rg.get("TOOL_TRAITS"), dict) else None,
+            allowed_tool_names_by_alias=(
+                rg.get("ALLOWED_TOOL_NAMES_BY_ALIAS")
+                if isinstance(rg.get("ALLOWED_TOOL_NAMES_BY_ALIAS"), dict)
+                else None
+            ),
             event_specs=event_specs,
             mcp_subsystem=mcp_subsystem,
             hosting_service=hosting_service,

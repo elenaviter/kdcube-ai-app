@@ -9,6 +9,7 @@ import json
 import sys
 import uuid
 from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -33,11 +34,11 @@ from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.infrastructure import ( 
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.configuration import (  # noqa: E402
     activate_configured_skills,
+    configured_agent_tool_config,
     configured_agent_input,
     configured_run_directory,
-    configured_tools,
+    configured_tool_ids,
     configured_web_search,
-    require_supported_tools,
     verify_docker_image,
     verify_playwright_chromium,
 )
@@ -51,6 +52,18 @@ from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.evidence import (  # noq
     print_evidence_summary,
     write_evidence_index,
 )
+from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.channels import (  # noqa: E402
+    DirectInputAttachment,
+    DirectTurnRequest,
+    add_direct_input_attachments,
+    completed_direct_turn_result,
+    prompt_with_attachment_manifest,
+    run_terminal_chat,
+)
+from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.telegram import (  # noqa: E402
+    configured_direct_telegram,
+    serve_direct_telegram,
+)
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.tool_runtime import (  # noqa: E402
     DirectToolRuntime,
 )
@@ -62,7 +75,9 @@ from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.model_service import (  
     build_model_service,
 )
 from kdcube_ai_app.apps.chat.emitters import ChatCommunicator  # noqa: E402
-from kdcube_ai_app.apps.chat.sdk.frameworks.langchain import KDCubeChatModel  # noqa: E402
+from kdcube_ai_app.apps.chat.sdk.frameworks.langchain import (
+    KDCubeChatModel,
+)  # noqa: E402
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_harness import (  # noqa: E402
     DirectAgentHarness,
 )
@@ -72,10 +87,22 @@ from kdcube_ai_app.apps.chat.sdk.skills.skills_registry import (  # noqa: E402
 
 
 ROLE = "standalone.langgraph.answer"
-WEB_SEARCH_TOOL_ID = "web_search"
-WEB_FETCH_TOOL_ID = "web_fetch"
-EXEC_TOOL_ID = "execute_python"
-RENDER_TOOL_IDS = ("write_pdf", "write_docx", "write_pptx")
+WEB_SEARCH_TOOL_ID = "web_tools.web_search"
+WEB_FETCH_TOOL_ID = "web_tools.web_fetch"
+EXEC_TOOL_ID = "exec_tools.execute_code_python"
+RENDER_TOOL_IDS = (
+    "rendering_tools.write_pdf",
+    "rendering_tools.write_docx",
+    "rendering_tools.write_pptx",
+)
+MODEL_TOOL_NAMES = {
+    WEB_SEARCH_TOOL_ID: "web_search",
+    WEB_FETCH_TOOL_ID: "web_fetch",
+    EXEC_TOOL_ID: "execute_python",
+    RENDER_TOOL_IDS[0]: "write_pdf",
+    RENDER_TOOL_IDS[1]: "write_docx",
+    RENDER_TOOL_IDS[2]: "write_pptx",
+}
 
 
 def _content_text(value: Any) -> str:
@@ -156,7 +183,9 @@ async def stream_turn(
                 continue
             text = _content_text(getattr(chunk, "content", ""))
             if text:
-                await comm.delta(text=text, index=index, marker="answer", agent="langgraph")
+                await comm.delta(
+                    text=text, index=index, marker="answer", agent="langgraph"
+                )
                 index += 1
         elif kind == "on_tool_start":
             called_tools.add(name)
@@ -164,7 +193,11 @@ async def stream_turn(
                 step=f"tool.{name}.{str(event.get('run_id') or '')[:8]}",
                 status="running",
                 title=f"Calling {name}",
-                markdown=json.dumps((event.get("data") or {}).get("input") or {}, ensure_ascii=False, default=str),
+                markdown=json.dumps(
+                    (event.get("data") or {}).get("input") or {},
+                    ensure_ascii=False,
+                    default=str,
+                ),
                 agent="langgraph",
             )
         elif kind == "on_tool_end":
@@ -232,20 +265,21 @@ async def run_one_turn(
     model: KDCubeChatModel,
     checkpointer: Any,
     instructions: str,
-    enabled_tools: set[str],
-    exec_runtime: dict[str, Any],
+    tool_config: Any,
+    configured_ids: set[str],
+    exec_runtime: dict[str, Any] | None,
     service: Any,
     harness: DirectAgentHarness,
-    attachment_source: Path | None = None,
+    input_attachments: tuple[DirectInputAttachment, ...] = (),
 ) -> tuple[str, str, set[str], Any]:
     turn_id = f"turn_{number:02d}_{uuid.uuid4().hex[:8]}"
     workspace = DirectTurnWorkspace(run_root=run_root, turn_id=turn_id)
     async with harness.turn(conversation_id=conversation_id, turn_id=turn_id) as turn:
-        if attachment_source is not None:
-            await turn.add_user_attachment(
-                attachment_source,
-                materialize_to=workspace.current_attachment(attachment_source.name),
-            )
+        attachments = await add_direct_input_attachments(
+            turn=turn,
+            workspace=workspace,
+            attachments=input_attachments,
+        )
         runtime = DirectToolRuntime(
             service=service,
             comm=turn.comm,
@@ -254,14 +288,18 @@ async def run_one_turn(
             bundle_id=harness.config.bundle_id,
             bundle_root=HERE,
             bundle_module="agent",
+            tool_config=tool_config,
         )
         graph = build_graph(
             model,
             checkpointer,
-            build_tools(runtime, enabled_ids=enabled_tools),
+            build_tools(runtime, configured_ids=configured_ids),
             instructions=instructions,
         )
-        answer, called_tools = await stream_turn(graph, prompt, run_config, turn.comm)
+        model_prompt = prompt_with_attachment_manifest(prompt, attachments)
+        answer, called_tools = await stream_turn(
+            graph, model_prompt, run_config, turn.comm
+        )
         await host_demo_outputs(turn=turn, workspace=workspace)
         await turn.persist_workspace(
             outdir=workspace.runtime_outdir,
@@ -269,7 +307,9 @@ async def run_one_turn(
             execution_id=f"{turn_id}_workspace",
         )
         await turn.complete(prompt=prompt, final_answer=answer)
-    print(f"[accounting] Redis turn cache contains {len(turn.accounting_events)} event(s)")
+    print(
+        f"[accounting] Redis turn cache contains {len(turn.accounting_events)} event(s)"
+    )
     return answer, turn_id, called_tools, turn
 
 
@@ -284,10 +324,10 @@ async def main_async(args: argparse.Namespace) -> None:
         conversation_id=args.conversation_id,
         session_id=args.session_id,
     )
-    configured_web_search(config, tool_id=WEB_SEARCH_TOOL_ID)
+    configured_web_search(config, connection_id="web")
     from kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search import web_search_server
 
-    web_search_server.load_config(config_path, tool_id=WEB_SEARCH_TOOL_ID)
+    web_search_server.load_config(config_path, tool_id="web")
     output_dir = configured_run_directory(config, config_path=config_path)
     harness_config = direct_harness_config(
         settings=settings,
@@ -300,33 +340,33 @@ async def main_async(args: argparse.Namespace) -> None:
         check_only=args.check,
     )
     agent_cfg = dict(config.get("agent") or {})
-    tool_config = configured_tools(config)
-    require_supported_tools(
-        tool_config,
-        supported={WEB_SEARCH_TOOL_ID, WEB_FETCH_TOOL_ID, EXEC_TOOL_ID, *RENDER_TOOL_IDS},
-        adapter="LangGraph direct example",
+    tool_config = configured_agent_tool_config(
+        config,
+        agent_id="langgraph",
+        bundle_root=HERE,
     )
+    configured_ids = set(configured_tool_ids(tool_config))
+    supported = {WEB_SEARCH_TOOL_ID, WEB_FETCH_TOOL_ID, EXEC_TOOL_ID, *RENDER_TOOL_IDS}
+    unsupported = sorted(configured_ids.difference(supported))
+    if unsupported:
+        raise ValueError(
+            "LangGraph direct example has no adapter for configured tools: "
+            + ", ".join(unsupported)
+        )
     unsupported_runtimes = sorted(
-        tool.id
-        for tool in tool_config
-        if tool.enabled
-        and tool.runtime != ("docker" if tool.id == EXEC_TOOL_ID else "local")
+        tool_id
+        for tool_id in configured_ids
+        if tool_config.tool_runtime.get(tool_id)
+        != ("docker" if tool_id == EXEC_TOOL_ID else "local")
     )
     if unsupported_runtimes:
         raise ValueError(
             "LangGraph tool runtime does not match the sample contract: "
             + ", ".join(unsupported_runtimes)
         )
-    enabled_tools = {tool.id for tool in tool_config if tool.enabled}
-    if WEB_SEARCH_TOOL_ID not in enabled_tools:
-        raise RuntimeError(f"the demonstration requires {WEB_SEARCH_TOOL_ID}")
-    if WEB_FETCH_TOOL_ID not in enabled_tools:
-        raise RuntimeError(f"the demonstration requires {WEB_FETCH_TOOL_ID}")
-    if EXEC_TOOL_ID not in enabled_tools:
-        raise RuntimeError(f"the demonstration requires {EXEC_TOOL_ID}")
-    if "write_pdf" not in enabled_tools:
-        raise RuntimeError("the demonstration requires write_pdf")
-    exec_runtime = platform_exec_profile(settings)
+    exec_runtime = (
+        platform_exec_profile(settings) if EXEC_TOOL_ID in configured_ids else None
+    )
     _skills_subsystem, skill_config = activate_configured_skills(
         config,
         config_path=config_path,
@@ -345,21 +385,29 @@ async def main_async(args: argparse.Namespace) -> None:
     )
     instructions = compose_provider_native_instructions(
         instruction_selection,
-        exec_tool=EXEC_TOOL_ID if EXEC_TOOL_ID in enabled_tools else None,
+        exec_tool=(
+            MODEL_TOOL_NAMES[EXEC_TOOL_ID] if EXEC_TOOL_ID in configured_ids else None
+        ),
         rendering_tools=tuple(
-            tool_id for tool_id in RENDER_TOOL_IDS if tool_id in enabled_tools
+            MODEL_TOOL_NAMES[tool_id]
+            for tool_id in RENDER_TOOL_IDS
+            if tool_id in configured_ids
         ),
         web_search_tool=(
-            WEB_SEARCH_TOOL_ID if WEB_SEARCH_TOOL_ID in enabled_tools else None
+            MODEL_TOOL_NAMES[WEB_SEARCH_TOOL_ID]
+            if WEB_SEARCH_TOOL_ID in configured_ids
+            else None
         ),
         web_fetch_tool=(
-            WEB_FETCH_TOOL_ID if WEB_FETCH_TOOL_ID in enabled_tools else None
+            MODEL_TOOL_NAMES[WEB_FETCH_TOOL_ID]
+            if WEB_FETCH_TOOL_ID in configured_ids
+            else None
         ),
         skill_instructions=skill_block,
     )
     print("mode: standalone SDK process")
     print(f"adapter: LangGraph create_agent -> KDCubeChatModel ({ROLE})")
-    print(f"tools: {', '.join(sorted(enabled_tools)) or '(none)'}")
+    print(f"tools: {', '.join(sorted(configured_ids)) or '(none)'}")
     print(f"instruction profile: {instruction_selection.profile}")
     print(
         "custom instructions: "
@@ -367,7 +415,7 @@ async def main_async(args: argparse.Namespace) -> None:
     )
     print(
         "web research: KDCube Web Search and Web Fetch "
-        f"({config_path}#agent.tools[id={WEB_SEARCH_TOOL_ID}].settings)"
+        f"({config_path}#agent.tools[id=web].settings)"
     )
     print(f"skills: {', '.join(skill_config.enabled) or '(none)'}")
     print(f"run directory: {output_dir}")
@@ -381,9 +429,10 @@ async def main_async(args: argparse.Namespace) -> None:
         agent_id=harness_config.agent_id,
     )
     print(f"agent state scope: {private_state_key}")
-    if not args.check:
+    if exec_runtime is not None and not args.check:
         image = verify_docker_image(exec_runtime)
-        print(f"isolated execution image: {image}")
+        print(f"isolated code-execution image: {image}")
+    if set(RENDER_TOOL_IDS).intersection(configured_ids) and not args.check:
         browser = await verify_playwright_chromium()
         print(f"document renderer: Playwright {browser} ready")
     if args.infra_check:
@@ -394,8 +443,12 @@ async def main_async(args: argparse.Namespace) -> None:
             emitter=ConsoleEmitter(output_dir / "communicator.jsonl"),
         )
         async with harness:
-            async with open_postgres_checkpointer(settings, harness_config.postgres_url):
-                print("infrastructure: Redis, Postgres conversation/checkpoint tables, and storage ready")
+            async with open_postgres_checkpointer(
+                settings, harness_config.postgres_url
+            ):
+                print(
+                    "infrastructure: Redis, Postgres conversation/checkpoint tables, and storage ready"
+                )
         print("infrastructure check: PASS")
         return
 
@@ -415,12 +468,97 @@ async def main_async(args: argparse.Namespace) -> None:
         max_tokens=int(agent_cfg.get("max_tokens") or 12000),
     )
     if args.check:
-        tools = build_tools(None, enabled_ids=enabled_tools)
+        tools = build_tools(None, configured_ids=configured_ids)
         graph = build_graph(model, MemorySaver(), tools, instructions=instructions)
         if graph is None:
             raise RuntimeError("LangGraph construction failed")
         print("check: PASS")
         return
+
+    async def run_channel_turn(request: DirectTurnRequest, checkpointer: Any):
+        request_config = replace(
+            harness_config,
+            user_id=request.user_id,
+            user_type=request.user_type,
+            session_id=request.session_id,
+        )
+        request_root = request.agent_input.run_path(
+            output_dir,
+            run_id=f"run_{uuid.uuid4().hex[:12]}",
+        )
+        request_root.mkdir(parents=True, exist_ok=True)
+        request_harness = DirectAgentHarness(
+            config=request_config,
+            model_service=service,
+            emitter=ConsoleEmitter(request_root / "communicator.jsonl"),
+        )
+        request_run_config = {
+            "configurable": {
+                "thread_id": request.agent_input.continuity_key(
+                    tenant=request_config.tenant,
+                    project=request_config.project,
+                    agent_id=request_config.agent_id,
+                )
+            },
+            "recursion_limit": int(agent_cfg.get("recursion_limit") or 24),
+        }
+        async with request_harness:
+            answer, turn_id, _called_tools, _turn = await run_one_turn(
+                prompt=request.prompt,
+                number=1,
+                conversation_id=request.conversation_id,
+                run_root=request_root,
+                run_config=request_run_config,
+                model=model,
+                checkpointer=checkpointer,
+                instructions=instructions,
+                tool_config=tool_config,
+                configured_ids=configured_ids,
+                exec_runtime=exec_runtime,
+                service=service,
+                harness=request_harness,
+                input_attachments=request.attachments,
+            )
+            return await completed_direct_turn_result(
+                harness=request_harness,
+                conversation_id=request.conversation_id,
+                turn_id=turn_id,
+                answer=answer,
+                metadata={"source": request.source},
+            )
+
+    if args.interactive or args.telegram_local:
+        async with open_postgres_checkpointer(
+            settings, harness_config.postgres_url
+        ) as checkpointer:
+
+            async def channel_callback(request: DirectTurnRequest):
+                return await run_channel_turn(request, checkpointer)
+
+            if args.interactive:
+                await run_terminal_chat(
+                    agent_input=agent_input,
+                    run_turn=channel_callback,
+                )
+            else:
+                await serve_direct_telegram(
+                    config=configured_direct_telegram(config),
+                    run_turn=channel_callback,
+                )
+        return
+
+    required_demo_tools = {
+        WEB_SEARCH_TOOL_ID,
+        WEB_FETCH_TOOL_ID,
+        EXEC_TOOL_ID,
+        RENDER_TOOL_IDS[0],
+    }
+    missing_demo_tools = sorted(required_demo_tools.difference(configured_ids))
+    if missing_demo_tools:
+        raise RuntimeError(
+            "the built-in demonstration requires tools: "
+            + ", ".join(missing_demo_tools)
+        )
 
     conversation_id = agent_input.conversation_id
     run_root = agent_input.run_path(
@@ -456,7 +594,14 @@ async def main_async(args: argparse.Namespace) -> None:
         ),
         (
             "Use the findings from the previous turn. Author complete Python and call "
-            "execute_python. The Python must use openpyxl to create "
+            "execute_python. Inside that generated Python, call the configured Web Search "
+            "handle with `await agent_io_tools.tool_call(fn=web_tools.web_search, "
+            "params={'queries': 'site:python.org current stable Python release', "
+            "'objective': 'Verify the stable release used in this report', 'n': 3}, "
+            "call_reason='Verify release from generated code', "
+            "tool_id='web_tools.web_search')`. Use that returned evidence in the workbook. "
+            "Do not import `web_tools`; the isolated runtime supplies the handle from the "
+            "configured tool catalog. The Python must use openpyxl to create "
             "files/research/research-data.xlsx and create polished, print-ready HTML at "
             "files/research/research-brief.html. Declare the XLSX external and the HTML "
             "internal in the artifact contract. After execution succeeds, call write_pdf "
@@ -469,8 +614,12 @@ async def main_async(args: argparse.Namespace) -> None:
     called_tools_by_turn: list[set[str]] = []
     completed_turns: list[Any] = []
     async with harness:
-        async with open_postgres_checkpointer(settings, harness_config.postgres_url) as checkpointer:
-            print("infrastructure: Redis, Postgres conversation/checkpoint tables, and storage ready")
+        async with open_postgres_checkpointer(
+            settings, harness_config.postgres_url
+        ) as checkpointer:
+            print(
+                "infrastructure: Redis, Postgres conversation/checkpoint tables, and storage ready"
+            )
             for number, prompt in enumerate(prompts, start=1):
                 answer, turn_id, called_tools, turn = await run_one_turn(
                     prompt=prompt,
@@ -481,17 +630,25 @@ async def main_async(args: argparse.Namespace) -> None:
                     model=model,
                     checkpointer=checkpointer,
                     instructions=instructions,
-                    enabled_tools=enabled_tools,
+                    tool_config=tool_config,
+                    configured_ids=configured_ids,
                     exec_runtime=exec_runtime,
                     service=service,
                     harness=harness,
-                    attachment_source=request_path if number == 1 else None,
+                    input_attachments=(
+                        (DirectInputAttachment.from_path(request_path),)
+                        if number == 1
+                        else ()
+                    ),
                 )
                 turn_ids.append(turn_id)
                 called_tools_by_turn.append(called_tools)
                 completed_turns.append(turn)
                 print(f"\n[turn {number} answer]\n{answer}\n")
-            required_research = {WEB_SEARCH_TOOL_ID, WEB_FETCH_TOOL_ID}
+            required_research = {
+                MODEL_TOOL_NAMES[WEB_SEARCH_TOOL_ID],
+                MODEL_TOOL_NAMES[WEB_FETCH_TOOL_ID],
+            }
             missing_research = sorted(
                 required_research.difference(called_tools_by_turn[0])
             )
@@ -529,7 +686,9 @@ async def main_async(args: argparse.Namespace) -> None:
         if not deliverable_workspace.current_file(f"research/{name}").is_file()
     ]
     if missing:
-        raise RuntimeError(f"agent completed without required artifacts: {', '.join(missing)}")
+        raise RuntimeError(
+            f"agent completed without required artifacts: {', '.join(missing)}"
+        )
     print("demonstration: PASS")
 
 
@@ -552,12 +711,13 @@ def main() -> None:
         ),
         help="Directory containing the standard platform descriptor set.",
     )
-    parser.add_argument(
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument(
         "--check",
         action="store_true",
         help="Construct the direct SDK path without calling a provider.",
     )
-    parser.add_argument(
+    modes.add_argument(
         "--infra-check",
         action="store_true",
         help="Verify Redis and bootstrap Postgres checkpoint tables without calling a provider.",
@@ -568,7 +728,20 @@ def main() -> None:
         help="Override agent.input.conversation_id and resume that conversation.",
     )
     parser.add_argument("--session-id", help="Override agent.input.session_id.")
-    asyncio.run(main_async(parser.parse_args()))
+    modes.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Read messages from this terminal and continue the configured conversation.",
+    )
+    modes.add_argument(
+        "--telegram-local",
+        action="store_true",
+        help="Run the local inline Telegram webhook configured under agent.ingress.telegram.",
+    )
+    try:
+        asyncio.run(main_async(parser.parse_args()))
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":

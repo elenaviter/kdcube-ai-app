@@ -1627,11 +1627,17 @@ class ReactSolverV2:
         allowed_tool_names_by_alias: Dict[str, Any] | None = None,
     ):
         try:
-            with self._bind_runtime_role_models():
-                return await self._run_impl(
-                    allowed_plugins=allowed_plugins,
-                    allowed_tool_names_by_alias=allowed_tool_names_by_alias,
+            with self.tools_subsystem.bind_allowed_tool_names_by_alias(
+                allowed_tool_names_by_alias
+            ):
+                effective_tool_policy = (
+                    self.tools_subsystem.current_allowed_tool_names_by_alias()
                 )
+                with self._bind_runtime_role_models():
+                    return await self._run_impl(
+                        allowed_plugins=allowed_plugins,
+                        allowed_tool_names_by_alias=effective_tool_policy,
+                    )
         except asyncio.CancelledError:
             close_handler = getattr(self.ctx_browser, "close_external_event_handler", None) if self.ctx_browser else None
             if callable(close_handler):

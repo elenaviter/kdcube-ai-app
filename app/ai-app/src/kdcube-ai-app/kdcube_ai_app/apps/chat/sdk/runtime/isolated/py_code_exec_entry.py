@@ -940,6 +940,10 @@ async def _async_main() -> int:
     sup = PrivilegedSupervisor(socket_path=socket_path, logger=logger, auth_token=supervisor_auth_token)
     alias_map = runtime_globals.get("TOOL_ALIAS_MAP") or {}
     sup.set_alias_map(alias_map)
+    if "ALLOWED_TOOL_NAMES_BY_ALIAS" in runtime_globals:
+        sup.set_allowed_tool_names_by_alias(
+            runtime_globals.get("ALLOWED_TOOL_NAMES_BY_ALIAS")
+        )
     logger.log(f"[entry] Set alias map with {len(alias_map)} entries: {list(alias_map.keys())}", level="INFO")
 
     # Async Unix server so all requests share the same ContextVars

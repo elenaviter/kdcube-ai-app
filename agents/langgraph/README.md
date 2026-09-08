@@ -4,7 +4,7 @@ title: "Run the LangGraph Agent"
 summary: "Run LangGraph through the KDCube model bridge with durable checkpoints and harness accounting."
 tags: ["agents", "langgraph", "langchain", "harness", "accounting", "standalone", "web-search", "web-fetch"]
 keywords: ["KDCubeChatModel", "KDCube Web Search", "KDCube Web Fetch", "stream_model_text_tracked", "AsyncPostgresSaver", "ChatCommunicator"]
-updated_at: 2026-09-07
+updated_at: 2026-09-08
 see_also:
   - repo:kdcube-ai-app/agents/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md
@@ -16,8 +16,8 @@ see_also:
 
 This directory runs LangChain `create_agent` through KDCube's
 `KDCubeChatModel`. Model streaming is accounted by the harness, while Postgres
-stores both the conversation index and LangGraph checkpoints. No KDCube server
-is required.
+stores both the conversation index and LangGraph checkpoints. It runs directly
+as a Python process from this checkout.
 
 ## Run it
 
@@ -36,6 +36,24 @@ cd agents/langgraph
 .venv/bin/python agent.py --infra-check
 .venv/bin/python agent.py
 ```
+
+For an ongoing terminal conversation, run:
+
+```bash
+.venv/bin/python agent.py --interactive \
+  --user-id alice --conversation-id terminal-chat --session-id terminal-1
+```
+
+For the development-only Telegram webhook, add the bot token and webhook
+secret to `descriptors.local/secrets.yaml`, expose local port `8787` through an
+HTTPS tunnel, register that URL with Telegram, then run:
+
+```bash
+.venv/bin/python agent.py --telegram-local
+```
+
+The complete webhook registration and process-local delivery boundary are in the
+[executable recipe](../../app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md#10-connect-a-local-telegram-bot).
 
 The default run uses `agent.input.user_id: demo-user` and
 `agent.input.conversation_id: langgraph-demo`. Run it again with those values
@@ -70,9 +88,11 @@ The full commands and capacity notes are in the
 Turn one hosts a research-request attachment, searches with
 [KDCube Web Search](../../mcp/web-search/README.md), and inspects a selected
 result with KDCube Web Fetch. Turn two resumes the same Postgres-backed graph
-thread. The model authors Python using `openpyxl`; `execute_python` runs it in the configured
-Docker image to create an XLSX and HTML. `write_pdf` then renders the HTML into
-a polished PDF.
+thread. The model authors Python using `openpyxl`; the program makes an
+additional Web Search call through `agent_io_tools.tool_call` and creates an
+XLSX and HTML in the isolated turn workspace. The trusted supervisor executes
+the Web call under the same descriptor-selected tool policy. `write_pdf` then
+renders the HTML into a polished PDF.
 
 The same YAML enables `write_docx` for Markdown and `write_pptx` for
 section-based HTML. A successful run proves live events, accounted model calls,
@@ -86,18 +106,22 @@ containing `pkg/user_code.py`.
 ## Change the demo
 
 Edit `config.local.yaml` to change the `workspace-files` instruction profile,
-`additional_instructions`, run directory, tools, skills, topic, or limits. The
+`additional_instructions`, local ingress, run directory, tools, skills, topic,
+or limits. The
 `agent.input` section selects the local caller session and durable
 conversation. Tenant and project come from `descriptors.local/assembly.yaml`;
 the private LangGraph checkpoint key adds this runner's stable `langgraph`
 agent ID. The profile teaches the current-turn artifact workspace; selected skill text and
 enabled capability guidance are composed before the administrator override.
 Web Search and Web Fetch share the allowlist, blocklist, and SSRF policy under
-the `web_search` tool row's `settings`. Edit
+`agent.tools[id=web].settings`. Edit
 `descriptors.local/assembly.yaml` for model provider, model ID, and
 infrastructure; edit `descriptors.local/secrets.yaml` for credentials. The shipped model is
-`claude-haiku-4-5-20251001`. Add LangChain tools in `tools.py` and select their
-IDs in YAML. The built-in execution and renderer wrappers are turn-bound, so
-new file-producing tools should preserve the same current-turn path contract.
+`claude-haiku-4-5-20251001`. Add a Python source through the canonical
+`agent.tools` `module`/`ref`, `alias`, and `allowed` fields; add only the small
+LangChain schema adapter in `tools.py`. The built-in execution and renderer
+wrappers are turn-bound, so new file-producing adapters should preserve the
+same current-turn path contract. Canonical discovery and admission are in
+[Tool Subsystem](../../app/ai-app/docs/sdk/tools/tool-subsystem-README.md).
 The exact composition is documented in
 [Direct Agent Instruction Profiles](../../app/ai-app/docs/runtime/harness/direct-agent-instruction-profiles-README.md).

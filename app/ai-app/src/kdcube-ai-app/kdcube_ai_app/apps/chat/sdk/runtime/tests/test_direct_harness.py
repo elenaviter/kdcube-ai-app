@@ -10,6 +10,7 @@ from kdcube_ai_app.apps.chat.sdk.runtime import direct_harness as module
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_harness import (
     DirectAgentHarness,
     DirectAgentHarnessConfig,
+    DirectAgentTurn,
 )
 
 
@@ -38,14 +39,56 @@ def test_config_requires_every_direct_host_boundary() -> None:
 
 
 @pytest.mark.asyncio
-async def test_turn_records_once_and_requires_accounting(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_turn_accepts_caller_attachment_bytes(tmp_path) -> None:
+    storage = SimpleNamespace(
+        put_attachment=AsyncMock(
+            return_value=("file:///hosted/input.png", "storage-key", "resource-name")
+        )
+    )
+    harness = SimpleNamespace(
+        config=SimpleNamespace(
+            tenant="tenant",
+            project="project",
+            user_id="user",
+            user_type="regular",
+        ),
+        storage=storage,
+    )
+    target = tmp_path / "current" / "input.png"
+    turn = DirectAgentTurn(
+        harness=harness,
+        conversation_id="conversation",
+        turn_id="turn",
+        communicator=SimpleNamespace(),
+    )
+
+    row = await turn.add_user_attachment_bytes(
+        b"png-data",
+        filename="../input.png",
+        mime="image/png",
+        materialize_to=target,
+    )
+
+    assert target.read_bytes() == b"png-data"
+    assert row["filename"] == "input.png"
+    assert row["size"] == 8
+    assert row["physical_path"] == str(target.resolve())
+    assert turn.user_attachments == [row]
+
+
+@pytest.mark.asyncio
+async def test_turn_records_once_and_requires_accounting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     @asynccontextmanager
     async def passthrough(*_args, **_kwargs):
         yield
 
     monkeypatch.setattr(module, "bind_accounting", passthrough)
     monkeypatch.setattr(module, "with_accounting", passthrough)
-    monkeypatch.setattr(module, "get_turn_events", AsyncMock(return_value=[{"usage": 1}]))
+    monkeypatch.setattr(
+        module, "get_turn_events", AsyncMock(return_value=[{"usage": 1}])
+    )
     record = AsyncMock(return_value=True)
     monkeypatch.setattr(module, "record_minimal_turn_log_if_absent", record)
 
@@ -62,9 +105,7 @@ async def test_turn_records_once_and_requires_accounting(monkeypatch: pytest.Mon
         await turn.complete(prompt="question", final_answer="answer")
 
     record.assert_awaited_once()
-    assert record.await_args.kwargs["user_attachments"] == [
-        {"filename": "request.md"}
-    ]
+    assert record.await_args.kwargs["user_attachments"] == [{"filename": "request.md"}]
     assert record.await_args.kwargs["assistant_files"] == [
         {"filename": "brief.html", "visibility": "internal"}
     ]
@@ -73,14 +114,18 @@ async def test_turn_records_once_and_requires_accounting(monkeypatch: pytest.Mon
 
 
 @pytest.mark.asyncio
-async def test_turn_fails_when_caller_forgets_completion(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_turn_fails_when_caller_forgets_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     @asynccontextmanager
     async def passthrough(*_args, **_kwargs):
         yield
 
     monkeypatch.setattr(module, "bind_accounting", passthrough)
     monkeypatch.setattr(module, "with_accounting", passthrough)
-    monkeypatch.setattr(module, "get_turn_events", AsyncMock(return_value=[{"usage": 1}]))
+    monkeypatch.setattr(
+        module, "get_turn_events", AsyncMock(return_value=[{"usage": 1}])
+    )
 
     harness = DirectAgentHarness(
         config=_config(),

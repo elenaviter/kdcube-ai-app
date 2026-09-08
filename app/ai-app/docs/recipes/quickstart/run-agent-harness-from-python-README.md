@@ -1,11 +1,11 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md
 title: "Recipe: Run the Agent Harness from Python"
-summary: "Run native ReAct, LangGraph, or Claude Code from SDK source with Web Search and Web Fetch, isolated code execution, document rendering, durable conversations, and accounting."
+summary: "Run native ReAct, LangGraph, or Claude Code from SDK source with terminal or local Telegram input, Web Search and Web Fetch, isolated code execution, document rendering, durable conversations, and accounting."
 status: current
-tags: ["recipe", "quickstart", "agent-harness", "python", "native-react", "langgraph", "claude-code", "self-hosted", "web-search", "web-fetch", "rendering"]
-keywords: ["run agent harness", "direct SDK agent", "KDCube Web Search", "KDCube Web Fetch", "standard descriptors", "Redis", "Postgres", "Git transcript", "isolated code execution", "write_pdf", "write_docx", "write_pptx"]
-updated_at: 2026-09-07
+tags: ["recipe", "quickstart", "agent-harness", "python", "native-react", "langgraph", "claude-code", "self-hosted", "terminal", "telegram", "web-search", "web-fetch", "rendering"]
+keywords: ["run agent harness", "direct SDK agent", "terminal chat", "local Telegram webhook", "KDCube Web Search", "KDCube Web Fetch", "standard descriptors", "Redis", "Postgres", "Git transcript", "isolated code execution", "write_pdf", "write_docx", "write_pptx"]
+updated_at: 2026-09-08
 see_also:
   - repo:kdcube-ai-app/agents/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/README.md
@@ -21,8 +21,8 @@ see_also:
 # Recipe: Run the Agent Harness from Python
 
 Run an agent from a shell or IDE and give it KDCube Harness capabilities. The
-sample process imports KDCube SDK source directly; it does not require a
-running KDCube server. Redis and Postgres are independent support services.
+sample process imports KDCube SDK source directly and runs as its own Python
+process. Redis and Postgres are independent support services.
 
 Choose one complete example:
 
@@ -68,16 +68,22 @@ Open agents/
                     next-turn continuity
               |
               v
-       agent-authored Python -> isolated Docker execution
+       agent-authored Python -> isolated code execution
               |                         |
-              |                         +-> XLSX
-              |                         +-> renderer-ready HTML
+              |                         +-> enabled Web tool via supervisor
+              |                         +-> XLSX + renderer-ready HTML
               |                         +-> archived pkg/user_code.py
               v
        rendering_tools.write_pdf -> polished PDF
               |
               v
        inspect conversation, files, execution, and spend evidence
+
+or select a direct conversation channel
+              |
+              +--> --interactive      terminal input/output
+              |
+              +--> --telegram-local   verified webhook, files, final reply
 ```
 
 The model writes the research and Python. KDCube supplies the reusable
@@ -235,28 +241,26 @@ its subprocess owns an Anthropic-specific model protocol. Keep
 `default_llm_provider: anthropic` for the Claude example. This is an adapter
 constraint, not a second model-configuration location.
 
-### Plan local capacity
+### Plan deployment capacity
 
 The model runtime dominates GPU memory. Model weights, quantization, context
-length, and KV cache determine whether the selected model fits; the Python
-harness itself uses no model VRAM. For one developer running turns
-sequentially, use these as starting capacity allowances rather than measured
-guarantees:
+length, and KV cache determine its local footprint. Size the remaining
+components from the enabled capabilities and expected concurrency:
 
-| Component | Starting host-memory allowance | What changes it |
-| --- | ---: | --- |
-| Direct harness, Redis, and Postgres | 1-2 GB | retained test data and concurrent turns |
-| One Playwright/Chromium render | 0.5-1.5 GB | page size, images, and browser concurrency |
-| One isolated Python execution | 0.5-2 GB | generated code, workbook size, and container limits |
-| On-host inference | model-dependent | weights, quantization, context/KV cache, and CPU spill |
+| Component | Resource driver |
+| --- | --- |
+| Direct agent process | selected adapter, active turns, and retained in-process state |
+| Redis and Postgres | concurrent turns, conversation volume, checkpoints, and accounting retention |
+| Local filesystem or S3 storage | attachments, generated files, turn records, and execution archives |
+| Playwright/Chromium rendering | concurrent PDF/PPTX renders, page complexity, and embedded media |
+| Isolated Python execution | concurrent containers plus configured CPU, RAM, network, and workspace limits |
+| On-host inference | model weights, quantization, context/KV cache, and CPU spill |
 
-A machine with 24 GB system RAM and 8 GB VRAM can plausibly run a small
-quantized model plus this sequential demo, but this is not a benchmark or a
-model recommendation. Start with one active turn, one browser render, and one
-executor call at a time. Reduce `num_ctx`, output tokens, or enabled tools when
-the local runtime spills excessively or cannot fit the request. Playwright is
-needed only for browser-backed rendering; disabling the PDF/PPTX tools and
-their demo calls removes that browser workload.
+Use the model server's measurements for inference sizing. Configure executor
+limits under `platform.services.proc.exec`, and scale Redis, Postgres, and the
+selected storage backend for the expected retention and concurrency. Tool rows
+in `config.local.yaml` select whether execution and rendering are part of the
+agent composition.
 
 ## 5. Build the isolated Python executor
 
@@ -301,6 +305,13 @@ agent:
     session_id: local-session
     conversation_id: native-demo
     recall_conversation_id: native-recall-demo
+  ingress:
+    telegram:
+      host: 127.0.0.1
+      port: 8787
+      path: /telegram/webhook
+      bot_token_ref: platform.services.telegram.bot_token
+      webhook_secret_ref: platform.services.telegram.webhook_secret
   topic: "the current stable Python release and its release date"
   instructions:
     profile: lite:core
@@ -308,30 +319,41 @@ agent:
     You are a research agent. Preserve public source URLs and follow enabled skills.
   run_directory: ./output
   tools:
-    - id: web_tools.web_search
-      enabled: true
-      runtime: local
+    - id: web
+      kind: python
+      module: kdcube_ai_app.apps.chat.sdk.tools.web_tools
+      alias: web_tools
+      discovery: semantic_kernel
+      allowed: [web_search, web_fetch]
+      runtime:
+        web_search: local
+        web_fetch: local
       settings:
         filter:
           allowlist:
             - python.org
           blocklist: []
           ssrf_guard: true
-    - id: web_tools.web_fetch
-      enabled: true
-      runtime: local
-    - id: exec_tools.execute_code_python
-      enabled: true
-      runtime: docker
-    - id: rendering_tools.write_pdf
-      enabled: true
-      runtime: local
-    - id: rendering_tools.write_docx
-      enabled: true
-      runtime: local
-    - id: rendering_tools.write_pptx
-      enabled: true
-      runtime: local
+
+    - id: code
+      kind: python
+      module: kdcube_ai_app.apps.chat.sdk.tools.exec_tools
+      alias: exec_tools
+      discovery: semantic_kernel
+      allowed: [execute_code_python]
+      runtime:
+        execute_code_python: docker
+
+    - id: documents
+      kind: python
+      module: kdcube_ai_app.apps.chat.sdk.tools.rendering_tools
+      alias: rendering_tools
+      discovery: semantic_kernel
+      allowed: [write_pdf, write_docx, write_pptx]
+      runtime:
+        write_pdf: local
+        write_docx: local
+        write_pptx: local
   skills:
     root: ./skills
     enabled:
@@ -355,7 +377,8 @@ identifies the current calling session and accounting lineage. Native's
 `recall_conversation_id` is the separate conversation used by its explicit
 cross-conversation search demonstration.
 
-The corresponding IDs are:
+The descriptor uses the same canonical tool IDs for every agent. Framework
+adapters translate those IDs only at their model-facing boundary:
 
 | Capability | Native | LangGraph | Claude Code |
 | --- | --- | --- | --- |
@@ -366,13 +389,42 @@ The corresponding IDs are:
 | DOCX | `rendering_tools.write_docx` | `write_docx` | `mcp__kdcube_harness__write_docx` |
 | PPTX | `rendering_tools.write_pptx` | `write_pptx` | `mcp__kdcube_harness__write_pptx` |
 
-Unknown tool or skill IDs fail during `--check`. Tool settings stay on their
-tool row. Web Search and Web Fetch run from the same
+Unknown tool or skill IDs fail during `--check`. Settings stay on their source
+row. Web Search and Web Fetch run from the same
 [KDCube Web Search MCP implementation](../../../../../mcp/web-search/README.md);
-the Web Search row owns their shared domain allowlist, blocklist, and SSRF
+the `agent.tools[id=web]` source owns their shared domain allowlist, blocklist, and SSRF
 policy. Native and LangGraph call the SDK implementation in-process. Claude
 starts the public `mcp/web-search/server.py` launcher as a stdio MCP server.
 Change the allowlist when changing the sample topic.
+
+The tracked descriptors select DuckDuckGo, which needs no search credential.
+To select Brave, change the standard assembly descriptor and set its secret in
+the ignored secret descriptor:
+
+```yaml
+# descriptors.local/assembly.yaml
+platform:
+  services:
+    proc:
+      tools:
+        web_search:
+          web_search_primary_backend: brave
+          web_search_backend: brave
+```
+
+```yaml
+# descriptors.local/secrets.yaml
+platform:
+  services:
+    brave:
+      api_key: "<BRAVE_API_KEY>"
+```
+
+For a generated-code Web Search call, the trusted supervisor resolves this
+descriptor-backed credential and performs the network request. The isolated
+code executor receives the tool result through authenticated, scoped
+supervisor IPC. Its container remains network-isolated and receives neither
+the search credential nor model/provider credentials.
 
 The Native profile is `lite:core`; the SDK adds the existing ReAct exec,
 rendering, and web blocks only when their tool families are enabled. LangGraph
@@ -397,7 +449,7 @@ See
 for supported Native profile IDs and the exact composition contract.
 
 `descriptors.local/assembly.yaml` selects independent services and durable
-storage:
+storage. The templates select a local filesystem path:
 
 ```yaml
 storage:
@@ -420,6 +472,17 @@ platform:
         py_code_exec_image: py-code-exec:latest
         py_code_exec_network_mode: none
 ```
+
+To store conversation files, artifacts, turn records, and execution archives
+in S3, select an S3 URI instead:
+
+```yaml
+storage:
+  kdcube: s3://<bucket>/<prefix>
+```
+
+The direct harness passes this URI to KDCube's shared storage backend. The
+process identity must have access to the selected bucket and prefix.
 
 Credentials live in `descriptors.local/secrets.yaml`. Model prices and
 economics policy live in `descriptors.local/economics.yaml`; add a matching
@@ -461,8 +524,11 @@ The full two-turn scenario:
 
 1. Stores `research-request.md` as a user attachment, performs Web Search, and
    fetches at least one selected result page before accepting it as evidence.
-2. Continues the conversation, authors Python, and invokes isolated execution.
-3. The program creates an XLSX evidence table and print-ready HTML.
+2. Continues the conversation, authors Python, and invokes isolated code
+   execution.
+3. The generated program calls `web_tools.web_search` through
+   `agent_io_tools.tool_call`, then creates an XLSX evidence table and
+   print-ready HTML.
 4. The agent invokes `write_pdf`; KDCube renders and hosts the final PDF.
 
 A successful run ends with:
@@ -471,7 +537,157 @@ A successful run ends with:
 demonstration: PASS
 ```
 
-## 9. Inspect durable evidence
+## 9. Keep a conversation open in the terminal
+
+Start a text conversation without changing the built-in demonstration:
+
+```bash
+.venv/bin/python agent.py --interactive \
+  --user-id alice \
+  --conversation-id terminal-chat \
+  --session-id terminal-1
+```
+
+Enter one message at each `you>` prompt. The completed answer is printed after
+`assistant>`. Enter `/exit` or `/quit` to stop. Each message is a normal
+accounted harness turn under the explicit user, conversation, session, tenant,
+project, and stable runner agent ID. Starting the command again with the same
+user and conversation continues the durable conversation and the adapter's
+private checkpoint or transcript.
+
+## 10. Connect a local Telegram bot
+
+Each example can expose a minimal Telegram webhook directly from its Python
+process. This mode is for development from one shell and runs the complete
+turn inline through `DirectAgentHarness`. Telegram transport identity and
+credentials are sufficient for this local path.
+
+Put the bot credentials in the ignored
+`descriptors.local/secrets.yaml` file:
+
+```yaml
+platform:
+  services:
+    telegram:
+      bot_token: "<TELEGRAM_BOT_TOKEN>"
+      webhook_secret: "<RANDOM_WEBHOOK_SECRET>"
+```
+
+The corresponding non-secret references and endpoint stay in
+`config.local.yaml`:
+
+```yaml
+agent:
+  ingress:
+    telegram:
+      host: 127.0.0.1
+      port: 8787
+      path: /telegram/webhook
+      bot_token_ref: platform.services.telegram.bot_token
+      webhook_secret_ref: platform.services.telegram.webhook_secret
+```
+
+Start the selected runner:
+
+```bash
+.venv/bin/python agent.py --telegram-local
+```
+
+Verify it from another shell:
+
+```bash
+curl -sS http://127.0.0.1:8787/healthz
+```
+
+Telegram requires a public HTTPS endpoint. Expose port `8787` with the HTTPS
+tunnel you use for development. For example, if `ngrok` is installed:
+
+```bash
+ngrok http 8787
+```
+
+Register the resulting HTTPS URL. A Telegram bot has one active webhook, so
+first record the current webhook when reusing a bot from an existing KDCube
+app. `descriptors.local/` is ignored by this example:
+
+```bash
+read -r -s -p "Telegram bot token: " TELEGRAM_BOT_TOKEN; echo
+read -r -s -p "Telegram webhook secret: " TELEGRAM_WEBHOOK_SECRET; echo
+read -r -p "Public HTTPS URL, without trailing slash: " PUBLIC_HTTPS_URL
+
+curl -sS \
+  "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo" \
+  > descriptors.local/telegram-webhook-before-local.json
+
+curl -sS -X POST \
+  "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
+  -d "url=${PUBLIC_HTTPS_URL}/telegram/webhook" \
+  -d "secret_token=${TELEGRAM_WEBHOOK_SECRET}"
+
+unset TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET
+```
+
+These shell reads keep the two secret values out of shell history; KDCube
+itself reads them from the descriptor, not from shell variables. Registering
+the local URL temporarily replaces the existing application webhook. Run one
+direct sample at a time when its examples share a bot.
+
+Send the bot text or a file. The adapter performs this flow:
+
+```text
+Telegram update
+  -> verify X-Telegram-Bot-Api-Secret-Token
+  -> parse update and download Telegram attachments with the Telegram SDK
+  -> user_id         = telegram_<sender-id>
+  -> session_id      = telegram_chat_<chat-id>
+  -> conversation_id = telegram_chat_<chat-id>
+  -> invoke one direct harness turn inline
+  -> read the persisted turn log
+  -> send its answer and external files through the Telegram SDK
+```
+
+The Telegram sender ID is a transport-authenticated local storage identity.
+KDCube platform identity and delegated authority begin when the agent is
+hosted as an app and configured for those facilities. The process owner selects
+tools in `config.local.yaml`. Connection Hub can link identities and govern
+delegated tool use in that hosted product; the app and chat runtime provide
+ingress.
+
+The local process serializes turn execution so state is mutated by one turn at
+a time. Concurrent HTTP request order is unspecified. Update claims have
+process lifetime, and the webhook request remains open for the complete agent
+run. A KDCube app with hosted chat ingress supplies ordered admission, retry
+recovery, multiworker coordination, and a live steer/follow-up lane. For a
+custom standalone host, build a durable queue around the direct callback to
+provide the ordering and recovery guarantees your product requires.
+
+Restore the previous application webhook when the bot is shared. The saved
+Telegram response contains the URL, not the webhook secret, so supply the same
+descriptor-held secret again:
+
+```bash
+read -r -s -p "Telegram bot token: " TELEGRAM_BOT_TOKEN; echo
+read -r -s -p "Telegram webhook secret: " TELEGRAM_WEBHOOK_SECRET; echo
+
+PREVIOUS_WEBHOOK_URL="$(
+  jq -r '.result.url // empty' \
+    descriptors.local/telegram-webhook-before-local.json
+)"
+
+if [ -n "$PREVIOUS_WEBHOOK_URL" ]; then
+  curl -sS -X POST \
+    "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
+    -d "url=${PREVIOUS_WEBHOOK_URL}" \
+    -d "secret_token=${TELEGRAM_WEBHOOK_SECRET}"
+else
+  curl -sS -X POST \
+    "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteWebhook"
+fi
+
+unset TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET PREVIOUS_WEBHOOK_URL
+```
+
+## 11. Inspect durable evidence
 
 Find the run index and deliverables:
 
@@ -511,7 +727,7 @@ expires.
 The local `communicator.jsonl` shows what the adapter streamed into the harness.
 It is diagnostic evidence, not the durable conversation authority.
 
-## 10. Try the other document operations
+## 12. Try the other document operations
 
 The default run demonstrates HTML-to-PDF because it gives an immediate visual
 result. The same `rendering_tools` module is already selected in YAML:
@@ -526,7 +742,7 @@ source, then call the matching renderer with an external output path. The
 model authors content and structure; the reusable renderer owns the document
 format instead of forcing every model to rebuild formatting code.
 
-## 11. Understand continuity by adapter
+## 13. Understand continuity by adapter
 
 Native adds a third turn in a different conversation and requires
 `react.memsearch` to recover the earlier research for the same user.
@@ -548,35 +764,43 @@ To use a private remote, set `storage.claude_code_session.repo` in
 `descriptors.local/assembly.yaml` and the matching
 `platform.services.git.http_token` credential in `descriptors.local/secrets.yaml`.
 
-## 12. Change the agent
+## 14. Change the agent
 
 Use `config.local.yaml` to change the instruction profile,
 `additional_instructions`, topic, tool selection, skills, limits, and settings
-attached to each tool row. Use the standard descriptors
+attached to each tool source. Use the standard descriptors
 to change model, infrastructure, storage, economics, executor, and secrets.
 
-Native trusted tool sources live in `agent.py`'s `TOOL_SOURCES`. LangGraph
-adapters live in `tools.py`. Claude's runner writes the selected stdio MCP
-servers and exact allowed tool IDs into its workspace for each turn. Rerun
-`--check` after any tool or skill change.
+Every Python source row names a `module` or local `ref`, an `alias`, exact
+callable names under `allowed`, and optional per-callable `runtime` values.
+The SDK `ToolSubsystem` introspects those sources and applies the same selected
+catalog to direct calls and generated-code supervisor calls. Native ReAct
+consumes that catalog directly. LangGraph's `tools.py` and Claude's local MCP
+servers are model-facing schema adapters over those canonical IDs. A new
+domain callable therefore gets one descriptor row plus the corresponding
+LangGraph `BaseTool` or Claude MCP schema adapter when that agent type will use
+it. The adapter translates names and arguments; `allowed` remains the single
+execution policy. Rerun `--check` after any tool or skill change. The full
+contract is in [Tool Subsystem](../../sdk/tools/tool-subsystem-README.md).
 
-## 13. Serve the same agent to users
+## 15. Serve the same agent to users
 
 This direct-host path gives one Python process model accounting, durable
 conversation records, communicator events, skills, attachments, output
 hosting, isolated Python, and document rendering. The process owner controls
 the selected tools.
 
-To serve the same agent through chat UI, API, or messaging, keep its core and
-harness adapter, place their composition in a KDCube app, and declare the
+To serve the same agent through chat UI, API, or messaging, place the tested
+agent implementation and its harness adapter in a KDCube app, then declare the
 required surface. The hosted runtime obtains user and conversation identity
-from authenticated ingress and adds tool-execution enforcement, delegated
-consent, rate/spend policy, and app hosting. Follow
+from authenticated ingress and adds a durable turn queue, ordering and retry
+recovery, tool-execution enforcement, delegated consent, rate/spend policy,
+and app hosting. Follow
 [Settle Your Solution in KDCube](../apps/settle-your-solution-in-kdcube-README.md).
 For Telegram ingress, also follow the
 [Telegram integration recipe](../connections/integrations/telegram-README.md).
 
-## 14. Stop services
+## 16. Stop services
 
 ```bash
 docker compose --env-file .env -f compose.yaml down

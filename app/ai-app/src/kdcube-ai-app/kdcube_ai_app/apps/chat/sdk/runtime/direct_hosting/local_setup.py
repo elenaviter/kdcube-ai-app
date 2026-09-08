@@ -34,8 +34,9 @@ def _secret_descriptor(
     redis: str,
 ) -> dict:
     document = copy.deepcopy(dict(template))
-    services = document.setdefault("services", {})
-    infra = document.setdefault("infra", {})
+    platform = document.setdefault("platform", {})
+    services = platform.setdefault("services", {})
+    infra = platform.setdefault("infra", {})
     infra.setdefault("postgres", {})["password"] = postgres
     infra.setdefault("redis", {})["password"] = redis
     if provider_key:
@@ -52,9 +53,14 @@ def configure(
 ) -> tuple[Path, Path, Path | None]:
     descriptors = root / "descriptors.local"
     compose_env = root / ".env"
-    assembly_template = yaml.safe_load(
-        (root / "descriptors.template" / "assembly.yaml").read_text(encoding="utf-8")
-    ) or {}
+    assembly_template = (
+        yaml.safe_load(
+            (root / "descriptors.template" / "assembly.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        or {}
+    )
     session_config = (assembly_template.get("storage") or {}).get(
         "claude_code_session"
     ) or {}
@@ -80,7 +86,10 @@ def configure(
     postgres_password = secrets.token_urlsafe(24)
     redis_password = secrets.token_urlsafe(24)
     shutil.copytree(root / "descriptors.template", descriptors)
-    assembly = yaml.safe_load((descriptors / "assembly.yaml").read_text(encoding="utf-8")) or {}
+    assembly = (
+        yaml.safe_load((descriptors / "assembly.yaml").read_text(encoding="utf-8"))
+        or {}
+    )
     infra = assembly.get("infra") or {}
     postgres_config = infra.get("postgres") or {}
     redis_config = infra.get("redis") or {}
@@ -112,8 +121,7 @@ def configure(
                 f"{postgres_config.get('database') or 'kdcube_agents'}",
                 "AGENT_DEMO_POSTGRES_PORT="
                 f"{int(postgres_config.get('port') or 55432)}",
-                "AGENT_DEMO_REDIS_PORT="
-                f"{int(redis_config.get('port') or 56379)}",
+                f"AGENT_DEMO_REDIS_PORT={int(redis_config.get('port') or 56379)}",
                 "",
             )
         ),

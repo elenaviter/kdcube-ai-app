@@ -63,6 +63,53 @@ def test_supervisor_rejects_missing_or_wrong_socket_token(tmp_path):
     assert sup._auth_error({"auth_token": "secret-token"}) is None
 
 
+@pytest.mark.asyncio
+async def test_supervisor_enforces_exact_invocation_tool_policy(monkeypatch):
+    sup = PrivilegedSupervisor.__new__(PrivilegedSupervisor)
+    sup.registered_tools = {
+        "web_tools.web_search": lambda **_kwargs: {"ok": True},
+        "web_tools.web_fetch": lambda **_kwargs: {"ok": True},
+    }
+    sup.alias_to_dyn = {}
+    sup.log = _CaptureLogger()
+    sup.set_allowed_tool_names_by_alias({"web_tools": ["web_search"]})
+
+    async def _tool_call(*, fn, params, call_reason, tool_id):
+        return fn(**params)
+
+    monkeypatch.setattr(
+        "kdcube_ai_app.apps.chat.sdk.runtime.isolated.supervisor_entry.agent_io_tools.tool_call",
+        _tool_call,
+    )
+
+    allowed = await sup.execute_privileged_operation(
+        {"tool_id": "web_tools.web_search", "params": {}}
+    )
+    denied = await sup.execute_privileged_operation(
+        {"tool_id": "web_tools.web_fetch", "params": {}}
+    )
+
+    assert allowed == {"ok": True, "result": {"ok": True}}
+    assert denied["ok"] is False
+    assert denied["code"] == "tool_not_allowed"
+
+
+@pytest.mark.asyncio
+async def test_supervisor_explicit_empty_policy_denies_all_tools() -> None:
+    sup = PrivilegedSupervisor.__new__(PrivilegedSupervisor)
+    sup.registered_tools = {"web_tools.web_search": lambda: {"ok": True}}
+    sup.alias_to_dyn = {}
+    sup.log = _CaptureLogger()
+    sup.set_allowed_tool_names_by_alias({})
+
+    result = await sup.execute_privileged_operation(
+        {"tool_id": "web_tools.web_search", "params": {}}
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "tool_not_allowed"
+
+
 def test_tool_stub_includes_socket_auth_token(monkeypatch):
     monkeypatch.setenv("SUPERVISOR_AUTH_TOKEN", "secret-token")
 
@@ -422,6 +469,7 @@ def test_bootstrap_supervisor_runtime_resolves_library_module_specs_without_expl
     runtime_globals = {
         "PORTABLE_SPEC_JSON": "{\"ok\": true}",
         "TOOL_ALIAS_MAP": {"io_tools": "dyn_io_tools_test"},
+        "ALLOWED_TOOL_NAMES_BY_ALIAS": {"io_tools": ["tool_call"]},
         "TOOL_MODULE_FILES": {},
         "RAW_TOOL_SPECS": [
             {
@@ -446,6 +494,7 @@ def test_build_executor_runtime_globals_strips_privileged_paths_and_descriptors(
         "CONTRACT": {"ok": True},
         "COMM_SPEC": {"channel": "chat.events"},
         "TOOL_ALIAS_MAP": {"io_tools": "dyn_io_tools_test"},
+        "ALLOWED_TOOL_NAMES_BY_ALIAS": {"io_tools": ["tool_call"]},
         "TOOL_MODULE_FILES": {"io_tools": "/workspace/bundles/demo/tools/io_tools.py"},
         "BUNDLE_SPEC": {"id": "demo.bundle"},
         "BUNDLE_STORAGE_DIR": "/bundle-storage/demo",
@@ -458,6 +507,9 @@ def test_build_executor_runtime_globals_strips_privileged_paths_and_descriptors(
 
     assert sanitized["CONTRACT"] == {"ok": True}
     assert sanitized["TOOL_ALIAS_MAP"] == {"io_tools": "dyn_io_tools_test"}
+    assert sanitized["ALLOWED_TOOL_NAMES_BY_ALIAS"] == {
+        "io_tools": ["tool_call"]
+    }
     assert "TOOL_MODULE_FILES" not in sanitized
     assert "BUNDLE_SPEC" not in sanitized
     assert "BUNDLE_STORAGE_DIR" not in sanitized

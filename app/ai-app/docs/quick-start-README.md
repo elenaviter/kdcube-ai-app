@@ -167,19 +167,20 @@ proves live narrowing or revocation from the running client.
 
 The source checkout also provides smaller executable paths:
 
-- [Add the KDCube Harness to your agent](../../../agents/README.md): keep a
-  LangGraph or Claude Code core, or start with Native ReAct, then add durable
-  conversations, selected tools and skills, isolated code, files, rendering,
-  streaming, and accounting. The examples run directly from Python with
-  independent Redis and Postgres services. The full command contract is
+- [Build and run on-premises agents with the KDCube Harness](../../../agents/README.md):
+  start with the included Native ReAct agent, LangGraph, or Claude Code and
+  compose durable conversations, selected tools and skills, isolated code,
+  files, rendering, streaming, and accounting on infrastructure you control.
+  The examples run directly from Python with independent Redis and Postgres
+  services. The full command contract is
   [Run the Agent Harness from Python](recipes/quickstart/run-agent-harness-from-python-README.md).
 - [Web Search MCP](../../../mcp/web-search/README.md) starts KDCube Web Search
   as an operator-filtered stdio, HTTP, or SSE MCP server.
 
-These component paths do not require the gateway, processor, chat UI, or a
-running KDCube server. Continue with this Quick Start when you want the full
-multi-user runtime and its authentication, tool-execution enforcement,
-managed tools, isolated workspaces, and app hosting.
+These component paths run as standalone local processes with their own support
+services. Continue with this Quick Start for the full multi-user runtime and
+its authentication, tool-execution enforcement, managed tools, isolated
+workspaces, and app hosting.
 
 ## What `init` Creates
 

@@ -2984,16 +2984,22 @@ class ReactSolverV2:
         allowed_plugins: List[str],
         allowed_tool_names_by_alias: Dict[str, Any] | None = None,
     ):
-        # Captured so react.delegate can hand the SAME run configuration to a
-        # spawned subagent (the child inherits the parent's tool selection).
         self._run_allowed_plugins = list(allowed_plugins or [])
-        self._run_allowed_tool_names_by_alias = allowed_tool_names_by_alias
         try:
-            with self._bind_runtime_role_models():
-                return await self._run_impl(
-                    allowed_plugins=allowed_plugins,
-                    allowed_tool_names_by_alias=allowed_tool_names_by_alias,
+            with self.tools_subsystem.bind_allowed_tool_names_by_alias(
+                allowed_tool_names_by_alias
+            ):
+                effective_tool_policy = (
+                    self.tools_subsystem.current_allowed_tool_names_by_alias()
                 )
+                # Captured so react.delegate gives the child the same effective
+                # policy that built the parent's catalog and execution scope.
+                self._run_allowed_tool_names_by_alias = effective_tool_policy
+                with self._bind_runtime_role_models():
+                    return await self._run_impl(
+                        allowed_plugins=allowed_plugins,
+                        allowed_tool_names_by_alias=effective_tool_policy,
+                    )
         except asyncio.CancelledError:
             close_handler = getattr(self.ctx_browser, "close_external_event_handler", None) if self.ctx_browser else None
             if callable(close_handler):

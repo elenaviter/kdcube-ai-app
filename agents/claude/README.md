@@ -4,7 +4,7 @@ title: "Run the Claude Code Agent"
 summary: "Run Claude Code through the KDCube harness with a Git-backed transcript and durable conversation."
 tags: ["agents", "claude-code", "harness", "conversation", "standalone", "web-search", "web-fetch", "mcp"]
 keywords: ["ClaudeCodeAgent", "KDCube Web Search MCP", "KDCube Web Fetch", "Claude transcript", "Git session store", "ChatCommunicator", "accounting"]
-updated_at: 2026-09-07
+updated_at: 2026-09-08
 see_also:
   - repo:kdcube-ai-app/agents/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md
@@ -16,8 +16,8 @@ see_also:
 
 This directory runs the local Claude Code CLI through `ClaudeCodeAgent`. The
 harness stores its conversation in Postgres and configured storage; the SDK
-stores its resumable CLI transcript on a per-conversation Git branch. No
-KDCube server is required.
+stores its resumable CLI transcript on a per-conversation Git branch. It runs
+directly as a Python process from this checkout.
 
 ## Run it
 
@@ -39,6 +39,24 @@ cd agents/claude
 .venv/bin/python agent.py --infra-check
 .venv/bin/python agent.py
 ```
+
+For an ongoing terminal conversation, run:
+
+```bash
+.venv/bin/python agent.py --interactive \
+  --user-id alice --conversation-id terminal-chat --session-id terminal-1
+```
+
+For the development-only Telegram webhook, add the bot token and webhook
+secret to `descriptors.local/secrets.yaml`, expose local port `8787` through an
+HTTPS tunnel, register that URL with Telegram, then run:
+
+```bash
+.venv/bin/python agent.py --telegram-local
+```
+
+The complete webhook registration and process-local delivery boundary are in the
+[executable recipe](../../app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md#10-connect-a-local-telegram-bot).
 
 The default run uses `agent.input.user_id: demo-user` and
 `agent.input.conversation_id: claude-demo`. Run it again with those values to
@@ -72,8 +90,10 @@ result with its Web Fetch operation. The generated Claude workspace denies
 configured KDCube boundaries.
 
 Turn two resumes the same Git-backed Claude session. Claude authors Python
-using `openpyxl`; the `kdcube_harness` MCP runs it in the configured Docker
-image to create an XLSX and HTML. A second MCP operation calls
+using `openpyxl`; that program makes an additional KDCube Web Search call
+through `agent_io_tools.tool_call` and creates an XLSX and HTML in the isolated
+turn workspace. The trusted supervisor executes the Web call under the same
+descriptor-selected tool policy. A second MCP operation calls
 `rendering_tools.write_pdf` to render the HTML into a polished PDF. The same
 server exposes Markdown-to-DOCX and section-HTML-to-PPTX operations.
 
@@ -85,19 +105,23 @@ the Claude transcript branch. A successful run ends with `demonstration: PASS`.
 ## Change the demo
 
 Edit `config.local.yaml` to change Claude's command and timeout, the
-`workspace-files` instruction profile, `additional_instructions`, run directory,
-tools, skills, or task. Its `agent.input` section selects the local caller
+`workspace-files` instruction profile, `additional_instructions`, local
+ingress, run directory, tools, skills, or task. Its `agent.input` section selects the local caller
 session and durable conversation. Tenant and project come from
 `descriptors.local/assembly.yaml`; the Git transcript branch and Claude session
 ID add this runner's stable `claude` agent ID. The profile becomes generated
 `CLAUDE.md`; selected KDCube skills become native `.claude/skills` entries. Web
-Search and Web Fetch share the egress policy under the
-`mcp__kdcube_web_search__web_search` tool row's `settings`. Edit
+Search and Web Fetch share the egress policy under
+`agent.tools[id=web].settings`. Edit
 `descriptors.local/assembly.yaml` to select the Anthropic model and a private
 Git transcript remote, and put its HTTPS token in
-`descriptors.local/secrets.yaml` at `services.git.http_token`.
-The SDK writes the selected stdio server and exact MCP tool permissions into
-Claude's workspace at run time. The shared descriptor template ships with
+`descriptors.local/secrets.yaml` at `platform.services.git.http_token`.
+The YAML source rows use the same canonical `module`, `alias`, `allowed`, and
+`runtime` contract as the other examples. The Claude adapter translates the
+sample's selected canonical tool IDs into its local stdio MCP names and writes
+those exact permissions into Claude's workspace at run time. A new domain tool
+also needs a Claude-facing MCP schema adapter; the descriptor `allowed` list
+still controls whether the trusted runtime may execute it. The shared descriptor template ships with
 `claude-haiku-4-5-20251001` selected. The Claude Code
 subprocess requires `default_llm_provider: anthropic`; direct agents that use
 KDCube `ModelServiceBase`, including the Native and LangGraph examples, can

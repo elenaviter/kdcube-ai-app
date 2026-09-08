@@ -1,4 +1,4 @@
-"""KDCube Web Search, isolated execution, and rendering tools for LangGraph."""
+"""KDCube Web Search, isolated code execution, and rendering for LangGraph."""
 
 from __future__ import annotations
 
@@ -10,7 +10,15 @@ from langchain_core.tools import BaseTool, tool
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.tool_runtime import (
     DirectToolRuntime,
 )
-from kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search import web_search_server
+
+WEB_SEARCH_TOOL_ID = "web_tools.web_search"
+WEB_FETCH_TOOL_ID = "web_tools.web_fetch"
+EXEC_TOOL_ID = "exec_tools.execute_code_python"
+RENDER_TOOL_IDS = {
+    "write_pdf": "rendering_tools.write_pdf",
+    "write_docx": "rendering_tools.write_docx",
+    "write_pptx": "rendering_tools.write_pptx",
+}
 
 
 def _normalise_results(value: Any) -> list[dict[str, str]]:
@@ -20,7 +28,7 @@ def _normalise_results(value: Any) -> list[dict[str, str]]:
         except json.JSONDecodeError:
             value = []
     if isinstance(value, dict):
-        value = value.get("results") or value.get("items") or []
+        value = value.get("ret") or value.get("results") or value.get("items") or []
     rows: list[dict[str, str]] = []
     for item in value or []:
         if not isinstance(item, dict):
@@ -29,10 +37,7 @@ def _normalise_results(value: Any) -> list[dict[str, str]]:
             {
                 "title": str(item.get("title") or "Untitled"),
                 "body": str(
-                    item.get("body")
-                    or item.get("snippet")
-                    or item.get("text")
-                    or ""
+                    item.get("body") or item.get("snippet") or item.get("text") or ""
                 ),
                 "url": str(item.get("href") or item.get("url") or ""),
             }
@@ -43,9 +48,9 @@ def _normalise_results(value: Any) -> list[dict[str, str]]:
 def build_tools(
     runtime: DirectToolRuntime | None,
     *,
-    enabled_ids: set[str] | None = None,
+    configured_ids: set[str],
 ) -> list[BaseTool]:
-    """Build tools for one turn; ``runtime`` binds filesystem state to that turn."""
+    """Adapt descriptor-selected KDCube tools to LangChain tool objects."""
 
     def require_runtime() -> DirectToolRuntime:
         if runtime is None:
@@ -58,14 +63,10 @@ def build_tools(
         limit = max(1, min(int(max_results or 5), 8))
         try:
             rows = _normalise_results(
-                await web_search_server.web_search(
-                    queries=query,
-                    objective=query,
-                    refinement="none",
-                    n=limit,
-                    fetch_content=False,
-                    include_binary_base64=False,
-                    use_llm=False,
+                await require_runtime().invoke_tool(
+                    tool_id=WEB_SEARCH_TOOL_ID,
+                    params={"queries": query, "objective": query, "n": limit},
+                    call_reason="Search the public web",
                 )
             )
             return json.dumps(
@@ -81,23 +82,20 @@ def build_tools(
     async def web_fetch(
         url: str,
         objective: str = "",
-        max_content_length: int = 12000,
     ) -> str:
         """Fetch one selected result through KDCube's governed Web Fetch."""
         try:
-            fetched = await web_search_server.web_fetch(
-                urls=[url],
-                objective=objective or None,
-                refinement="none",
-                max_content_length=max(
-                    1000, min(int(max_content_length or 12000), 50000)
-                ),
-                include_binary_base64=False,
-                use_archive_fallback=False,
-                use_llm=False,
+            fetched = await require_runtime().invoke_tool(
+                tool_id=WEB_FETCH_TOOL_ID,
+                params={
+                    "urls": [url],
+                    "objective": objective or None,
+                    "refinement": "none",
+                },
+                call_reason="Fetch a selected web source",
             )
             return json.dumps(
-                {"ok": True, "url": url, "result": fetched.get(url)},
+                fetched,
                 ensure_ascii=False,
                 default=str,
             )
@@ -161,13 +159,11 @@ def build_tools(
         )
 
     available = [
-        web_search,
-        web_fetch,
-        execute_python,
-        write_pdf,
-        write_docx,
-        write_pptx,
+        (WEB_SEARCH_TOOL_ID, web_search),
+        (WEB_FETCH_TOOL_ID, web_fetch),
+        (EXEC_TOOL_ID, execute_python),
+        (RENDER_TOOL_IDS["write_pdf"], write_pdf),
+        (RENDER_TOOL_IDS["write_docx"], write_docx),
+        (RENDER_TOOL_IDS["write_pptx"], write_pptx),
     ]
-    if enabled_ids is None:
-        return available
-    return [item for item in available if item.name in enabled_ids]
+    return [item for canonical_id, item in available if canonical_id in configured_ids]

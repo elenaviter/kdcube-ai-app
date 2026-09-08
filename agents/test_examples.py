@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import json
 import os
 import shutil
@@ -34,34 +33,6 @@ DIRECT_RECIPE = (
     / "run-agent-harness-from-python-README.md"
 )
 ADAPTERS = ("native", "langgraph", "claude")
-WEB_SEARCH_TOOL_IDS = {
-    "native": "web_tools.web_search",
-    "langgraph": "web_search",
-    "claude": "mcp__kdcube_web_search__web_search",
-}
-WEB_FETCH_TOOL_IDS = {
-    "native": "web_tools.web_fetch",
-    "langgraph": "web_fetch",
-    "claude": "mcp__kdcube_web_search__web_fetch",
-}
-EXEC_TOOL_IDS = {
-    "native": "exec_tools.execute_code_python",
-    "langgraph": "execute_python",
-    "claude": "mcp__kdcube_harness__execute_python",
-}
-RENDER_TOOL_IDS = {
-    "native": {
-        "rendering_tools.write_pdf",
-        "rendering_tools.write_docx",
-        "rendering_tools.write_pptx",
-    },
-    "langgraph": {"write_pdf", "write_docx", "write_pptx"},
-    "claude": {
-        "mcp__kdcube_harness__write_pdf",
-        "mcp__kdcube_harness__write_docx",
-        "mcp__kdcube_harness__write_pptx",
-    },
-}
 README_SECTIONS = (
     "## What it is",
     "## Run it",
@@ -81,24 +52,39 @@ def test_primary_agents_are_visible_at_the_agents_root() -> None:
 
 def test_agents_root_explains_the_demonstration_and_why_to_run_it() -> None:
     source = (AGENTS_ROOT / "README.md").read_text(encoding="utf-8")
+    normalized = " ".join(source.split())
 
-    assert "# Add the KDCube Harness to Your Agent" in source
-    assert "Keep the agent core you already have." in source
-    assert "If you do not have an agent core, use the Native ReAct example." in source
-    assert "it does not require a running KDCube server" in source
-    assert "## Why use the harness?" in source
+    assert "# Build and Run On-Premises Agents with the KDCube Harness" in source
+    assert "Native ReAct** is an included agent implementation" in source
+    assert "This is a constructor: each directory already runs" in source
+    assert "an agent you\nalready operate or a new implementation you build" in source
+    assert "infrastructure you control" in source
+    assert "## Use the ready composition" in source
+    assert "## Resource profile" in source
+    assert "for your own\ndomain workflow" in source
+    assert "setup_local.py --provider none" in source
+    assert "After the first run, change these constructor inputs:" in source
+    assert "direct on-premises topology" in normalized
+    assert "## What the harness gives the agent" in source
     assert "## How do I try it?" in source
-    assert "continue a conversation and search earlier conversations" in source
+    assert "continue a conversation by stable user" in normalized
+    assert "react.memsearch" in normalized
     assert "KDCube Web Search and Web Fetch" in source
-    assert "No virtual environment is bundled" in source
+    assert "Create a `.venv` in the selected agent directory" in source
     assert ".venv/bin/python -m playwright install chromium" in source
     assert "py-code-exec:latest" in source
     assert "research and report" in source
     assert "--conversation-id release-research" in source
-    assert "isolated Docker workspace" in source
-    assert "receive an attachment and retain generated files" in source
-    for adapter in ADAPTERS:
-        assert f"[{adapter}]({adapter}/README.md)" in source
+    assert "isolated turn workspace" in source
+    assert "agent_io_tools.tool_call" in source
+    assert "ToolSubsystem" in source
+    assert "Files and attachments" in source
+    assert "local filesystem or S3 storage" in source
+    assert "[Native ReAct](native/README.md)" in source
+    assert "[LangGraph](langgraph/README.md)" in source
+    assert "[Claude Code](claude/README.md)" in source
+    assert "Keep the agent core you already have" not in source
+    assert "runnable proof" not in source
 
 
 def test_repo_entry_points_name_the_agent_harness_value() -> None:
@@ -107,7 +93,7 @@ def test_repo_entry_points_name_the_agent_harness_value() -> None:
 
     for source in (root, quick_start):
         normalized = " ".join(source.split())
-        assert "Add the KDCube Harness to your agent" in normalized
+        assert "Build and run on-premises agents with the KDCube Harness" in normalized
         assert "durable conversations" in normalized
         assert "isolated code" in normalized
         assert "rendering" in normalized
@@ -121,7 +107,10 @@ def test_primary_onboarding_links_agents_and_web_search_directly() -> None:
     mcp_catalog = MCP_CATALOG.read_text(encoding="utf-8")
 
     assert "(agents/README.md)" in root
-    assert "(app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md)" in root
+    assert (
+        "(app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md)"
+        in root
+    )
     assert "(mcp/web-search/README.md)" in root
     assert "(../../../agents/README.md)" in quick_start
     assert "(recipes/quickstart/run-agent-harness-from-python-README.md)" in quick_start
@@ -145,6 +134,8 @@ def test_every_agents_readme_answers_the_four_first_use_questions() -> None:
         assert ".venv/bin/python -m playwright install chromium" in source, path
         assert "Dockerfile_Exec" in source, path
         assert ".venv/bin/python agent.py --infra-check" in source, path
+        assert ".venv/bin/python agent.py --interactive" in source, path
+        assert ".venv/bin/python agent.py --telegram-local" in source, path
 
 
 @pytest.mark.parametrize("adapter", ADAPTERS)
@@ -184,30 +175,49 @@ def test_each_example_owns_its_runnable_contract(adapter: str) -> None:
     )
     assert str(agent.get("additional_instructions") or "").strip()
     assert agent["run_directory"] == "./output"
+    telegram = agent["ingress"]["telegram"]
+    assert telegram == {
+        "host": "127.0.0.1",
+        "port": 8787,
+        "path": "/telegram/webhook",
+        "bot_token_ref": "platform.services.telegram.bot_token",
+        "webhook_secret_ref": "platform.services.telegram.webhook_secret",
+    }
     assert isinstance(agent.get("tools"), list)
     assert agent["tools"]
     assert all(str(item.get("id") or "").strip() for item in agent["tools"])
     configured_by_id = {item["id"]: item for item in agent["tools"]}
-    assert configured_by_id[WEB_FETCH_TOOL_IDS[adapter]]["runtime"] == "local"
-    assert configured_by_id[EXEC_TOOL_IDS[adapter]]["runtime"] == "docker"
-    assert RENDER_TOOL_IDS[adapter].issubset(configured_by_id)
-    assert all(
-        configured_by_id[tool_id]["runtime"] == "local"
-        for tool_id in RENDER_TOOL_IDS[adapter]
-    )
-    assert agent.get("skills", {}).get("enabled") == [
-        "demo.research-brief"
-    ]
-    web_rows = [
-        item for item in agent["tools"] if item["id"] == WEB_SEARCH_TOOL_IDS[adapter]
-    ]
-    assert len(web_rows) == 1
-    web_policy = web_rows[0]["settings"]
+    assert set(configured_by_id) == {"web", "code", "documents"}
+    assert configured_by_id["web"]["module"].endswith(".web_tools")
+    assert configured_by_id["web"]["alias"] == "web_tools"
+    assert configured_by_id["web"]["allowed"] == ["web_search", "web_fetch"]
+    assert configured_by_id["web"]["runtime"] == {
+        "web_search": "local",
+        "web_fetch": "local",
+    }
+    assert configured_by_id["code"]["module"].endswith(".exec_tools")
+    assert configured_by_id["code"]["allowed"] == ["execute_code_python"]
+    assert configured_by_id["code"]["runtime"] == {"execute_code_python": "docker"}
+    assert configured_by_id["documents"]["module"].endswith(".rendering_tools")
+    assert set(configured_by_id["documents"]["allowed"]) == {
+        "write_pdf",
+        "write_docx",
+        "write_pptx",
+    }
+    assert agent.get("skills", {}).get("enabled") == ["demo.research-brief"]
+    web_policy = configured_by_id["web"]["settings"]
     assert web_policy["filter"]["allowlist"] == ["python.org"]
     assert web_policy["filter"]["blocklist"] == []
     assert web_policy["filter"]["ssrf_guard"] is True
     if adapter == "claude":
         assert "model" not in agent["adapter"]
+        assert agent["adapter"]["allowed_tools"] == [
+            "Read",
+            "Write",
+            "Edit",
+            "Grep",
+            "Glob",
+        ]
     else:
         assert "adapter" not in agent
 
@@ -215,13 +225,35 @@ def test_each_example_owns_its_runnable_contract(adapter: str) -> None:
     assert "../../app/ai-app/src/kdcube-ai-app" in requirements
     assert "sdk/tools/mcp/web_search/requirements.txt" in requirements
     assert "playwright" in requirements
+    assert "fastapi" in requirements
+    assert "uvicorn" in requirements
     assert "python-docx" in requirements
     assert "python-pptx" in requirements
 
+    secrets = yaml.safe_load(
+        (root / "descriptors.template" / "secrets.yaml").read_text(encoding="utf-8")
+    )
+    assert secrets["platform"]["services"]["brave"] == {"api_key": None}
+    assert secrets["platform"]["services"]["telegram"] == {
+        "bot_token": None,
+        "webhook_secret": None,
+    }
+    assembly = yaml.safe_load(
+        (root / "descriptors.template" / "assembly.yaml").read_text(encoding="utf-8")
+    )
+    web_backend = assembly["platform"]["services"]["proc"]["tools"]["web_search"]
+    assert web_backend == {
+        "web_search_primary_backend": "duckduckgo",
+        "web_search_backend": "duckduckgo",
+    }
+
 
 def test_every_adapter_uses_kdcube_web_search_and_fetch() -> None:
-    native_tools = (AGENTS_ROOT / "native" / "tools.py").read_text(encoding="utf-8")
+    native_source = (AGENTS_ROOT / "native" / "agent.py").read_text(encoding="utf-8")
     langgraph_tools = (AGENTS_ROOT / "langgraph" / "tools.py").read_text(
+        encoding="utf-8"
+    )
+    langgraph_source = (AGENTS_ROOT / "langgraph" / "agent.py").read_text(
         encoding="utf-8"
     )
     claude_config = yaml.safe_load(
@@ -229,94 +261,46 @@ def test_every_adapter_uses_kdcube_web_search_and_fetch() -> None:
     )
     claude_source = (AGENTS_ROOT / "claude" / "agent.py").read_text(encoding="utf-8")
 
-    for source in (native_tools, langgraph_tools):
-        assert "from ddgs import DDGS" not in source
-        assert "web_search_server.web_search(" in source
-        assert "web_search_server.web_fetch(" in source
+    assert not (AGENTS_ROOT / "native" / "tools.py").exists()
+    assert "web_search_server.web_search(" not in langgraph_tools
+    assert "web_search_server.web_fetch(" not in langgraph_tools
+    assert "require_runtime().invoke_tool(" in langgraph_tools
 
-    claude_tools = {
-        item["id"]
-        for item in claude_config["agent"]["tools"]
-        if item.get("enabled", True)
-    }
-    assert "WebSearch" not in claude_tools
-    assert "WebFetch" not in claude_tools
-    assert "Bash" not in claude_tools
-    assert "mcp__kdcube_web_search__web_search" in claude_tools
-    assert "mcp__kdcube_web_search__web_fetch" in claude_tools
-    assert "mcp__kdcube_web_search__allowlist_status" not in claude_tools
+    claude_sources = {item["id"]: item for item in claude_config["agent"]["tools"]}
+    assert claude_sources["web"]["module"].endswith(".web_tools")
+    assert claude_sources["web"]["allowed"] == ["web_search", "web_fetch"]
+    assert "WebSearch" not in claude_config["agent"]["adapter"]["allowed_tools"]
+    assert "WebFetch" not in claude_config["agent"]["adapter"]["allowed_tools"]
+    assert "Bash" not in claude_config["agent"]["adapter"]["allowed_tools"]
     assert 'REPO_ROOT / "mcp" / "web-search" / "server.py"' in claude_source
     assert 'denied_tools=("WebSearch", "WebFetch", "Bash")' in claude_source
+    for source in (native_source, langgraph_source, claude_source):
+        assert "agent_io_tools.tool_call(fn=web_tools.web_search" in source
+        assert "Do not import `web_tools`" in source
 
 
 @pytest.mark.asyncio
-async def test_native_web_search_adapter_calls_kdcube_tool(monkeypatch) -> None:
-    from agents.native import tools as native_tools
-
-    search = AsyncMock(
-        return_value=[
-            {"title": "Python", "text": "Current release", "url": "https://python.org/"}
-        ]
-    )
-    monkeypatch.setattr(native_tools.web_search_server, "web_search", search)
-
-    result = await native_tools.web_search("current Python release", max_results=3)
-
-    assert result["ok"] is True
-    assert result["results"][0]["url"] == "https://python.org/"
-    search.assert_awaited_once_with(
-        queries="current Python release",
-        objective="current Python release",
-        refinement="none",
-        n=3,
-        fetch_content=False,
-        include_binary_base64=False,
-        use_llm=False,
-    )
-
-
-@pytest.mark.asyncio
-async def test_native_web_fetch_adapter_calls_kdcube_tool(monkeypatch) -> None:
-    from agents.native import tools as native_tools
-
-    fetch = AsyncMock(return_value={"https://python.org/": {"text": "Python"}})
-    monkeypatch.setattr(native_tools.web_search_server, "web_fetch", fetch)
-
-    result = await native_tools.web_fetch(
-        "https://python.org/",
-        objective="verify release",
-        max_content_length=4000,
-    )
-
-    assert result == {
-        "ok": True,
-        "url": "https://python.org/",
-        "result": {"text": "Python"},
-    }
-    fetch.assert_awaited_once_with(
-        urls=["https://python.org/"],
-        objective="verify release",
-        refinement="none",
-        max_content_length=4000,
-        include_binary_base64=False,
-        use_archive_fallback=False,
-        use_llm=False,
-    )
-
-
-@pytest.mark.asyncio
-async def test_langgraph_web_search_adapter_calls_kdcube_tool(
-    monkeypatch,
-) -> None:
+async def test_langgraph_web_search_adapter_calls_kdcube_tool() -> None:
     from agents.langgraph import tools as langgraph_tools
 
-    search = AsyncMock(
-        return_value=[
-            {"title": "Python", "text": "Current release", "url": "https://python.org/"}
-        ]
+    runtime = SimpleNamespace(
+        invoke_tool=AsyncMock(
+            return_value={
+                "ok": True,
+                "ret": [
+                    {
+                        "title": "Python",
+                        "text": "Current release",
+                        "url": "https://python.org/",
+                    }
+                ],
+            }
+        )
     )
-    monkeypatch.setattr(langgraph_tools.web_search_server, "web_search", search)
-    tools = langgraph_tools.build_tools(None, enabled_ids={"web_search"})
+    tools = langgraph_tools.build_tools(
+        runtime,
+        configured_ids={"web_tools.web_search"},
+    )
 
     result = json.loads(
         await tools[0].ainvoke({"query": "current Python release", "max_results": 2})
@@ -324,48 +308,53 @@ async def test_langgraph_web_search_adapter_calls_kdcube_tool(
 
     assert result["ok"] is True
     assert result["results"][0]["url"] == "https://python.org/"
-    search.assert_awaited_once_with(
-        queries="current Python release",
-        objective="current Python release",
-        refinement="none",
-        n=2,
-        fetch_content=False,
-        include_binary_base64=False,
-        use_llm=False,
+    runtime.invoke_tool.assert_awaited_once_with(
+        tool_id="web_tools.web_search",
+        params={
+            "queries": "current Python release",
+            "objective": "current Python release",
+            "n": 2,
+        },
+        call_reason="Search the public web",
     )
 
 
 @pytest.mark.asyncio
-async def test_langgraph_web_fetch_adapter_calls_kdcube_tool(monkeypatch) -> None:
+async def test_langgraph_web_fetch_adapter_calls_kdcube_tool() -> None:
     from agents.langgraph import tools as langgraph_tools
 
-    fetch = AsyncMock(return_value={"https://python.org/": {"text": "Python"}})
-    monkeypatch.setattr(langgraph_tools.web_search_server, "web_fetch", fetch)
-    tools = langgraph_tools.build_tools(None, enabled_ids={"web_fetch"})
+    runtime = SimpleNamespace(
+        invoke_tool=AsyncMock(
+            return_value={
+                "ok": True,
+                "ret": [{"url": "https://python.org/", "text": "Python"}],
+            }
+        )
+    )
+    tools = langgraph_tools.build_tools(
+        runtime,
+        configured_ids={"web_tools.web_fetch"},
+    )
 
     result = json.loads(
         await tools[0].ainvoke(
             {
                 "url": "https://python.org/",
                 "objective": "verify release",
-                "max_content_length": 4000,
             }
         )
     )
 
-    assert result == {
-        "ok": True,
-        "url": "https://python.org/",
-        "result": {"text": "Python"},
-    }
-    fetch.assert_awaited_once_with(
-        urls=["https://python.org/"],
-        objective="verify release",
-        refinement="none",
-        max_content_length=4000,
-        include_binary_base64=False,
-        use_archive_fallback=False,
-        use_llm=False,
+    assert result["ok"] is True
+    assert result["ret"][0]["text"] == "Python"
+    runtime.invoke_tool.assert_awaited_once_with(
+        tool_id="web_tools.web_fetch",
+        params={
+            "urls": ["https://python.org/"],
+            "objective": "verify release",
+            "refinement": "none",
+        },
+        call_reason="Fetch a selected web source",
     )
 
 
@@ -419,7 +408,7 @@ async def test_public_web_search_mcp_launcher_starts_with_operator_policy() -> N
             "--config",
             str(config),
             "--tool-id",
-            "mcp__kdcube_web_search__web_search",
+            "web",
         ],
         env=os.environ.copy(),
         read_timeout_seconds=20,
@@ -487,6 +476,8 @@ async def test_claude_harness_mcp_exposes_execution_and_rendering_tools(
         args=[
             "-m",
             module,
+            "--config",
+            str(AGENTS_ROOT / "claude" / "config.template.yaml"),
             "--descriptors",
             str(descriptors),
             "--run-root",
@@ -534,9 +525,13 @@ def test_each_example_owns_a_standard_app_agnostic_descriptor_set(adapter: str) 
         "gateway.yaml",
         "secrets.yaml",
     }
-    assembly = yaml.safe_load((descriptors / "assembly.yaml").read_text(encoding="utf-8"))
+    assembly = yaml.safe_load(
+        (descriptors / "assembly.yaml").read_text(encoding="utf-8")
+    )
     secrets = yaml.safe_load((descriptors / "secrets.yaml").read_text(encoding="utf-8"))
-    economics = yaml.safe_load((descriptors / "economics.yaml").read_text(encoding="utf-8"))
+    economics = yaml.safe_load(
+        (descriptors / "economics.yaml").read_text(encoding="utf-8")
+    )
     assert isinstance(assembly.get("infra", {}).get("redis"), dict)
     assert isinstance(assembly.get("infra", {}).get("postgres"), dict)
     assert assembly.get("storage", {}).get("kdcube") == "../output/kdcube-storage"
@@ -567,7 +562,9 @@ def test_each_example_owns_a_standard_app_agnostic_descriptor_set(adapter: str) 
     assert prices
     assert prices[0]["model"] == "claude-haiku-4-5-20251001"
     assert prices[0]["provider"] == "anthropic"
-    assert yaml.safe_load((descriptors / "gateway.yaml").read_text(encoding="utf-8")) == {}
+    assert (
+        yaml.safe_load((descriptors / "gateway.yaml").read_text(encoding="utf-8")) == {}
+    )
 
 
 @pytest.mark.parametrize("adapter", ADAPTERS)
@@ -591,11 +588,48 @@ def test_primary_examples_use_sdk_direct_harness(adapter: str) -> None:
     assert "verify_conversation(" in source
 
 
+@pytest.mark.parametrize("adapter", ADAPTERS)
+def test_primary_examples_expose_the_same_direct_conversation_modes(
+    adapter: str,
+) -> None:
+    source = (AGENTS_ROOT / adapter / "agent.py").read_text(encoding="utf-8")
+
+    assert "DirectTurnRequest" in source
+    assert "completed_direct_turn_result(" in source
+    assert "run_terminal_chat(" in source
+    assert "serve_direct_telegram(" in source
+    assert '"--interactive"' in source
+    assert '"--telegram-local"' in source
+    assert "except KeyboardInterrupt:" in source
+
+
+def test_provider_native_examples_name_materialized_telegram_attachments() -> None:
+    langgraph = (AGENTS_ROOT / "langgraph" / "agent.py").read_text(encoding="utf-8")
+    claude = (AGENTS_ROOT / "claude" / "agent.py").read_text(encoding="utf-8")
+
+    assert "prompt_with_attachment_manifest(prompt, attachments)" in langgraph
+    assert "prompt_with_attachment_manifest(prompt, attachments)" in claude
+    assert 'mirror_to=workspace / "attachments"' in claude
+
+
+@pytest.mark.parametrize("adapter", ADAPTERS)
+def test_direct_conversation_modes_are_exclusive_with_checks(adapter: str) -> None:
+    completed = subprocess.run(
+        [sys.executable, "agent.py", "--check", "--interactive"],
+        cwd=AGENTS_ROOT / adapter,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode == 2
+    assert "not allowed with argument" in completed.stderr
+
+
 def test_each_adapter_uses_the_full_agent_private_state_scope() -> None:
     native = (AGENTS_ROOT / "native" / "agent.py").read_text(encoding="utf-8")
-    langgraph = (AGENTS_ROOT / "langgraph" / "agent.py").read_text(
-        encoding="utf-8"
-    )
+    langgraph = (AGENTS_ROOT / "langgraph" / "agent.py").read_text(encoding="utf-8")
     claude = (AGENTS_ROOT / "claude" / "agent.py").read_text(encoding="utf-8")
 
     for source in (native, langgraph, claude):
@@ -736,6 +770,39 @@ def test_offline_adapter_construction_rejects_unknown_instruction_profile(
     assert "instruction profile" in completed.stderr.lower()
 
 
+def test_native_check_rejects_configured_callable_missing_from_source(
+    tmp_path: Path,
+) -> None:
+    root = AGENTS_ROOT / "native"
+    config = yaml.safe_load((root / "config.template.yaml").read_text(encoding="utf-8"))
+    config["agent"]["tools"][0]["allowed"].append("missing_callable")
+    config["agent"]["run_directory"] = str(tmp_path / "output")
+    config["agent"]["skills"]["root"] = str(root / "skills")
+    config_path = tmp_path / "native-missing-tool.yaml"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "agent.py",
+            "--config",
+            str(config_path),
+            "--descriptors",
+            "descriptors.template",
+            "--check",
+        ],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "native adapter construction incomplete" in completed.stderr
+    assert "web_tools.missing_callable" in completed.stderr
+
+
 def test_native_model_selection_comes_from_assembly_descriptor(tmp_path: Path) -> None:
     descriptors = tmp_path / "descriptors"
     shutil.copytree(AGENTS_ROOT / "native" / "descriptors.template", descriptors)
@@ -743,7 +810,9 @@ def test_native_model_selection_comes_from_assembly_descriptor(tmp_path: Path) -
     assembly = yaml.safe_load(assembly_path.read_text(encoding="utf-8"))
     assembly["models"]["default_llm_provider"] = "openai"
     assembly["models"]["default_llm_model_id"] = "gpt-4o"
-    assembly_path.write_text(yaml.safe_dump(assembly, sort_keys=False), encoding="utf-8")
+    assembly_path.write_text(
+        yaml.safe_dump(assembly, sort_keys=False), encoding="utf-8"
+    )
 
     completed = subprocess.run(
         [
@@ -782,7 +851,9 @@ def test_model_service_agents_accept_arbitrary_on_host_model_from_assembly(
         "endpoint": "http://127.0.0.1:11500/generate",
         "num_ctx": 24576,
     }
-    assembly_path.write_text(yaml.safe_dump(assembly, sort_keys=False), encoding="utf-8")
+    assembly_path.write_text(
+        yaml.safe_dump(assembly, sort_keys=False), encoding="utf-8"
+    )
 
     completed = subprocess.run(
         [
@@ -819,7 +890,9 @@ def test_custom_model_selection_requires_gateway_endpoint(tmp_path: Path) -> Non
         "default_llm_model_id": "operator-selected:model-tag",
     }
     del assembly["services"]["llm"]["custom"]["endpoint"]
-    assembly_path.write_text(yaml.safe_dump(assembly, sort_keys=False), encoding="utf-8")
+    assembly_path.write_text(
+        yaml.safe_dump(assembly, sort_keys=False), encoding="utf-8"
+    )
 
     completed = subprocess.run(
         [
@@ -854,7 +927,9 @@ def test_claude_model_selection_is_descriptor_owned_and_provider_constrained(
         "default_llm_provider": "custom",
         "default_llm_model_id": "operator-selected:model-tag",
     }
-    assembly_path.write_text(yaml.safe_dump(assembly, sort_keys=False), encoding="utf-8")
+    assembly_path.write_text(
+        yaml.safe_dump(assembly, sort_keys=False), encoding="utf-8"
+    )
 
     completed = subprocess.run(
         [
@@ -874,18 +949,15 @@ def test_claude_model_selection_is_descriptor_owned_and_provider_constrained(
     )
 
     assert completed.returncode != 0
-    assert "Claude Code adapter requires models.default_llm_provider" in completed.stderr
+    assert (
+        "Claude Code adapter requires models.default_llm_provider" in completed.stderr
+    )
 
 
 def test_each_example_owns_its_selected_research_skill() -> None:
     for adapter in ADAPTERS:
         skill = (
-            AGENTS_ROOT
-            / adapter
-            / "skills"
-            / "demo"
-            / "research-brief"
-            / "SKILL.md"
+            AGENTS_ROOT / adapter / "skills" / "demo" / "research-brief" / "SKILL.md"
         )
         source = skill.read_text(encoding="utf-8")
         assert "namespace: demo" in source
@@ -898,58 +970,55 @@ def test_each_example_owns_its_selected_research_skill() -> None:
 
 
 def test_native_yaml_can_select_the_isolated_exec_tool() -> None:
-    from agents.native.agent import EXEC_TOOL_ID, RENDER_TOOL_IDS, TOOL_SOURCES
-    from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.native_tool_bindings import (
-        resolve_native_tool_bindings,
+    from agents.native.agent import EXEC_TOOL_ID, RENDER_TOOL_IDS
+    from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.configuration import (
+        configured_agent_tool_config,
+        configured_tool_ids,
     )
 
     config = yaml.safe_load(
         (AGENTS_ROOT / "native" / "config.template.yaml").read_text(encoding="utf-8")
     )
-    bindings = resolve_native_tool_bindings(
+    resolved = configured_agent_tool_config(
         config,
-        sources=TOOL_SOURCES,
-        adapter_name="native direct example",
+        agent_id="native",
+        bundle_root=AGENTS_ROOT / "native",
     )
 
-    assert bindings.enabled_ids == (
+    assert configured_tool_ids(resolved) == (
         "web_tools.web_search",
         "web_tools.web_fetch",
         EXEC_TOOL_ID,
         *RENDER_TOOL_IDS,
     )
-    assert bindings.tool_runtime[EXEC_TOOL_ID] == "docker"
-    assert bindings.allowed_tool_names_by_alias["exec_tools"] == [
-        "execute_code_python"
-    ]
-    assert any(spec.get("alias") == "exec_tools" for spec in bindings.tool_specs)
-    assert bindings.allowed_tool_names_by_alias["rendering_tools"] == [
+    assert resolved.tool_runtime[EXEC_TOOL_ID] == "docker"
+    assert resolved.allowed_tool_names_by_alias["exec_tools"] == ["execute_code_python"]
+    assert any(spec.get("alias") == "exec_tools" for spec in resolved.tool_specs)
+    assert resolved.allowed_tool_names_by_alias["rendering_tools"] == [
         "write_pdf",
         "write_docx",
         "write_pptx",
     ]
 
 
-def test_native_tool_binding_rejects_ids_outside_the_host_registry() -> None:
-    from agents.native.agent import TOOL_SOURCES
-    from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.native_tool_bindings import (
-        resolve_native_tool_bindings,
+def test_direct_tool_selection_changes_only_through_canonical_allowed_names() -> None:
+    from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.configuration import (
+        configured_agent_tool_config,
+        configured_tool_ids,
     )
 
     config = yaml.safe_load(
         (AGENTS_ROOT / "native" / "config.template.yaml").read_text(encoding="utf-8")
     )
-    config = copy.deepcopy(config)
-    config["agent"]["tools"].append(
-        {"id": "unregistered.read_everything", "enabled": True, "runtime": "local"}
+    config["agent"]["tools"][0]["allowed"] = ["web_search"]
+    resolved = configured_agent_tool_config(
+        config,
+        agent_id="native",
+        bundle_root=AGENTS_ROOT / "native",
     )
 
-    with pytest.raises(ValueError, match="does not expose configured tools"):
-        resolve_native_tool_bindings(
-            config,
-            sources=TOOL_SOURCES,
-            adapter_name="native direct example",
-        )
+    assert "web_tools.web_search" in configured_tool_ids(resolved)
+    assert "web_tools.web_fetch" not in configured_tool_ids(resolved)
 
 
 def test_native_event_evidence_resolves_json_tool_calls_and_results() -> None:
@@ -1010,18 +1079,29 @@ def test_direct_recipe_is_an_executable_configuration_contract() -> None:
         "user_id: demo-user",
         "conversation_id: native-demo",
         "tenant / project / user_id / conversation_id / agent_id",
-        "topic: \"the current stable Python release and its release date\"",
+        'topic: "the current stable Python release and its release date"',
         "instructions:\n    profile: lite:core",
         "additional_instructions: |",
-        "id: web_tools.web_search",
-        "id: web_tools.web_fetch",
-        "id: exec_tools.execute_code_python",
+        "id: web",
+        "module: kdcube_ai_app.apps.chat.sdk.tools.web_tools",
+        "allowed: [web_search, web_fetch]",
+        "id: code",
+        "allowed: [execute_code_python]",
+        "id: documents",
+        "allowed: [write_pdf, write_docx, write_pptx]",
         "skills:\n    root: ./skills",
         "settings:\n        filter:",
-        "agent.py`'s `TOOL_SOURCES",
+        "SDK `ToolSubsystem` introspects those sources",
         "Dockerfile_Exec",
         "docker image inspect py-code-exec:latest",
         "demonstration: PASS",
+        ".venv/bin/python agent.py --interactive",
+        ".venv/bin/python agent.py --telegram-local",
+        "bot_token_ref: platform.services.telegram.bot_token",
+        "webhook_secret_ref: platform.services.telegram.webhook_secret",
+        "user_id         = telegram_<sender-id>",
+        "the app and chat runtime provide",
+        "build a durable queue around the direct callback",
         "output/runs/<user>/<conversation>/<run>/evidence.json",
         "Serve the same agent to users",
     )
@@ -1034,7 +1114,9 @@ def test_direct_recipe_is_an_executable_configuration_contract() -> None:
         *(AGENTS_ROOT / name / "README.md" for name in ADAPTERS),
     )
     for readme in readmes:
-        assert "run-agent-harness-from-python-README.md" in readme.read_text(encoding="utf-8")
+        assert "run-agent-harness-from-python-README.md" in readme.read_text(
+            encoding="utf-8"
+        )
 
 
 @pytest.mark.parametrize("adapter", ADAPTERS)
@@ -1062,11 +1144,16 @@ def test_configure_materializes_standard_descriptors_without_printing_secrets(
         provider_key="provider-secret",
     )
 
-    secret_document = json.loads((descriptors / "secrets.yaml").read_text(encoding="utf-8"))
+    secret_document = json.loads(
+        (descriptors / "secrets.yaml").read_text(encoding="utf-8")
+    )
     compose_source = compose_env.read_text(encoding="utf-8")
-    assert secret_document["services"]["openai"]["api_key"] == "provider-secret"
-    assert secret_document["infra"]["postgres"]["password"] in compose_source
-    assert secret_document["infra"]["redis"]["password"] in compose_source
+    platform = secret_document["platform"]
+    assert "services" not in secret_document
+    assert "infra" not in secret_document
+    assert platform["services"]["openai"]["api_key"] == "provider-secret"
+    assert platform["infra"]["postgres"]["password"] in compose_source
+    assert platform["infra"]["redis"]["password"] in compose_source
     assert (descriptors / "assembly.yaml").is_file()
     assert (descriptors / "economics.yaml").is_file()
     assert (descriptors / "gateway.yaml").is_file()
@@ -1102,9 +1189,16 @@ def test_infrastructure_projects_standard_descriptor_settings(tmp_path: Path) ->
     assert postgres_url(settings) == (
         "postgresql://demo%20user:p%3Ao%2Fs%40t@localhost:55432/demo%2Fdb?sslmode=disable"
     )
-    assert storage_uri(settings, descriptors_dir=tmp_path) == (
-        tmp_path / "output" / "conversation-store"
-    ).resolve().as_uri()
+    assert (
+        storage_uri(settings, descriptors_dir=tmp_path)
+        == (tmp_path / "output" / "conversation-store").resolve().as_uri()
+    )
+
+    settings.STORAGE_PATH = "s3://agent-records/tenant/project"
+    assert (
+        storage_uri(settings, descriptors_dir=tmp_path)
+        == "s3://agent-records/tenant/project"
+    )
 
 
 def test_descriptor_activation_normalizes_storage_for_sdk_consumers(
@@ -1168,7 +1262,9 @@ async def test_langgraph_postgres_checkpointer_runs_idempotent_setup(
         "from_conn_string",
         staticmethod(lambda _url: FakeContextManager()),
     )
-    settings = SimpleNamespace(PGHOST="localhost", PGPORT=55432, PGDATABASE="kdcube_agents")
+    settings = SimpleNamespace(
+        PGHOST="localhost", PGPORT=55432, PGDATABASE="kdcube_agents"
+    )
 
     async with open_postgres_checkpointer(settings, "postgresql://unused") as opened:
         assert opened is checkpointer
@@ -1185,7 +1281,6 @@ def test_examples_require_model_authored_code_and_kdcube_rendering() -> None:
         assert "in python" in source.lower()
 
     helper_sources = (
-        (AGENTS_ROOT / "native" / "tools.py").read_text(encoding="utf-8"),
         (AGENTS_ROOT / "langgraph" / "tools.py").read_text(encoding="utf-8"),
     )
     for source in helper_sources:
@@ -1209,7 +1304,13 @@ async def test_langgraph_file_tools_delegate_to_the_turn_runtime() -> None:
     )
     tools = {
         item.name: item
-        for item in build_tools(runtime, enabled_ids={"execute_python", "write_pdf"})
+        for item in build_tools(
+            runtime,
+            configured_ids={
+                "exec_tools.execute_code_python",
+                "rendering_tools.write_pdf",
+            },
+        )
     }
 
     execute_result = json.loads(

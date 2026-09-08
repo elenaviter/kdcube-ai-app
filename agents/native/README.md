@@ -4,7 +4,7 @@ title: "Run the Native ReAct Agent"
 summary: "Run KDCube native ReAct directly from Python with YAML-selected tools and skills."
 tags: ["agents", "native-react", "harness", "standalone", "demonstration", "web-search", "web-fetch"]
 keywords: ["ReactSolverV2", "DirectAgentHarness", "KDCube Web Search", "KDCube Web Fetch", "Postgres conversation", "ChatCommunicator", "accounting"]
-updated_at: 2026-09-07
+updated_at: 2026-09-08
 see_also:
   - repo:kdcube-ai-app/agents/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md
@@ -16,8 +16,8 @@ see_also:
 
 This directory runs KDCube's `ReactSolverV2` in your Python process.
 `config.local.yaml` selects agent behavior and tool settings;
-`descriptors.local/` selects the model, storage, and support services. No
-KDCube server is required.
+`descriptors.local/` selects the model, storage, and support services. It runs
+directly as a Python process from this checkout.
 
 ## Run it
 
@@ -36,6 +36,24 @@ cd agents/native
 .venv/bin/python agent.py --infra-check
 .venv/bin/python agent.py
 ```
+
+For an ongoing terminal conversation, run:
+
+```bash
+.venv/bin/python agent.py --interactive \
+  --user-id alice --conversation-id terminal-chat --session-id terminal-1
+```
+
+For the development-only Telegram webhook, add the bot token and webhook
+secret to `descriptors.local/secrets.yaml`, expose local port `8787` through an
+HTTPS tunnel, register that URL with Telegram, then run:
+
+```bash
+.venv/bin/python agent.py --telegram-local
+```
+
+The complete webhook registration and process-local delivery boundary are in the
+[executable recipe](../../app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md#10-connect-a-local-telegram-bot).
 
 The default run uses `agent.input.user_id: demo-user` and
 `agent.input.conversation_id: native-demo`. Run it again with those values to
@@ -56,7 +74,8 @@ The first command creates this runner's `.venv`; no prebuilt environment is
 shipped. Installing `requirements.txt` installs the SDK and this runner's Python
 dependencies. Chromium is required by the enabled PDF renderer. The Docker
 build creates the `py-code-exec:latest` image required by the enabled isolated
-Python tool. `--infra-check` verifies both prerequisites before model spend.
+code-execution tool. `--infra-check` verifies both prerequisites before model
+spend.
 
 To use an on-host model, prepare the same directory with no provider secret:
 
@@ -107,8 +126,10 @@ protocol reliably within the configured context window.
 Turn one hosts a research-request attachment, searches with
 [KDCube Web Search](../../mcp/web-search/README.md), and inspects a selected
 result with KDCube Web Fetch. Turn two makes the model author Python that uses
-`openpyxl`; KDCube executes that code in the configured Docker image to create
-an XLSX and HTML.
+`openpyxl`. That generated program calls the enabled Web Search tool through
+`agent_io_tools.tool_call` for an additional verification query, then creates
+an XLSX and HTML. The generated program runs in the isolated turn workspace;
+the Web tool runs in the trusted supervisor under the same YAML allow policy.
 The agent then calls `rendering_tools.write_pdf` to turn the HTML into a
 polished PDF. It does not generate PDF bytes in Python.
 
@@ -127,14 +148,15 @@ records in `output/kdcube-storage`, including the execution ZIP containing
 ## Change the demo
 
 Edit `config.local.yaml` to change the `lite:core` instruction profile,
-`additional_instructions`, run directory, tools, skills, topic, or limits.
+`additional_instructions`, local ingress, run directory, tools, skills, topic,
+or limits.
 Its `agent.input` section selects the local caller session, durable
 conversation, and recall conversation. Tenant and project come from
 `descriptors.local/assembly.yaml`; this runner's stable agent ID is `native`.
 The SDK preserves the ReAct protocol and automatically adds standard blocks for
 the enabled exec, rendering, and web tool families. Web Search and Web Fetch
-share the allowlist, blocklist, and SSRF policy under the
-`web_tools.web_search` tool row's `settings`. Edit
+share the allowlist, blocklist, and SSRF policy under
+`agent.tools[id=web].settings`. Edit
 `descriptors.local/assembly.yaml` for the model provider and ID, storage, and isolated executor;
 edit `descriptors.local/secrets.yaml` for credentials. The shipped model is
 `claude-haiku-4-5-20251001`.
@@ -144,10 +166,13 @@ and `num_ctx` is the context budget sent on every request. Model-specific
 override lists are not part of this example; change the single selected model
 and shared context budget directly.
 
-To add a local Python tool, implement it in `tools.py`, register its trusted
-source in `agent.py`'s `TOOL_SOURCES`, and select its ID in
-`config.local.yaml`. The SDK resolves that registry into Native tool bindings;
-this example does not carry a separate planner module.
+To add a local Python tool, point a new `agent.tools` source row at an
+importable `module` or a local `ref`, give it an `alias`, and list the exact
+callable names under `allowed`. The SDK `ToolSubsystem` introspects that source
+and uses the same selection for the model catalog, direct calls, and
+generated-code supervisor admission. The canonical `ToolSubsystem` is the
+runner's tool registry.
+See [Tool Subsystem](../../app/ai-app/docs/sdk/tools/tool-subsystem-README.md).
 
 Executor image, timeout, network, and workspace limits live under
 `platform.services.proc.exec` in `descriptors.local/assembly.yaml`. The full

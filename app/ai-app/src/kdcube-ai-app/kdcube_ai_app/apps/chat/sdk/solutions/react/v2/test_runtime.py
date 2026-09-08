@@ -4,6 +4,7 @@ import os
 import json
 import asyncio
 import datetime
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -51,6 +52,23 @@ def _solver_stub() -> ReactSolverV2:
 
 async def _noop_async(*args, **kwargs):
     return None
+
+
+class _ToolPolicyScope:
+    def __init__(self):
+        self.active = None
+
+    @contextmanager
+    def bind_allowed_tool_names_by_alias(self, value):
+        previous = self.active
+        self.active = value
+        try:
+            yield
+        finally:
+            self.active = previous
+
+    def current_allowed_tool_names_by_alias(self):
+        return self.active
 
 
 def test_validate_decision_rejects_tool_call_with_final_answer():
@@ -772,6 +790,7 @@ async def test_phase_watcher_cancels_when_event_lane_owner_changes():
 async def test_run_closes_external_event_handler_when_cancelled():
     solver = _solver_stub()
     close_calls = 0
+    tool_policy = _ToolPolicyScope()
 
     class _Browser:
         runtime_ctx = SimpleNamespace(agent_role_models={})
@@ -781,16 +800,22 @@ async def test_run_closes_external_event_handler_when_cancelled():
             close_calls += 1
 
     async def _cancelled_run(**kwargs):
-        del kwargs
+        assert tool_policy.active == {"web_tools": ["web_search"]}
+        assert kwargs["allowed_tool_names_by_alias"] == tool_policy.active
         raise asyncio.CancelledError
 
     solver.ctx_browser = _Browser()
+    solver.tools_subsystem = tool_policy
     solver._run_impl = _cancelled_run
 
     with pytest.raises(asyncio.CancelledError):
-        await solver.run(allowed_plugins=[], allowed_tool_names_by_alias={})
+        await solver.run(
+            allowed_plugins=["web_tools"],
+            allowed_tool_names_by_alias={"web_tools": ["web_search"]},
+        )
 
     assert close_calls == 1
+    assert tool_policy.active is None
 
 
 

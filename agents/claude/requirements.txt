@@ -4,6 +4,8 @@
 app-foundation[mcp]>=2026.09.03.1835,<2027
 asyncpg==0.31.0
 semantic-kernel
+fastapi
+uvicorn
 playwright
 markdown-it-py
 mdit-py-plugins

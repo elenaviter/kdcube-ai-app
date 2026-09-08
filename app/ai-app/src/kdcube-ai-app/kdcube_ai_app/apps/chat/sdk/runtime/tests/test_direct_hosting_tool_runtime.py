@@ -13,6 +13,7 @@ from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.tool_runtime import (
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.workspace import (
     DirectTurnWorkspace,
 )
+from kdcube_ai_app.apps.chat.sdk.runtime.tool_config import AgentToolConfig
 
 
 class _ToolSubsystem:
@@ -35,17 +36,119 @@ def _runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> DirectToolRunti
     )
 
 
-def test_direct_turn_workspace_uses_the_canonical_artifact_layout(tmp_path: Path) -> None:
+def test_direct_turn_workspace_uses_the_canonical_artifact_layout(
+    tmp_path: Path,
+) -> None:
     workspace = DirectTurnWorkspace(tmp_path, "turn_demo")
 
     assert workspace.current_file("research/data.xlsx") == (
-        tmp_path / "turn_demo" / "out" / "workdir" / "turn_demo" / "files" / "research" / "data.xlsx"
+        tmp_path
+        / "turn_demo"
+        / "out"
+        / "workdir"
+        / "turn_demo"
+        / "files"
+        / "research"
+        / "data.xlsx"
     )
     assert workspace.current_attachment("request.md") == (
-        tmp_path / "turn_demo" / "out" / "workdir" / "turn_demo" / "attachments" / "request.md"
+        tmp_path
+        / "turn_demo"
+        / "out"
+        / "workdir"
+        / "turn_demo"
+        / "attachments"
+        / "request.md"
     )
     with pytest.raises(ValueError, match="canonical turn_"):
         DirectTurnWorkspace(tmp_path, "turn-demo")
+
+
+@pytest.mark.asyncio
+async def test_descriptor_selected_module_is_discovered_and_enforced(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool_module = tmp_path / "market_tools.py"
+    tool_module.write_text(
+        """
+class MarketTools:
+    async def latest_prices(self, symbol: str):
+        return {"symbol": symbol, "price": 42}
+
+    async def delete_supplier(self, supplier_id: str):
+        return {"deleted": supplier_id}
+
+tools = MarketTools()
+
+def list_tools():
+    return {
+        "latest_prices": {
+            "callable": tools.latest_prices,
+            "description": "Read current prices.",
+        },
+        "delete_supplier": {
+            "callable": tools.delete_supplier,
+            "description": "Delete a supplier.",
+        },
+    }
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    tool_config = AgentToolConfig(
+        tool_specs=[
+            {
+                "module": "market_tools",
+                "alias": "market_tools",
+                "use_sk": False,
+            }
+        ],
+        tool_runtime={"market_tools.latest_prices": "local"},
+        allowed_plugins=["market_tools"],
+        allowed_tool_names_by_alias={"market_tools": ["latest_prices"]},
+    )
+    runtime = DirectToolRuntime(
+        service=object(),
+        comm=SimpleNamespace(),
+        workspace=DirectTurnWorkspace(tmp_path / "run", "turn_demo"),
+        exec_runtime={"mode": "docker", "image": "exec:test"},
+        bundle_id="example@1-0",
+        bundle_root=tmp_path,
+        bundle_module="agent",
+        tool_config=tool_config,
+    )
+    runtime.prepare = AsyncMock()
+
+    async def invoke(*, fn, params, **_kwargs):
+        return await fn(**params)
+
+    monkeypatch.setattr(module.agent_io_tools, "tool_call", invoke)
+
+    assert runtime.configured_tool_ids() == ("market_tools.latest_prices",)
+    exported = runtime.tool_subsystem.export_runtime_globals()
+    assert exported["ALLOWED_TOOL_NAMES_BY_ALIAS"] == {
+        "market_tools": ["latest_prices"]
+    }
+    assert exported["RAW_TOOL_SPECS"] == [
+        {
+            "module": "market_tools",
+            "alias": "market_tools",
+            "use_sk": False,
+        }
+    ]
+    assert await runtime.invoke_tool(
+        tool_id="market_tools.latest_prices",
+        params={"symbol": "KDC"},
+        call_reason="Read the current price",
+    ) == {"symbol": "KDC", "price": 42}
+    with pytest.raises(ValueError, match="not allowed"):
+        await runtime.invoke_tool(
+            tool_id="market_tools.delete_supplier",
+            params={"supplier_id": "supplier-1"},
+            call_reason="Delete one supplier",
+        )
 
 
 @pytest.mark.asyncio
@@ -114,8 +217,10 @@ async def test_renderer_reads_current_turn_source_and_writes_current_turn_output
     assert result["ok"] is True
     assert result["source_path"] == "turn_demo/files/research/brief.html"
     assert result["output_path"] == "turn_demo/files/research/brief.pdf"
-    assert runtime.workspace.current_file("research/brief.pdf").read_bytes().startswith(
-        b"%PDF-"
+    assert (
+        runtime.workspace.current_file("research/brief.pdf")
+        .read_bytes()
+        .startswith(b"%PDF-")
     )
 
 

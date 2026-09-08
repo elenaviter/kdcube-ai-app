@@ -639,6 +639,7 @@ def test_executor_payload_strips_privileged_runtime_globals():
             "TOOL_MODULE_FILES": {"web_tools": "/bundle/tool.py"},
             "BUNDLE_STORAGE_DIR": "/bundle-storage/demo",
             "TOOL_ALIAS_MAP": {"web_tools": "dyn_web_tools"},
+            "ALLOWED_TOOL_NAMES_BY_ALIAS": {"web_tools": ["web_search"]},
             "RESULT_FILENAME": "result.json",
         }
     )
@@ -648,6 +649,9 @@ def test_executor_payload_strips_privileged_runtime_globals():
     assert "TOOL_MODULE_FILES" not in payload
     assert "BUNDLE_STORAGE_DIR" not in payload
     assert payload["TOOL_ALIAS_MAP"] == {"web_tools": "dyn_web_tools"}
+    assert payload["ALLOWED_TOOL_NAMES_BY_ALIAS"] == {
+        "web_tools": ["web_search"]
+    }
     assert payload["RESULT_FILENAME"] == "result.json"
 
 

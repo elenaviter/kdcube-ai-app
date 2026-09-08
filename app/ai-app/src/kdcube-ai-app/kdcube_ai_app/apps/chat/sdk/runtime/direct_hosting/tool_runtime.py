@@ -16,7 +16,12 @@ from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace.layout import (
     resolve_artifact_path,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.run_ctx import OUTDIR_CV, WORKDIR_CV
-from kdcube_ai_app.apps.chat.sdk.runtime.tool_subsystem import ToolSubsystem
+from kdcube_ai_app.apps.chat.sdk.runtime.tool_config import AgentToolConfig
+from kdcube_ai_app.apps.chat.sdk.runtime.tool_subsystem import (
+    ToolSubsystem,
+    tool_id_allowed_by_alias_names,
+)
+from kdcube_ai_app.apps.chat.sdk.tools.io_tools import tools as agent_io_tools
 from kdcube_ai_app.apps.chat.sdk.tools.exec_tools import (
     build_exec_output_contract,
     normalize_exec_contract_for_turn,
@@ -73,6 +78,7 @@ class DirectToolRuntime:
         bundle_id: str,
         bundle_root: Path,
         bundle_module: str,
+        tool_config: AgentToolConfig | None = None,
         context_rag_client: Any = None,
         timeout_s: int = 600,
         logger: Any = None,
@@ -83,6 +89,12 @@ class DirectToolRuntime:
         self.exec_runtime = dict(exec_runtime or {})
         self.timeout_s = max(1, int(timeout_s or 600))
         self.logger = logger or AgentLogger("direct_hosting.tools")
+        self.tool_config = tool_config or AgentToolConfig()
+        self._tool_policy = (
+            None
+            if tool_config is None
+            else self.tool_config.allowed_tool_names_by_alias
+        )
         self.tool_subsystem = ToolSubsystem(
             service=service,
             comm=comm,
@@ -93,11 +105,10 @@ class DirectToolRuntime:
                 module=bundle_module,
             ),
             context_rag_client=context_rag_client,
-            # Generated code receives no nested tool inventory. Research and
-            # orchestration happen before execution; only declared files cross
-            # back from the isolated program.
-            tools_specs=[],
-            tool_runtime={},
+            raw_tool_specs=list(self.tool_config.tool_specs),
+            tool_runtime=dict(self.tool_config.tool_runtime),
+            tool_traits=dict(self.tool_config.tool_traits),
+            allowed_tool_names_by_alias=self._tool_policy,
         )
 
     async def prepare(self) -> None:
@@ -106,6 +117,39 @@ class DirectToolRuntime:
             outdir=self.workspace.runtime_outdir,
             logger=self.logger,
         )
+
+    def configured_tool_ids(self) -> tuple[str, ...]:
+        """Return the finite, discovered catalog selected by descriptor policy."""
+        entries = self.tool_subsystem.react_tools_cached(
+            allowed_plugins=self.tool_config.allowed_plugins,
+            allowed_tool_names_by_alias=(self.tool_config.allowed_tool_names_by_alias),
+        )
+        return tuple(str(entry["id"]) for entry in entries)
+
+    def _require_configured_tool(self, tool_id: str) -> None:
+        if not tool_id_allowed_by_alias_names(tool_id, self._tool_policy):
+            raise ValueError(f"tool is not allowed by agent configuration: {tool_id}")
+
+    async def invoke_tool(
+        self,
+        *,
+        tool_id: str,
+        params: Mapping[str, Any],
+        call_reason: str,
+    ) -> Any:
+        """Invoke one configured Python tool through the ordinary tool wrapper."""
+        self._require_configured_tool(tool_id)
+        fn = self.tool_subsystem.resolve_callable(tool_id)
+        if fn is None:
+            raise ValueError(f"configured Python tool is not available: {tool_id}")
+        await self.prepare()
+        with _workspace_scope(self.workspace):
+            return await agent_io_tools.tool_call(
+                fn=fn,
+                params=dict(params),
+                call_reason=call_reason,
+                tool_id=tool_id,
+            )
 
     async def execute_python(
         self,
@@ -116,23 +160,32 @@ class DirectToolRuntime:
         timeout_s: int | None = None,
     ) -> dict[str, Any]:
         """Execute Python supplied by the agent under the configured contract."""
+        self._require_configured_tool("exec_tools.execute_code_python")
         source = str(code or "")
         if not source.strip():
             return _error("missing_code", "code is required")
-        normalized, contract_rewrites, contract_error = normalize_exec_contract_for_turn(
-            artifacts,
-            turn_id=self.workspace.turn_id,
+        normalized, contract_rewrites, contract_error = (
+            normalize_exec_contract_for_turn(
+                artifacts,
+                turn_id=self.workspace.turn_id,
+            )
         )
         if contract_error or not normalized:
             return _error(
                 str((contract_error or {}).get("code") or "invalid_contract"),
-                str((contract_error or {}).get("message") or "artifact contract is invalid"),
+                str(
+                    (contract_error or {}).get("message")
+                    or "artifact contract is invalid"
+                ),
             )
         output_contract, contract, output_error = build_exec_output_contract(normalized)
         if output_error or output_contract is None or contract is None:
             return _error(
                 str((output_error or {}).get("code") or "invalid_contract"),
-                str((output_error or {}).get("message") or "artifact contract is invalid"),
+                str(
+                    (output_error or {}).get("message")
+                    or "artifact contract is invalid"
+                ),
             )
         rewritten_code, code_rewrites = rewrite_exec_code_paths(
             source,
@@ -177,7 +230,9 @@ class DirectToolRuntime:
             turn_id=self.workspace.turn_id,
         )
         if error or not normalized:
-            raise ValueError(str((error or {}).get("message") or "invalid artifact path"))
+            raise ValueError(
+                str((error or {}).get("message") or "invalid artifact path")
+            )
         relative = str(normalized[0]["filepath"])
         if Path(relative).suffix.lower() != extension:
             raise ValueError(f"artifact path must end with {extension}")
@@ -194,6 +249,7 @@ class DirectToolRuntime:
         from kdcube_ai_app.apps.chat.sdk.tools import rendering_tools
 
         operation = str(operation or "").strip()
+        self._require_configured_tool(f"rendering_tools.{operation}")
         extension = {
             "write_pdf": ".pdf",
             "write_docx": ".docx",
@@ -215,12 +271,16 @@ class DirectToolRuntime:
                 source_path,
                 extension=source_suffix,
             )
-            output_rel, output = self._current_artifact(output_path, extension=extension)
+            output_rel, output = self._current_artifact(
+                output_path, extension=extension
+            )
             source.resolve().relative_to(self.workspace.artifact_root.resolve())
         except Exception as exc:
             return _error("invalid_render_path", str(exc))
         if not source.is_file():
-            return _error("render_source_missing", f"render source does not exist: {source_rel}")
+            return _error(
+                "render_source_missing", f"render source does not exist: {source_rel}"
+            )
         if source.stat().st_size > 4_000_000:
             return _error("render_source_too_large", "render source exceeds 4 MB")
         content = source.read_text(encoding="utf-8")
@@ -240,7 +300,9 @@ class DirectToolRuntime:
         if not isinstance(rendered, dict) or not rendered.get("ok"):
             return dict(rendered or _error("render_failed", f"{operation} failed"))
         if not output.is_file() or output.stat().st_size <= 0:
-            return _error("render_output_missing", f"renderer did not create {output_rel}")
+            return _error(
+                "render_output_missing", f"renderer did not create {output_rel}"
+            )
         mime = mimetypes.guess_type(output.name)[0] or "application/octet-stream"
         return {
             "ok": True,
@@ -266,7 +328,9 @@ class DirectToolRuntime:
             ],
         }
 
-    async def write_pdf(self, *, source_path: str, output_path: str, title: str = "") -> dict[str, Any]:
+    async def write_pdf(
+        self, *, source_path: str, output_path: str, title: str = ""
+    ) -> dict[str, Any]:
         """Render current-turn HTML to PDF with ``rendering_tools.write_pdf``."""
         return await self._render(
             operation="write_pdf",
@@ -275,7 +339,9 @@ class DirectToolRuntime:
             title=title or None,
         )
 
-    async def write_docx(self, *, source_path: str, output_path: str, title: str = "") -> dict[str, Any]:
+    async def write_docx(
+        self, *, source_path: str, output_path: str, title: str = ""
+    ) -> dict[str, Any]:
         """Render current-turn Markdown to DOCX with ``rendering_tools.write_docx``."""
         return await self._render(
             operation="write_docx",
@@ -284,7 +350,9 @@ class DirectToolRuntime:
             title=title or None,
         )
 
-    async def write_pptx(self, *, source_path: str, output_path: str, title: str = "") -> dict[str, Any]:
+    async def write_pptx(
+        self, *, source_path: str, output_path: str, title: str = ""
+    ) -> dict[str, Any]:
         """Render current-turn slide HTML to PPTX with ``rendering_tools.write_pptx``."""
         return await self._render(
             operation="write_pptx",

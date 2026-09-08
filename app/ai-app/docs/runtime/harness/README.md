@@ -3,7 +3,7 @@ id: repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/README.md
 title: "Agent Harness Runtime"
 summary: "Framework-neutral event, timeline, and workspace contracts shared by KDCube agent adapters."
 tags: ["runtime", "harness", "agents", "events", "timeline", "workspace"]
-updated_at: 2026-09-06
+updated_at: 2026-09-07
 keywords:
   [
     "agent harness",
@@ -32,7 +32,7 @@ classical runtime services and concrete agent implementations.
 
 ```text
 KDCube runtime services
-  identity, storage, event lane, communicator, accounting, isolated execution
+  identity, storage, event lane, communicator, accounting, isolated code execution
                               |
                               v
                     runtime/harness
@@ -145,7 +145,11 @@ Redis holds the short-lived per-turn accounting mirror. All three use the
 KDCube conversation tables in Postgres and durable payload storage. LangGraph
 additionally uses its own Postgres checkpoint tables for graph continuation.
 The examples run the same two-turn web-research and PDF/XLSX task and expose
-real `ChatCommunicator` events in the terminal.
+real `ChatCommunicator` events in the terminal. Their shared direct-channel
+contract also supports a continuing terminal session and a process-local
+Telegram webhook. Telegram update parsing, attachment hydration, and final
+turn-log delivery reuse the integration SDK; each concrete adapter supplies
+the callback that runs one durable turn.
 
 The copy-and-run contract, including YAML-selected tools and skills and the
 optional isolated-execution image, is

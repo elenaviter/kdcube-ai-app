@@ -26,6 +26,7 @@ class PrivilegedSupervisor:
         self.registered_tools: dict[str, Callable[..., Any]] = {}
         self.log = logger or AgentLogger("supervisor")
         self.alias_to_dyn: Dict[str, str] = {}
+        self.allowed_tool_names_by_alias: Optional[Dict[str, Optional[list[str]]]] = None
         self.auth_token = auth_token if auth_token is not None else os.environ.get("SUPERVISOR_AUTH_TOKEN", "")
 
         # Remove old socket
@@ -45,6 +46,20 @@ class PrivilegedSupervisor:
     def set_alias_map(self, alias_map: Dict[str, str]):
         """Register alias→dyn_module_name mapping."""
         self.alias_to_dyn = alias_map or {}
+
+    def set_allowed_tool_names_by_alias(
+        self,
+        allowed: Optional[Dict[str, Optional[list[str]]]],
+    ) -> None:
+        """Register the invocation's canonical default-closed tool policy."""
+        self.allowed_tool_names_by_alias = (
+            None
+            if allowed is None
+            else {
+                str(alias): None if names is None else list(names)
+                for alias, names in allowed.items()
+            }
+        )
 
     @staticmethod
     def _allowed_peer_uids() -> set[int]:
@@ -218,6 +233,24 @@ class PrivilegedSupervisor:
         if not tool_id:
             self.log.log("[supervisor] ERROR: Missing tool_id in request", level="ERROR")
             return {"ok": False, "error": "Missing tool_id"}
+
+        from kdcube_ai_app.apps.chat.sdk.runtime.tool_subsystem import (
+            tool_id_allowed_by_alias_names,
+        )
+
+        if not tool_id_allowed_by_alias_names(
+            str(tool_id),
+            self.allowed_tool_names_by_alias,
+        ):
+            self.log.log(
+                f"[supervisor] Rejected tool outside active policy: {tool_id}",
+                level="WARNING",
+            )
+            return {
+                "ok": False,
+                "error": f"Tool is not allowed by the active agent policy: {tool_id}",
+                "code": "tool_not_allowed",
+            }
 
         fn = None
         try:

@@ -8,6 +8,8 @@ langgraph-prebuilt==1.0.8
 asyncpg==0.31.0
 jsonschema==4.26.0
 semantic-kernel
+fastapi
+uvicorn
 playwright
 markdown-it-py
 mdit-py-plugins

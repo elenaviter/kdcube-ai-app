@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from pydantic import Field
+import yaml
 
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_harness import DirectAgentHarness
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.evidence import ConsoleEmitter
@@ -15,6 +16,9 @@ from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.infrastructure import (
     activate_platform_descriptors,
     direct_harness_config,
     platform_exec_profile,
+)
+from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.configuration import (
+    configured_agent_tool_config,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.direct_hosting.model_service import (
     build_model_service,
@@ -43,13 +47,20 @@ def build_app(runtime: DirectToolRuntime) -> KDCubeMCPServer:
         ),
     )
     async def execute_python(
-        code: Annotated[str, Field(description="Complete Python source authored for this invocation")],
+        code: Annotated[
+            str,
+            Field(description="Complete Python source authored for this invocation"),
+        ],
         artifacts: Annotated[
             list[dict[str, Any]],
             Field(description="Required output artifact contract"),
         ],
-        program_name: Annotated[str, Field(description="Short execution label")] = "Agent-generated Python",
-        timeout_s: Annotated[int | None, Field(description="Optional timeout override")] = None,
+        program_name: Annotated[
+            str, Field(description="Short execution label")
+        ] = "Agent-generated Python",
+        timeout_s: Annotated[
+            int | None, Field(description="Optional timeout override")
+        ] = None,
     ) -> str:
         result = await runtime.execute_python(
             code=code,
@@ -112,6 +123,10 @@ def build_app(runtime: DirectToolRuntime) -> KDCubeMCPServer:
 
 async def _build_runtime(args: argparse.Namespace) -> DirectToolRuntime:
     descriptors = Path(args.descriptors).expanduser().resolve()
+    config_path = Path(args.config).expanduser().resolve()
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(config, dict):
+        raise ValueError("configuration root must be a mapping")
     settings = activate_platform_descriptors(descriptors)
     service = await build_model_service(role=args.role, check_only=True)
     harness_config = direct_harness_config(
@@ -146,12 +161,18 @@ async def _build_runtime(args: argparse.Namespace) -> DirectToolRuntime:
         bundle_id=args.bundle_id,
         bundle_root=Path(args.bundle_root),
         bundle_module=args.bundle_module,
+        tool_config=configured_agent_tool_config(
+            config,
+            agent_id=args.agent_id,
+            bundle_root=Path(args.bundle_root),
+        ),
         timeout_s=args.timeout_s,
     )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", required=True)
     parser.add_argument("--descriptors", required=True)
     parser.add_argument("--run-root", required=True)
     parser.add_argument("--events", required=True)

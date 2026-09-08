@@ -4,6 +4,13 @@ agent:
     user_type: regular
     session_id: local-session
     conversation_id: langgraph-demo
+  ingress:
+    telegram:
+      host: 127.0.0.1
+      port: 8787
+      path: /telegram/webhook
+      bot_token_ref: platform.services.telegram.bot_token
+      webhook_secret_ref: platform.services.telegram.webhook_secret
   max_tokens: 12000
   recursion_limit: 24
   topic: "the current stable Python release and its release date"
@@ -14,9 +21,15 @@ agent:
     and deliverable creation. Preserve source URLs and follow enabled skills.
   run_directory: ./output
   tools:
-    - id: web_search
-      enabled: true
-      runtime: local
+    - id: web
+      kind: python
+      module: kdcube_ai_app.apps.chat.sdk.tools.web_tools
+      alias: web_tools
+      discovery: semantic_kernel
+      allowed: [web_search, web_fetch]
+      runtime:
+        web_search: local
+        web_fetch: local
       settings:
         filter:
           allowlist:
@@ -25,21 +38,24 @@ agent:
           ssrf_guard: true
         server:
           log_level: WARNING
-    - id: web_fetch
-      enabled: true
-      runtime: local
-    - id: execute_python
-      enabled: true
-      runtime: docker
-    - id: write_pdf
-      enabled: true
-      runtime: local
-    - id: write_docx
-      enabled: true
-      runtime: local
-    - id: write_pptx
-      enabled: true
-      runtime: local
+    - id: code
+      kind: python
+      module: kdcube_ai_app.apps.chat.sdk.tools.exec_tools
+      alias: exec_tools
+      discovery: semantic_kernel
+      allowed: [execute_code_python]
+      runtime:
+        execute_code_python: docker
+    - id: documents
+      kind: python
+      module: kdcube_ai_app.apps.chat.sdk.tools.rendering_tools
+      alias: rendering_tools
+      discovery: semantic_kernel
+      allowed: [write_pdf, write_docx, write_pptx]
+      runtime:
+        write_pdf: local
+        write_docx: local
+        write_pptx: local
   skills:
     root: ./skills
     enabled:

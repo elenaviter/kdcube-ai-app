@@ -77,9 +77,13 @@ class DirectAgentHarnessConfig:
             "redis_url": self.redis_url,
             "storage_uri": self.storage_uri,
         }
-        missing = [name for name, value in required.items() if not str(value or "").strip()]
+        missing = [
+            name for name, value in required.items() if not str(value or "").strip()
+        ]
         if missing:
-            raise ValueError(f"direct agent harness configuration is missing: {', '.join(missing)}")
+            raise ValueError(
+                f"direct agent harness configuration is missing: {', '.join(missing)}"
+            )
         if int(self.turn_cache_ttl_seconds) <= 0:
             raise ValueError("turn_cache_ttl_seconds must be positive")
 
@@ -125,8 +129,27 @@ class DirectAgentTurn:
     ) -> dict[str, Any]:
         """Store one user input and optionally materialize it in the turn workspace."""
         path = Path(source).expanduser().resolve()
-        data = path.read_bytes()
-        name = Path(filename or path.name).name
+        return await self.add_user_attachment_bytes(
+            path.read_bytes(),
+            filename=filename or path.name,
+            mime=mime,
+            materialize_to=materialize_to,
+        )
+
+    async def add_user_attachment_bytes(
+        self,
+        data: bytes,
+        *,
+        filename: str,
+        mime: str | None = None,
+        materialize_to: str | Path | None = None,
+    ) -> dict[str, Any]:
+        """Store caller-provided bytes and optionally materialize them for the turn."""
+        if not isinstance(data, bytes):
+            raise TypeError("direct user attachment content must be bytes")
+        name = Path(filename).name
+        if not name:
+            raise ValueError("direct user attachment filename is required")
         media_type = mime or mimetypes.guess_type(name)[0] or "application/octet-stream"
         uri, key, rn = await self.harness.storage.put_attachment(
             tenant=self.harness.config.tenant,
@@ -183,7 +206,9 @@ class DirectAgentTurn:
         )
         visible = [row for row in hosted if row.get("visibility") != "internal"]
         if emit and visible:
-            await self.hosting_service.emit_solver_artifacts(files=visible, citations=[])
+            await self.hosting_service.emit_solver_artifacts(
+                files=visible, citations=[]
+            )
         return hosted
 
     async def persist_workspace(
@@ -245,13 +270,16 @@ class DirectAgentTurn:
             )
         else:
             blocks = [dict(block) for block in rich_blocks if isinstance(block, dict)]
-            supplemental = build_minimal_turn_log_payload(
-                final_answer=answer,
-                turn_id=self.turn_id,
-                conversation_id=self.conversation_id,
-                user_attachments=self.user_attachments,
-                assistant_files=self.assistant_files,
-            ).get("blocks") or []
+            supplemental = (
+                build_minimal_turn_log_payload(
+                    final_answer=answer,
+                    turn_id=self.turn_id,
+                    conversation_id=self.conversation_id,
+                    user_attachments=self.user_attachments,
+                    assistant_files=self.assistant_files,
+                ).get("blocks")
+                or []
+            )
             existing_paths = {
                 str(block.get("path") or "")
                 for block in blocks
@@ -260,7 +288,10 @@ class DirectAgentTurn:
             for block in supplemental:
                 if not isinstance(block, dict):
                     continue
-                if block.get("type") not in {"user.attachment.meta", "react.tool.result"}:
+                if block.get("type") not in {
+                    "user.attachment.meta",
+                    "react.tool.result",
+                }:
                     continue
                 if str(block.get("path") or "") in existing_paths:
                     continue
@@ -448,9 +479,17 @@ class DirectAgentHarness:
                 finally:
                     turn.accounting_events = list(await get_turn_events())
         if completed_normally and not turn.finished:
-            raise RuntimeError("direct agent turn exited without calling turn.complete()")
-        if completed_normally and cfg.require_accounting_events and not turn.accounting_events:
-            raise RuntimeError("the completed model turn produced no Redis accounting evidence")
+            raise RuntimeError(
+                "direct agent turn exited without calling turn.complete()"
+            )
+        if (
+            completed_normally
+            and cfg.require_accounting_events
+            and not turn.accounting_events
+        ):
+            raise RuntimeError(
+                "the completed model turn produced no Redis accounting evidence"
+            )
 
     async def verify_conversation(
         self,
@@ -469,15 +508,21 @@ class DirectAgentHarness:
             bundle_id=self.config.bundle_id,
             with_payload=True,
         )
-        items = [dict(item) for item in (result.get("items") or []) if isinstance(item, dict)]
+        items = [
+            dict(item) for item in (result.get("items") or []) if isinstance(item, dict)
+        ]
         found = {str(item.get("turn_id") or "") for item in items}
         missing = [turn_id for turn_id in expected_turn_ids if turn_id not in found]
         if missing:
-            raise RuntimeError(f"durable conversation is missing turn logs: {', '.join(missing)}")
+            raise RuntimeError(
+                f"durable conversation is missing turn logs: {', '.join(missing)}"
+            )
         for item in items:
             if str(item.get("turn_id") or "") not in expected_turn_ids:
                 continue
-            if not str(item.get("hosted_uri") or "").strip() or not isinstance(item.get("payload"), dict):
+            if not str(item.get("hosted_uri") or "").strip() or not isinstance(
+                item.get("payload"), dict
+            ):
                 raise RuntimeError(
                     f"turn {item.get('turn_id')!r} has a Postgres row without a materialized storage payload"
                 )

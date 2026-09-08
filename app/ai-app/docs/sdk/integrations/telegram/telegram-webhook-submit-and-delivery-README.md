@@ -4,6 +4,7 @@ title: "Telegram Webhook Submit And Queued Delivery"
 summary: "Exact runtime data path for Telegram bot messages: webhook acknowledgement, shared chat ingress, processor-side app execution, activity streaming, and final Telegram delivery."
 tags: ["sdk", "integrations", "telegram", "webhook", "chat-ingress", "queued-delivery", "agent-runtime"]
 keywords: ["telegram webhook", "telegram submitter", "telegram queued delivery", "submit_telegram_turn", "run_with_queued_telegram_delivery", "TelegramActivityStreamer", "deliver_turn_to_telegram"]
+updated_at: 2026-09-07
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/telegram/telegram-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/telegram/telegram-react-events-and-artifact-history-README.md
@@ -12,6 +13,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-conversation-events-and-react-output-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/events/external-events-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/timeline-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md
 ---
 
 # Telegram Webhook Submit And Queued Delivery
@@ -21,6 +23,24 @@ Telegram webhook request does not run the app's agent or workflow inline and
 does not own final response delivery. The webhook submits the message to shared
 chat ingress. The processor later runs the app, and the app wraps that run with
 `telegram_user_admin.run_with_queued_telegram_delivery(...)`.
+
+## Local Direct-Agent Mode
+
+The runnable programs under [`agents/`](../../../../../../agents/README.md)
+also expose a separate development adapter named `--telegram-local`. That
+adapter validates the Telegram webhook secret and reuses this SDK's update,
+attachment, and final-delivery functions, then invokes one
+`DirectAgentHarness` turn inline in the webhook process. Its update claims and
+turn serialization belong to that one process, while concurrent request order
+remains unspecified.
+
+This direct adapter is the shortest path for trying one agent and one bot from
+a shell. Ordered, restart-safe, asynchronous, and multiworker delivery uses the
+normal managed flow below, or a durable queue supplied by the direct host. The
+[direct-agent recipe](../../../recipes/quickstart/run-agent-harness-from-python-README.md#10-connect-a-local-telegram-bot)
+owns the exact setup and boundary. Connection Hub participates in identity
+linking and delegated authority for a hosted product; transport ingress remains
+owned by the app and chat runtime.
 
 ## Normal Flow
 

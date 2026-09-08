@@ -129,12 +129,12 @@ You can also start with one SDK component from this checkout:
 
 | Goal | Start here |
 | --- | --- |
-| Keep a LangGraph or Claude Code agent, or start with Native ReAct, and add durable conversations, tools, skills, isolated code, files, rendering, streaming, and accounting | [Add the KDCube Harness to your agent](agents/README.md) · [run it step by step](app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md) |
+| Run Native ReAct, LangGraph, Claude Code, or your own agent on infrastructure you control with durable conversations, tools, skills, isolated code execution, files, rendering, streaming, and accounting | [Build and run on-premises agents with the KDCube Harness](agents/README.md) · [run it step by step](app/ai-app/docs/recipes/quickstart/run-agent-harness-from-python-README.md) |
 | Give an agent KDCube Web Search as a standalone, operator-filtered MCP server | [Web Search MCP quick start](mcp/web-search/README.md) · [MCP server catalog](mcp/README.md) |
 
-The direct-agent path uses independent Redis and Postgres services and does
-not require a running KDCube server. The Web Search launcher runs as a local
-stdio MCP server or as an HTTP/SSE service.
+The direct-agent path is a standalone Python process with independent Redis
+and Postgres services. The Web Search launcher runs as a local stdio MCP server
+or as an HTTP/SSE service.
 
 Working with a coding agent? Point it at [AGENTS.md](AGENTS.md) — it routes
 contributor rules and the operator/builder path (install, configure, build an

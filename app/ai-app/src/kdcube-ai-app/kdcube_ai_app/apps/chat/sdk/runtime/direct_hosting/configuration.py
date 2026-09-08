@@ -5,18 +5,15 @@ from __future__ import annotations
 import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-
-@dataclass(frozen=True)
-class ConfiguredTool:
-    id: str
-    enabled: bool = True
-    runtime: str = "local"
-    settings: Mapping[str, Any] = field(default_factory=dict)
+from kdcube_ai_app.apps.chat.sdk.runtime.tool_config import (
+    AgentToolConfig,
+    agent_tool_config_from_bundle_props,
+)
 
 
 @dataclass(frozen=True)
@@ -107,71 +104,117 @@ def configured_agent_input(
     return ConfiguredAgentInput(**normalized)
 
 
-def configured_tools(config: Mapping[str, Any]) -> tuple[ConfiguredTool, ...]:
+def configured_tool_connections(
+    config: Mapping[str, Any]
+) -> tuple[Mapping[str, Any], ...]:
+    """Return the standard tool-source rows declared by a direct agent."""
     raw_tools = _agent(config).get("tools")
     if not isinstance(raw_tools, Sequence) or isinstance(raw_tools, (str, bytes)):
         raise ValueError("agent.tools must be a list of tool mappings")
 
-    tools: list[ConfiguredTool] = []
+    tools: list[Mapping[str, Any]] = []
     seen: set[str] = set()
     for index, raw in enumerate(raw_tools):
         if not isinstance(raw, Mapping):
             raise ValueError(f"agent.tools[{index}] must be a mapping")
-        tool_id = str(raw.get("id") or "").strip()
-        if not tool_id:
+        connection_id = str(raw.get("id") or "").strip()
+        if not connection_id:
             raise ValueError(f"agent.tools[{index}].id is required")
-        if tool_id in seen:
-            raise ValueError(f"agent.tools contains duplicate id {tool_id!r}")
+        if connection_id in seen:
+            raise ValueError(f"agent.tools contains duplicate id {connection_id!r}")
         raw_settings = raw.get("settings")
-        if raw_settings is None:
-            raw_settings = {}
-        elif not isinstance(raw_settings, Mapping):
+        if raw_settings is not None and not isinstance(raw_settings, Mapping):
             raise ValueError(f"agent.tools[{index}].settings must be a mapping")
-        seen.add(tool_id)
-        tools.append(
-            ConfiguredTool(
-                id=tool_id,
-                enabled=bool(raw.get("enabled", True)),
-                runtime=str(raw.get("runtime") or "local").strip().lower(),
-                settings=dict(raw_settings),
-            )
-        )
+        seen.add(connection_id)
+        tools.append(dict(raw))
     if not tools:
         raise ValueError("agent.tools must declare at least one tool")
     return tuple(tools)
 
 
+def configured_agent_tool_config(
+    config: Mapping[str, Any],
+    *,
+    agent_id: str,
+    bundle_root: Path,
+) -> AgentToolConfig:
+    """Project direct-agent YAML through KDCube's canonical tool parser."""
+    connections = configured_tool_connections(config)
+    props = {
+        "surfaces": {
+            "as_consumer": {
+                "default_agent": agent_id,
+                "agents": {agent_id: {"tools": list(connections)}},
+            }
+        }
+    }
+    resolved = agent_tool_config_from_bundle_props(
+        props,
+        agent_id,
+        bundle_root=bundle_root,
+        default_agent_id=agent_id,
+    )
+    if not resolved.allowed_plugins:
+        raise ValueError("agent.tools did not resolve any supported tool sources")
+    return resolved
+
+
+def configured_tool_ids(tool_config: AgentToolConfig) -> tuple[str, ...]:
+    """Return explicit canonical ids selected by a direct-agent tool config."""
+    mcp_aliases = {
+        str(spec.get("alias") or "").strip()
+        for spec in tool_config.mcp_tool_specs
+        if str(spec.get("alias") or "").strip()
+    }
+    resolved: list[str] = []
+    for alias, names in tool_config.allowed_tool_names_by_alias.items():
+        if names is None or "*" in names:
+            raise ValueError(
+                "direct agent examples require explicit allowed tool names for "
+                f"source {alias!r}"
+            )
+        for name in names:
+            tool_id = (
+                f"mcp.{alias}.{name}" if alias in mcp_aliases else f"{alias}.{name}"
+            )
+            if tool_id not in resolved:
+                resolved.append(tool_id)
+    return tuple(resolved)
+
+
 def configured_tool_settings(
     config: Mapping[str, Any],
     *,
-    tool_id: str,
+    connection_id: str,
 ) -> Mapping[str, Any]:
-    """Return settings attached to one exact configured tool ID."""
-    for tool in configured_tools(config):
-        if tool.id == tool_id:
-            return tool.settings
-    raise ValueError(f"agent.tools has no tool with id {tool_id!r}")
+    """Return settings attached to one exact configured source row."""
+    for connection in configured_tool_connections(config):
+        if str(connection.get("id") or "").strip() == connection_id:
+            return dict(connection.get("settings") or {})
+    raise ValueError(f"agent.tools has no tool source with id {connection_id!r}")
 
 
 def configured_web_search(
     config: Mapping[str, Any],
     *,
-    tool_id: str,
+    connection_id: str,
 ) -> Mapping[str, Any]:
-    """Validate Web Search settings attached to one exact tool row."""
-    raw = configured_tool_settings(config, tool_id=tool_id)
+    """Validate Web Search settings attached to its configured source row."""
+    raw = configured_tool_settings(config, connection_id=connection_id)
     filter_config = raw.get("filter")
     if not isinstance(filter_config, Mapping):
-        raise ValueError(f"agent.tools[{tool_id!r}].settings.filter must be a mapping")
+        raise ValueError(
+            f"agent.tools[{connection_id!r}].settings.filter must be a mapping"
+        )
     for key in ("allowlist", "blocklist"):
         value = filter_config.get(key)
         if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
             raise ValueError(
-                f"agent.tools[{tool_id!r}].settings.filter.{key} must be a list"
+                f"agent.tools[{connection_id!r}].settings.filter.{key} must be a list"
             )
     if not isinstance(filter_config.get("ssrf_guard"), bool):
         raise ValueError(
-            f"agent.tools[{tool_id!r}].settings.filter.ssrf_guard must be true or false"
+            f"agent.tools[{connection_id!r}].settings.filter.ssrf_guard must be true or false"
         )
     return raw
 
@@ -193,29 +236,18 @@ def configured_run_directory(
     )
 
 
-def enabled_tool_ids(config: Mapping[str, Any]) -> tuple[str, ...]:
-    return tuple(tool.id for tool in configured_tools(config) if tool.enabled)
-
-
-def require_supported_tools(
-    tools: Sequence[ConfiguredTool],
-    *,
-    supported: set[str],
-    adapter: str,
-) -> None:
-    unknown = sorted(tool.id for tool in tools if tool.id not in supported)
-    if unknown:
-        raise ValueError(f"{adapter} does not expose configured tools: {', '.join(unknown)}")
-
-
-def configured_skills(config: Mapping[str, Any], *, config_path: Path) -> ConfiguredSkills:
+def configured_skills(
+    config: Mapping[str, Any], *, config_path: Path
+) -> ConfiguredSkills:
     raw = _agent(config).get("skills") or {}
     if not isinstance(raw, Mapping):
         raise ValueError("agent.skills must be a mapping")
     enabled_raw = raw.get("enabled") or []
     if not isinstance(enabled_raw, Sequence) or isinstance(enabled_raw, (str, bytes)):
         raise ValueError("agent.skills.enabled must be a list")
-    enabled = tuple(dict.fromkeys(str(item).strip() for item in enabled_raw if str(item).strip()))
+    enabled = tuple(
+        dict.fromkeys(str(item).strip() for item in enabled_raw if str(item).strip())
+    )
     root_raw = str(raw.get("root") or "").strip()
     root = None
     if root_raw:
@@ -242,7 +274,11 @@ def activate_configured_skills(
     )
 
     selection = configured_skills(config, config_path=config_path)
-    policy = {"enabled": list(selection.enabled)} if selection.enabled else {"disabled": ["*"]}
+    policy = (
+        {"enabled": list(selection.enabled)}
+        if selection.enabled
+        else {"disabled": ["*"]}
+    )
     visibility = {str(consumer): dict(policy) for consumer in consumers}
     subsystem = SkillsSubsystem(
         descriptor={
@@ -253,9 +289,13 @@ def activate_configured_skills(
     )
     set_active_skills_subsystem(subsystem)
     registry = subsystem.get_skill_registry()
-    missing = sorted(skill_id for skill_id in selection.enabled if skill_id not in registry)
+    missing = sorted(
+        skill_id for skill_id in selection.enabled if skill_id not in registry
+    )
     if missing:
-        raise ValueError(f"agent.skills.enabled contains unknown skills: {', '.join(missing)}")
+        raise ValueError(
+            f"agent.skills.enabled contains unknown skills: {', '.join(missing)}"
+        )
     return subsystem, selection
 
 
@@ -265,7 +305,9 @@ def verify_docker_image(profile: Mapping[str, Any]) -> str:
         raise ValueError("isolated execution profile has no image")
     docker = shutil.which("docker")
     if docker is None:
-        raise RuntimeError("Docker is required when the isolated code-execution tool is enabled")
+        raise RuntimeError(
+            "Docker is required when the isolated code-execution tool is enabled"
+        )
     result = subprocess.run(
         [docker, "image", "inspect", image],
         stdout=subprocess.DEVNULL,
@@ -301,17 +343,16 @@ async def verify_playwright_chromium() -> str:
 __all__ = [
     "ConfiguredAgentInput",
     "ConfiguredSkills",
-    "ConfiguredTool",
     "activate_configured_skills",
     "agent_instructions",
     "configured_agent_input",
+    "configured_agent_tool_config",
     "configured_skills",
     "configured_run_directory",
+    "configured_tool_connections",
+    "configured_tool_ids",
     "configured_tool_settings",
-    "configured_tools",
     "configured_web_search",
-    "enabled_tool_ids",
-    "require_supported_tools",
     "verify_docker_image",
     "verify_playwright_chromium",
 ]

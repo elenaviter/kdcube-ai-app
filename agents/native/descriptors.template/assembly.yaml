@@ -36,6 +36,10 @@ secrets:
 platform:
   services:
     proc:
+      tools:
+        web_search:
+          web_search_primary_backend: duckduckgo
+          web_search_backend: duckduckgo
       exec:
         py_code_exec_image: py-code-exec:latest
         py_code_exec_timeout: 600
